@@ -112,4 +112,15 @@ describe("the decisions UI", { skip: pw ? false : "playwright not resolvable (se
     assert.deepEqual(errors, []);
     await page.close();
   });
+
+  test("C6: a held finding is marked held on the findings page — held work never looks free", async () => {
+    const { page, errors } = await open(`/u/${universe}/shared/3/`);
+    // It waits on nobody, so the default "needs a person" view does not list it: show everything.
+    await page.click("button:has-text('showing: needs a person')");
+    await page.waitForSelector(`[data-f="${finding}"]`, { timeout: 10_000 });
+    const row = (await page.textContent(`[data-f="${finding}"]`))!;
+    assert.match(row, /held · ruled/, row);
+    assert.deepEqual(errors, []);
+    await page.close();
+  });
 });

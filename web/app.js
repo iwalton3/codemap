@@ -30,7 +30,7 @@ import { decisionsUrl } from './decisions.js';
 
 import {
   errText, hitTarget, apiPost, api, loaded, taskError, isErr, pageShell, nav, go, href, setRouter, postSeen,
-  copyIdButton, jumpTarget, worthResolving, goReplace, sharedUrl, reviewLabel,
+  copyIdButton, heldMark, jumpTarget, worthResolving, goReplace, sharedUrl, reviewLabel,
 } from './core.js';
 
 /**
@@ -3606,6 +3606,7 @@ class PrStoryPage extends Component {
       on-click="${() => { st.teamOpen = open ? null : f.id; }}">
       <div class="tfhead">
         <span class="tfsev">${sev}</span>
+        ${heldMark(f)}
         <span class="tftitle">${f.comment || f.text}</span>
       </div>
       <div class="tfmeta">
@@ -4815,6 +4816,7 @@ class BacklogPage extends Component {
     const f = this.fullOf(r), st = this.state;
     if (!f) return html`<div class="blfull"><span class="dim">loading the full finding…</span></div>`;
     return html`<div class="blfull">
+      ${heldMark(f)}
       ${when(!!f.comment && !!f.text, () => html`<div class="bltriage"><span class="dim bltlabel">latest triage</span>${f.text}</div>`)}
       <div class="dim blmeta">${f.author}${f.authorModel ? ` (${f.authorModel})` : ''} · ${(f.createdAt || '').slice(0, 10)}${f.category ? ' · ' + f.category : ''} · ${f.confirms} confirm${f.confirms === 1 ? '' : 's'}, ${f.refutes} refute${f.refutes === 1 ? '' : 's'} · remediation ${f.remediation}</div>
       ${each(f.corroboration || [], c => html`<div class="blverdict"><b>${c.verdict}</b> — ${c.by}${c.model ? ` (${c.model})` : ''}: ${c.rationale}</div>`, (c, i) => 'c' + i)}

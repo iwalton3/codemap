@@ -2269,9 +2269,6 @@ export interface DecisionOption {
    *  multi-select question (owner, 2026-09-23). */
   park?: string;
   recommended?: boolean;
-  /** Its settles are carried out by the answer itself. Only on a round a skill posted before
-   *  asking, from a sort of two sorters and an arbitrator (`DecisionRound.prevalidated`). */
-  closesOnAnswer?: boolean;
   /** A bulk decision's "None — approve all": an empty multi-select cannot be submitted, so
    *  every bulk group carries one (measured 2026-09-23). No effects of its own. */
   approveAll?: boolean;
@@ -2308,30 +2305,12 @@ export interface DecisionRound {
   /** "Decided rather than asked" lines: notes with no effects. */
   notes?: string[];
   /** Set only by the import of a skill round whose record says two sorters and an arbitrator
-   *  sorted it — the one thing that lets an option close on answer. */
+   *  sorted it. It closes nothing (close-on-answer was cut); it is kept as provenance, which
+   *  may decide how much reading later work needs (owner, 2026-09-23). */
   prevalidated?: { record: string; sortedBy: string };
   postedBy: Actor;
   at: string;
 }
-
-/**
- * The decision answer an agent's act carries out, and WHAT it carries out. The findings fold
- * cannot see `decisions/`, so it checks the stamp describes this very act — the finding and
- * state it closes — and trusts that the decision ops verified the answer before writing it
- * (owner, 2026-09-23, option B). `ruler` is whose answer it was: carrying a ruling out stays
- * the answerer's act, whoever's agent runs it (owner, 2026-09-23).
- */
-export interface DecisionStamp { round: string; decision: string; answer: string; ruler: string }
-/** A settle: this finding, closed as this. */
-export interface CloseStamp extends DecisionStamp { finding: string; as: "refuted" }
-
-export const isDecisionStamp = (v: unknown): v is DecisionStamp =>
-  !!v && typeof v === "object" && ["round", "decision", "answer", "ruler"].every((k) => typeof (v as any)[k] === "string" && (v as any)[k]);
-
-/** The stamp, if it carries out closing THIS finding to THIS state. */
-export const closeStampFor = (v: unknown, finding: string, next: string): CloseStamp | undefined =>
-  isDecisionStamp(v) && (v as any).finding === finding && (v as any).as === "refuted" && next === "refuted"
-    ? v as CloseStamp : undefined;
 
 /** An `AskUserQuestion` call copied from the asking machine's transcript. */
 export interface LoggedQuestion {
@@ -2343,9 +2322,13 @@ export interface LoggedQuestion {
   answers: Record<string, string | string[]>;
   /** Transcript id of the session that logged it. */
   transcript?: string;
-  /** The round the call was asked for, from the caller: the transcript cannot say which
+  /** The rounds the call was asked for, from the caller: the transcript cannot say which
    *  round a call belonged to, and an identical question in another round must not bind. */
-  round: string;
+  rounds: string[];
+  /** Question text → the one named round whose posted payload it carries, decided when it
+   *  was logged, so a round pulled later cannot unbind it (owner, S0.8(d)). A confirm-this-
+   *  reading question binds to no round and is absent. */
+  bound: Record<string, string>;
   /** The result entry's timestamp: the call binds only to decisions posted before it. */
   answeredAt: string;
   loggedBy: Actor;

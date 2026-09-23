@@ -1,17 +1,14 @@
 /**
- * Where a person's answer to a decision reaches the folds that run today.
+ * A decision stamp on a finding close opens NOTHING, and a stamped sign-off signs nothing.
  *
- * - **The findings close path** accepts an agent's close that carries a stamp describing THIS
- *   close — the finding and the state — and names whose ruling it carries out (`ruler`). It
- *   never reopens, and a finding already closed stays as its closer left it.
- * - **The hold** on a triaged finding is the existing ratchet: once a sorter's verdict confirms
- *   a finding, an agent cannot close it without a stamp (owner, 2026-09-23: "The purpose of
- *   allowing agents to close agent findings was if they weren't triaged first").
- * - **The standard is untouched.** A sign-off carried out from an answer waits for the
- *   verifier (owner, 2026-09-23, "Waits for I9 too"), so an agent's stamped sign-off still
- *   signs nothing — pinned here so the old bypass cannot come back unannounced.
+ * The stamped-close path — an agent closing a finding a person stood behind, because the event
+ * carried a person's answer to a decision — was removed with close-on-answer (owner,
+ * 2026-09-23, S0.6: "Remove it now"). The findings fold never checked the stamp against the
+ * decisions record, so any close carrying a well-formed one passed. The verifier (I9) adds its
+ * own close path under its own ruling. These pin that the old bypass cannot come back
+ * unannounced, and that events a build before this one wrote are read as ordinary closes.
  *
- * Rulings: docs/decision-rounds-worked-cases.md.
+ * Rulings: docs/decision-rounds-worked-cases.md; `.git/triage/2026-09-23-decision-rounds-2-impl-review/owner.md`.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -33,7 +30,7 @@ import { testEvent } from "./test-events.js";
 const person: Actor = { principal: "izzie@x.com" };
 const agent: Actor = { principal: "izzie@x.com", via: { kind: "agent", model: "m" } };
 const base = { round: "R1", decision: "d1", answer: "e9", ruler: "alice@x.com" };
-/** What a verified settle of f_1 carries: whose ruling, the finding it closes, and how. */
+/** What a stamped close event carried, when a build still wrote them. */
 const stamp = { ...base, finding: "f_1", as: "refuted" };
 
 // --- findings ---------------------------------------------------------------------------
@@ -46,56 +43,20 @@ const change = (id: string, state: string, data: Record<string, unknown> = {}, p
   id, kind: "finding.stateChanged", subject: "f_1", actor: agent, writerPrev: prev, after: [prev], data: { state, ...data },
 });
 
-test("an agent's close of a person's finding needs a decision stamp, and records whose ruling it was", () => {
-  const bare = foldFindings([created, change("0000000002-b", "refuted")]).get("f_1")!;
-  assert.notEqual(bare.state, "refuted", "unstamped, it is the ratchet as before");
-
-  const f = foldFindings([created, change("0000000002-b", "refuted", { decision: stamp })]).get("f_1")!;
-  assert.equal(f.state, "refuted");
-  assert.deepEqual(f.closed?.decision, stamp, "the close says which decision it carried out");
-  assert.equal(f.closed?.decision?.ruler, "alice@x.com", "and whose ruling — not the closing agent's principal");
-  assert.equal(f.closed?.by.principal, "izzie@x.com", "the closer is still whoever's agent closed it");
-});
-
-test("a stamp that does not name its ruler is no stamp", () => {
-  const { ruler: _r, ...noRuler } = stamp;
-  const f = foldFindings([created, change("0000000002-b", "refuted", { decision: noRuler })]).get("f_1")!;
-  assert.notEqual(f.state, "refuted");
-});
-
-test("a stamp does not let an agent reopen what a person closed", () => {
-  const closed = testEvent({
-    id: "0000000002-b", kind: "finding.stateChanged", subject: "f_1", actor: person,
-    writerPrev: created.id, after: [created.id], data: { state: "resolved" },
-  });
-  const f = foldFindings([created, closed, change("0000000003-c", "issued", { decision: stamp }, closed.id)]).get("f_1")!;
-  assert.equal(f.state, "resolved", "a decision settles; it never un-settles through an agent");
-});
-
-test("a malformed stamp is no stamp", () => {
-  const f = foldFindings([created, change("0000000002-b", "refuted", { decision: { round: "R1" } })]).get("f_1")!;
-  assert.notEqual(f.state, "refuted");
-});
-
-test("a stamp closes only the finding it names, and only as its `as` says", () => {
-  const other = foldFindings([created, change("0000000002-b", "refuted", { decision: { ...stamp, finding: "f_2" } })]).get("f_1")!;
-  assert.notEqual(other.state, "refuted", "a stamp for another finding closes nothing here");
-  const wrongState = foldFindings([created, change("0000000002-b", "withdrawn", { decision: stamp })]).get("f_1")!;
-  assert.notEqual(wrongState.state, "withdrawn", "a refuting decision does not withdraw");
-  const bare = foldFindings([created, change("0000000002-b", "refuted", { decision: base })]).get("f_1")!;
-  assert.notEqual(bare.state, "refuted", "a stamp that does not say what it closes is no stamp");
-});
-
-test("a stamped close leaves an already-closed finding closed, as its closer left it — whoever closed it", () => {
-  for (const closer of [person, { principal: "bob@x.com", via: { kind: "agent" as const, model: "m" } }]) {
-    const closed = testEvent({
-      id: "0000000002-b", kind: "finding.stateChanged", subject: "f_1", actor: closer,
-      writerPrev: created.id, after: [created.id], data: { state: "refuted", reason: "first closer's reason", ...(closer.via ? { decision: stamp } : {}) },
-    });
-    const f = foldFindings([created, closed, change("0000000003-c", "refuted", { decision: { ...stamp, answer: "e10" } }, closed.id)]).get("f_1")!;
-    assert.equal(f.closed?.reason, "first closer's reason");
-    assert.equal(f.closed?.by.principal, closer.principal);
+test("S0.6: an agent's stamped close of a person's finding is ignored, like an unstamped one", () => {
+  for (const data of [{}, { decision: stamp }]) {
+    const f = foldFindings([created, change("0000000002-b", "refuted", data)]).get("f_1")!;
+    assert.notEqual(f.state, "refuted", JSON.stringify(data));
+    assert.equal((f as any).settledBy, undefined);
   }
+});
+
+test("S0.6: a person's close carrying a stamp is their own close, as ever", () => {
+  const byPerson = testEvent({ id: "0000000002-b", kind: "finding.stateChanged", subject: "f_1", actor: person, writerPrev: created.id, after: [created.id], data: { state: "refuted", reason: "mine", decision: stamp } });
+  const f = foldFindings([created, byPerson]).get("f_1")!;
+  assert.equal(f.state, "refuted");
+  assert.equal(f.closed?.reason, "mine");
+  assert.equal((f.closed as any)?.decision, undefined, "the stamp is not carried onto the close");
 });
 
 // --- the hold on a triaged finding (N13) -------------------------------------------------
@@ -109,15 +70,15 @@ const verdict = (id: string, v: string, model: string, prev: string) => testEven
   writerPrev: prev, after: [prev], data: { verdict: v, note: "sorter" },
 });
 
-test("an untriaged agent finding is an agent's to refute; one a sorter confirmed is held for a stamp", () => {
+test("an untriaged agent finding is an agent's to refute; one a sorter confirmed is held, stamp or no stamp", () => {
   const untriaged = foldFindings([agentFiled, change("0000000002-b", "refuted", {}, agentFiled.id)]).get("f_1")!;
   assert.equal(untriaged.state, "refuted", "nobody stood behind it, so refuting it is triage");
 
   const c = verdict("0000000002-b", "confirm", "sorter", agentFiled.id);
-  const triaged = foldFindings([agentFiled, c, change("0000000003-c", "refuted", {}, c.id)]).get("f_1")!;
-  assert.notEqual(triaged.state, "refuted", "a sorter confirmed it: an agent alone cannot close it");
-  const carried = foldFindings([agentFiled, c, change("0000000003-c", "refuted", { decision: stamp }, c.id)]).get("f_1")!;
-  assert.equal(carried.state, "refuted", "carrying out a ruling on it can");
+  for (const data of [{}, { decision: stamp }]) {
+    const triaged = foldFindings([agentFiled, c, change("0000000003-c", "refuted", data, c.id)]).get("f_1")!;
+    assert.notEqual(triaged.state, "refuted", `a sorter confirmed it: an agent alone cannot close it (${JSON.stringify(data)})`);
+  }
 
   const r = verdict("0000000002-b", "refute", "sorter", agentFiled.id);
   const refutedBySort = foldFindings([agentFiled, r, change("0000000003-c", "refuted", {}, r.id)]).get("f_1")!;
@@ -156,42 +117,4 @@ test("an agent's sign-off signs nothing, stamp or no stamp", async () => {
     assert.equal(foldStandard(asAgent((e) => e.data!)).witnesses.length, 0);
     assert.equal(foldStandard(asAgent((e) => ({ ...e.data!, decision: { ...base, operationId: (e.data as any).witness.operationId, content: "x" } }))).witnesses.length, 0);
   } finally { discard(root); discard(side); }
-});
-
-// --- carried out once (P2 + P6.Q18) ---------------------------------------------------------
-
-const byPerson = (id: string, state: string, prev: string, data: Record<string, unknown> = {}) => testEvent({
-  id, kind: "finding.stateChanged", subject: "f_1", actor: person, writerPrev: prev, after: [prev], data: { state, ...data },
-});
-
-test("Q18 (B5.3): a PERSON's stamped close of a finding another clone already closed leaves the first closer's state and reason", () => {
-  const first = byPerson("0000000002-b", "invalid", created.id, { reason: "not reproducible" });
-  const f = foldFindings([created, first, byPerson("0000000003-c", "refuted", first.id, { decision: stamp })]).get("f_1")!;
-  assert.equal(f.state, "invalid");
-  assert.equal(f.closed?.reason, "not reproducible");
-  assert.deepEqual(f.settledBy, ["e9"], "it still counts as done (H1)");
-  // The same person's own unstamped close is theirs to make: only ruling closes are no-ops.
-  const own = foldFindings([created, first, byPerson("0000000003-c", "refuted", first.id, { reason: "changed my mind" })]).get("f_1")!;
-  assert.equal(own.state, "refuted");
-});
-
-test("P2.e (H1): a close made moot by another clone is never carried out after a reopen", () => {
-  const invalid = byPerson("0000000002-b", "invalid", created.id);
-  const moot = change("0000000003-c", "refuted", { decision: stamp }, invalid.id);
-  const reopen = byPerson("0000000004-d", "issued", moot.id);
-  const retry = change("0000000005-e", "refuted", { decision: stamp }, reopen.id);
-  const f = foldFindings([created, invalid, moot, reopen, retry]).get("f_1")!;
-  assert.equal(f.state, "issued", "reopen wins");
-  assert.deepEqual(f.settledBy, ["e9"]);
-});
-
-test("P2.f: the same answer's close from two clones, merged close → reopen → duplicate, leaves it open", () => {
-  const close = change("0000000002-b", "refuted", { decision: stamp });
-  const reopen = byPerson("0000000003-c", "issued", close.id);
-  const dup = testEvent({ id: "0000000004-z", kind: "finding.stateChanged", subject: "f_1", actor: { principal: "bob@x.com", via: { kind: "agent", model: "m" } }, writerPrev: created.id, after: [reopen.id], data: { state: "refuted", decision: stamp } });
-  const f = foldFindings([created, close, reopen, dup]).get("f_1")!;
-  assert.equal(f.state, "issued");
-  // A different answer is a different close, and it does apply.
-  const other = foldFindings([created, close, reopen, change("0000000004-d", "refuted", { decision: { ...stamp, answer: "e10" } }, reopen.id)]).get("f_1")!;
-  assert.equal(other.state, "refuted");
 });

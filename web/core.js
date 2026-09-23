@@ -456,6 +456,14 @@ export const copyIdButton = (id, title) => html`<button class="copyid" title="${
  *
  * @param {string} q
  */
+/**
+ * A finding's decision mark (plan C6): held by a decision — ruled, undecided, or unknown when
+ * the decisions log cannot be read — and whether the person's own later words may overturn
+ * the ruling. Without it, held work looked free on every findings page.
+ * @param {{ held?: { decision: string, why: string }[] | 'unknown', possiblySuperseded?: { decision: string, words: string[] }[] }} f
+ */
+export const heldMark = (f) => html`${when(f.held === 'unknown', () => html`<span class="qbadge drift" title="the decisions log cannot be read, so whether a ruling holds this is unknown">held: unknown</span>`)}${when(Array.isArray(f.held), () => html`<span class="qbadge" title="${(Array.isArray(f.held) ? f.held : []).map((h) => `${h.decision}: ${h.why === 'ruled' ? 'a ruling holds it for the verifier' : 'a decision on it is not settled'}`).join('; ')}">held · ${(Array.isArray(f.held) ? f.held : []).map((h) => h.why).join(', ')}</span>`)}${when(!!f.possiblySuperseded, () => html`<span class="qbadge drift" title="${(f.possiblySuperseded || []).map((p) => `${p.decision}: ${p.words.join(' / ')}`).join('; ')}">possibly superseded</span>`)}`;
+
 export const looksLikeId = (q) => /^[a-z]{1,8}_[0-9a-z][0-9a-z_-]*$/i.test(q.trim());
 
 /**

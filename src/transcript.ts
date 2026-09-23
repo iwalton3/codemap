@@ -190,26 +190,29 @@ export function classifyAnswer(q: AskedQuestion, answer: string | string[]): Ans
 
 // --- the reader ------------------------------------------------------------------------------
 
-/** A reader agent, as the harness recorded launching it. `said` is every string it wrote. */
-export interface ReaderAgent { agentId: string; session: string; toolUseId: string; said: string[] }
+/** A reader agent, as the harness recorded it: launched, and — once finished — handing back. */
+export interface ReaderAgent {
+  agentId: string; session: string; toolUseId: string;
+  /** When the parent's `Agent` call was made: the reader cannot have read words typed after it. */
+  launchedAt: string;
+  /** Its final report, as the harness delivered it to the parent. */
+  report: string;
+}
 
 const AGENT = /^a[A-Za-z0-9]{6,63}$/;
 
-/** Every string leaf of a value — a tool call's input, flattened for "did it say this". */
-const leaves = (v: unknown, out: string[] = []): string[] => {
-  if (typeof v === "string") out.push(v);
-  else if (Array.isArray(v)) for (const x of v) leaves(x, out);
-  else if (v && typeof v === "object") for (const x of Object.values(v)) leaves(x, out);
-  return out;
-};
-
 /**
- * The subagent `agentId`, verified as a separate agent the harness launched on this machine
- * (docs/decision-rounds-worked-cases.md, "What a reader subagent leaves", measured 2026-09-23):
- * its own `<session>/subagents/agent-<id>.jsonl`, every entry a sidechain carrying its id; a
- * meta file naming the parent's call; and, in the parent's own transcript, that `Agent` call and
- * a launch result naming the id. Plain files, so this is C14's strength and no more (owner, the
- * P7 gate). Fails closed on any shape it does not know.
+ * The subagent `agentId`, verified as a separate agent the harness launched on this machine,
+ * and finished (docs/decision-rounds-worked-cases.md, "What a reader subagent leaves", measured
+ * 2026-09-23): its own `<session>/subagents/agent-<id>.jsonl`, every entry a sidechain carrying
+ * its id; a meta file naming the parent's call; and, in the parent's own transcript, that
+ * `Agent` call, a launch result naming the id, and its hand-back. Plain files, so this is C14's
+ * strength and no more (owner, the P7 gate). Fails closed on any shape it does not know.
+ *
+ * The report is the PARENT's record of the hand-back — an entry, or a queued attachment, whose
+ * `origin` is `{kind: "peer", from: <id>, handback: true, body}` — not the subagent's last
+ * text: measured 2026-09-23, a reader goes on writing after it hands back, so its last text is
+ * not its verdict. A reader with no hand-back is still running and is refused (S0.8(c)).
  */
 export function readSubagent(agentId: string, dir: string = transcriptDir()): ReaderAgent | Unverified {
   if (!AGENT.test(agentId)) return { unverified: `not a subagent id: ${JSON.stringify(agentId)}` };
@@ -233,20 +236,17 @@ export function readSubagent(agentId: string, dir: string = transcriptDir()): Re
   }
   const parent = entries(session, dir);
   if (isUnverified(parent)) return parent;
-  const called = parent.some((e) => e.type === "assistant" && e.isSidechain !== true && Array.isArray(e.message?.content)
+  const call = parent.find((e) => e.type === "assistant" && e.isSidechain !== true && Array.isArray(e.message?.content)
     && e.message.content.some((x: any) => x?.type === "tool_use" && x.id === toolUseId && x.name === "Agent"));
   const launched = parent.some((e) => e.type === "user" && e.isSidechain !== true && e.toolUseResult?.agentId === agentId
     && Array.isArray(e.message?.content) && e.message.content.some((x: any) => x?.type === "tool_result" && x.tool_use_id === toolUseId));
-  if (!called || !launched) return { unverified: `session ${session} does not record launching subagent ${agentId}` };
-  const said: string[] = [];
-  for (const e of own) {
-    if (e.type !== "assistant" || !Array.isArray(e.message?.content)) continue;
-    for (const x of e.message.content) {
-      if (x?.type === "text" && typeof x.text === "string") said.push(x.text);
-      else if (x?.type === "tool_use") leaves(x.input, said);
-    }
-  }
-  return { agentId, session, toolUseId, said };
+  if (!call || !launched) return { unverified: `session ${session} does not record launching subagent ${agentId}` };
+  const launchedAt = stampOf(call);
+  if (isUnverified(launchedAt)) return launchedAt;
+  const handback = (o: any) => o && o.kind === "peer" && o.from === agentId && o.handback === true && typeof o.body === "string" ? o.body as string : undefined;
+  const reports = parent.filter((e) => e.isSidechain !== true).map((e) => handback(e.origin) ?? handback(e.attachment?.origin)).filter((b): b is string => b !== undefined);
+  if (!reports.length) return { unverified: `subagent ${agentId} has not handed back a report: it may still be running` };
+  return { agentId, session, toolUseId, launchedAt, report: reports.at(-1)! };
 }
 
 // --- the person's typed words ----------------------------------------------------------------

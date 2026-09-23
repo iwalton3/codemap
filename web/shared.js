@@ -11,7 +11,7 @@
  */
 
 import { Component, defineComponent, html, when, each } from './vendor/vdx/framework.js';
-import { api, apiPost, pageShell, nav, go, href, errText, taskError, copyIdButton, sharedUrl, reviewLabel } from './core.js';
+import { api, apiPost, pageShell, nav, go, href, errText, taskError, copyIdButton, heldMark, sharedUrl, reviewLabel } from './core.js';
 
 /**
  * What a pending ask reads as on the row.
@@ -421,6 +421,7 @@ class SharedPage extends Component {
           <span class="${sevClass(f.severity)}">${f.severity ?? '\u2014'}</span>
           ${when(!!f.category, () => html`<span class="rvfcat">${f.category}</span>`)}
           ${this.marksEl(f)}
+          ${heldMark(f)}
           <span class="fauthor dim">${f.author}${f.authorModel ? ` (${f.authorModel})` : ''}</span>
           ${copyIdButton(f.id, `copy ${f.id} — the handle that resolves in anyone's clone, unlike a link to this page`)}
         </div>

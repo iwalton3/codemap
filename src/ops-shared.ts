@@ -7,7 +7,7 @@
  * failing. A sidecar is additive.
  */
 
-import type { Actor, CloseStamp, Triage } from "./schema.js";
+import type { Actor, Triage } from "./schema.js";
 import { db as openDb } from "./db.js";
 import { requireActor, isAgentActor, actorVia } from "./identity.js";
 import { comparableHashes, sameBody } from "./normalize.js";
@@ -43,14 +43,14 @@ import {
   type NewNote, type NoteKind,
 } from "./shared-notes.js";
 import { assertTriageBatch, triageScope, triageOf, isTombstone, type SharedTriage } from "./shared-triage.js";
-import { backlogFindingEvent, releaseBacklog, rewitness, assign, isClosed, closeOnDecision } from "./shared-findings.js";
+import { backlogFindingEvent, releaseBacklog, rewitness, assign, isClosed } from "./shared-findings.js";
 import { cachedTriage, materializeTriage } from "./triage-publish.js";
 export { mirrorNote } from "./notes-publish.js";
 export { sharedKnowsNode, docsVerdict, type DocsVerdict } from "./docs-lookup.js";
 import { docsVerdict } from "./docs-lookup.js";
 import { queueContestedTriage } from "./ops/triage.js";
 import { liveAnchors, liveIndex, anchorFiles } from "./ops/shared.js";
-import { decisionHolds, holdMark } from "./ops/decision-holds.js";
+import { decisionsView } from "./ops/decision-holds.js";
 export { mirrorTriage, mirrorTriageBatch, mirrorTriageClear } from "./triage-publish.js";
 import { homed, linkedBranches, prsLinkedTo, writeLocalLink, readSharedNotes, readAnnotations, readAnchorStore, readFindings, loadNodes, loadNodeVersions, nodeIdsWithPublishableVersions, derivationLookup, workIndexFor, readLocalTriage, replaceLocalTriage, coveredTriageTargets, attributeLocalWalkthrough, readBlockedScopes, findingCountsByPr, readUnpublishedWalkthroughs, readStoreMeta, writeStoreMeta, foldedScopes, hasFoldedFromSidecar, SIDECAR_LINEAGE, type SidecarMark } from "./store.js";
 import { holdsLock, withLock } from "./lock.js";
@@ -1352,12 +1352,6 @@ export function bindDecisions(root: string, via: Via = {}): Bound | { error: str
   return b;
 }
 
-/** Carry out a ruling's close on one finding, as `actor`, stamped with the ruling. */
-export async function closeFindingOnDecision(root: string, b: Bound, pr: string, stamp: CloseStamp, reason: string) {
-  await closeOnDecision(b.cfg.path, prKey(b.cfg, pr), b.actor, stamp, reason);
-  return materializeFindings(root, b.cfg, pr);
-}
-
 export const reportOnFinding = homed(async function reportOnFinding(root: string, pr: number | string, id: string, result: "fixed" | "answered" | "declined", detail: string, files?: string[]) {
   const b = bind(root);
   if ("error" in b) return b;
@@ -1826,8 +1820,7 @@ export async function sharedFindings(
   const place = (f: SharedFinding) => places.get(f.target.id) ?? { state: "unknown" as const };
   // Marked, never dropped: this is a catalogue, and `queue` waits on a PERSON, who is exactly
   // who should see a finding their ruling holds (owner, B5.2 + H7.13).
-  const byId = new Map(all.map((f) => [f.id, f]));
-  const holds = await decisionHolds(root, (id) => { const f = byId.get(id); return !!f && !isClosed(f.state); });
+  const holds = await decisionsView(root);
   const offset = Math.max(0, Math.floor(opts.offset ?? 0));
   const limit = opts.limit !== undefined ? Math.max(1, Math.floor(opts.limit)) : undefined;
   const rows = limit === undefined ? chosen.slice(offset) : chosen.slice(offset, offset + limit);
@@ -1877,7 +1870,7 @@ export async function sharedFindings(
       ? { shown: page.rows.length, offset: page.offset, more: page.remaining, nextOffset: page.offset + page.rows.length }
       : {}),
     findings: page.rows.map((f) => {
-      const row = { ...view(f), tier: findingTier(f), target: { ...f.target, where: place(f).state, at: place(f).at, lastFile: place(f).file }, ...holdMark(holds, f.id) };
+      const row = { ...view(f), tier: findingTier(f), target: { ...f.target, where: place(f).state, at: place(f).at, lastFile: place(f).file }, ...holds.mark(f.id) };
       if (!opts.terse) return row;
       const light = { ...row } as Record<string, unknown>;
       for (const k of HEAVY) light[k] = undefined;

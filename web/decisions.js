@@ -15,6 +15,9 @@
 import { Component, defineComponent, html, when, each } from './vendor/vdx/framework.js';
 import { api, attestedPost, pageShell, nav, href, errText, taskError } from './core.js';
 
+/** What an empty list says when the log could not be read: not "nothing" (P3.1 (4)). */
+const UNKNOWN = 'unknown — the log can\'t be read';
+
 export const decisionsUrl = (u, round) => `/u/${u}/decisions/${round ? round + '/' : ''}`;
 
 /**
@@ -58,8 +61,9 @@ class DecisionsPage extends Component {
   }
 
   /** One decision: its question as asked, its standing answer, and — if it wants one — the controls. */
-  decision(d) {
-    const s = d.standing, busy = this.state.busy === d.id, replaced = !!d.replacedBy;
+  decision(d, blocked) {
+    // Blocked, answering is refused anyway (P3.1 (4)): no controls that cannot work.
+    const s = d.standing, busy = this.state.busy === d.id, replaced = !!d.replacedBy || blocked;
     const checked = this.state.checked[d.id] || [];
     return html`<div class="op-card ${replaced ? 'moved' : ''}">
       <div class="ft"><b>${d.ref}</b> <span class="qbadge">${d.kind}</span>
@@ -67,9 +71,12 @@ class DecisionsPage extends Component {
         ${when(!!s, () => html`<span class="qbadge ${s.verified ? '' : 'drift'}">${s.verified ? 'answered' : 'answered, unverified'}</span>`)}
       </div>
       <div class="fs">${d.payload.question}</div>
-      ${each(d.options, (o) => html`<div class="fs dim">• <b>${o.label}</b>${o.effects.length ? ' — ' + o.effects.map((e) => `${e.on === 'settle' ? 'close as ' + e.as : 'fix'}: ${e.findings.join(', ')}`).join('; ') : ''}${o.closesOnAnswer ? ' (closes on your answer)' : ''}</div>`, (o) => o.label)}
+      ${each(d.options, (o) => html`<div class="fs dim">• <b>${o.label}</b>${o.effects.length ? ' — ' + o.effects.map((e) => `${e.on === 'settle' ? 'close as ' + e.as : 'fix'}: ${e.findings.join(', ')}`).join('; ') : ''}</div>`, (o) => o.label)}
       ${when(!!s, () => html`<div class="fs">you said: <b>${s.words}</b>${s.options.length ? ' → ' + s.options.join(', ') : ''}${s.park ? ' → parked until ' + s.park : ''}</div>`)}
       ${when(!!(s && s.flags), () => html`<div class="fs dim">${(s.flags || []).join('; ')}</div>`)}
+      ${when(!!(d.possiblySuperseded && d.possiblySuperseded.length), () => html`<div class="fs"><span class="qbadge drift">possibly superseded</span>
+        your later words may change this — until they are read or you confirm, the ruling above stands:
+        ${each(d.possiblySuperseded || [], (p) => html`<div class="fs dim">“${p.words}” (${p.state})</div>`, (p) => p.answer)}</div>`)}
       ${when(!replaced && d.kind === 'options', () => html`<div class="op-actions">
         ${each(d.options, (o) => html`<button class="pullbtn" disabled="${busy}" on-click="${() => this.answer(d.id, o.park ? { park: o.park } : { option: o.label })}">${o.label}</button>`, (o) => o.label)}
       </div>`)}
@@ -93,22 +100,25 @@ class DecisionsPage extends Component {
     return html`
       ${when(blocked, () => html`<div class="attn-banner"><span class="attn-n">!</span><span>The decisions log cannot be read, so these lists may be wrong and answering is refused: ${v.diagnostic?.detail ?? 'unreadable'}</span></div>`)}
       <div class="sec">waiting on you (${v.waitingOnYou.length})</div>
-      ${when(!v.waitingOnYou.length && !blocked, () => html`<div class="empty">nothing — every question is answered</div>`)}
+      ${when(!v.waitingOnYou.length, () => html`<div class="empty">${blocked ? UNKNOWN : 'nothing — every question is answered'}</div>`)}
       ${each(v.waitingOnYou, (w) => html`<div class="fs"><a href="${href(decisionsUrl(u, w.round))}">${w.round} ${w.ref}</a> — ${w.why}</div>`, (w, i) => w.decision + i)}
 
       <div class="sec">ruled, not carried out (${v.ruledNotCarriedOut.length})</div>
       <div class="empty">You ruled; the finding is still open. A close waits for the verifier; a fix is somebody's work.</div>
+      ${when(!v.ruledNotCarriedOut.length && blocked, () => html`<div class="empty">${UNKNOWN}</div>`)}
       ${each(v.ruledNotCarriedOut, (x) => html`<div class="fs"><a href="${href(decisionsUrl(u, x.round))}">${x.round} ${x.ref}</a> — ${x.finding}: ${x.on === 'settle' ? 'close as ' + x.as : 'fix'} <span class="dim">(ruled by ${x.ruler}${x.replacedBy ? '; the question was replaced, and this holds until the replacement is answered' : ''})</span></div>`, (x) => x.decision + x.finding)}
 
       <div class="sec">parked (${v.parked.length})</div>
-      ${when(!v.parked.length, () => html`<div class="empty">none</div>`)}
+      ${when(!v.parked.length, () => html`<div class="empty">${blocked ? UNKNOWN : 'none'}</div>`)}
       ${each(v.parked, (x) => html`<div class="fs"><a href="${href(decisionsUrl(u, x.round))}">${x.round} ${x.ref}</a> — until ${x.until}${x.findings.length ? ': ' + x.findings.join(', ') : ''} <span class="dim">(it comes back to you the day after)</span></div>`, (x) => x.decision)}
 
       <div class="sec">your words, read two ways (${v.readingsInDispute.length})</div>
-      ${when(!v.readingsInDispute.length, () => html`<div class="empty">none</div>`)}
+      ${when(!v.readingsInDispute.length, () => html`<div class="empty">${blocked ? UNKNOWN : 'none'}</div>`)}
       ${each(v.readingsInDispute, (x) => html`<div class="op-card"><div class="fs"><a href="${href(decisionsUrl(u, x.round))}">${x.round} ${x.ref}</a>: “${x.words}”</div>
         <div class="fs dim">one reading: ${x.reader}</div><div class="fs dim">the other: ${x.session}</div></div>`, (x) => x.answer)}
 
+      ${when('possiblySuperseded' in v && v.possiblySuperseded.length > 0, () => html`<div class="sec">rulings your later words may change (${'possiblySuperseded' in v ? v.possiblySuperseded.length : 0})</div>
+        ${each('possiblySuperseded' in v ? v.possiblySuperseded : [], (x) => html`<div class="fs"><a href="${href(decisionsUrl(u, x.round))}">${x.round} ${x.ref}</a> — ${x.words.map((p) => `“${p.words}” (${p.state})`).join('; ')}</div>`, (x) => x.decision)}`)}
       ${when(v.awaitingReading.length > 0, () => html`<div class="fs dim">${v.awaitingReading.length} answer(s) in your own words are waiting for an agent to read them.</div>`)}`;
   }
 
@@ -123,7 +133,7 @@ class DecisionsPage extends Component {
       ${when(!!one, () => html`
         <div class="dim">${one.round.source}${one.round.pr ? ' · PR ' + one.round.pr : ''}${one.round.prevalidated ? ' · pre-validated: ' + one.round.prevalidated.sortedBy : ''}</div>
         ${each(one.round.notes || [], (n) => html`<div class="fs dim">decided rather than asked: ${n}</div>`, (n, i) => 'n' + i)}
-        ${each(one.decisions, (x) => this.decision(x), (x) => x.id)}
+        ${each(one.decisions, (x) => this.decision(x, one.status === 'blocked'), (x) => x.id)}
         ${this.views(one)}`)}
       ${when(!one && !!list, () => html`
         ${this.views(list)}

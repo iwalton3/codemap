@@ -208,7 +208,13 @@ import { readScopeChecked, sortEvents, SHARD_EXT, type LogEvent, type ScopeDiagn
 // when given, a replaced question's ruling holds; events without the new fields are dropped
 // (H7.12 — they exist only in stores this unpushed branch wrote). Findings: `settledBy`, and a
 // stamped close of a closed finding is a no-op. The same shards, a different fold.
-export const MATERIALIZER_VERSION = 28;
+//
+// 28 -> 29: both folds again (review round 2026-09-23-decision-rounds-2-impl-review). Decisions:
+// the standing answer is ranked from the set, not in recording order; close-on-answer and the
+// "own" class are gone; a reading binds only from codemap's parse of the reader's hand-back
+// (older readings are dropped, S0.7); confirm-this-reading calls bind. Findings: a
+// decision-stamped close no longer opens the gate, and `settledBy` is gone (S0.6).
+export const MATERIALIZER_VERSION = 29;
 
 /**
  * What the events in a scope are, cheaply.

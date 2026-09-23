@@ -15,8 +15,7 @@ import {
 import { requireActor, isAgentActor, actorLabel, reviewerKey, isIndependent, isErrorIndependent } from "../identity.js";
 import { isAgentAuthored, publishStateOf, type PublishState } from "../pr-push.js";
 import { genId, liveAnchors, resolveRefs, loadNodesShared} from "./shared.js";
-import { decisionHolds, holdMark } from "./decision-holds.js";
-import type { Hold } from "../shared-decisions.js";
+import { decisionsView, type HoldMark } from "./decision-holds.js";
 
 // ---------------------------------------------------------------------------
 // Annotations
@@ -661,8 +660,10 @@ export interface QueueItem {
   /** Absent when listing beyond the assignment queue (`assignedOnly: false`). */
   assignment?: Annotation["assignment"];
   /** A decision holds it from open work, and why — or `unknown` when the decisions log
-   *  cannot be read. The assigned list drops held rows unless a PERSON assigned them. */
-  held?: Hold[] | "unknown";
+   *  cannot be read. The assigned list drops held rows unless a PERSON assigned them after
+   *  the latest hold began. */
+  held?: HoldMark["held"];
+  possiblySuperseded?: HoldMark["possiblySuperseded"];
   target: Annotation["target"];
   /** Where to look: the anchor's file and symbol, plus its current source. */
   file?: string;
@@ -804,7 +805,10 @@ export async function reviewQueue(
   // "outstanding" means. A separate "unknown" would split one state into two for no
   // caller — every filter on it wants the same rows either way.
   const remediationOf = new Map(rows.filter((f) => f.remediation).map((f) => [f.id, f.remediation!.state]));
-  const everything = [...store.annotations, ...rows.map(findingAsQueueEntry)];
+  // Each queue entry keeps its own row: an id under two review keys is two rows, each with its
+  // own assignment (owner, P3.1 (3)).
+  const rowOf = new Map<Annotation, SharedFinding>();
+  const everything = [...store.annotations, ...rows.map((f) => { const a = findingAsQueueEntry(f); rowOf.set(a, f); return a; })];
   const pushedIds = await pushedAnnotationIds(root);
   const liveIds = new Set((await readAnchorStore(root)).anchors.map((a) => a.id));
   const assignedOnly = opts.assignedOnly !== false;
@@ -823,17 +827,19 @@ export async function reviewQueue(
   if (opts.publishState) pending = pending.filter((a) => publishStateOf(a, pushedIds) === opts.publishState);
 
   // A finding a decision holds is not offered as work (owner, B1.3): the assigned list drops
-  // it and says so, unless a person assigned it themselves, which wins, marked (H7.15). The
-  // catalogue (`assignedOnly: false`) marks it instead (B5.2).
-  const byId = new Map(rows.map((f) => [f.id, f]));
-  const holds = await decisionHolds(root, (f) => { const r = byId.get(f); return !!r && !isClosed(r.state); });
+  // it and says so, unless a PERSON assigned it after the latest hold on it began, which keeps
+  // it, marked (owner, P1.4 + S0.4). The catalogue (`assignedOnly: false`) marks it instead (B5.2).
+  const holds = await decisionsView(root);
   let withheld = 0;
   if (assignedOnly) {
     // Refused in the queue's own shape, so a caller reading `queue` sees it empty, not absent.
-    if ("unknown" in holds) return { total: 0, offset: 0, more: false, queue: [] as QueueItem[], error: `the decisions log cannot be read, so which findings a person's ruling holds is unknown and nothing is offered as work: ${holds.unknown}` };
+    if (holds.unknown) return { total: 0, offset: 0, more: false, queue: [] as QueueItem[], error: `the decisions log cannot be read, so which findings a person's ruling holds is unknown and nothing is offered as work: ${holds.unknown}` };
     pending = pending.filter((a) => {
-      const by = byId.get(a.id)?.assignment?.by;
-      const keep = !holds.held.get(a.id)?.length || (!!by && !isAgentActor(by));
+      const held = holds.mark(a.id).held;
+      if (!Array.isArray(held)) return true;
+      const began = Math.max(...held.map((h) => Date.parse(h.since)));
+      const as = rowOf.get(a)?.assignment;
+      const keep = !!as && !isAgentActor(as.by) && Date.parse(as.at) > began;
       if (!keep) withheld++;
       return keep;
     });
@@ -886,7 +892,7 @@ export async function reviewQueue(
       ...triageState(a),
       ...(a.postedRef ? { postedRef: a.postedRef } : {}),
       ...(prOf.has(a.id) ? { pr: prOf.get(a.id), shared: sharedIds.has(a.id) } : {}),
-      ...holdMark(holds, a.id),
+      ...holds.mark(a.id),
     }));
     return {
       total, offset, more, queue: brief, ...heldNote,
@@ -943,7 +949,7 @@ export async function reviewQueue(
       ...targetState(a),
       ...triageState(a),
       ...(a.postedRef ? { postedRef: a.postedRef } : {}),
-      ...holdMark(holds, a.id),
+      ...holds.mark(a.id),
     });
   }
   return { total, offset, more, queue, ...heldNote };
