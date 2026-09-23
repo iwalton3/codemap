@@ -416,3 +416,6 @@ run("P4.c (Q13): a follow-up to a reading's copy attaches to the decision the co
   const nd = { ...D("d9", "D9", q("D9: Rename fix — settle F10?", ["Yes", "No"]), [{ label: "Yes", effects: [settle("F10")] }, { label: "No", effects: [] }]), round: "R2", origin: { answer: copy } };
   return [L, A, R, post("R2", [nd])];
 }, (b, out) => standing(b.d2!)!.separately?.[0] === "Rename fix" && (b.d2!.followUps ?? []).includes("d9") && !waits(out, "d2", /Rename fix/));
+test("P5 (bulk 8): two options sharing a label are refused", () => {
+  assert.match(checkDecision(D("dl", "D9", q("D9: is F1 real?", ["A", "A"]), [{ label: "A", effects: [settle("F1")] }, { label: "A", effects: [] }]))!, /share a label/);
+});

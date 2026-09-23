@@ -58,13 +58,16 @@ export async function checkRound(root: string, b: Bound, r: NewRound, prevalidat
   if (!r?.round || typeof r.round.id !== "string" || !r.round.id.trim() || typeof r.round.source !== "string" || !r.round.source.trim()) return "a round needs an id and a source";
   if (!Array.isArray(r.decisions) || !r.decisions.length) return "a round needs at least one decision";
   if (existing.rounds.some((x) => x.id === r.round.id)) return `round ${r.round.id} is already posted; a changed question is a new decision in a new round`;
-  const refs = new Set<string>();
+  const refs = new Set<string>(), ids = new Set<string>(), replaces = new Set<string>();
   for (const d of r.decisions) {
     if (d?.round !== r.round.id) return `decision ${String(d?.id)} names round ${String(d?.round)}, not ${r.round.id}`;
     const bad = checkDecision(d, prevalidated);
     if (bad) return `decision ${d.ref ?? d.id}: ${bad}`;
     if (refs.has(d.ref)) return `two decisions in one round share the ref ${d.ref}`;
     refs.add(d.ref);
+    // The fold keeps the first of two, so the second would be asked with the first's payload (bulk 8).
+    if (ids.has(d.id)) return `two decisions in one round share the id ${d.id}`;
+    ids.add(d.id);
     if (existing.decisions.some((x) => x.id === d.id)) return `decision ${d.id} is already posted`;
     // A decision names findings by codemap id, and only ones codemap holds (owner, 2026-09-23:
     // "Yes, refuse unrecorded"). Findings a round's own sort produced come in by import.
@@ -72,8 +75,18 @@ export async function checkRound(root: string, b: Bound, r: NewRound, prevalidat
       const found = lookupFinding(root, f);
       if (!found) return `decision ${d.ref} names ${f}, which is not a finding this store holds — record it first (a skill round's findings come in through import_round)`;
       if ("ambiguous" in found) return `decision ${d.ref} names ${f}, which is a finding under more than one review (${found.ambiguous.join(", ")}), so a ruling on it could close the wrong one`;
+      // On this map only, the team's clones could not carry a ruling on it out (bulk 10).
+      if (!found.finding.origin) return `decision ${d.ref} names ${f}, which is on this map only — publish it first (\`codemap unify-findings\`)`;
     }
-    if (d.supersedes && !existing.decisions.some((x) => x.id === d.supersedes)) return `decision ${d.ref} replaces ${d.supersedes}, which is not posted`;
+    if (d.supersedes) {
+      const old = existing.decisions.find((x) => x.id === d.supersedes);
+      if (!old) return `decision ${d.ref} replaces ${d.supersedes}, which is not posted`;
+      // One replacement per question, so "the replacement decides" names one (bulk 9, ruled):
+      // re-asking a replaced question replaces its replacement, which keeps the chain linear.
+      if (old.replacedBy) return `decision ${d.ref} replaces ${d.supersedes}, which ${old.replacedBy} already replaced — replace ${old.replacedBy} instead`;
+      if (replaces.has(d.supersedes)) return `two decisions in this round replace ${d.supersedes}`;
+      replaces.add(d.supersedes);
+    }
   }
   return null;
 }

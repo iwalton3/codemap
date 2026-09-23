@@ -146,6 +146,8 @@ export function checkDecision(d: Decision, prevalidated = false): string | null 
   if (!str(d.id) || !str(d.round) || !/^D\d+$/.test(typeof d.ref === "string" ? d.ref : "")) return "a decision needs an id, a round and a ref like D2";
   if (d.kind !== "options" && d.kind !== "words" && d.kind !== "bulk") return "kind must be options, words or bulk";
   const labels = d.payload.options.map((o) => o.label);
+  // A pick is recorded by label, so two options sharing one could not be told apart (bulk 8).
+  if (new Set(labels).size !== labels.length) return "two options share a label";
   if (d.options.length !== labels.length || d.options.some((o, i) => o.label !== labels[i])) {
     return "the options must be the payload's options, in order";
   }

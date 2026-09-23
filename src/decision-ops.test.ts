@@ -11,7 +11,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { indexBlob } from "./repo.js";
-import { writeStore, readFinding } from "./store.js";
+import { writeStore, readFinding, writeLocalFinding } from "./store.js";
+import { db as openDb } from "./db.js";
 import type { State } from "./schema.js";
 import { shareFinding, corroborateFinding, closeFinding, bindDecisions, reassignFinding, sharedFindings, closeFindingOnDecision } from "./ops-shared.js";
 import { reviewQueue } from "./ops/annotations.js";
@@ -455,6 +456,50 @@ test("P2.c: a page click answered again after a crash closes what the first did 
       const again = await answerDirect(u.root, { decision: "dC", option: "Not defects" }) as any;
       assert.deepEqual(again.closed, [g], JSON.stringify(again));
       assert.equal((await readFinding(u.root, f))?.closed?.reason, "the first close", "f stays as its first close left it");
+    });
+  } finally { u.cleanup(); }
+});
+
+test("P5 (bulk 8–10): posting refuses duplicate ids, a second or chained replacement, and a finding the team does not have", async () => {
+  const u = await universe();
+  try {
+    const f = await withFinding(u);
+    const g = await withFinding(u);
+    await asAgent(async () => {
+      // Two decisions sharing an id: the fold keeps the first, so the second was asked with its payload.
+      const dup = await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f), decision("d1", g, {}, "D2")] });
+      assert.match(String(err(dup)), /share the id d1/, JSON.stringify(dup).slice(0, 300));
+      assert.equal((await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f), decision("d2", g, {}, "D2")] }) as any).ok, true);
+
+      const re = (id: string, ref: string, round: string, supersedes: string) => ({ ...decision(id, f, {}, ref), round, supersedes });
+      assert.match(String(err(await postRound(u.root, { round: { id: "R2", source: "x" }, decisions: [re("d1b", "D1", "R2", "d1"), re("d1c", "D2", "R2", "d1")] }))), /two decisions in this round replace d1/);
+      assert.equal((await postRound(u.root, { round: { id: "R2", source: "x" }, decisions: [re("d1b", "D1", "R2", "d1")] }) as any).ok, true);
+      assert.match(String(err(await postRound(u.root, { round: { id: "R3", source: "x" }, decisions: [re("d1c", "D1", "R3", "d1")] }))), /d1b already replaced — replace d1b instead/);
+      assert.equal((await postRound(u.root, { round: { id: "R3", source: "x" }, decisions: [re("d1c", "D1", "R3", "d1b")] }) as any).ok, true, "the chain stays linear");
+
+      // On this map only: the team's clones could not carry a ruling on it out.
+      const local = { ...(await readFinding(u.root, f))!, id: "f_local" };
+      await writeLocalFinding(u.root, local as any, 7);
+      assert.match(String(err(await postRound(u.root, { round: { id: "R4", source: "x" }, decisions: [{ ...decision("d4", "f_local"), round: "R4" }] }))), /on this map only/);
+    });
+  } finally { u.cleanup(); }
+});
+
+test("Q16: a finding id under two review keys is refused, never closed in whichever scope sorted first", async () => {
+  const u = await universe();
+  try {
+    const f = await withFinding(u);
+    await asAgent(async () => {
+      const r = await postPrevalidated(u.root, bindDecisions(u.root) as any, { round: { id: "R1", source: "triage" }, decisions: [decision("d1", f, { closesOnAnswer: true })] }, { record: "rec", sortedBy: "two sorters and an arbitrator" });
+      assert.equal((r as any).ok, true, JSON.stringify(r));
+      // The same id under another key, as a second review's row would put it.
+      openDb(u.root).prepare("INSERT INTO findings(id,pr,target_kind,target_id,state,author,created_at,needs_ack,contested,ord,body) SELECT id,'8',target_kind,target_id,state,author,created_at,needs_ack,contested,ord,body FROM findings WHERE id = ?").run(f);
+      assert.match(String(err(await postRound(u.root, { round: { id: "R2", source: "x" }, decisions: [{ ...decision("d2", f, {}, "D2"), round: "R2" }] }))), /under more than one review \(7, 8\)/);
+    });
+    await asPerson(async () => {
+      const a = await answerDirect(u.root, { decision: "d1", option: "Not a defect" }) as any;
+      assert.deepEqual(a.closed, []);
+      assert.match(String(a.refused?.[0]), /under 7, 8, so it was not closed/);
     });
   } finally { u.cleanup(); }
 });
