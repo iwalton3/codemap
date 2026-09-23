@@ -1862,6 +1862,20 @@ export async function readFinding(
 }
 
 /**
+ * One finding by id alone, for a caller that holds no review key — or, when the id is under
+ * more than one key, every key it is under. `readFinding` throws there; this reports it, for a
+ * caller that must refuse rather than act on whichever row sorted first (the decision ops did,
+ * and closed a finding in the older scope). `origin` set means the team has it.
+ */
+export function lookupFinding(root: string, id: string): { finding: SharedFinding } | { ambiguous: string[] } | null {
+  const rows = db(root).prepare("SELECT pr, body, source_scope FROM findings WHERE id = ? ORDER BY pr").all(id) as unknown as
+    { pr: string; body: string; source_scope: string | null }[];
+  if (rows.length > 1) return { ambiguous: rows.map((r) => r.pr) };
+  const f = rows[0] ? hydrate(rows[0].body, rows[0].pr, rows[0].source_scope) : null;
+  return f ? { finding: f } : null;
+}
+
+/**
  * The team's notes, across every bucket of one universe.
  *
  * Reads the PROJECTION, never the log. `notesForTarget` folds one bucket because a

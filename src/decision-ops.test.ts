@@ -13,11 +13,11 @@ import { spawnSync } from "node:child_process";
 import { indexBlob } from "./repo.js";
 import { writeStore, readFinding } from "./store.js";
 import type { State } from "./schema.js";
-import { shareFinding, corroborateFinding, closeFinding, bindDecisions, reassignFinding, sharedFindings } from "./ops-shared.js";
+import { shareFinding, corroborateFinding, closeFinding, bindDecisions, reassignFinding, sharedFindings, closeFindingOnDecision } from "./ops-shared.js";
 import { reviewQueue } from "./ops/annotations.js";
 import { postRound, postPrevalidated, logQuestion, relayAnswer, answerDirect, decisionRounds, decisionRound, recordReading } from "./ops/decisions.js";
 import { discard } from "./test-tmp.js";
-import { decisionScope, logQuestionEvent } from "./shared-decisions.js";
+import { decisionScope, logQuestionEvent, recordAnswerEvent } from "./shared-decisions.js";
 
 const state: State = { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State;
 const SRC = "export function creditLine(cents) {\n  return cents * 2;\n}\n";
@@ -383,6 +383,78 @@ test("P3.c + P3.i (B1.3, H7.13–15): a held finding is not offered as work; the
       assert.match(String(refused.error), /decisions log cannot be read/);
       assert.deepEqual(refused.queue, []);
       assert.equal((await reviewQueue(u.root, { assignedOnly: false }) as any).queue.find((x: any) => x.id === f)?.held, "unknown");
+    });
+  } finally { u.cleanup(); }
+});
+
+test("P2.b–P2.d (B2.3): a close is carried out once per answer, retried until it lands, and only for the decisions touched", async () => {
+  const u = await universe();
+  try {
+    const [f, g, h] = [await withFinding(u), await withFinding(u), await withFinding(u)];
+    const both = (id: string, ref: string, a: string, b2: string) => ({
+      id, round: "R1", ref, kind: "options" as const,
+      payload: { question: `${ref}: are ${a} and ${b2} real?`, header: ref, options: [{ label: "Not defects" }, { label: "Real" }] },
+      options: [{ label: "Not defects", effects: [{ findings: [a, b2], on: "settle" as const, as: "refuted" as const }], closesOnAnswer: true }, { label: "Real", effects: [{ findings: [a, b2], on: "unblock" as const }] }],
+    });
+    const dA = both("dA", "D1", f, g);
+    let answerA = "";
+    await asAgent(async () => {
+      const b = bindDecisions(u.root) as any;
+      const r = await postPrevalidated(u.root, b, { round: { id: "R1", source: "triage" }, decisions: [dA, decision("dB", h, {}, "D2")] }, { record: "rec", sortedBy: "two sorters and an arbitrator" });
+      assert.equal((r as any).ok, true, JSON.stringify(r));
+      const when = soon();
+      asked(u.transcripts, "Not defects", "toolu_1", [dA.payload], when);
+      // The crash: the call and its answer are in the log, and neither close happened.
+      const L = await logQuestionEvent(b.cfg.path, b.cfg.universe, b.actor, { session: SESSION, toolUseId: "toolu_1", questions: [dA.payload], answers: { [dA.payload.question]: "Not defects" }, transcript: SESSION, round: "R1", answeredAt: when });
+      const hash = (await decisionRound(u.root, "R1") as any).decisions.find((d: any) => d.id === "dA").hash;
+      answerA = (await recordAnswerEvent(b.cfg.path, b.cfg.universe, b.actor, { decision: "dA", hash, via: { kind: "question", question: L.id } })).id;
+    });
+    await asPerson(async () => { await answerDirect(u.root, { decision: "dB", words: "leave it for now, fix later" }); });
+    await asAgent(async () => {
+      const dB = (await decisionRound(u.root, "R1") as any).decisions.find((d: any) => d.id === "dB");
+      const maps = [{ decision: "dB", option: "Real, fix it" }];
+      const read = await recordReading(u.root, { answer: dB.standing.id, reader: { transcript: "agent-B", reading: "fix", maps }, session: { reading: "fix", maps } }) as any;
+      assert.equal(read.agree, true, JSON.stringify(read));
+      assert.equal((await readFinding(u.root, f))?.state, "issued", "P2.d: an unrelated reading carries out nothing on dA");
+
+      // Midway: f closed, g not, when the op died.
+      const b = bindDecisions(u.root) as any;
+      await closeFindingOnDecision(u.root, b, "7", { round: "R1", decision: "dA", answer: answerA, ruler: "alice@x.com", finding: f, as: "refuted" }, "the first close");
+      const retry = await logQuestion(u.root, { session: SESSION, toolUseId: "toolu_1", round: "R1" }, {}, u.transcripts) as any;
+      assert.deepEqual(retry.answered[0].closed, [g], "the retry closes the rest");
+      assert.deepEqual((await readFinding(u.root, f))?.settledBy, [answerA], "and f exactly once");
+      assert.equal((await readFinding(u.root, g))?.state, "refuted");
+    });
+    // P2.b: reopened by a person, it is never closed again by the same answer.
+    await asPerson(async () => { await closeFinding(u.root, 7, f, "issued", "not so fast"); });
+    await asAgent(async () => {
+      assert.equal((await readFinding(u.root, f))?.state, "issued", "the check could fail: it is open");
+      const again = await logQuestion(u.root, { session: SESSION, toolUseId: "toolu_1", round: "R1" }, {}, u.transcripts) as any;
+      assert.deepEqual(again.answered[0].closed, []);
+      assert.equal((await readFinding(u.root, f))?.state, "issued", "reopen wins");
+    });
+  } finally { u.cleanup(); }
+});
+
+test("P2.c: a page click answered again after a crash closes what the first did not, and nothing twice", async () => {
+  const u = await universe();
+  try {
+    const [f, g] = [await withFinding(u), await withFinding(u)];
+    const dC = { id: "dC", round: "R1", ref: "D1", kind: "options" as const,
+      payload: { question: `D1: are ${f} and ${g} real?`, header: "D1", options: [{ label: "Not defects" }, { label: "Real" }] },
+      options: [{ label: "Not defects", effects: [{ findings: [f, g], on: "settle" as const, as: "refuted" as const }], closesOnAnswer: true }, { label: "Real", effects: [{ findings: [f, g], on: "unblock" as const }] }] };
+    await asAgent(async () => {
+      const r = await postPrevalidated(u.root, bindDecisions(u.root) as any, { round: { id: "R1", source: "triage" }, decisions: [dC] }, { record: "rec", sortedBy: "two sorters and an arbitrator" });
+      assert.equal((r as any).ok, true, JSON.stringify(r));
+    });
+    await asPerson(async () => {
+      const b = bindDecisions(u.root) as any;
+      const hash = (await decisionRound(u.root, "R1") as any).decisions[0].hash;
+      const first = (await recordAnswerEvent(b.cfg.path, b.cfg.universe, b.actor, { decision: "dC", hash, via: { kind: "direct", option: "Not defects" } })).id;
+      await closeFindingOnDecision(u.root, b, "7", { round: "R1", decision: "dC", answer: first, ruler: "alice@x.com", finding: f, as: "refuted" }, "the first close");
+      const again = await answerDirect(u.root, { decision: "dC", option: "Not defects" }) as any;
+      assert.deepEqual(again.closed, [g], JSON.stringify(again));
+      assert.equal((await readFinding(u.root, f))?.closed?.reason, "the first close", "f stays as its first close left it");
     });
   } finally { u.cleanup(); }
 });

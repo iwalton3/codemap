@@ -10,7 +10,8 @@ import { isAgentActor } from "../identity.js";
 import { readCached } from "../materialize.js";
 import { decisionsProjection } from "../shared-projections.js";
 import { sidecarIdentity, type SidecarConfig } from "../sidecar-config.js";
-import { bindDecisions, closeFindingOnDecision, findingKeyAndState, type Bound, type Via } from "../ops-shared.js";
+import { bindDecisions, closeFindingOnDecision, type Bound, type Via } from "../ops-shared.js";
+import { lookupFinding } from "../store.js";
 import { isClosed } from "../shared-findings.js";
 import {
   checkDecision, decisionHash, decisionScope, foldDecisions, heldFindings, logQuestionEvent, postRoundEvent, readingsInDispute,
@@ -36,9 +37,10 @@ async function writable(root: string, b: Bound): Promise<{ s: SharedDecisions } 
   return { s };
 }
 
+/** Open unless the finding record says it closed; an id under two reviews is not known closed. */
 const isOpen = (root: string) => (f: string) => {
-  const r = findingKeyAndState(root, f);
-  return !!r && !isClosed(r.state as any);
+  const r = lookupFinding(root, f);
+  return !!r && ("ambiguous" in r || !isClosed(r.finding.state));
 };
 
 // --- posting ---------------------------------------------------------------------------
@@ -64,7 +66,9 @@ export async function checkRound(root: string, b: Bound, r: NewRound, prevalidat
     // A decision names findings by codemap id, and only ones codemap holds (owner, 2026-09-23:
     // "Yes, refuse unrecorded"). Findings a round's own sort produced come in by import.
     for (const o of d.options) for (const e of o.effects) for (const f of e.findings) {
-      if (!findingKeyAndState(root, f)) return `decision ${d.ref} names ${f}, which is not a finding this store holds — record it first (a skill round's findings come in through import_round)`;
+      const found = lookupFinding(root, f);
+      if (!found) return `decision ${d.ref} names ${f}, which is not a finding this store holds — record it first (a skill round's findings come in through import_round)`;
+      if ("ambiguous" in found) return `decision ${d.ref} names ${f}, which is a finding under more than one review (${found.ambiguous.join(", ")}), so a ruling on it could close the wrong one`;
     }
     if (d.supersedes && !existing.decisions.some((x) => x.id === d.supersedes)) return `decision ${d.ref} replaces ${d.supersedes}, which is not posted`;
   }
@@ -137,28 +141,35 @@ export async function decisionRound(root: string, id: string, via: Via = {}) {
 // --- answering -------------------------------------------------------------------------
 
 /**
- * Carry out what the answer itself may carry out: the settles of a pre-validated option, and
- * only on a verified answer that is the decision's standing one. Every other ruling waits for
- * the verifier (owner, 2026-09-23: "Held until I9"). The close is `b.actor`'s act, stamped
- * with whose ruling it carries out.
+ * Carry out what the answer itself may carry out: the settles of a close-on-answer option the
+ * person picked themselves (the fold marks those, B2.2), on the decision's standing answer.
+ * Every other ruling waits for the verifier (owner: "Held until I9"). The close is `b.actor`'s
+ * act, stamped with whose ruling it carries out.
+ *
+ * Once per (answer, finding), and retried until it lands (B2.3): the finding record's
+ * `settledBy` says whether this answer's close has reached it, so a retry after a crash closes
+ * the rest and a reopen is never undone. A finding already closed still gets the stamped close
+ * — the findings fold leaves it as its closer left it and records the answer as done (H1).
  */
-async function carryOut(root: string, b: Bound, decisionId: string, answerId: string) {
+async function carryOut(root: string, b: Bound, decisionId: string, answerId: string): Promise<{ closed: string[]; refused?: string[] }> {
   const s = await cached(root, b.cfg);
   const d = s.decisions.find((x) => x.id === decisionId);
   const a = d && standing(d);
-  // No `verified` check here: the fold never rules a settle from an unverified answer (C8).
-  if (!d || !a || a.id !== answerId) return [];
-  const closed: string[] = [];
+  if (!d || !a || a.id !== answerId) return { closed: [] };
+  const closed: string[] = [], refused: string[] = [];
   for (const r of a.ruled) {
     if (!r.closesOnAnswer || r.on !== "settle" || r.as !== "refuted") continue;
-    const row = findingKeyAndState(root, r.finding);
-    // Already closed: the finding stays as its closer left it; the ruling is still recorded.
-    if (!row || isClosed(row.state as any)) continue;
-    await closeFindingOnDecision(root, b, row.pr, { round: d.round, decision: d.id, answer: a.id, ruler: a.by.principal, finding: r.finding, as: "refuted" },
+    const row = lookupFinding(root, r.finding);
+    if (!row) continue;
+    if ("ambiguous" in row) { refused.push(`${r.finding} is a finding under ${row.ambiguous.join(", ")}, so it was not closed`); continue; }
+    if (row.finding.settledBy?.includes(a.id)) continue;
+    const was = row.finding.state;
+    await closeFindingOnDecision(root, b, row.finding.pr!, { round: d.round, decision: d.id, answer: a.id, ruler: a.by.principal, finding: r.finding, as: "refuted" },
       `ruled by ${a.by.principal} (${d.ref}: ${a.words})`);
-    closed.push(r.finding);
+    // Every finding this answer closed, listed, never collapsed (R7.2) — and never one it did not.
+    if (!isClosed(was)) closed.push(r.finding);
   }
-  return closed;
+  return { closed, ...(refused.length ? { refused } : {}) };
 }
 
 async function record(root: string, b: Bound, d: FoldedDecision, via: AnswerVia, relayedBy?: string) {
@@ -168,7 +179,7 @@ async function record(root: string, b: Bound, d: FoldedDecision, via: AnswerVia,
   const a = now?.answers.find((x) => x.id === e.id);
   // The fold dropped it: say so rather than report an answer nobody will see.
   if (!a) return { decision: d.id, ref: d.ref, recorded: false as const, why: "the fold did not accept this answer (a paraphrased question, a question posted after it was answered, an unverified park, or a decision since replaced)" };
-  const closed = await carryOut(root, b, d.id, e.id);
+  const { closed, refused } = await carryOut(root, b, d.id, e.id);
   return {
     decision: d.id, ref: d.ref, recorded: true as const, answer: e.id, verified: a.verified, own: a.own,
     ...(a.outranked ? { outranked: true, note: a.conflicts ? "not your own answer, after one that is: it disagrees with your ruling and waits for you" : "not your own answer, after one that is: once read, it waits for you only if it disagrees" } : {}),
@@ -176,8 +187,7 @@ async function record(root: string, b: Bound, d: FoldedDecision, via: AnswerVia,
     ruled: a.ruled, ...(a.unruled.length ? { waitingOnYou: a.unruled } : {}),
     ...(a.separately?.length ? { askSeparately: a.separately } : {}),
     ...(a.park ? { parked: a.park } : {}), ...(a.flags ? { flags: a.flags } : {}),
-    // Every finding this answer closed, listed, never collapsed (R7.2).
-    closed,
+    closed, ...(refused ? { refused } : {}),
   };
 }
 
@@ -218,7 +228,7 @@ export async function logQuestion(root: string, input: { session?: string; toolU
     if (d.round !== round.id || d.replacedBy || !call.questions.some((q) => sameQuestion(q, d.payload)) || call.answers[d.payload.question] === undefined) continue;
     const had = d.answers.find((a) => a.once === once);
     // Answered once: the retry records nothing new (B1.4), and carries out what it may (B2.3).
-    if (had) answered.push({ decision: d.id, ref: d.ref, recorded: false as const, already: had.id, closed: await carryOut(root, b, d.id, had.id) });
+    if (had) answered.push({ decision: d.id, ref: d.ref, recorded: false as const, already: had.id, ...await carryOut(root, b, d.id, had.id) });
     else answered.push(await record(root, b, d, { kind: "question", question: logged }));
   }
   return {
@@ -270,8 +280,15 @@ export async function recordReading(root: string, input: {
   const s = await cached(root, b.cfg);
   const a = s.decisions.find((x) => x.id === d.id)?.answers.find((x) => x.id === input.answer);
   if (!a?.reading) return { ok: false, recorded: false, why: "the fold did not accept this reading (the reader is the relayer, a decision it names is answered, replaced, in another round or posted after the words, or the answer was not free text)" };
+  // Only the decisions this reading touched: carrying out every decision in the universe was
+  // an O(N) read per reading, and re-ran closes nobody had asked for (Q5, Q6).
   const closed: string[] = [];
-  if (a.reading.agree) for (const x of s.decisions) closed.push(...await carryOut(root, b, x.id, standing(x)?.id ?? ""));
+  if (a.reading.agree) {
+    for (const id of new Set(input.reader.maps.map((m) => m.decision))) {
+      const x = s.decisions.find((y) => y.id === id);
+      if (x) closed.push(...(await carryOut(root, b, x.id, standing(x)?.id ?? "")).closed);
+    }
+  }
   return {
     ok: true, agree: a.reading.agree,
     ...(a.reading.agree ? {} : { note: a.reading.unclear ? "unclear, so nothing binds and it waits for the person" : "the readings disagree, so nothing applies and it waits for the person" }),

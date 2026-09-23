@@ -1352,11 +1352,6 @@ export function bindDecisions(root: string, via: Via = {}): Bound | { error: str
   return b;
 }
 
-/** A finding this store holds, wherever it lives: its key (pr or branch) and state. */
-export function findingKeyAndState(root: string, id: string): { pr: string; state: string } | undefined {
-  return openDb(root).prepare("SELECT pr, state FROM findings WHERE id = ? ORDER BY created_at LIMIT 1").get(id) as { pr: string; state: string } | undefined;
-}
-
 /** Carry out a ruling's close on one finding, as `actor`, stamped with the ruling. */
 export async function closeFindingOnDecision(root: string, b: Bound, pr: string, stamp: CloseStamp, reason: string) {
   await closeOnDecision(b.cfg.path, prKey(b.cfg, pr), b.actor, stamp, reason);
