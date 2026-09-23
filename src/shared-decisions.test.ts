@@ -10,7 +10,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  foldDecisions, decisionHash, checkDecision, heldFindings, standing, waitingOnMe, readingsInDispute, ruledNotCarriedOut, awaitingReading,
+  foldDecisions, decisionHash, checkDecision, heldFindings, standing, waitingOnMe, readingsInDispute, ruledNotCarriedOut, awaitingReading, parked,
   type FoldedDecision, type SharedDecisions,
 } from "./shared-decisions.js";
 
@@ -68,7 +68,7 @@ const reading = (a: any, maps: any[], session = maps, extra: any = {}) =>
 
 const ruled = (d: FoldedDecision) => standing(d)?.ruled ?? [];
 const rules = (d: FoldedDecision, f: string, on: string) => ruled(d).some((r) => r.finding === f && r.on === on);
-const waits = (out: SharedDecisions, id: string, re?: RegExp) => waitingOnMe(out).some((w) => w.decision === id && (!re || re.test(w.why)));
+const waits = (out: SharedDecisions, id: string, re?: RegExp, today = "2026-09-23") => waitingOnMe(out, today).some((w) => w.decision === id && (!re || re.test(w.why)));
 const held = (out: SharedDecisions, f: string, why?: string, isOpen = (_: string) => true) => (heldFindings(out, isOpen).get(f) ?? []).some((x) => !why || x.why === why);
 
 // --- what an answer rules
@@ -388,3 +388,31 @@ run("P3.g: ...and the later answer takes it over", () => {
 run("P3.h (H6.4): of two replacements from two clones the first in log order replaces; the second is live and flagged", () =>
   [post("R1b", [d1b]), post("R1x", [reask(d1b, "d1x", "D8", "R1x")])],
   (b, out) => b.d1!.replacedBy === "d1b" && b.d1x!.replaceLost === "d1b" && waits(out, "d1x", /conflicting replacement/) && waits(out, "d1x", /not answered/));
+
+// --- P4: the views, and parks
+
+const isParked = (out: SharedDecisions, id: string, today: string) => parked(out, today).some((p) => p.decision === id);
+run("P4.a (B3.1, H6.5–6.6): a park is under Parked, not waiting on you, through the whole of its date", () => [page(d3, { option: "Park until 2026-10-15" })],
+  (b, out) => ["2026-10-14", "2026-10-15"].every((t) => isParked(out, "d3", t) && !waits(out, "d3", undefined, t))
+    && parked(out, "2026-10-15")[0]!.until === "2026-10-15" && parked(out, "2026-10-15")[0]!.findings.includes("F20"));
+run("P4.a: ...and the day after, it is yours again, its findings still held as undecided", () => [page(d3, { option: "Park until 2026-10-15" })],
+  (b, out) => !isParked(out, "d3", "2026-10-16") && waits(out, "d3", /parked until 2026-10-15, which has passed/, "2026-10-16") && held(out, "F20", "undecided"));
+run("P4.a (B4.1): words read as a park, the two readings agreeing, park — and show under Parked", () => {
+  const [L, A] = call(d3, "park it till mid October");
+  return [L, A, reading(A, [{ decision: "d3", option: "Park until 2026-10-15" }])];
+}, (b, out) => isParked(out, "d3", "2026-09-23"));
+run("P4.a (B4.1): read two ways, nothing parks and it waits on you", () => {
+  const [L, A] = call(d3, "later, maybe");
+  return [L, A, reading(A, [{ decision: "d3", option: "Park until 2026-10-15" }], [{ decision: "d3", option: null }])];
+}, (b, out) => !isParked(out, "d3", "2026-09-23") && waits(out, "d3") && readingsInDispute(out).some((x) => x.decision === "d3"));
+run("P4.b (Q11): 'not sure, ask bob', read as nothing on both sides, stays waiting on you", () => {
+  const [L, A] = call(d1, "not sure, ask bob");
+  return [L, A, reading(A, [{ decision: "d1", option: null }])];
+}, (b, out) => waits(out, "d1", /rule nothing/) && held(out, "F3", "undecided") && !awaitingReading(out).length);
+run("P4.c (Q13): a follow-up to a reading's copy attaches to the decision the copy is on", () => {
+  const [L, A] = call(d1, "settle, and on the bulk one take the rename separately");
+  const R = reading(A, [{ decision: "d1", option: "Settle" }, { decision: "d2", option: "Rename fix" }]);
+  const copy = `${R.id}/d2`;
+  const nd = { ...D("d9", "D9", q("D9: Rename fix — settle F10?", ["Yes", "No"]), [{ label: "Yes", effects: [settle("F10")] }, { label: "No", effects: [] }]), round: "R2", origin: { answer: copy } };
+  return [L, A, R, post("R2", [nd])];
+}, (b, out) => standing(b.d2!)!.separately?.[0] === "Rename fix" && (b.d2!.followUps ?? []).includes("d9") && !waits(out, "d2", /Rename fix/));

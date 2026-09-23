@@ -52,6 +52,10 @@ describe("the decisions UI", { skip: pw ? false : "playwright not resolvable (se
       const r = await ops.postRound(root, { round: { id: "R1", source: "e2e" }, decisions: [{
         id: "d1", round: "R1", ref: "D1", kind: "options", payload,
         options: [{ label: "Not a defect", effects: [{ findings: [finding], on: "settle", as: "refuted" }] }, { label: "Real, fix it", effects: [{ findings: [finding], on: "unblock" }] }],
+      }, {
+        id: "d2", round: "R1", ref: "D2", kind: "options",
+        payload: { question: `D2: review ${finding} now, or park it?`, header: "Park", options: [{ label: "Park until 2099-01-01" }, { label: "Now" }] },
+        options: [{ label: "Park until 2099-01-01", park: "2099-01-01", effects: [] }, { label: "Now", effects: [{ findings: [finding], on: "unblock" }] }],
       }] }) as any;
       assert.equal(r.ok, true, JSON.stringify(r));
     });
@@ -79,21 +83,33 @@ describe("the decisions UI", { skip: pw ? false : "playwright not resolvable (se
 
   test("an unanswered question waits on you; answering it is a ruling, and the finding stays open", async () => {
     const hub = await open(`/u/${universe}/decisions/`);
-    await hub.page.waitForSelector("text=waiting on you (1)", { timeout: 10_000 });
+    await hub.page.waitForSelector("text=waiting on you (2)", { timeout: 10_000 });
     assert.deepEqual(hub.errors, []);
     await hub.page.close();
 
     const { page, errors } = await open(`/u/${universe}/decisions/R1/`);
     await page.waitForSelector(".op-card", { timeout: 10_000 });
-    assert.match((await page.textContent("main"))!, /Is the currency finding real\?/);
+    assert.match((await page.textContent("main"))!, /D1: is the currency finding \(f_[0-9a-z-]+\) real\?/);
     await page.click("button.pullbtn:has-text('Not a defect')");
     await page.waitForSelector("text=ruled, not carried out (1)", { timeout: 10_000 });
     const text = (await page.textContent("main"))!;
-    assert.match(text, /waiting on you \(0\)/);
+    assert.match(text, /waiting on you \(1\)/);
     assert.match(text, new RegExp(`${finding}: close as refuted`));
     assert.match(text, /you said: Not a defect/);
     assert.deepEqual(errors, []);
     await page.close();
     assert.notEqual((await readFinding(root, finding))?.state, "refuted", "a ruling is not a close: the verifier carries it out");
+  });
+
+  test("P4.d: a park leaves 'waiting on you' for its own view, with its date", async () => {
+    const { page, errors } = await open(`/u/${universe}/decisions/R1/`);
+    await page.waitForSelector("text=parked (0)", { timeout: 10_000 });
+    await page.click("button.pullbtn:has-text('Park until 2099-01-01')");
+    await page.waitForSelector("text=parked (1)", { timeout: 10_000 });
+    const text = (await page.textContent("main"))!;
+    assert.match(text, /R1 D2 — until 2099-01-01/);
+    assert.match(text, /waiting on you \(0\)/);
+    assert.deepEqual(errors, []);
+    await page.close();
   });
 });

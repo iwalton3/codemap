@@ -1014,7 +1014,7 @@ const tools: Tool[] = [
   },
   {
     name: "decision_rounds",
-    description: "Every posted round, and the three things the person reads: what waits on them (unanswered, or answers that need them again), rulings not yet carried out (a settle waits for the verifier; an unblock is fix work), and readings in dispute. Also free text still waiting for a reader — an agent's job, not theirs.",
+    description: "Every posted round, and the three things the person reads: what waits on them (unanswered, or answers that need them again), rulings not yet carried out (a settle waits for the verifier; an unblock is fix work), readings in dispute, and what they parked (until its date; the day after, it waits on them again). Also free text still waiting for a reader — an agent's job, not theirs. `status: \"blocked\"` means the log could not be read and these lists may be wrong.",
     inputSchema: obj({}),
     mutates: false,
     handler: (a, c) => ops.decisionRounds(c.universe.path),

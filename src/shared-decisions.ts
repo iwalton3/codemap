@@ -409,9 +409,11 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
           if (t.kind === "options" && picked.length > 1 && t.payload.multiSelect !== true) continue;
           const target = t === src.d ? src.a : (() => {
             // A copy is never the person's own answer to a question they may not have seen (B2.2).
-            const copy: FoldedAnswer = { ...src.a, options: [], ruled: [], unruled: [], free: false, superseded: false, own: false };
+            // Its own id, so a follow-up citing it attaches to THIS decision (Q13).
+            const copy: FoldedAnswer = { ...src.a, id: `${e.id}/${t.id}`, options: [], ruled: [], unruled: [], free: false, superseded: false, own: false };
             delete copy.park; delete copy.parkWaits; delete copy.separately; delete copy.flags;
             t.answers.push(copy);
+            answersById.set(copy.id, { a: copy, d: t });
             return copy;
           })();
           target.free = false;
@@ -524,8 +526,15 @@ const stillHeld = (s: SharedDecisions, d: FoldedDecision): Ruled[] => {
 
 export interface WaitingItem { decision: string; round: string; ref: string; why: string }
 
-/** What waits on the person: unanswered questions, and answers that need them again. */
-export function waitingOnMe(s: SharedDecisions): WaitingItem[] {
+/** Parked through the whole of its date, by UTC date (H6.6). */
+const parkedOn = (a: FoldedAnswer | undefined, today: string): boolean => a?.park !== undefined && a.park >= today;
+
+/**
+ * What waits on the person: unanswered questions, and answers that need them again. `today`
+ * (UTC, YYYY-MM-DD) comes from the op, never a clock in here: a park holds through its date
+ * and, once it has passed, the decision is theirs again (bulk 3).
+ */
+export function waitingOnMe(s: SharedDecisions, today: string): WaitingItem[] {
   const out: WaitingItem[] = [];
   for (const d of s.decisions) {
     if (d.replacedBy) {
@@ -549,6 +558,11 @@ export function waitingOnMe(s: SharedDecisions): WaitingItem[] {
     const at = a ? d.answers.indexOf(a) : -1;
     for (const x of d.answers.slice(at + 1)) if (x.conflicts) item(`an unconfirmed answer disagrees with your ruling: "${x.words}"`);
     if (!a) { item("not answered"); continue; }
+    if (parkedOn(a, today)) continue;   // under "parked", not here (H6.5)
+    if (a.park !== undefined) item(`parked until ${a.park}, which has passed`);
+    // Read, and ruled nothing: every mapping `null` or not an option. Its findings are still
+    // undecided, so without this it would wait on nobody (Q11, C20).
+    if (a.free && a.reading?.agree) item("your words were read, and they rule nothing here");
     if (a.reading?.unclear) item(`the reader could not tell which question your words answer: ${a.reading.unclear}`);
     if (a.parkWaits) item(`a park until ${a.parkWaits} that could not be verified as yours`);
     if (a.unruled.length) item(`settles that could not be verified as yours: ${a.unruled.join(", ")}`);
@@ -557,6 +571,20 @@ export function waitingOnMe(s: SharedDecisions): WaitingItem[] {
     for (const label of a.separately ?? []) {
       if (!(d.followUps ?? []).some((f) => s.decisions.find((x) => x.id === f)?.origin?.answer === a.id)) item(`you asked to rule on "${label}" separately, and it has not been asked yet`);
     }
+  }
+  return out;
+}
+
+export interface Parked { decision: string; round: string; ref: string; until: string; findings: string[] }
+
+/** Decisions parked by the person, still within their date (owner, B3.1: "a separate park queue"). */
+export function parked(s: SharedDecisions, today: string): Parked[] {
+  const out: Parked[] = [];
+  for (const d of s.decisions) {
+    const a = standing(d);
+    if (d.replacedBy || !parkedOn(a, today)) continue;
+    const findings = [...new Set(d.options.flatMap((o) => o.effects.flatMap((e) => e.findings)))];
+    out.push({ decision: d.id, round: d.round, ref: d.ref, until: a!.park!, findings });
   }
   return out;
 }

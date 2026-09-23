@@ -100,6 +100,10 @@ class DecisionsPage extends Component {
       <div class="empty">You ruled; the finding is still open. A close waits for the verifier; a fix is somebody's work.</div>
       ${each(v.ruledNotCarriedOut, (x) => html`<div class="fs"><a href="${href(decisionsUrl(u, x.round))}">${x.round} ${x.ref}</a> — ${x.finding}: ${x.on === 'settle' ? 'close as ' + x.as : 'fix'} <span class="dim">(ruled by ${x.ruler}${x.replacedBy ? '; the question was replaced, and this holds until the replacement is answered' : ''})</span></div>`, (x) => x.decision + x.finding)}
 
+      <div class="sec">parked (${v.parked.length})</div>
+      ${when(!v.parked.length, () => html`<div class="empty">none</div>`)}
+      ${each(v.parked, (x) => html`<div class="fs"><a href="${href(decisionsUrl(u, x.round))}">${x.round} ${x.ref}</a> — until ${x.until}${x.findings.length ? ': ' + x.findings.join(', ') : ''} <span class="dim">(it comes back to you the day after)</span></div>`, (x) => x.decision)}
+
       <div class="sec">your words, read two ways (${v.readingsInDispute.length})</div>
       ${when(!v.readingsInDispute.length, () => html`<div class="empty">none</div>`)}
       ${each(v.readingsInDispute, (x) => html`<div class="op-card"><div class="fs"><a href="${href(decisionsUrl(u, x.round))}">${x.round} ${x.ref}</a>: “${x.words}”</div>

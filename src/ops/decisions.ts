@@ -15,7 +15,7 @@ import { lookupFinding } from "../store.js";
 import { isClosed } from "../shared-findings.js";
 import {
   checkDecision, decisionHash, decisionScope, foldDecisions, heldFindings, logQuestionEvent, postRoundEvent, readingsInDispute,
-  recordAnswerEvent, recordReadingEvent, ruledNotCarriedOut, standing, waitingOnMe, awaitingReading,
+  recordAnswerEvent, recordReadingEvent, ruledNotCarriedOut, standing, waitingOnMe, awaitingReading, parked,
   type AnswerVia, type FoldedDecision, type Mapping, type SharedDecisions,
 } from "../shared-decisions.js";
 import { isUnverified, readCall, readMessage, sameQuestion, sessionHolding, transcriptDir } from "../transcript.js";
@@ -29,6 +29,9 @@ const read = async (root: string, cfg: Pick<SidecarConfig, "path" | "universe">)
   return { s: value, status };
 };
 const cached = async (root: string, cfg: Pick<SidecarConfig, "path" | "universe">): Promise<SharedDecisions> => (await read(root, cfg)).s;
+
+/** Today by UTC date, for the views: parks are dated, and the fold holds no clock. */
+const today = () => new Date().toISOString().slice(0, 10);
 
 /** A write onto a scope the fold cannot read would be decided against rows that may be wrong. */
 async function writable(root: string, b: Bound): Promise<{ s: SharedDecisions } | { error: string; status: ScopeStatus }> {
@@ -109,9 +112,10 @@ export async function decisionRounds(root: string, via: Via = {}) {
   return {
     ...status,
     rounds: s.rounds.map((r) => ({ ...r, decisions: s.decisions.filter((d) => d.round === r.id).length })),
-    waitingOnYou: waitingOnMe(s),
+    waitingOnYou: waitingOnMe(s, today()),
     ruledNotCarriedOut: ruledNotCarriedOut(s, isOpen(root)),
     readingsInDispute: readingsInDispute(s),
+    parked: parked(s, today()),
     // Waiting on an agent, not on the person: shown so it is not mistaken for nothing.
     awaitingReading: awaitingReading(s),
   };
@@ -131,9 +135,10 @@ export async function decisionRound(root: string, id: string, via: Via = {}) {
     round,
     decisions: s.decisions.filter(mine).map((d) => ({ ...d, standing: standing(d) ?? null })),
     held: [...held].filter(([, hs]) => hs.some((h) => s.decisions.find((d) => d.id === h.decision)?.round === id)).map(([finding, hs]) => ({ finding, holds: hs })),
-    waitingOnYou: waitingOnMe(s).filter(mine),
+    waitingOnYou: waitingOnMe(s, today()).filter(mine),
     ruledNotCarriedOut: ruledNotCarriedOut(s, isOpen(root)).filter(mine),
     readingsInDispute: readingsInDispute(s).filter(mine),
+    parked: parked(s, today()).filter(mine),
     awaitingReading: awaitingReading(s).filter(mine),
   };
 }
