@@ -247,7 +247,7 @@ verbatim.
   > If the note is bulk approved and verified asked via the transcript checking mechanism we
   > discussed, it is fine.
 
-  *The session's reading, not yet confirmed:* a list line covering a group 2 or 3 item stands
+  *The session's reading, confirmed by the owner ("Yes your reading of C5 checks out."):* a list line covering a group 2 or 3 item stands
   only when the owner has bulk-approved the list, and the approval verifies. That means the line
   is inside the question, or inside the span its excerpts name. Otherwise the line is posted as
   a decision. Lines covering other groups stay a note, as written.
