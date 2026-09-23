@@ -122,3 +122,15 @@ test("the transcript directory is the cwd with every non-alphanumeric turned int
     if (prev !== undefined) process.env.CODEMAP_TRANSCRIPT_DIR = prev;
   }
 });
+
+test("the session holding an id is found among top-level transcripts only", async () => {
+  const { sessionHolding } = await import("./transcript.js");
+  const { mkdirSync } = await import("node:fs");
+  const dir = transcript([call("tx", [Q1])]);
+  mkdirSync(join(dir, S, "subagents"), { recursive: true });
+  writeFileSync(join(dir, S, "subagents", "agent-1.jsonl"), JSON.stringify(call("only-in-subagent", [Q1])) + "\n");
+  assert.equal(sessionHolding("tx", dir), S);
+  assert.ok(isUnverified(sessionHolding("only-in-subagent", dir)), "a subagent's transcript is never the session");
+  assert.ok(isUnverified(sessionHolding("nowhere", dir)));
+  assert.ok(isUnverified(sessionHolding("../x", dir)), "an id that is not an id");
+});

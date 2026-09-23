@@ -67,6 +67,9 @@ describe("every registered route", { skip: pw ? false : "playwright not resolvab
         // A pull request the fixture has no data for. Rendering an empty state
         // cleanly IS the assertion — this is the shape a mistyped URL takes.
         case "pr": return "1";
+        // A round the fixture does not hold (it has no sidecar either): the page must say so
+        // cleanly, which is the shape a stale link to a round takes.
+        case "round": return "R1";
         default: throw new Error(`route "${route}" has parameter ":${name}" with no fixture value — add one to fill()`);
       }
     });

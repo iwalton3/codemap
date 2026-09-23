@@ -97,6 +97,7 @@ import { readFinding, readBug, idsStartingWith, readSpec, readOperation } from "
 import { isRemediation, type Ask, type FindingState, type Remediation, type Verdict } from "./shared-findings.js";
 export { reportDefect, type DefectContext, type DefectInput } from "./ops/defect.js";
 export { promoteAnnotation } from "./promote-annotation.js";
+export { postRound, decisionRounds, decisionRound, logQuestion, relayAnswer, recordReading, answerDirect } from "./ops/decisions.js";
 
 /**
  * Report back on whatever `review_queue` handed you — annotation or finding.

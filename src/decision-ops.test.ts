@@ -110,7 +110,8 @@ test("a logged answer is a ruling: the finding is held for the verifier and list
       assert.ok(view.waitingOnYou.some((w: any) => w.decision === "d1"), "unanswered, it waits on you");
 
       asked(u.transcripts, "Not a defect");
-      const r = await logQuestion(u.root, { session: SESSION, toolUseId: "toolu_1" }, {}, u.transcripts) as any;
+      // No session given: the agent knows what it asked, and codemap finds whose transcript holds it.
+      const r = await logQuestion(u.root, { toolUseId: "toolu_1" }, {}, u.transcripts) as any;
       assert.equal(r.ok, true, JSON.stringify(r));
       assert.equal(r.answered[0].verified, true);
       assert.deepEqual(r.answered[0].closed, [], "an ordinary round's ruling closes nothing itself");

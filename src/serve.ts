@@ -47,7 +47,7 @@ try {
 const rootFor = (u: string | null) => (u && ws.byId.get(u) ? ws.byId.get(u)!.path : ws.primary.path);
 
 /**
- * What a caller must send back to perform one of the five acts reserved to a person.
+ * What a caller must send back to perform one of the acts reserved to a person (the standard's five, and answering a decision).
  *
  * **This is not authentication and it must never be described as any.** It cannot be: the
  * value is handed out by `GET /api/standard/attest` to anybody who asks, and this file is
@@ -242,6 +242,12 @@ async function api(path: string, q: URLSearchParams): Promise<unknown> {
       return shared.sharedHub(root);
     case "/api/findings/backlog":
       return shared.findingBacklog(root, { asOf: q.get("asOf") || undefined });
+    // Decision rounds: what waits on the person, what they ruled that is not carried out, and
+    // readings in dispute. Answering is the POST below, behind the principal notice.
+    case "/api/decisions":
+      return ops.decisionRounds(root);
+    case "/api/decisions/round":
+      return ops.decisionRound(root, q.get("id") ?? "");
     case "/api/shared/triage":
       return shared.sharedTriage(root, (q.get("kind") as "node" | "anchor") || undefined, q.get("target") || undefined);
     case "/api/shared/contested":
@@ -347,22 +353,41 @@ const server = createServer(async (req, res) => {
     // work and move nothing, because the threat model is an agent that respects a stated
     // intent — attribution without prevention, which is the same trade principal identity
     // makes everywhere else in this subsystem.
+    /** The principal notice, checked; false (and answered) when it is missing. See `PRINCIPAL_NOTICE`. */
+    const attested = (body: any, act: string): boolean => {
+      if (body.attest === `${PRINCIPAL_NOTICE} ${PRINCIPAL_NONCE}`) return true;
+      res.writeHead(400, { "content-type": "application/json" });
+      res.end(JSON.stringify({
+        error:
+          `\`${act}\` is one of the acts this system reserves to a person, so it needs the `
+          + `notice from GET /api/standard/attest sent back as \`attest\`. Read it before you `
+          + `send it: it is a claim about who you are, and it is the whole of the control.`,
+      }));
+      return false;
+    };
+    // Answering a decision on the page: the person's direct door, and the only one besides a
+    // verified relay (owner, R18: "answering happens either via MCP verified channels or the
+    // web app via the human attestation guardrail"). A sixth principal act.
+    if (req.method === "POST" && url.pathname === "/api/decisions/answer") {
+      const chunks: Buffer[] = [];
+      for await (const c of req) chunks.push(c as Buffer);
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+      if (!attested(body, "answer")) return;
+      const root = rootFor(body.u ?? null);
+      const out = await withLock<unknown>(root, () => ops.answerDirect(root, {
+        decision: String(body.decision ?? ""), option: body.option, park: body.park, words: body.words, checked: body.checked,
+      }));
+      res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify(out));
+      return;
+    }
     if (req.method === "POST" && url.pathname.startsWith("/api/standard/")) {
       const chunks: Buffer[] = [];
       for await (const c of req) chunks.push(c as Buffer);
       const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
       const root = rootFor(body.u ?? null);
       const act = url.pathname.slice("/api/standard/".length);
-      if (body.attest !== `${PRINCIPAL_NOTICE} ${PRINCIPAL_NONCE}`) {
-        res.writeHead(400, { "content-type": "application/json" });
-        res.end(JSON.stringify({
-          error:
-            `\`${act}\` is one of the acts this system reserves to a person, so it needs the `
-            + `notice from GET /api/standard/attest sent back as \`attest\`. Read it before you `
-            + `send it: it is a claim about who you are, and it is the whole of the control.`,
-        }));
-        return;
-      }
+      if (!attested(body, act)) return;
       const out = await withLock<unknown>(root, async () => {
         if (act === "ratify") return ops.ratifySpec(root, { specId: body.specId });
         if (act === "withdraw") return ops.withdrawSpec(root, { specId: body.specId, reason: body.reason ?? "" });

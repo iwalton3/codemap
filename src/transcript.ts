@@ -9,7 +9,7 @@
  * Only the session's own top-level `<session>.jsonl` is read. Subagents write to
  * `<session>/subagents/`, so their words cannot be mistaken for the person's by construction.
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AskedQuestion } from "./schema.js";
@@ -57,6 +57,24 @@ function entries(session: string, dir: string): Record<string, any>[] | Unverifi
     } catch { /* a torn last line while the session is still writing */ }
   }
   return out;
+}
+
+/**
+ * The session whose own transcript holds `id` (a tool-use id or an entry id), newest first —
+ * for an agent that knows what it asked but not its session id. Top-level files only, so a
+ * subagent's transcript is never the answer.
+ */
+export function sessionHolding(id: string, dir: string = transcriptDir()): string | Unverified {
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(id)) return { unverified: `not an id: ${JSON.stringify(id)}` };
+  let files: { name: string; at: number }[];
+  try {
+    files = readdirSync(dir).filter((f) => f.endsWith(".jsonl") && SESSION.test(f.slice(0, -6)))
+      .map((f) => ({ name: f, at: statSync(join(dir, f)).mtimeMs })).sort((a, b) => b.at - a.at);
+  } catch { return { unverified: `no transcripts in ${dir}` }; }
+  for (const f of files) {
+    try { if (readFileSync(join(dir, f.name), "utf8").includes(`"${id}"`)) return f.name.slice(0, -6); } catch { /* unreadable: not this one */ }
+  }
+  return { unverified: `no session in ${dir} holds ${id}` };
 }
 
 // --- questions --------------------------------------------------------------------------

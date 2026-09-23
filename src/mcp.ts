@@ -965,6 +965,65 @@ const tools: Tool[] = [
     handler: (a, c) => ops.closeFinding(c.universe.path, a as never),
   },
   {
+    name: "post_round",
+    description: "Post a round of questions for a person to answer, BEFORE asking them. Each decision carries the exact `AskUserQuestion` question it will be asked with (`payload`) and, per option, its `effects`: `{findings, on: \"settle\", as: \"refuted\"}` closes those findings once carried out, `{findings, on: \"unblock\"}` releases them as fix work. Ask with the `ask` payloads this returns, VERBATIM, then call `log_question` — a paraphrased question cannot be matched and reads as unverified.\n\n`kind`: \"options\" (a picked option is the ruling), \"words\" (the answer IS the words; no effects), or \"bulk\" (a multi-select whose options are items: a CHECKED item is ruled on separately, every unchecked item is approved; it must carry exactly one option with `approveAll: true`, because an empty multi-select cannot be submitted).\n\nRefused: a finding this store does not hold (record it first), a settle without `as: \"refuted\"`, an unblock with an `as`, a park option on a multi-select, and `closesOnAnswer` (only a pre-validated round may close on answer). A person's ruling is NOT a close: a settle holds its finding until the verifier carries it out.",
+    inputSchema: obj({
+      round: { type: "object", description: "{ id, source (a review round's or plan's slug, or \"ad hoc\"), pr?, branch?, notes? (decided-rather-than-asked lines) }" },
+      decisions: { type: "array", items: { type: "object" }, description: "Each { id, round, ref (\"D1\"), kind, payload (the AskUserQuestion question), options: [{ label (= the payload's option label, same order), effects, park?, recommended?, approveAll? }], supersedes?, origin? }" },
+    }, ["round", "decisions"]),
+    mutates: true,
+    handler: (a, c) => ops.postRound(c.universe.path, a as never),
+  },
+  {
+    name: "log_question",
+    description: "After EVERY `AskUserQuestion` you put to the person, call this with its `toolUseId`. Codemap reads the call and the person's answer from this session's own transcript — never from your summary — and records it as the answer to every posted decision whose exact question it carries. Returns what each answer ruled, what waits on the person, and every finding it closed (only a pre-validated option closes on answer). If the transcript cannot confirm the call, nothing is written and it says why. `session` is optional: codemap finds the transcript holding the call.",
+    inputSchema: obj({
+      toolUseId: { type: "string", description: "The AskUserQuestion call's tool_use id." },
+      session: { type: "string", description: "This session's id, if you know it." },
+    }, ["toolUseId"]),
+    mutates: true,
+    handler: (a, c) => ops.logQuestion(c.universe.path, a as never),
+  },
+  {
+    name: "relay_answer",
+    description: "The person TYPED their answer instead of picking (\"D2 B\", \"D3 park 2026-10-15\", or free words). Give the message's transcript entry id and codemap copies their WHOLE message — you never retype it. A reply that is exactly one decision and option rules it; anything else is free text, which a reader agent maps onto options (`record_reading`). If the transcript cannot confirm the message, pass `words` and it is recorded as UNVERIFIED: it unblocks, and its settles wait for the person.",
+    inputSchema: obj({
+      decision: { type: "string" },
+      entryId: { type: "string", description: "The transcript entry id (uuid) of the person's message." },
+      session: { type: "string" },
+      words: { type: "string", description: "Only used if the transcript cannot confirm the message." },
+      relayedBy: { type: "string", description: "Your own session id — the reader must be a different one." },
+    }, ["decision", "entryId"]),
+    mutates: true,
+    handler: (a, c) => ops.relayAnswer(c.universe.path, a as never),
+  },
+  {
+    name: "record_reading",
+    description: "You are the READER of a person's free-text answer, running in a session other than the one that relayed it. Map their words onto options of ANY open decision in the same round (`option: null` where they fit none), next to the asking session's own reading. Only when the two agree does anything apply; if they disagree, nothing applies and it waits for the person. `asks`: words asking for work no option held — post a decision for it.",
+    inputSchema: obj({
+      answer: { type: "string", description: "The answer id from `decision_round`." },
+      reader: { type: "object", description: "{ transcript (YOUR session id), reading, maps: [{ decision, option | null }] }" },
+      session: { type: "object", description: "{ reading, maps } — the asking session's reading, as it gave it." },
+      asks: { type: "string" },
+    }, ["answer", "reader", "session"]),
+    mutates: true,
+    handler: (a, c) => ops.recordReading(c.universe.path, a as never),
+  },
+  {
+    name: "decision_rounds",
+    description: "Every posted round, and the three things the person reads: what waits on them (unanswered, or answers that need them again), rulings not yet carried out (a settle waits for the verifier; an unblock is fix work), and readings in dispute. Also free text still waiting for a reader — an agent's job, not theirs.",
+    inputSchema: obj({}),
+    mutates: false,
+    handler: (a, c) => ops.decisionRounds(c.universe.path),
+  },
+  {
+    name: "decision_round",
+    description: "One round: each decision's exact question and effects, its standing answer (what it ruled, what waits, any reading), which findings it holds and why, and the three views for this round.",
+    inputSchema: obj({ id: { type: "string" } }, ["id"]),
+    mutates: false,
+    handler: (a, c) => ops.decisionRound(c.universe.path, String(a.id)),
+  },
+  {
     name: "revise_finding",
     description:
       "Correct a finding — yours or somebody else's — without losing what it used to say.\n\n"

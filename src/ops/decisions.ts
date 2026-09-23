@@ -17,7 +17,7 @@ import {
   recordAnswerEvent, recordReadingEvent, ruledNotCarriedOut, standing, waitingOnMe, awaitingReading,
   type AnswerVia, type FoldedDecision, type Mapping, type SharedDecisions,
 } from "../shared-decisions.js";
-import { isUnverified, readCall, readMessage, sameQuestion, transcriptDir } from "../transcript.js";
+import { isUnverified, readCall, readMessage, sameQuestion, sessionHolding, transcriptDir } from "../transcript.js";
 import type { Decision, DecisionRound } from "../schema.js";
 
 const cached = async (root: string, cfg: Pick<SidecarConfig, "path" | "universe">): Promise<SharedDecisions> =>
@@ -168,14 +168,17 @@ async function record(root: string, b: Bound, d: FoldedDecision, via: AnswerVia,
  * every open decision whose exact payload it carries. The default path for relaying the person's
  * answers (owner, R13). An unverifiable call writes nothing and says why.
  */
-export async function logQuestion(root: string, input: { session: string; toolUseId: string }, via: Via = {}, dir: string = transcriptDir(root)) {
+export async function logQuestion(root: string, input: { session?: string; toolUseId: string }, via: Via = {}, dir: string = transcriptDir()) {
   const b = bindDecisions(root, via);
   if ("error" in b) return b;
-  const call = readCall(input.session, input.toolUseId, dir);
+  const session = input.session ?? sessionHolding(input.toolUseId, dir);
+  if (isUnverified(session)) return { ok: false, unverified: session.unverified, note: "nothing was written" };
+  input = { ...input, session };
+  const call = readCall(session, input.toolUseId, dir);
   if (isUnverified(call)) return { ok: false, unverified: call.unverified, note: "nothing was written; relay_answer can still record the words as an unverified answer, which only unblocks" };
   const before = await cached(root, b.cfg);
-  if (before.questions.some((q) => q.toolUseId === input.toolUseId && q.session === input.session)) return { error: `call ${input.toolUseId} is already logged` };
-  const e = await logQuestionEvent(b.cfg.path, b.cfg.universe, b.actor, { session: call.session, toolUseId: call.toolUseId, questions: call.questions, answers: call.answers, transcript: input.session });
+  if (before.questions.some((q) => q.toolUseId === input.toolUseId && q.session === session)) return { error: `call ${input.toolUseId} is already logged` };
+  const e = await logQuestionEvent(b.cfg.path, b.cfg.universe, b.actor, { session: call.session, toolUseId: call.toolUseId, questions: call.questions, answers: call.answers, transcript: session });
   const answered = [];
   for (const d of before.decisions) {
     if (d.replacedBy || !call.questions.some((q) => sameQuestion(q, d.payload)) || call.answers[d.payload.question] === undefined) continue;
@@ -189,17 +192,18 @@ export async function logQuestion(root: string, input: { session: string; toolUs
  * a relay can never carry part of it. A message the transcript cannot confirm is recorded only
  * from `words`, as unverified: it unblocks and settles nothing (C8).
  */
-export async function relayAnswer(root: string, input: { decision: string; session: string; entryId: string; words?: string; relayedBy?: string }, via: Via = {}, dir: string = transcriptDir(root)) {
+export async function relayAnswer(root: string, input: { decision: string; session?: string; entryId: string; words?: string; relayedBy?: string }, via: Via = {}, dir: string = transcriptDir()) {
   const b = bindDecisions(root, via);
   if ("error" in b) return b;
   const d = (await cached(root, b.cfg)).decisions.find((x) => x.id === input.decision);
   if (!d) return { error: `no decision ${input.decision}` };
-  const m = readMessage(input.session, input.entryId, dir);
+  const session = input.session ?? sessionHolding(input.entryId, dir);
+  const m = isUnverified(session) ? session : readMessage(session, input.entryId, dir);
   if (isUnverified(m)) {
     if (!input.words?.trim()) return { ok: false, unverified: m.unverified, note: "nothing was written; pass the words to record them as an unverified answer, which only unblocks" };
     return { ok: true, ...(await record(root, b, d, { kind: "unverified", words: input.words }, input.relayedBy)), unverifiedBecause: m.unverified };
   }
-  return { ok: true, ...(await record(root, b, d, { kind: "message", session: m.session, entryId: m.entryId, text: m.text }, input.relayedBy ?? input.session)) };
+  return { ok: true, ...(await record(root, b, d, { kind: "message", session: m.session, entryId: m.entryId, text: m.text }, input.relayedBy ?? m.session)) };
 }
 
 /** The reader's mapping of free text onto options, beside the session's own (C17, C19). */

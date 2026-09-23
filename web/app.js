@@ -26,6 +26,7 @@ import { enableRouting } from './vendor/vdx/router.js';
 // `src/import-cycles.test.ts` walks `web/` and fails if the edge comes back.
 import './shared.js';
 import { standardUrl, rulesUrl, branchUrl, auditUrl, conformanceUrl, servedNote } from './standard.js';
+import { decisionsUrl } from './decisions.js';
 
 import {
   errText, hitTarget, apiPost, api, loaded, taskError, isErr, pageShell, nav, go, href, setRouter, postSeen,
@@ -734,7 +735,7 @@ defineComponent('md-content', MdContent);
  */
 const VIEW_LINKS = [
   ['nodes', u => nodesUrl(u)], ['bugs', u => bugsUrl(u)], ['orphans', u => orphansUrl(u)],
-  ['diff', u => diffUrl(u)], ['shared', u => sharedHubUrl(u)], ['backlog', u => backlogUrl(u)], ['PRs', u => prsUrl(u), 'prs'],
+  ['diff', u => diffUrl(u)], ['shared', u => sharedHubUrl(u)], ['backlog', u => backlogUrl(u)], ['decisions', u => decisionsUrl(u)], ['PRs', u => prsUrl(u), 'prs'],
 ];
 
 /**
@@ -4968,6 +4969,8 @@ setRouter(enableRouting(document.querySelector('router-outlet'), {
   '/u/:universe/diff/': { component: 'diff-page' },
   '/u/:universe/prs/': { component: 'pr-inbox-page' },
   '/u/:universe/backlog/': { component: 'backlog-page' },
+  '/u/:universe/decisions/': { component: 'decisions-page' },
+  '/u/:universe/decisions/:round/': { component: 'decisions-page' },
   '/u/:universe/pr/:pr/': { component: 'pr-story-page' },
   '/u/:universe/search/': { component: 'search-page' },
   '/u/:universe/shared/:pr/': { component: 'shared-page' },

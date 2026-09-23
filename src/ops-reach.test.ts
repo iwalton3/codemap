@@ -61,6 +61,9 @@ const WEB_REQUIRED = [
   "backlogOn", "releaseBacklogOn",
   "publishLocalDocs", "publishLocalNotes", "publishLocalTriage", "publishLocalGraph",
   "sharedTriage", "contestedTriage", "sharedGraph",
+  // Answering a decision directly: the person's own door (owner, R18). Without it a person
+  // could only answer through an agent relaying for them.
+  "answerDirect",
 ];
 /** Reads only. An agent must SEE the team's stakes; it may not republish or heal. */
 const MCP_REQUIRED = [
@@ -69,6 +72,8 @@ const MCP_REQUIRED = [
   // evidence rather than a disposition. Left to people it is simply never done, which
   // is why an agent must be able to reach both the queue and the repair.
   "findingBacklog", "rewitnessOn",
+  // The default path for relaying the person's answers (owner, R13), and what they left open.
+  "logQuestion", "relayAnswer", "recordReading", "decisionRounds", "decisionRound", "postRound",
 ];
 /** And these must NOT be agent-reachable, for the reason in the note above. */
 const MCP_FORBIDDEN = [
@@ -89,6 +94,10 @@ const MCP_FORBIDDEN = [
   // above already covers the reachable path; these are named so the gate survives a
   // refactor that calls the bug ops directly.
   "backlogBugOp", "releaseBugBacklogOp",
+  // An agent answers nothing on a person's behalf: it asks, and logs what they said. And
+  // no surface may mark its own round pre-validated — that door waits for the skill work
+  // (owner, 2026-09-23: leave the skill untouched until this branch is stable).
+  "answerDirect", "postPrevalidated",
 ];
 
 test("the join and recover flows are reachable from the web, not just a terminal", () => {

@@ -36,7 +36,7 @@ export const hitTarget = (e, sel) => (e.target instanceof Element ? e.target.clo
 /**
  * A POST that carries the principal notice.
  *
- * The five acts under `/api/standard/` that only a person may perform need the sentence
+ * The acts only a person may perform (the five under `/api/standard/`, and answering a decision) need the sentence
  * from `GET /api/standard/attest` sent back. From a browser that is one extra round trip
  * and invisible; from anything else it is a claim about who you are. `PRINCIPAL_NOTICE` in
  * `src/serve.ts` says what it is for and why making it opaque would destroy it.
@@ -110,6 +110,8 @@ export async function apiPost(path, body) {
  *   '/api/shared/peers':        Awaited<ReturnType<Shared['sharedStatus']>>,
  *   '/api/shared/hub':          Awaited<ReturnType<Shared['sharedHub']>>,
  *   '/api/findings/backlog':    Awaited<ReturnType<Shared['findingBacklog']>>,
+ *   '/api/decisions':           Awaited<ReturnType<Ops['decisionRounds']>>,
+ *   '/api/decisions/round':     Awaited<ReturnType<Ops['decisionRound']>>,
  *   '/api/shared/triage':       Awaited<ReturnType<Shared['sharedTriage']>>,
  *   '/api/shared/contested':    Awaited<ReturnType<Shared['contestedTriage']>>,
  *   '/api/shared/graph':        Awaited<ReturnType<Shared['sharedGraph']>>,
