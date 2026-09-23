@@ -785,3 +785,16 @@ machine, session `0ff94697…`), asked to reply with one line and use no tools:
   same strength as every other transcript check codemap makes (C14: the person's own message is a
   line in the same file), and no stronger.
 
+
+### Session 0ff94697, 2026-09-23 — the P7 gate
+
+- **Q.** A reader subagent leaves harness-written artifacts that cross-reference each other, all of
+  them plain same-user files the relaying session could write, none signed: exactly C14's strength.
+  Does it pass the gate? Options: Passes, at C14's bar (Rec.) / Fails: forgeable / Discuss first.
+  **A (picked):** "Passes, at C14's bar (Rec.)" — the session's description: build step 2;
+  `record_reading` requires `reader.transcript` to be a subagent of this machine whose files
+  cross-reference and contain the reading, and refuses anything else; a typed reply the reader
+  binds then becomes the person's own answer (H8).
+- **(unprompted, owner, while step 2 was being built):** "If an agent is writing fake transcripts,
+  it has gone off the rails and ideally auto mode would stop it." — forgery is outside what this
+  check defends against; it guards honest mistakes, like every transcript check.

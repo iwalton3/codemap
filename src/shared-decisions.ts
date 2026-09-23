@@ -95,6 +95,8 @@ export interface FoldedAnswer {
     reader: { transcript: string; reading: string; maps: Mapping[] };
     session: { reading: string; maps: Mapping[] };
     asks?: string;
+    /** The asking machine checked the reader was a separate agent the harness launched (P7). */
+    verifiedReader?: true;
     /** The reader could not tell which question the words answer, and why: nothing binds (H5). */
     unclear?: string;
   };
@@ -377,6 +379,12 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
         const rm = maps(rd?.maps), sm = maps(ses?.maps);
         if (!rm || !sm) break;
         const unclear = str(data.unclear);
+        // Trusted from the logger, as a verified message is: the reader's files are on the
+        // machine that asked, and a clone cannot re-read them.
+        const verifiedReader = !!str(rd?.verified?.session);
+        // A typed reply the verified reader binds to its own question is the person's own
+        // answer to it (owner, H8): it may close, and it outranks.
+        const bindsOwn = verifiedReader && src.a.via === "message";
         // Every mapped decision is in the same round — so posted when the answered one was, before
         // the words — takes options, is not replaced, and, apart from the one answered, has no
         // standing answer yet (C2). An outranked answer is read against its own decision only.
@@ -391,6 +399,7 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
           session: { reading: str(ses.reading) ?? "", maps: sm },
           ...(str(data.asks) ? { asks: data.asks } : {}),
           ...(unclear ? { unclear } : {}),
+          ...(verifiedReader ? { verifiedReader: true as const } : {}),
         };
         if (!agree) {
           // Unread, an outranked message was a conflict pending; read two ways it still is.
@@ -419,7 +428,19 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
             return copy;
           })();
           target.free = false;
-          rule(t, target, { verified: src.a.verified, words: src.a.words, picked, free: false, own: false }, src.a.verified, false);
+          const own = bindsOwn && t === src.d;
+          rule(t, target, { verified: src.a.verified, words: src.a.words, picked, free: false, own }, src.a.verified, own);
+        }
+        if (bindsOwn && byDecision.has(src.d.id)) {
+          src.a.own = true;
+          if (src.a.outranked) {
+            // Own against own: the later GIVEN stands (H7.9).
+            const cur = standing(src.d);   // before `outranked` is cleared, or it finds src.a itself
+            delete src.a.outranked; delete src.a.conflicts;
+            if (cur && Date.parse(src.a.givenAt) < Date.parse(cur.givenAt)) src.a.superseded = true;
+            else if (cur) cur.superseded = true;
+          }
+          break;
         }
         // Read, an outranked message disagrees unless it picked what the standing answer did.
         if (src.a.outranked) {
@@ -700,5 +721,5 @@ export const recordAnswerEvent = (logRoot: string, universe: string, actor: Acto
 
 export const recordReadingEvent = (
   logRoot: string, universe: string, actor: Actor,
-  a: { answer: string; reader: { transcript: string; reading: string; maps: Mapping[] }; session: { reading: string; maps: Mapping[] }; asks?: string; unclear?: string },
+  a: { answer: string; reader: { transcript: string; reading: string; maps: Mapping[]; verified?: { session: string; toolUseId: string } }; session: { reading: string; maps: Mapping[] }; asks?: string; unclear?: string },
 ) => emitEvent(logRoot, decisionScope(universe), actor, "decision.reading.recorded", a.answer, a as unknown as Record<string, unknown>);

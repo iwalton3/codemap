@@ -135,7 +135,9 @@ test("the standard projection's table set is pinned to a materializer version", 
   // 27: a stamped close applies in the findings fold — an agent carrying out a person's
   // answer to a decision. No new event kind and no new table here — a fold-mind change the
   // pins cannot see. The new `decisions/` scope is pinned by its own test below.
-  assert.equal(MATERIALIZER_VERSION, 27, "and record the new number here");
+  // 28: both the decisions and the findings fold change what existing events derive
+  // (`settledBy`; round-bound answers). Fold-mind again, invisible to the pins.
+  assert.equal(MATERIALIZER_VERSION, 28, "and record the new number here");
 });
 
 /**
@@ -175,7 +177,7 @@ test("the findings fold's event vocabulary is pinned to a materializer version",
   const wo = src.slice(src.indexOf("const witnessOf"), src.indexOf("};", src.indexOf("const witnessOf")));
   assert.deepEqual([...new Set([...wo.matchAll(/str\(w, "(\w+)"\)|w!\.(\w+)/g)].map((m) => m[1] ?? m[2]!))].sort(),
     ["anchorId", "bodyHash", "deleted"], "the fold reads a new witness field — bump MATERIALIZER_VERSION with it");
-  assert.equal(MATERIALIZER_VERSION, 27, "and record the new number here");
+  assert.equal(MATERIALIZER_VERSION, 28, "and record the new number here");
 });
 
 /**
@@ -196,7 +198,7 @@ test("the decisions fold's event vocabulary is pinned to a materializer version"
   const block = proj.slice(proj.indexOf("export const decisionsProjection"), proj.indexOf("/** Shared notes"));
   assert.deepEqual([...new Set([...block.matchAll(/INSERT INTO (\w+)/g)].map((m) => m[1]!))].sort(),
     ["decision_records", "decision_rounds", "logged_questions"], "the decisions projection's tables changed — bump MATERIALIZER_VERSION with them");
-  assert.equal(MATERIALIZER_VERSION, 27, "and record the new number here");
+  assert.equal(MATERIALIZER_VERSION, 28, "and record the new number here");
 });
 
 /**
@@ -223,7 +225,7 @@ test("the bugs fold's event vocabulary is pinned to a materializer version", asy
     "bug.corroborated", "bug.filed", "bug.outcome", "bug.promoted", "bug.requested", "bug.revised",
     "bug.stateChanged", "bug.tracked", "bug.unanchored",
   ], "the bugs fold learned or forgot an event — bump MATERIALIZER_VERSION with it");
-  assert.equal(MATERIALIZER_VERSION, 27, "and record the new number here");
+  assert.equal(MATERIALIZER_VERSION, 28, "and record the new number here");
 });
 
 /**

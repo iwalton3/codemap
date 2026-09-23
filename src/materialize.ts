@@ -201,7 +201,14 @@ import { readScopeChecked, sortEvents, SHARD_EXT, type LogEvent, type ScopeDiagn
 // store has folded it; the bump is for the EXISTING findings fold, which this change teaches
 // to accept an agent's close that carries a person's answer to a decision — a fold-mind change
 // on already-folded scopes whose shards have not moved.
-export const MATERIALIZER_VERSION = 27;
+//
+// 27 -> 28: both folds change what EXISTING events derive (review round
+// 2026-09-23-decision-rounds-2-review). Decisions: an answer binds only to its round and a
+// question posted before it, typed replies are never parsed, precedence by own-ness then by
+// when given, a replaced question's ruling holds; events without the new fields are dropped
+// (H7.12 — they exist only in stores this unpushed branch wrote). Findings: `settledBy`, and a
+// stamped close of a closed finding is a no-op. The same shards, a different fold.
+export const MATERIALIZER_VERSION = 28;
 
 /**
  * What the events in a scope are, cheaply.

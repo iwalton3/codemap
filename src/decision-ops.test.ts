@@ -18,7 +18,7 @@ import { shareFinding, corroborateFinding, closeFinding, bindDecisions, reassign
 import { reviewQueue } from "./ops/annotations.js";
 import { postRound, postPrevalidated, logQuestion, relayAnswer, answerDirect, decisionRounds, decisionRound, recordReading } from "./ops/decisions.js";
 import { discard } from "./test-tmp.js";
-import { decisionScope, logQuestionEvent, recordAnswerEvent } from "./shared-decisions.js";
+import { decisionScope, logQuestionEvent, recordAnswerEvent, recordReadingEvent } from "./shared-decisions.js";
 
 const state: State = { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State;
 const SRC = "export function creditLine(cents) {\n  return cents * 2;\n}\n";
@@ -69,6 +69,26 @@ function asked(dir: string, answer: string, toolUseId = "toolu_1", questions: ob
     { type: "user", uuid: "m2", isSidechain: false, timestamp: when, origin: { kind: "human" }, message: { role: "user", content: "D2 A" } },
   ];
   writeFileSync(join(dir, `${SESSION}.jsonl`), lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
+}
+
+const READER = "a0000000000000b01";
+/** A reader subagent, in the shape measured 2026-09-23: its own sidechain transcript and meta
+ *  file under the parent session, and the launch in the parent's transcript. Call after `asked`,
+ *  which rewrites the parent. */
+function readerAgent(dir: string, said: string, agentId = READER, parent = SESSION) {
+  const sub = join(dir, parent, "subagents");
+  mkdirSync(sub, { recursive: true });
+  const call = `toolu_${agentId}`;
+  writeFileSync(join(sub, `agent-${agentId}.meta.json`), JSON.stringify({ agentType: "general-purpose", toolUseId: call }));
+  writeFileSync(join(sub, `agent-${agentId}.jsonl`), [
+    { type: "user", uuid: "s1", isSidechain: true, agentId, sessionId: parent, message: { role: "user", content: "read this" } },
+    { type: "assistant", uuid: "s2", isSidechain: true, agentId, sessionId: parent, message: { content: [{ type: "text", text: said }] } },
+  ].map((l) => JSON.stringify(l)).join("\n") + "\n");
+  const launch = [
+    { type: "assistant", uuid: `l-${agentId}`, isSidechain: false, message: { content: [{ type: "tool_use", id: call, name: "Agent", input: {} }] } },
+    { type: "user", uuid: `lr-${agentId}`, isSidechain: false, message: { content: [{ type: "tool_result", tool_use_id: call, content: "launched" }] }, toolUseResult: { isAsync: true, status: "async_launched", agentId } },
+  ];
+  writeFileSync(join(dir, `${parent}.jsonl`), readFileSync(join(dir, `${parent}.jsonl`), "utf8") + launch.map((l) => JSON.stringify(l)).join("\n") + "\n");
 }
 
 async function withFinding(u: Awaited<ReturnType<typeof universe>>) {
@@ -211,7 +231,8 @@ test("H5: a relayed reply is the whole message, bound by the reader, never parse
       assert.equal(r.verified, true, JSON.stringify(r));
       assert.equal(r.awaitsReading, true, "\"D1 B\" is words for the reader, not a pick");
       assert.deepEqual(r.ruled, []);
-      const read = await recordReading(u.root, { answer: r.answer, reader: { transcript: "agent-B", reading: "fix it", maps: [{ decision: "d1", option: "Real, fix it" }] }, session: { reading: "fix it", maps: [{ decision: "d1", option: "Real, fix it" }] } }) as any;
+      readerAgent(u.transcripts, "They mean: fix it.");
+      const read = await recordReading(u.root, { answer: r.answer, reader: { transcript: READER, reading: "fix it", maps: [{ decision: "d1", option: "Real, fix it" }] }, session: { reading: "fix it", maps: [{ decision: "d1", option: "Real, fix it" }] } }, {}, u.transcripts) as any;
       assert.equal(read.agree, true, JSON.stringify(read));
       const round = await decisionRound(u.root, "R1") as any;
       assert.ok(round.decisions[0].standing.ruled.some((x: any) => x.finding === f && x.on === "unblock"));
@@ -318,9 +339,15 @@ test("a reading of free text rules only when it agrees, and is refused from the 
       assert.equal(lq.answered[0].awaitsReading, true);
       const answer = lq.answered[0].answer;
       const maps = [{ decision: "d1", option: "Not a defect" }];
-      const self = await recordReading(u.root, { answer, reader: { transcript: SESSION, reading: "r", maps }, session: { reading: "r", maps } }) as any;
-      assert.equal(self.recorded, false, "the session that asked cannot read its own answer");
-      const two = await recordReading(u.root, { answer, reader: { transcript: "agent-B", reading: "r", maps }, session: { reading: "r", maps: [{ decision: "d1", option: "Real, fix it" }] } }) as any;
+      readerAgent(u.transcripts, "reading: r");
+      const self = await recordReading(u.root, { answer, reader: { transcript: SESSION, reading: "r", maps }, session: { reading: "r", maps } }, {}, u.transcripts) as any;
+      assert.equal(self.ok, false, "the session that asked cannot read its own answer");
+      // P7 / F4: the relaying session naming someone who never read it.
+      const someone = await recordReading(u.root, { answer, reader: { transcript: "someone-else", reading: "r", maps }, session: { reading: "r", maps } }, {}, u.transcripts) as any;
+      assert.match(String(someone.unverified), /not a subagent id/);
+      const unsaid = await recordReading(u.root, { answer, reader: { transcript: READER, reading: "something it never said", maps }, session: { reading: "r", maps } }, {}, u.transcripts) as any;
+      assert.match(String(unsaid.unverified), /never said this reading/);
+      const two = await recordReading(u.root, { answer, reader: { transcript: READER, reading: "r", maps }, session: { reading: "r", maps: [{ decision: "d1", option: "Real, fix it" }] } }, {}, u.transcripts) as any;
       assert.equal(two.agree, false);
       const view = await decisionRounds(u.root) as any;
       assert.ok(view.readingsInDispute.some((x: any) => x.decision === "d1"));
@@ -414,7 +441,8 @@ test("P2.b–P2.d (B2.3): a close is carried out once per answer, retried until 
     await asAgent(async () => {
       const dB = (await decisionRound(u.root, "R1") as any).decisions.find((d: any) => d.id === "dB");
       const maps = [{ decision: "dB", option: "Real, fix it" }];
-      const read = await recordReading(u.root, { answer: dB.standing.id, reader: { transcript: "agent-B", reading: "fix", maps }, session: { reading: "fix", maps } }) as any;
+      readerAgent(u.transcripts, "fix");
+      const read = await recordReading(u.root, { answer: dB.standing.id, reader: { transcript: READER, reading: "fix", maps }, session: { reading: "fix", maps } }, {}, u.transcripts) as any;
       assert.equal(read.agree, true, JSON.stringify(read));
       assert.equal((await readFinding(u.root, f))?.state, "issued", "P2.d: an unrelated reading carries out nothing on dA");
 
@@ -500,6 +528,51 @@ test("Q16: a finding id under two review keys is refused, never closed in whiche
       const a = await answerDirect(u.root, { decision: "d1", option: "Not a defect" }) as any;
       assert.deepEqual(a.closed, []);
       assert.match(String(a.refused?.[0]), /under 7, 8, so it was not closed/);
+    });
+  } finally { u.cleanup(); }
+});
+
+test("P7 + H8: 'D1 A' bound by a verified reader to a pre-staged question closes it; a re-sent relay after a crash closes the rest once", async () => {
+  const u = await universe();
+  try {
+    const [f, g] = [await withFinding(u), await withFinding(u)];
+    const dA = { id: "dA", round: "R1", ref: "D1", kind: "options" as const,
+      payload: { question: `D1: are ${f} and ${g} real?`, header: "D1", options: [{ label: "Not defects" }, { label: "Real" }] },
+      options: [{ label: "Not defects", effects: [{ findings: [f, g], on: "settle" as const, as: "refuted" as const }], closesOnAnswer: true }, { label: "Real", effects: [{ findings: [f, g], on: "unblock" as const }] }] };
+    await asAgent(async () => {
+      const b = bindDecisions(u.root) as any;
+      assert.equal((await postPrevalidated(u.root, b, { round: { id: "R1", source: "triage" }, decisions: [dA] }, { record: "rec", sortedBy: "two sorters and an arbitrator" }) as any).ok, true);
+      asked(u.transcripts, "unused", "toolu_x", [payloadFor(f)]);   // m1 is the person's "D1 B"; read here as their answer
+      const r = await relayAnswer(u.root, { round: "R1", decision: "dA", session: SESSION, entryId: "m1" }, {}, u.transcripts) as any;
+      assert.equal(r.recorded, true, JSON.stringify(r));
+      readerAgent(u.transcripts, "D1 B means Not defects here");
+      // The crash: the reading is in the log and f closed; g's close never ran.
+      const maps = [{ decision: "dA", option: "Not defects" }];
+      await recordReadingEvent(b.cfg.path, b.cfg.universe, b.actor, { answer: r.answer, reader: { transcript: READER, reading: "Not defects", maps, verified: { session: SESSION, toolUseId: `toolu_${READER}` } }, session: { reading: "Not defects", maps } });
+      await closeFindingOnDecision(u.root, b, "7", { round: "R1", decision: "dA", answer: r.answer, ruler: "alice@x.com", finding: f, as: "refuted" }, "the first close");
+      assert.equal((await readFinding(u.root, g))?.state, "issued", "the check could fail: g is open");
+      const again = await relayAnswer(u.root, { round: "R1", decision: "dA", session: SESSION, entryId: "m1" }, {}, u.transcripts) as any;
+      assert.deepEqual(again.closed, [g], JSON.stringify(again));
+      assert.deepEqual((await readFinding(u.root, f))?.settledBy, [r.answer], "f exactly once");
+      const read = await decisionRound(u.root, "R1") as any;
+      assert.equal(read.decisions[0].standing.own, true, "your own answer, once the reader is verified");
+    });
+  } finally { u.cleanup(); }
+});
+
+test("P7: record_reading by a verified reader subagent carries out a typed reply's close", async () => {
+  const u = await universe();
+  try {
+    const f = await withFinding(u);
+    await asAgent(async () => {
+      assert.equal((await postPrevalidated(u.root, bindDecisions(u.root) as any, { round: { id: "R1", source: "triage" }, decisions: [decision("d1", f, { closesOnAnswer: true })] }, { record: "rec", sortedBy: "two sorters and an arbitrator" }) as any).ok, true);
+      asked(u.transcripts, "unused", "toolu_x", [payloadFor(f)]);
+      const r = await relayAnswer(u.root, { round: "R1", decision: "d1", session: SESSION, entryId: "m1" }, {}, u.transcripts) as any;
+      readerAgent(u.transcripts, "reading: they said it is not a defect");
+      const maps = [{ decision: "d1", option: "Not a defect" }];
+      const read = await recordReading(u.root, { answer: r.answer, reader: { transcript: READER, reading: "they said it is not a defect", maps }, session: { reading: "not a defect", maps } }, {}, u.transcripts) as any;
+      assert.deepEqual(read.closed, [f], JSON.stringify(read));
+      assert.equal((await readFinding(u.root, f))?.state, "refuted");
     });
   } finally { u.cleanup(); }
 });

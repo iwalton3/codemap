@@ -6,8 +6,9 @@
  * not match reads `unverified` with a reason — never an error that blocks the caller,
  * because "I could not check" is not a verdict (docs/decision-rounds-worked-cases.md).
  *
- * Only the session's own top-level `<session>.jsonl` is read. Subagents write to
- * `<session>/subagents/`, so their words cannot be mistaken for the person's by construction.
+ * The person's words are read only from the session's own top-level `<session>.jsonl`.
+ * Subagents write to `<session>/subagents/`, so their words cannot be mistaken for the
+ * person's by construction; that directory is read only by `readSubagent`, to check a reader.
  */
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
@@ -185,6 +186,67 @@ export function classifyAnswer(q: AskedQuestion, answer: string | string[]): Ans
     if (l) return { kind: "label+words", label: l, words: a.slice(l.length).replace(/^[\s:,.;—-]+/, "") };
     return { kind: "words", words: a };
   });
+}
+
+// --- the reader ------------------------------------------------------------------------------
+
+/** A reader agent, as the harness recorded launching it. `said` is every string it wrote. */
+export interface ReaderAgent { agentId: string; session: string; toolUseId: string; said: string[] }
+
+const AGENT = /^a[A-Za-z0-9]{6,63}$/;
+
+/** Every string leaf of a value — a tool call's input, flattened for "did it say this". */
+const leaves = (v: unknown, out: string[] = []): string[] => {
+  if (typeof v === "string") out.push(v);
+  else if (Array.isArray(v)) for (const x of v) leaves(x, out);
+  else if (v && typeof v === "object") for (const x of Object.values(v)) leaves(x, out);
+  return out;
+};
+
+/**
+ * The subagent `agentId`, verified as a separate agent the harness launched on this machine
+ * (docs/decision-rounds-worked-cases.md, "What a reader subagent leaves", measured 2026-09-23):
+ * its own `<session>/subagents/agent-<id>.jsonl`, every entry a sidechain carrying its id; a
+ * meta file naming the parent's call; and, in the parent's own transcript, that `Agent` call and
+ * a launch result naming the id. Plain files, so this is C14's strength and no more (owner, the
+ * P7 gate). Fails closed on any shape it does not know.
+ */
+export function readSubagent(agentId: string, dir: string = transcriptDir()): ReaderAgent | Unverified {
+  if (!AGENT.test(agentId)) return { unverified: `not a subagent id: ${JSON.stringify(agentId)}` };
+  let sessions: string[];
+  try { sessions = readdirSync(dir).filter((s) => SESSION.test(s)); } catch { return { unverified: `no transcripts in ${dir}` }; }
+  const session = sessions.find((s) => { try { return statSync(join(dir, s, "subagents", `agent-${agentId}.jsonl`)).isFile(); } catch { return false; } });
+  if (!session) return { unverified: `no subagent ${agentId} in ${dir}` };
+  let meta: any;
+  try { meta = JSON.parse(readFileSync(join(dir, session, "subagents", `agent-${agentId}.meta.json`), "utf8")); } catch { return { unverified: `subagent ${agentId} has no readable meta file` }; }
+  const toolUseId = meta?.toolUseId;
+  if (typeof toolUseId !== "string" || !toolUseId) return { unverified: `subagent ${agentId}'s meta file names no call` };
+  let own: Record<string, any>[] = [];
+  try {
+    for (const line of readFileSync(join(dir, session, "subagents", `agent-${agentId}.jsonl`), "utf8").split("\n")) {
+      if (!line.trim()) continue;
+      try { const v = JSON.parse(line); if (v && typeof v === "object" && !Array.isArray(v)) own.push(v); } catch { /* a torn last line */ }
+    }
+  } catch { return { unverified: `subagent ${agentId}'s transcript is unreadable` }; }
+  if (!own.length || own.some((e) => e.isSidechain !== true || e.agentId !== agentId || e.sessionId !== session)) {
+    return { unverified: `subagent ${agentId}'s transcript is not all its own sidechain` };
+  }
+  const parent = entries(session, dir);
+  if (isUnverified(parent)) return parent;
+  const called = parent.some((e) => e.type === "assistant" && e.isSidechain !== true && Array.isArray(e.message?.content)
+    && e.message.content.some((x: any) => x?.type === "tool_use" && x.id === toolUseId && x.name === "Agent"));
+  const launched = parent.some((e) => e.type === "user" && e.isSidechain !== true && e.toolUseResult?.agentId === agentId
+    && Array.isArray(e.message?.content) && e.message.content.some((x: any) => x?.type === "tool_result" && x.tool_use_id === toolUseId));
+  if (!called || !launched) return { unverified: `session ${session} does not record launching subagent ${agentId}` };
+  const said: string[] = [];
+  for (const e of own) {
+    if (e.type !== "assistant" || !Array.isArray(e.message?.content)) continue;
+    for (const x of e.message.content) {
+      if (x?.type === "text" && typeof x.text === "string") said.push(x.text);
+      else if (x?.type === "tool_use") leaves(x.input, said);
+    }
+  }
+  return { agentId, session, toolUseId, said };
 }
 
 // --- the person's typed words ----------------------------------------------------------------

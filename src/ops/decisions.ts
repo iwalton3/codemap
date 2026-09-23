@@ -18,7 +18,7 @@ import {
   recordAnswerEvent, recordReadingEvent, ruledNotCarriedOut, standing, waitingOnMe, awaitingReading, parked,
   type AnswerVia, type FoldedDecision, type Mapping, type SharedDecisions,
 } from "../shared-decisions.js";
-import { isUnverified, readCall, readMessage, sameQuestion, sessionHolding, transcriptDir } from "../transcript.js";
+import { isUnverified, readCall, readMessage, readSubagent, sameQuestion, sessionHolding, transcriptDir } from "../transcript.js";
 import type { Decision, DecisionRound } from "../schema.js";
 import type { ScopeStatus } from "../eventlog.js";
 
@@ -280,33 +280,45 @@ export async function relayAnswer(root: string, input: { round: string; decision
     return { error: `the message was typed at ${m.at}, and round ${round.id} was posted at ${round.at}: words bind only to a question posted before them (nothing was written)` };
   }
   const had = d.answers.find((a) => a.once === `m:${m.session}\0${m.entryId}`);
-  if (had) return { ok: true, decision: d.id, ref: d.ref, recorded: false as const, already: had.id, note: "this message already answers this decision" };
+  // Answered once; a re-send carries out what the reader's binding may, if a crash stranded it (B2.3).
+  if (had) return { ok: true, decision: d.id, ref: d.ref, recorded: false as const, already: had.id, note: "this message already answers this decision", ...await carryOut(root, b, d.id, had.id) };
   return { ok: true, ...(await record(root, b, d, { kind: "message", session: m.session, entryId: m.entryId, text: m.text, at: m.at, round: d.round }, input.relayedBy ?? m.session)) };
 }
 
 /** The reader's mapping of free text onto options, beside the session's own (C17, C19). */
 export async function recordReading(root: string, input: {
   answer: string; reader: { transcript: string; reading: string; maps: Mapping[] }; session: { reading: string; maps: Mapping[] }; asks?: string; unclear?: string;
-}, via: Via = {}) {
+}, via: Via = {}, dir: string = transcriptDir()) {
   const b = bindDecisions(root, via);
   if ("error" in b) return b;
   const w = await writable(root, b);
   if ("error" in w) return w;
   const d = w.s.decisions.find((x) => x.answers.some((a) => a.id === input.answer));
   if (!d) return { error: `no answer ${input.answer}` };
-  await recordReadingEvent(b.cfg.path, b.cfg.universe, b.actor, input);
+  const touched = (maps: Mapping[]) => [...new Set(maps.map((m) => m.decision))];
+  const carry = async (s: SharedDecisions, ids: string[]) => {
+    const closed: string[] = [];
+    for (const id of ids) {
+      const x = s.decisions.find((y) => y.id === id);
+      if (x) closed.push(...(await carryOut(root, b, x.id, standing(x)?.id ?? "")).closed);
+    }
+    return closed;
+  };
+  // Read once; a re-run carries out what that reading may, if a crash stranded it (B2.3).
+  const prior = d.answers.find((a) => a.id === input.answer)!.reading;
+  if (prior) return { ok: true, recorded: false, already: prior.id, closed: prior.agree ? await carry(w.s, touched(prior.reader.maps)) : [] };
+  // The reader is a separate agent the harness launched on this machine, and it said this
+  // reading itself — checked here, where the transcripts are, as answers are (C14; the P7 gate).
+  const agent = readSubagent(input.reader?.transcript ?? "", dir);
+  if (isUnverified(agent)) return { ok: false, unverified: agent.unverified, note: "nothing was written: the reader must be a subagent of this machine, launched to read, passing its own agent id" };
+  if (!agent.said.some((t) => t.includes(input.reader.reading))) return { ok: false, unverified: `subagent ${agent.agentId} never said this reading`, note: "nothing was written" };
+  await recordReadingEvent(b.cfg.path, b.cfg.universe, b.actor, { ...input, reader: { ...input.reader, verified: { session: agent.session, toolUseId: agent.toolUseId } } });
   const s = await cached(root, b.cfg);
   const a = s.decisions.find((x) => x.id === d.id)?.answers.find((x) => x.id === input.answer);
   if (!a?.reading) return { ok: false, recorded: false, why: "the fold did not accept this reading (the reader is the relayer, a decision it names is answered, replaced, in another round or posted after the words, or the answer was not free text)" };
   // Only the decisions this reading touched: carrying out every decision in the universe was
   // an O(N) read per reading, and re-ran closes nobody had asked for (Q5, Q6).
-  const closed: string[] = [];
-  if (a.reading.agree) {
-    for (const id of new Set(input.reader.maps.map((m) => m.decision))) {
-      const x = s.decisions.find((y) => y.id === id);
-      if (x) closed.push(...(await carryOut(root, b, x.id, standing(x)?.id ?? "")).closed);
-    }
-  }
+  const closed = a.reading.agree ? await carry(s, touched(input.reader.maps)) : [];
   return {
     ok: true, agree: a.reading.agree,
     ...(a.reading.agree ? {} : { note: a.reading.unclear ? "unclear, so nothing binds and it waits for the person" : "the readings disagree, so nothing applies and it waits for the person" }),

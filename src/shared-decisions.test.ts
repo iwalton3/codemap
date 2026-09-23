@@ -419,3 +419,33 @@ run("P4.c (Q13): a follow-up to a reading's copy attaches to the decision the co
 test("P5 (bulk 8): two options sharing a label are refused", () => {
   assert.match(checkDecision(D("dl", "D9", q("D9: is F1 real?", ["A", "A"]), [{ label: "A", effects: [settle("F1")] }, { label: "A", effects: [] }]))!, /share a label/);
 });
+
+// --- P7 + H8: a typed reply bound by a verified reader is the person's own answer
+
+const verified = { verified: { session: "sess-A", toolUseId: "tu-agent" } };
+const vreading = (a: any, maps: any[]) => ev("decision.reading.recorded", { answer: a.id, reader: { transcript: "a0000000000000b01", reading: "r", maps, ...verified }, session: { reading: "r", maps } });
+run("H8: 'D9 A' bound by a verified reader to a pre-staged question closes on answer, and is your own", () => {
+  const RD = post("RD", [cd2], PV);
+  const A = msg(cd2, "D10 Agree");
+  return [RD, A, vreading(A, [{ decision: "de", option: "Agree" }])];
+}, (b) => ruled(b.de!).some((r) => r.finding === "F4" && r.closesOnAnswer) && standing(b.de!)!.own === true);
+run("H8: ...the same reply with an unverified reader rules and is held", () => {
+  const RD = post("RD", [cd2], PV);
+  const A = msg(cd2, "D10 Agree");
+  return [RD, A, reading(A, [{ decision: "de", option: "Agree" }])];
+}, (b, out) => rules(b.de!, "F4", "settle") && !ruled(b.de!).some((r) => r.closesOnAnswer) && held(out, "F4", "ruled"));
+run("H8 + H7.9: your typed correction after a page click, once verified, replaces it if given later", () => {
+  const P = page(d1, { option: "Settle" });
+  const A = msg(d1, "no, leave it");
+  return [P, A, vreading(A, [{ decision: "d1", option: "No" }])];
+}, (b, out) => standing(b.d1!)!.via === "message" && standing(b.d1!)!.options[0] === "No" && !held(out, "F3", "ruled") && !waits(out, "d1"));
+run("H8 + H7.9: ...and not if it was typed before the click", () => {
+  // Clicked at 00:00:02; typed at 00:00:01.5 and relayed after the click.
+  const P = page(d1, { option: "Settle" });
+  const A = msg(d1, "no, leave it", "u1", "2026-09-23T00:00:01.500Z");
+  return [P, A, vreading(A, [{ decision: "d1", option: "No" }])];
+}, (b) => standing(b.d1!)!.via === "direct" && b.d1!.answers[1]!.superseded === true && !b.d1!.answers[1]!.conflicts);
+run("H8: a verified reader's copy onto another question is still never your own", () => {
+  const M = msg(d1, "settle, and A on the other");
+  return [M, vreading(M, [{ decision: "d1", option: "Settle" }, { decision: "d4", option: "A" }])];
+}, (b) => standing(b.d1!)!.own === true && standing(b.d4!)!.own === false);
