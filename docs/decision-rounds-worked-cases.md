@@ -268,6 +268,15 @@ verbatim.
      test.
   6. The excerpts: the nearest match before the question is used, with no limit on how far back.
 
+- **The logging verb.** Asked whether logging a question is its own tool or part of
+  `relay_answer`:
+  > Yes log question makes sense, and it should probably be the default way owner questions are
+  > related to codemap.
+
+  ("related" was corrected by the owner to "relayed".) *The session's reading:* `log_question` is its own tool, and it is how an owner's answer
+  reaches codemap. It is used after every `AskUserQuestion` put to the owner when codemap is
+  present. `relay_answer` keeps only unverified words, which unblock and never settle.
+
 **Consequence for the plan.** C1, C7 and C14 are marked wrong, and C2, C5 and C17 are amended.
 The in-session rulings also add a logged-question record: the call and the excerpt-named span.
 The plan says a C-item marked wrong sends I8 back to a redraft, so **I8 is redrafted before
