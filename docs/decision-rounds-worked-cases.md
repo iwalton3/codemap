@@ -303,3 +303,245 @@ anything is built.**
   or the web app via the human attestation guardrail" ("Drop it (Recommended)").
 - **Verification happens before the fold.** The owner: "Correct, verification needs to happen
   before it ends up in the fold."
+- **A park on a date no option offered is accepted and flagged.** Asked about a typed
+  `D1 park 2099-12-31`, the owner said: "If it's a valid decision it should be accepted, if
+  it is errant the system should probably flag it." *The session's reading:* a verified park
+  applies. The answer is flagged when the date is not one the decision offered, or when it had
+  already passed on the day it was answered. It is never refused.
+
+## The I8a review round (R20–R25) — ruled 2026-09-23
+
+The owner's words from that round's discussion, verbatim. Plan rev 7 numbers them R20 (the
+stamp, "B"), R21 (already closed), R22 (the park flag, superseded below by the views), R23
+(replaced question), R24 (a sidecar is required) and R25 (no "accepted" yet).
+
+- **Forgery:** "Yeah I am not worried about forged sidecar entries."
+- **P10, a settle on a finding already closed:** "Closing an already closed finding should just
+  leave it closed."
+- **P2, an arbitration that maps to a park:** "Arbitration mapping to park should probably set an
+  awaits you flag, agreed."
+- **P9, what the downstream folds check about a stamp:** asked for the options, then "I lean
+  towards B". B is the self-describing stamp: it carries what it carries out, and the fold checks
+  it names this finding and the state its `as` maps to. A sign-off stamp names the operation and
+  the hash of the text shown.
+- **Where closes land:** asked whether items would be marked closed in the local SQLite database,
+  the session answered that the close is a log event every clone folds into its own SQLite. The
+  owner raised the default local sidecar ("Don't we have a local sidecar that is enabled by
+  default and placed in .codemap? The long-term target was to drop local findings.") and then
+  ruled: "Yes, so requiring a sidecar is fine because long-term the plan is enable it by
+  default."
+  - Decision records need a sidecar. "Codemap present" gains "a sidecar resolves".
+  - The decision tools never create `.codemap/sidecar/` themselves: that would turn comment-push
+    off, per `docs/plan-retire-local-findings.md`.
+- **P4, an arbitration of an answer whose question was replaced:** "P4 - agree, just drop it".
+- **"Accepted" as a settle:** "Accepted should probably be a different status, I don't like
+  overloading resolved with it. We should probably overhaul finding states to include the finding
+  state taxonomy I proposed the other day." And: "Agreed, finding sort overhaul should be its own
+  thing." Until that overhaul, a decision settles only as `refuted`, and `accepted` is removed
+  from `DecisionEffect.as`.
+  - *The session's reading of "the taxonomy":* the five sort groups plus the four close outcomes.
+    Reported to the owner as a reading.
+- **The ending:** "Record the settled items in owner and apply the fixes you listed". The fixes:
+  P1, P2 (the flag), P3, P4, P6, P7, P8, P9 (B) and P10, with `accepted` removed.
+
+## The recovery — ruled 2026-09-23
+
+After two review rounds landed in their own fixes, the diagnosis
+(`docs/postmortems/2026-09-23-i8a-fix-round.md`) asked for the missing level to be put to the owner
+as cases. These are the questions and answers, verbatim; a picked option is quoted as its label
+and its description is the session's. They supersede C11 ("by number only"), R12's excerpts and
+span, and C22's "or that span" relaxation.
+
+### Session e5813f62, 2026-09-23 — planning batch 1 (the cases)
+
+Running example: round R, question D2 "Is F14 a real defect?", options A: not a defect, close as
+refuted / B: real, fix it / C: park until 2026-10-15.
+
+- **Q1.** When you look at a round of decisions, which of these do you need to be able to see? Each
+  one you pick becomes something the record answers directly; the rest stay in the log but get no
+  view. Options: Waiting on me / Ruled, not carried out / Readings in dispute / Replaced questions.
+  **A (picked, multi):** "Waiting on me", "Ruled, not carried out", "Readings in dispute"
+  (not picked: "Replaced questions").
+- **Q2.** You pick D2 A. An agent does the close, so for a while F14 is ruled on but still open.
+  Today F14 is released the moment you answer and looks like any other open finding. What should
+  F14 be during that period? Options: Held for the verifier / Open, ruling attached.
+  **A (picked):** "Held for the verifier" — the session's description: F14 shows as "ruled
+  refuted, awaiting close", not offered as open work, only a verifier acts on it; a "fix it"
+  ruling still releases F14 as fix work.
+- **Q3.** Some findings can close directly on your answer when the verdict was pre-validated
+  (example: triage says F9 is invalid because the cited line doesn't exist; D4 offers "Agree,
+  close F9 as refuted", marked to close on answer). What makes that verdict pre-validated?
+  Options: A verifier re-checked it / Both sorters agreed / Either of those.
+  **A (typed):** "Hmm, this would have to be for questions logged into codemap, there's no way to
+  display an intent prior to an AskUserQuestion in a way codemap itself can verify. If an external
+  sort posted questions to answer into codemap in unanswered state it could be done."
+- **Q4.** Alice answers "sign off operation 3 of the spec"; an agent running for Bob carries it
+  out. As built the sign-off is credited to Bob, the agent's principal. Whose act is carrying out
+  a ruling? Options: Stays the answerer's / Answerer's agents only.
+  **A (picked):** "Stays the answerer's" — the session's description: credited to Alice whoever's
+  agent runs it; for a close, the agent is recorded as closer and Alice as the one who ruled.
+
+### Session e5813f62, 2026-09-23 — planning batch 2
+
+Before this batch the session told the owner: batch 1's Q3 answer confines the pre-staged close to
+questions posted into codemap unanswered before they are asked (`postRound`), never questions
+logged after the fact (`logQuestion`).
+
+- **Q5.** So a close-on-answer option can exist only on a question an external sort posted into
+  codemap, unanswered, before it was asked. On such a posted question, is the posting itself enough
+  to count as pre-validation? Options: Posting is enough / Posting plus a check.
+  **A (typed):** "Hmm you caught me. The whole goal of this is \"dual control\" for agents. The
+  control for this is I think is two methods: 1. For fix auditors, the skill makes a role
+  assertation that it's executing a skill with two blind sorts and an arbitrator, so it gets
+  pre-validated decisions. A regular session needs a check even if a user answers in codemap
+  because the premise the question is based off of might be flawed. Suggestion would be another
+  agent needs to vet the question's action either before or after the user answers it for
+  non-skill-on-clean-session decisions."
+- **Q6.** A decision names findings by codemap id, so a round's question may name only findings
+  already recorded in codemap; the posting agent records each first (30 triage findings → 30 in
+  codemap); posting one naming an unrecorded finding is refused. Right? Options: Yes, refuse
+  unrecorded / Round number + optional id.
+  **A (picked):** "Yes, refuse unrecorded"
+- **Q7 (goal; the session's derived wording).** "Settle what a ruling, carrying it out, and a
+  finding's state are, as cases you've marked; then keep, rewrite or revert the ten frozen commits
+  against them, and put the rest of the decision-rounds arc back in an order where nothing is built
+  before what reads it." Options: Use it / Narrower: just the ten.
+  **A (picked):** "Use it"
+- **Q8.** The non-fold prefix ending at `21cb228` (I2 plus design docs). Options: Review I2, land
+  I2 only / Branch pointer only / Land the whole prefix.
+  **A (picked):** "Branch pointer only"
+
+### Session e5813f62, 2026-09-23 — planning batch 3
+
+Before this batch the session said codemap cannot see which skill is running, and that the local
+transcript records the skill call. It also printed a six-item bulk list in its message; **the
+owner did not see it** (see Q12).
+
+- **Q9.** The ten frozen commits `747f7fd..c745e30`: what survives the answers is the question-text
+  binding, the shape checks and the logged-question event. Options: Revert, rebuild (Recommended)
+  / Rewrite on top.
+  **A (typed):** "Check what all was committed first, decide what we discard based on that. A
+  history rewrite to keep the good parts is likely worth it."
+- **Q10.** Should this plan build I8e (the transcript module) first, before the record is rebuilt?
+  Options: Yes, I8e first / Not in this plan.
+  **A (typed):** "If there's a redesign here, we should take a look at the original plan and most
+  likely fold the changed parts into this one, the old one is flawed."
+- **Q11.** The role claim that makes a posted round pre-validated: codemap cannot see which skill
+  is running. Options: Check it in the transcript / Record it as a claim / Leave to verifier plan.
+  **A (typed):** "The claim would limit what the session is allowed to do after the claim is
+  called and only be available from an MCP server connection that hasn't logged findings or other
+  codemap actions. Not perfect, but likely good enough if the skill is the only documented
+  instance of the exact call to make the claim."
+- **Q12.** Approve the six items listed in my message? Options: Approve all six / Push back on some.
+  **A (typed):** "Didn't see the items listed, just a narration that you were presenting them.
+  (Did you present it in a block that gets summarized?)" — not a ruling; the list is re-presented.
+
+### Session e5813f62, 2026-09-23 — planning batch 4
+
+Before this batch the session said: three answers collide with each other or with rev 7; the bulk
+list is inside the last question this time.
+
+- **Q13.** Collision: a round may name only findings already in codemap, so the posting session
+  records them first; a role claim is available only on a connection that has not yet filed
+  findings or done other codemap acts. Which gives way? Options: Claim first, then file / File
+  elsewhere, then claim.
+  **A (typed):** "That was for the agent that does validation of questions and verifies existing
+  findings, not one logging new findings. That would have to use a different pathway such as a
+  bulk import from the skill file structure (which could theoretically be forged, but I am less
+  worried about that)."
+- **Q14.** Outside a claimed skill round a second agent must vet the question's action; that is
+  the verifier, deferred to I9. Until it exists, what happens to an ordinary session's ruling?
+  Options: Minimal verifier in this plan / You close by hand meanwhile / Held until I9.
+  **A (picked):** "Held until I9"
+- **Q15.** Is the old plan (rev 7) closed, with its unchanged rulings (R1–R25, minus what today
+  supersedes) carried over as this plan's baseline? Options: Close it, carry rulings / Keep both
+  plans.
+  **A (typed, with the option):** "Close, carry rulings (codemap isn't managed in codemap, so no
+  findings to move...)"
+- **Q16 (bulk, the list inside the question):**
+  1. A settle option that doesn't say how it closes is refused when posted, not defaulted to
+     'refuted'.
+  2. I8b (the ops) is built after today's cases and from them.
+  3. Fix the stale 'not yet: untracked' line at docs/decision-rounds-next.md:30.
+  4. No separate rename pass: new code uses the owner's names — the closer is the 'verifier'; the
+     free-text mapper is renamed, 'reader' proposed.
+  5. Every ruling code quotes is committed word for word at the doc path the code cites, in or
+     before the commit that cites it. R20–R25 and today's rulings go into
+     docs/decision-rounds-worked-cases.md.
+  6. Replaced questions get no view: supersession stays in the log, and a replaced question's
+     answer keeps what it already did.
+  7. A repo in a round that has no codemap has its items asked in session and recorded in
+     owner.md only, never posted as decisions.
+  **A (picked):** "Approve all seven"
+
+### Session e5813f62, 2026-09-23 — after the plan was shown
+
+- **(unprompted, owner):** "Drop a feedback file into /working/skills that pushback items should
+  become batched multi-select question groups where any that the person wants to rule on
+  separately as a question gets a check. This is because I think the list above the question
+  block got summarized. This also supersedes inline text capture from message approvals in the
+  plan, so it kills two birds with one stone."
+
+### Session e5813f62, 2026-09-23 — the open questions O1–O4
+
+- **O1.** Does a verified answer's operation sign-off also wait for I9 (the verifier)? Options:
+  Carries out at once (Rec.) / Waits for I9 too. **A (picked):** "Waits for I9 too"
+- **O2.** Pre-validation needs "two blind sorts and an arbitrator"; `/triage-review` records "two
+  sorters, one of them blind". Options: Today's sort counts / Skill changes to 2 blind.
+  **A (typed):** "2 blind only applies to verifiers, they handle a higher finding load and an
+  uncontaminated orchestrator would be good for that"
+- **O3.** A park picked together with other options on a multi-select. Options: Refuse at posting
+  (Rec.) / The park wins / Apply rest, flag park / Treat as free text.
+  **A (picked):** "Refuse at posting (Rec.)"
+- **O4.** Can a multi-select be submitted with nothing checked? Options: Empty submit works / Need
+  a 'none' option / Not sure: add 'none'. **A (typed):** "Pretty sure you can, let's test it now"
+
+### Session e5813f62, 2026-09-23 — marks on the session's calls (bulk, multi-select form; also the O4 test)
+
+Each group: "Check any item you want to rule on separately; unchecked items are approved as written."
+- **Group 1 (Closing):** K1 Only pre-staged close / K4 Only agreed verdicts / Hold as posting event /
+  O2 reading. **A:** picked "Hold as posting event"; typed: "There's a skip button but unsure if it
+  skips the whole batch, selecting none is NOT available". → K1, K4 and the O2 reading approved; the
+  hold's mechanism is to be ruled on separately.
+- **Group 2 (The ten):** Keep / Adapt / Discard / Rewrite mechanics. **A (typed):** "None" → all
+  approved.
+- **Group 3 (Other calls):** Bulk decision shape / Record + ops together / Import by PR or branch /
+  §5 sentences marked. **A (typed):** "None" → all approved.
+
+**O4, measured:** a multi-select cannot be submitted empty ("selecting none is NOT available"). The
+transcript's `toolUseResult.answers` records a multi-select answer as a LIST, and typed "Other"
+text is one more element of that list (e.g. `["Hold as posting event", "There's a skip button …"]`,
+`["None"]`).
+
+### Session e5813f62, 2026-09-23 — the hold's mechanism (ruled separately)
+
+- **Q.** You ruled that a finding with a settle ruling on it is held for the verifier. Where should
+  that hold be enforced? Options: Posting writes a hold / Findings read decisions / Import needs
+  person-ack / Close tool refuses only.
+  **A (typed):** "Epistemically correct option: don't let findings confirmed by two agents get
+  closed, log two confirmations one per sort and the arbitrator if applicable. The purpose of
+  allowing agents to close agent findings was if they weren't triaged first."
+
+### The model these rulings give
+
+- **A ruling** is the person's answer, and it stands as given whatever then happens to the finding
+  (§11 of the diagnosis; R21). A finding already closed stays closed; the ruling is still recorded.
+- **Carrying it out** is a separate act: the verifier's, or — only on an option a skill posted
+  before it was asked, from a sort of two sorters and an arbitrator — the answer itself. Until the
+  verifier exists (I9), every other settle and every sign-off is held. A carried-out act is the
+  answerer's (Alice's sign-off is Alice's, whoever's agent runs it).
+- **A finding's state** stays the finding record's; the decision record never stores "carried
+  out". A finding a triage confirmed is not agent-closable without a stamp — the existing ratchet —
+  because "the purpose of allowing agents to close agent findings was if they weren't triaged
+  first."
+- **Three views**, each a question the record answers: *waiting on me*, *ruled, not carried out*,
+  *readings in dispute*. Replaced questions get no view.
+- **Names.** The closer is the **verifier**. The agent that maps the person's free text onto options
+  is the **reader** (the code's former "arbitration"); *arbitrator* is `/triage-review`'s
+  tie-breaker between its sorters and nothing else.
+- **Bulk approvals** are multi-select questions: each item an option, checked = ruled on
+  separately, a "None — approve all" option in every group (an empty multi-select cannot be
+  submitted). Every item is then inside the logged call; nothing is captured from message text.
+- **The diagnosis's four sentences, as these rulings mark them:** 1 right; 2 right; 3 moot
+  (effects name codemap ids, and posting a decision that names an unrecorded finding is refused);
+  4 right.
