@@ -2,8 +2,9 @@
 
 **The gate for plan `2026-09-22-decision-rounds` (I11).** Three past rounds are worked by hand
 against `PROPOSAL-decision-rounds.md` §7 as the plan amends it. Nothing here is built. No schema
-is written until the owner has marked every C-item below **holds** or **wrong**. The marks
-proposed here are the session's; the owner's marks replace them.
+is written until the owner has marked every C-item below **holds** or **wrong**. **The owner
+marked it on 2026-09-23** (*The owner's marks*, at the end). The table before that section holds
+the session's proposals, and it is kept as the evidence for them.
 
 Written 2026-09-23. The plan (`.git/plan/2026-09-22-decision-rounds/plan.md`) holds the C-list's
 full text. This document holds its evidence.
@@ -230,3 +231,44 @@ means no case contains the situation, so the case cannot mark it.
 **What changes I8 if the marks stand:** C1's words-as-requirement path, C5's group 2/3 limit,
 C14's `multiSelect` normalization, and C17's `words` decision. C7 changes only the plan's text.
 The first two are policy and the owner's call. The last two are mechanics.
+
+## The owner's marks — 2026-09-23
+
+Asked in session with `AskUserQuestion`, every item inside the question text. The answers are
+verbatim.
+
+- **C1 — wrong.** Asked what happens to words that ask for work no option holds:
+  > New decision (Recommended)
+
+  The arbitrator flags such words, and the session posts them as a new decision (C20's path). The
+  picked option still applies.
+- **C5 — amended.** Asked whether the "decided rather than asked" list may cover a group 2 or 3
+  item:
+  > If the note is bulk approved and verified asked via the transcript checking mechanism we
+  > discussed, it is fine.
+
+  *The session's reading, not yet confirmed:* a list line covering a group 2 or 3 item stands
+  only when the owner has bulk-approved the list, and the approval verifies. That means the line
+  is inside the question, or inside the span its excerpts name. Otherwise the line is posted as
+  a decision. Lines covering other groups stay a note, as written.
+- **C2 — amended.** Asked what happens when words settle a question the round never asked:
+  > Map to any open one
+
+  The arbitrator is given every open decision in the round, not only the one asked, and may map
+  the words to any of them. This settles only decisions that were posted. Case 1's V-a and V-b
+  would have needed posting first.
+- **Approved as a batch:**
+  > Approve all six
+
+  1. C17 gains a `words` decision kind: recorded, never arbitrated, with no effects.
+  2. C14 treats a missing `multiSelect` as false.
+  3. C7 counts four free-text answers in case 3.
+  4. C4, C6, C11, C13, C15, C16, C18, C20 and C22 (as amended) hold.
+  5. C3, C8, C9, C10, C12, C19, C21 and C23 are carried into I8 as written, each with a fixture
+     test.
+  6. The excerpts: the nearest match before the question is used, with no limit on how far back.
+
+**Consequence for the plan.** C1, C7 and C14 are marked wrong, and C2, C5 and C17 are amended.
+The in-session rulings also add a logged-question record: the call and the excerpt-named span.
+The plan says a C-item marked wrong sends I8 back to a redraft, so **I8 is redrafted before
+anything is built.**
