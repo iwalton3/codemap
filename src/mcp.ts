@@ -88,6 +88,14 @@ const DIRTY = {
   type: "boolean",
   description: "With `at` a branch: also read that branch's worktree's UNCOMMITTED files, laid over the commit. Review state stays the commit's — review does not cover uncommitted changes.",
 };
+/**
+ * `at` on a write: record against a commit instead of the checkout. Not `AT` — that one is
+ * a read view, and "answer at" is the wrong promise for a record.
+ */
+const RECORD_AT = (what: string) => ({
+  type: "string",
+  description: `Record against this commit (a branch, tag or sha) instead of the checkout — for an agent in a worktree, or one that read the code at a commit it did not check out. ${what} Refused if this clone cannot read the commit.`,
+});
 /** For a derived view, which is generated from the working tree only and says so rather than answer about the wrong tree. */
 const refuseAt = (a: { at?: string }) => a.at
   ? { error: "this view is generated from the working tree's analyzer output and cannot answer at a commit yet; `at` is supported by context, search, get_node, get_anchor and check_stale" }
@@ -950,6 +958,7 @@ const tools: Tool[] = [
       remediation: { type: "string", enum: ["outstanding", "fixed-on-branch", "fixed-on-default", "deferred", "wont-fix"], description: "What HAPPENED about it, as opposed to whether it is true — a separate axis from `disposition`. Set it when you have verified the code, and say where in `detail`. `fixed-on-branch` vs `fixed-on-default` is load-bearing: a fix on an unmerged branch means the mainline still carries the defect, so a linked bug must NOT be closed. Never reach for `refuted` to mean \"fixed\" — that marks a real defect a false positive and poisons the one question this data answers." },
       state: { type: "string", enum: ["created", "issued", "invalid", "refuted", "resolved", "withdrawn"], description: "Where the finding should END UP, if you have concluded that. Optional — reporting and closing are different acts, and most reports are not closes. On a finding nobody has confirmed and no person filed, it just happens; otherwise it is recorded as a PENDING ask carrying your `detail` as the reason, shows as `refuted pending` / `fixed pending` on the item, and lands in a person's queue." },
       files: { type: "array", items: { type: "string" }, description: "Files you actually changed (for `fixed`). One file maximum." },
+      at: RECORD_AT("Your verdict is grounded on it instead of the branch head (a finding witnessed at a commit it does not contain is refused), and the remediation names it."),
       by: { type: "string" },
     }, ["id", "result", "detail"]),
     mutates: true,
@@ -1677,6 +1686,7 @@ const tools: Tool[] = [
           consulted: { type: "array", items: { type: "string" }, description: "Documentation you read. Weaker than the other two." },
         },
       },
+      at: RECORD_AT("Witnesses come from that commit's code, not the working tree. The audit is about the codebase only if every anchor it read is verbatim the same on the default branch's tip; otherwise it is provisional."),
       model: { type: "string", description: "YOUR model id. Never guess it." },
       harness: { type: "string" },
     }, ["requirementId", "outcome", "finding"]),

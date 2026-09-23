@@ -419,6 +419,45 @@ test("an audit of a dirty tree is provisional, whatever branch it is on", async 
   } finally { discard(root); }
 });
 
+/**
+ * `at` witnesses a commit's code, so the checkout's branch and dirt stop deciding what the
+ * audit is about (plan 2026-09-22-decision-rounds, I2). What decides it is `promote_audit`'s
+ * rule: every witness verbatim on the trunk's tip — a default-branch commit whose body has
+ * since moved is NOT the codebase any more.
+ */
+test("an audit `at` a commit is about the codebase only if its witnesses match the trunk's tip", async () => {
+  const { root, anchors } = await universe();
+  try {
+    const { specId } = await adoptRule(root);
+    ok(await ratifyReviewed(root, specId));
+    const rule = (await listRequirements(root))[0]!;
+    const rev = () => spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).stdout.trim();
+    const first = rev();
+    const original = (await indexBlob(SRC, "src/credit.js"))[0]!.bodyHash;
+    await editCode(root, "export function creditLine(cents) { return cents * 2; }\n");
+    const tip = rev();
+    const audit = (at: string) => recordAudit(root, {
+      requirementId: rule.id, outcome: "conformant", finding: "read it at the commit", evidence: { read: anchors }, at,
+    });
+
+    const old = ok(await audit(first));
+    assert.equal(old.audit.provisional, true, "a default-branch commit whose witnessed body has since moved");
+    assert.equal(old.audit.commit, first);
+    assert.equal(old.audit.witnesses[0]!.bodyHash, original, "witnessed from the commit, not the working tree");
+
+    // Off the default branch, with a dirty tree: neither matters, because nothing was read from it.
+    spawnSync("git", ["checkout", "-qb", "feature"], { cwd: root });
+    writeFileSync(join(root, "src/credit.js"), "export function creditLine(c) { return c * 3; }\n", "utf8");
+    const current = ok(await audit(tip));
+    assert.equal(current.audit.provisional, undefined, "the trunk's tip is the codebase, wherever the checkout stands");
+
+    const bogus = await recordAudit(root, {
+      requirementId: rule.id, outcome: "indeterminate", finding: "x", at: "no-such-ref",
+    });
+    assert.match(String((bogus as { error?: string }).error), /not a commit this clone can read/);
+  } finally { discard(root); }
+});
+
 test("a rule whose cited symbol was RENAMED can still be audited", async () => {
   // `recordAudit` validated the merged list of `evidence.read` AND the requirement's own
   // `cites`, so once a citation left `@work` every audit of that rule was refused — in all

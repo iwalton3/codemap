@@ -25,7 +25,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { ISO_DATE, parseAsOf, type BugWitness } from "./schema.js";
 import { witnessDrift, realDrift } from "./reviews.js";
-import { originSlug, headCommit, currentBranch, isAncestor, defaultBranch, revParse, trunkBase, hasObject, branchHead } from "./git.js";
+import { originSlug, headCommit, currentBranch, isAncestor, defaultBranch, revParse, trunkBase, hasObject, branchHead, trunkRef } from "./git.js";
 import { prIsMerged, prMergedAt, mergedAfter, landingOf, knownPrHead } from "./pr.js";
 import { fetchReviewThreads, type GhRunner } from "./pr-push.js";
 import { ensureSidecar, sync as sidecarSync, receive as sidecarReceive, healMerge, readManifests, checkPeers, currentManifest, sidecarLineage, isSameSidecar } from "./sidecar.js";
@@ -477,32 +477,33 @@ export async function shareFinding(root: string, pr: number | string, f: NewFind
  *   the error was invisible. Recorded, not refused: absence of evidence is not evidence.
  * - `missing` — the checkout demonstrably lacks the code. REFUSED.
  */
-function verdictGround(root: string, f: SharedFinding): { state: "ok" | "unknown" | "missing"; ref?: string; head?: string } {
+function verdictGround(root: string, f: SharedFinding, at?: string): { state: "ok" | "unknown" | "missing"; ref?: string; head?: string } {
   const ref = f.sourceRef;
   // A branch finding is about the BRANCH, which the checkout answering is usually not on
   // (an agent in a worktree reads through the main checkout). Its code is at the branch head.
+  // `at` is the caller naming the commit it read, which outranks both.
   const branch = f.branch ?? branchOf(String(f.pr ?? ""));
-  const head = branch ? branchHead(root, branch, f.namedRef) : headCommit(root);
+  const head = at ?? (branch ? branchHead(root, branch, f.namedRef) : headCommit(root));
   if (!ref || ref === "@work" || !head) return { state: "unknown", ref, head: head ?? undefined };
   return { state: isAncestor(root, ref, head) ? "ok" : "missing", ref, head };
 }
 
 export const corroborateFinding = homed(async function corroborateFinding(
   root: string, pr: number | string, id: string, verdict: Verdict, rationale: string,
-  via: Via & { anyway?: boolean } = {},
+  via: Via & { anyway?: boolean; at?: string } = {},
 ) {
   const b = bind(root, via);
   if ("error" in b) return b;
   if (!rationale.trim()) return { error: "a verdict without a rationale is a vote, not a review — say what you checked" };
   const f = (await cachedFindings(root, b.cfg, pr)).value.get(id);
-  const ground = f ? verdictGround(root, f) : { state: "unknown" as const };
+  const ground = f ? verdictGround(root, f, via.at) : { state: "unknown" as const };
   if (ground.state === "missing" && !via.anyway) {
     return {
       error: `${id} was witnessed at ${ground.ref!.slice(0, 12)}, which this checkout does not contain — so the code it `
         + `is about is not the code you are reading. A verdict formed here is a verdict about a different tree: that is `
         + `how five findings on another universe were refuted for being "not present" the day before they merged.\n\n`
         + `Read it at its own ref (\`git show ${ground.ref!.slice(0, 12)}:<file>\`, or check out the pull request's head), `
-        + `then say the verdict. Pass \`anyway\` if you have read the right code by some other route and know this is fine.`,
+        + `then say the verdict with \`at\` naming the commit you read. Pass \`anyway\` if you have read the right code by some other route and know this is fine.`,
     };
   }
   await corroborate(b.cfg.path, prKey(b.cfg, pr), b.actor, id, verdict, rationale, ground.head);
@@ -955,23 +956,6 @@ export async function findingBacklog(root: string, opts: { asOf?: string } = {})
      */
     attention: b.due.length + b.woken.length + b.live.length + b.moved.length + b.unjudgeable.length,
   };
-}
-
-/**
- * The ref that means "on the trunk", preferring the remote's.
- *
- * `origin/<trunk>` first: a stale local trunk answers "not landed" for everything merged
- * since the last checkout of it, which would silently classify real debt as ongoing review.
- */
-function trunkRef(root: string): { name: string; sha: string } | null {
-  try {
-    const name = defaultBranch(root);
-    for (const ref of [`origin/${name}`, name]) {
-      const sha = revParse(root, ref);
-      if (sha) return { name: ref, sha };
-    }
-  } catch { /* gitless */ }
-  return null;
 }
 
 /**

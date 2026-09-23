@@ -118,6 +118,23 @@ function hasRemote(root: string, remote: string): boolean {
   return r.status === 0 && (r.stdout ?? "").split("\n").some((l) => l.trim() === remote);
 }
 
+/**
+ * The ref that means "on the trunk", preferring the remote's.
+ *
+ * `origin/<trunk>` first: a stale local trunk answers "not landed" for everything merged
+ * since the last checkout of it, which would silently classify real debt as ongoing review.
+ */
+export function trunkRef(root: string): { name: string; sha: string } | null {
+  try {
+    const name = defaultBranch(root);
+    for (const ref of [`origin/${name}`, name]) {
+      const sha = revParse(root, ref);
+      if (sha) return { name: ref, sha };
+    }
+  } catch { /* gitless */ }
+  return null;
+}
+
 /** Is the working tree on the default branch — i.e. is this about the codebase? */
 export function onDefaultBranch(root: string): boolean {
   if (!isGitRepo(root)) return true;   // not a repo: there is only one state of the code

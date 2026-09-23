@@ -773,6 +773,40 @@ test("a verdict formed on a tree that lacks the finding's code is refused", asyn
 });
 
 /**
+ * `at` is how an agent grounds a verdict on the commit it READ rather than the checkout it
+ * stands in (plan 2026-09-22-decision-rounds, I2). The same rolled-back tree as above
+ * refuses without it and records with it — and the remediation names that commit.
+ */
+test("close_finding with `at` grounds the verdict on the named commit", async () => {
+  const u = await universe();
+  try {
+    const g = (...a: string[]) => spawnSync("git", ["-c", "user.email=izzie@x.com", "-c", "user.name=t", ...a], { cwd: u.root, encoding: "utf8" });
+    g("add", "-A"); g("commit", "-q", "-m", "base");
+    writeFileSync(join(u.root, "later.txt"), "the code the finding is about\n", "utf8");
+    g("add", "-A"); g("commit", "-q", "-m", "the commit the finding was written against");
+    const later = g("rev-parse", "HEAD").stdout.trim();
+    const f = await shared.shareFinding(u.root, 269, { ...NEW, sourceRef: later } as never) as { id: string };
+    g("checkout", "-q", "HEAD~1");
+
+    const close = (at?: string) => closeFinding(u.root, {
+      id: f.id, result: "fixed", detail: "read it at the finding's commit", files: ["later.txt"],
+      disposition: "confirmed" as never, ...(at ? { at } : {}),
+    }) as Promise<{ ok?: boolean; error?: string; refused?: { field: string }[] }>;
+
+    const bare = await close();
+    assert.deepEqual(bare.refused?.map((x) => x.field), ["disposition"], "without `at` the checkout grounds it, and lacks the code");
+
+    const bogus = await close("no-such-ref");
+    assert.match(String(bogus.error), /not a commit this clone can read/, "an unreadable `at` refuses before any event");
+
+    const r = await close(later);
+    assert.equal(r.ok, true, JSON.stringify(r));
+    const row = await readFinding(u.root, f.id) as SharedFinding;
+    assert.equal(row.remediation?.ref, later, "and the remediation records the commit it was made against");
+  } finally { u.cleanup(); }
+});
+
+/**
  * And a verdict that CANNOT be grounded says so rather than passing silently.
  *
  * 29 of 43 records on that universe carried no `sourceRef` at all, which is why the

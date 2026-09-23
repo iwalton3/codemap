@@ -84,6 +84,7 @@ export {
 } from "./ops/annotations.js";
 
 import { resolveActor } from "./identity.js";
+import { revParse } from "./git.js";
 import {
   closeAssignment as closeAnnotation, closeLocalFinding as closeLocal, commentOnLocalFinding,
   reviseLocalFinding, reviseAnnotation, remediateLocalFinding, checkComment, checkLifecycle, REVISABLE,
@@ -116,6 +117,8 @@ export async function closeFinding(
     id: string; result: "fixed" | "answered" | "declined"; detail: string; files?: string[]; by?: string;
     comment?: string; line?: number; severity?: "low" | "medium" | "high" | "critical";
     remediation?: Remediation; disposition?: never; state?: FindingState;
+    /** Record against this commit instead of the branch head — see `close_finding`'s `at`. */
+    at?: string;
   },
 ): Promise<Record<string, unknown>> {
   // VALIDATED FIRST, before a single event is written. This ran after the outcome, the
@@ -134,8 +137,14 @@ export async function closeFinding(
       { agent: !!resolveActor(root, {})?.via });
     if ("error" in l) return l;
   }
+  // Resolved here, with the other validation, so an unknown commit refuses before any event.
+  const at = input.at ? revParse(root, input.at) : undefined;
+  if (input.at && !at) return { error: `\`at\`: "${input.at}" is not a commit this clone can read — fetch it first` };
   const f = await readFinding(root, input.id).catch(() => null);
-  if (!f) return closeAnnotation(root, input as never) as Promise<Record<string, unknown>>;
+  if (!f) {
+    if (at) return { error: `${input.id} is a legacy annotation finding, which records no commit — \`at\` applies to findings in the canonical table` };
+    return closeAnnotation(root, input as never) as Promise<Record<string, unknown>>;
+  }
   if (!f.origin) {
     const r = await closeLocal(root, input as never);
     // The same inference the fold-owned branch makes: a report that says `fixed` must
@@ -143,7 +152,7 @@ export async function closeFinding(
     // published, which is most of them for most of their life.
     const rem = input.remediation ?? (input.result === "fixed" ? ("fixed-on-branch" as const) : undefined);
     if (!r.error && rem) {
-      const rr = await remediateLocalFinding(root, f.id, rem, { detail: input.detail }) as { error?: string };
+      const rr = await remediateLocalFinding(root, f.id, rem, { detail: input.detail, ...(at ? { ref: at } : {}) }) as { error?: string };
       if (rr.error) return { ...r, note: `${r.note ?? ""} remediation NOT recorded: ${rr.error}`.trim() };
     }
     return r.error ? r : { ...r, ...(await applyState(root, input, f.id)) };
@@ -161,7 +170,7 @@ export async function closeFinding(
   // formed on a tree that does not contain the code the finding is about, and a refusal
   // nobody reports is the silent-drop shape this envelope exists to end.
   const vr = verdict
-    ? await shared.corroborateFinding(root, f.pr!, f.id, verdict, input.detail) as { error?: string }
+    ? await shared.corroborateFinding(root, f.pr!, f.id, verdict, input.detail, at ? { at } : {}) as { error?: string }
     : null;
   // The corrected wording is the point of reporting back, so it goes onto the RECORD
   // rather than into the outcome's prose: a `comment` the submitter reads and a `line`
@@ -189,7 +198,7 @@ export async function closeFinding(
   const remediation = input.remediation
     ?? (input.result === "fixed" ? ("fixed-on-branch" as const) : undefined);
   if (remediation) {
-    const rr = await shared.remediateFinding(root, f.pr!, f.id, remediation, { detail: input.detail }) as { error?: string };
+    const rr = await shared.remediateFinding(root, f.pr!, f.id, remediation, { detail: input.detail, ...(at ? { ref: at } : {}) }) as { error?: string };
     if (rr.error) { refused.push({ field: "remediation", why: rr.error }); notes.push(`remediation NOT recorded: ${rr.error}`); }
     else {
       applied.push("remediation");

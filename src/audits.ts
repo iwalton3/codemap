@@ -37,7 +37,7 @@ import {
 import { liveHashes, liveIndex, witnessDrift, realDrift } from "./reviews.js";
 import { legacyIndex, type AnchorIndex } from "./anchor-resolve.js";
 import { commitMatches, readProvisionalAudits } from "./provisional.js";
-import { currentBranch, headCommit, isDirty, isGitRepo, onDefaultBranch } from "./git.js";
+import { currentBranch, headCommit, isDirty, isGitRepo, onDefaultBranch, revParse, trunkRef } from "./git.js";
 import { requireActor } from "./identity.js";
 import { universeKey } from "./sidecar-config.js";
 import type { ActorInput } from "./identity.js";
@@ -147,6 +147,8 @@ export async function recordAudit(
     requirementId: string; outcome: AuditOutcome; finding: string; evidence?: AuditEvidence;
     promotedFrom?: string; trigger?: AuditTrigger;
     observations?: { pointerId: string; firing: boolean }[];
+    /** Record against this commit: witnesses come from its snapshot, not the working tree. */
+    at?: string;
   } & ActorInput,
 ): Promise<{ ok: true; id: string; audit: Audit; released: string[]; notShared?: string } | Err> {
   if (!OUTCOMES.includes(input.outcome)) return { error: `outcome must be one of ${OUTCOMES.join(" | ")}` };
@@ -156,6 +158,8 @@ export async function recordAudit(
   if (!finding) return { error: "an audit needs a finding — what you concluded, in your own words" };
   const r = await readRequirement(root, input.requirementId);
   if (!r) return { error: `no requirement "${input.requirementId}"` };
+  const at = input.at ? revParse(root, input.at) : null;
+  if (input.at && !at) return { error: `\`at\`: "${input.at}" is not a commit this clone can read — fetch it first` };
 
   const evidence: AuditEvidence = input.evidence ?? {};
   if ((evidence.ran ?? []).some((r) => !r?.command?.trim())) {
@@ -218,9 +222,9 @@ export async function recordAudit(
   // every witness was `sha256:absent`, and absent never drifts, so `conformant` over a
   // symbol that had been renamed away stood for ever with nothing able to supersede it.
   let resolved: { live: AnchorIndex; absent: string[] };
-  try { resolved = await liveIndex(root, read); } catch { resolved = { live: legacyIndex(new Map()), absent: read }; }
+  try { resolved = await liveIndex(root, read, at ?? undefined); } catch { resolved = { live: legacyIndex(new Map()), absent: read }; }
   if (resolved.absent.length) {
-    return { error: `unknown anchor(s) in evidence.read: ${resolved.absent.join(", ")}` };
+    return { error: `unknown anchor(s) in evidence.read${at ? ` at ${at.slice(0, 12)}` : ""}: ${resolved.absent.join(", ")}` };
   }
 
   const actor = requireActor(root, input);
@@ -292,15 +296,20 @@ export async function recordAudit(
     };
   }
 
-  const dirty = isGitRepo(root) && isDirty(root);
-  const provisional = !onDefaultBranch(root) || dirty;
+  // With `at` the witnesses come from git objects, so the tree's state is irrelevant — and
+  // so is the checkout's branch. It is about the codebase only if what it witnessed is
+  // verbatim on the trunk's tip: `promotableAudits`' rule, applied at record time. An audit
+  // that witnessed nothing is about the codebase only when `at` IS the tip, or an audit of
+  // any commit with an empty `read` would reach the team.
+  const dirty = !at && isGitRepo(root) && isDirty(root);
+  const provisional = at ? !(await onTrunkTip(root, at, read, live)) : !onDefaultBranch(root) || dirty;
   const audit: Audit = {
     id: mint(), requirementId: r.id, universe: universeKey(root), outcome: input.outcome, evidence, finding,
     witnesses: read.map((id) => ({ anchorId: id, bodyHash: live?.get(id) ?? "sha256:absent" })),
     auditor: actor, at: now(), trigger,
     ...(observations.length ? { observations } : {}),
-    commit: isGitRepo(root) ? headCommit(root) : null,
-    branch: isGitRepo(root) ? currentBranch(root) : null,
+    commit: at ?? (isGitRepo(root) ? headCommit(root) : null),
+    branch: at ? (revParse(root, `refs/heads/${input.at}`) ? input.at! : null) : isGitRepo(root) ? currentBranch(root) : null,
     ...(provisional ? { provisional: true } : {}),
     ...(input.promotedFrom ? { promotedFrom: input.promotedFrom } : {}),
   };
@@ -312,6 +321,17 @@ export async function recordAudit(
     ok: true, id: audit.id, audit, released: await settleAcknowledgements(root, audit),
     ...(sharing.reason ? { notShared: sharing.reason } : {}),
   };
+}
+
+/** Does everything an audit at `at` witnessed read the same on the trunk's tip? */
+async function onTrunkTip(root: string, at: string, read: string[], live: AnchorIndex | null): Promise<boolean> {
+  const tip = trunkRef(root);
+  if (!tip) return false;
+  if (tip.sha === at) return true;
+  if (!read.length || !live) return false;
+  let onTip: AnchorIndex;
+  try { onTip = await liveHashes(root, read, tip.sha); } catch { return false; }
+  return read.every((id) => live.get(id) !== undefined && onTip.get(id) === live.get(id));
 }
 
 /**
