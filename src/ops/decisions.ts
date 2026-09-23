@@ -19,9 +19,22 @@ import {
 } from "../shared-decisions.js";
 import { isUnverified, readCall, readMessage, sameQuestion, sessionHolding, transcriptDir } from "../transcript.js";
 import type { Decision, DecisionRound } from "../schema.js";
+import type { ScopeStatus } from "../eventlog.js";
 
-const cached = async (root: string, cfg: Pick<SidecarConfig, "path" | "universe">): Promise<SharedDecisions> =>
-  (await readCached(root, cfg.path, decisionScope(cfg.universe), sidecarIdentity(cfg), foldDecisions, decisionsProjection)).value;
+/** The folded rounds, and whether the log could be read — a blocked scope serves its stored
+ *  rows, which must never read as "every question is answered". */
+const read = async (root: string, cfg: Pick<SidecarConfig, "path" | "universe">): Promise<{ s: SharedDecisions; status: ScopeStatus }> => {
+  const { value, ...status } = await readCached(root, cfg.path, decisionScope(cfg.universe), sidecarIdentity(cfg), foldDecisions, decisionsProjection);
+  return { s: value, status };
+};
+const cached = async (root: string, cfg: Pick<SidecarConfig, "path" | "universe">): Promise<SharedDecisions> => (await read(root, cfg)).s;
+
+/** A write onto a scope the fold cannot read would be decided against rows that may be wrong. */
+async function writable(root: string, b: Bound): Promise<{ s: SharedDecisions } | { error: string; status: ScopeStatus }> {
+  const { s, status } = await read(root, b.cfg);
+  if (status.status === "blocked") return { error: `the decisions log is blocked, so nothing is written: ${status.diagnostic?.detail ?? "unreadable"}`, status };
+  return { s };
+}
 
 const isOpen = (root: string) => (f: string) => {
   const r = findingKeyAndState(root, f);
@@ -34,9 +47,11 @@ export interface NewRound { round: Omit<DecisionRound, "postedBy" | "at" | "univ
 
 /** What posting refuses, shared by `postRound` and the import (which alone may pre-validate). */
 export async function checkRound(root: string, b: Bound, r: NewRound, prevalidated: boolean): Promise<string | null> {
+  const w = await writable(root, b);
+  if ("error" in w) return w.error;
+  const existing = w.s;
   if (!r?.round || typeof r.round.id !== "string" || !r.round.id.trim() || typeof r.round.source !== "string" || !r.round.source.trim()) return "a round needs an id and a source";
   if (!Array.isArray(r.decisions) || !r.decisions.length) return "a round needs at least one decision";
-  const existing = await cached(root, b.cfg);
   if (existing.rounds.some((x) => x.id === r.round.id)) return `round ${r.round.id} is already posted; a changed question is a new decision in a new round`;
   const refs = new Set<string>();
   for (const d of r.decisions) {
@@ -86,8 +101,9 @@ export async function postPrevalidated(root: string, b: Bound, r: NewRound, prev
 export async function decisionRounds(root: string, via: Via = {}) {
   const b = bindDecisions(root, via);
   if ("error" in b) return b;
-  const s = await cached(root, b.cfg);
+  const { s, status } = await read(root, b.cfg);
   return {
+    ...status,
     rounds: s.rounds.map((r) => ({ ...r, decisions: s.decisions.filter((d) => d.round === r.id).length })),
     waitingOnYou: waitingOnMe(s),
     ruledNotCarriedOut: ruledNotCarriedOut(s, isOpen(root)),
@@ -101,12 +117,13 @@ export async function decisionRounds(root: string, via: Via = {}) {
 export async function decisionRound(root: string, id: string, via: Via = {}) {
   const b = bindDecisions(root, via);
   if ("error" in b) return b;
-  const s = await cached(root, b.cfg);
+  const { s, status } = await read(root, b.cfg);
   const round = s.rounds.find((r) => r.id === id);
-  if (!round) return { error: `no round ${id}` };
+  if (!round) return { error: `no round ${id}`, ...status };
   const mine = (x: { round: string }) => x.round === id;
   const held = heldFindings(s);
   return {
+    ...status,
     round,
     decisions: s.decisions.filter(mine).map((d) => ({ ...d, standing: standing(d) ?? null })),
     held: [...held].filter(([, hs]) => hs.some((h) => s.decisions.find((d) => d.id === h.decision)?.round === id)).map(([finding, hs]) => ({ finding, holds: hs })),
@@ -176,7 +193,9 @@ export async function logQuestion(root: string, input: { session?: string; toolU
   input = { ...input, session };
   const call = readCall(session, input.toolUseId, dir);
   if (isUnverified(call)) return { ok: false, unverified: call.unverified, note: "nothing was written; relay_answer can still record the words as an unverified answer, which only unblocks" };
-  const before = await cached(root, b.cfg);
+  const w = await writable(root, b);
+  if ("error" in w) return w;
+  const before = w.s;
   if (before.questions.some((q) => q.toolUseId === input.toolUseId && q.session === session)) return { error: `call ${input.toolUseId} is already logged` };
   const e = await logQuestionEvent(b.cfg.path, b.cfg.universe, b.actor, { session: call.session, toolUseId: call.toolUseId, questions: call.questions, answers: call.answers, transcript: session });
   const answered = [];
@@ -195,7 +214,9 @@ export async function logQuestion(root: string, input: { session?: string; toolU
 export async function relayAnswer(root: string, input: { decision: string; session?: string; entryId: string; words?: string; relayedBy?: string }, via: Via = {}, dir: string = transcriptDir()) {
   const b = bindDecisions(root, via);
   if ("error" in b) return b;
-  const d = (await cached(root, b.cfg)).decisions.find((x) => x.id === input.decision);
+  const w = await writable(root, b);
+  if ("error" in w) return w;
+  const d = w.s.decisions.find((x) => x.id === input.decision);
   if (!d) return { error: `no decision ${input.decision}` };
   const session = input.session ?? sessionHolding(input.entryId, dir);
   const m = isUnverified(session) ? session : readMessage(session, input.entryId, dir);
@@ -212,8 +233,9 @@ export async function recordReading(root: string, input: {
 }, via: Via = {}) {
   const b = bindDecisions(root, via);
   if ("error" in b) return b;
-  const before = await cached(root, b.cfg);
-  const d = before.decisions.find((x) => x.answers.some((a) => a.id === input.answer));
+  const w = await writable(root, b);
+  if ("error" in w) return w;
+  const d = w.s.decisions.find((x) => x.answers.some((a) => a.id === input.answer));
   if (!d) return { error: `no answer ${input.answer}` };
   await recordReadingEvent(b.cfg.path, b.cfg.universe, b.actor, input);
   const s = await cached(root, b.cfg);
@@ -229,7 +251,9 @@ export async function answerDirect(root: string, input: { decision: string; opti
   const b = bindDecisions(root, via);
   if ("error" in b) return b;
   if (isAgentActor(b.actor)) return { error: "answering on a person's behalf is not an agent's act: ask with AskUserQuestion and log_question it" };
-  const d = (await cached(root, b.cfg)).decisions.find((x) => x.id === input.decision);
+  const w = await writable(root, b);
+  if ("error" in w) return w;
+  const d = w.s.decisions.find((x) => x.id === input.decision);
   if (!d) return { error: `no decision ${input.decision}` };
   const { decision: _d, ...rest } = input;
   return { ok: true, ...(await record(root, b, d, { kind: "direct", ...rest })) };

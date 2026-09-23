@@ -6,7 +6,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -16,6 +16,7 @@ import type { State } from "./schema.js";
 import { shareFinding, corroborateFinding, closeFinding, bindDecisions } from "./ops-shared.js";
 import { postRound, postPrevalidated, logQuestion, relayAnswer, answerDirect, decisionRounds, decisionRound, recordReading } from "./ops/decisions.js";
 import { discard } from "./test-tmp.js";
+import { decisionScope } from "./shared-decisions.js";
 
 const state: State = { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State;
 const SRC = "export function creditLine(cents) {\n  return cents * 2;\n}\n";
@@ -241,6 +242,25 @@ test("a reading of free text rules only when it agrees, and is refused from the 
       const view = await decisionRounds(u.root) as any;
       assert.ok(view.readingsInDispute.some((x: any) => x.decision === "d1"));
       assert.ok(view.waitingOnYou.some((x: any) => x.decision === "d1"));
+    });
+  } finally { u.cleanup(); }
+});
+
+test("Q14: a decisions log that cannot be read is blocked, not 'nothing waits on you', and writes on it refuse", async () => {
+  const u = await universe();
+  try {
+    const f = await withFinding(u);
+    await asAgent(async () => {
+      await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f)] });
+      const b = bindDecisions(u.root) as any;
+      const dir = join(b.cfg.path, decisionScope(b.cfg.universe));
+      const shard = join(dir, readdirSync(dir).find((n) => n.endsWith(".ndjson"))!);
+      writeFileSync(shard, `\x00\x01 garbage\n${readFileSync(shard, "utf8")}`);
+      const view = await decisionRounds(u.root) as any;
+      assert.equal(view.status, "blocked", JSON.stringify(view).slice(0, 300));
+      assert.match(String(err(await postRound(u.root, { round: { id: "R2", source: "x" }, decisions: [{ ...decision("d2", f), round: "R2" }] }))), /blocked/);
+      asked(u.transcripts, "Not a defect");
+      assert.match(String(err(await logQuestion(u.root, { session: SESSION, toolUseId: "toolu_1" }, {}, u.transcripts))), /blocked/);
     });
   } finally { u.cleanup(); }
 });
