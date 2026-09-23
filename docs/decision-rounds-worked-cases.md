@@ -48,12 +48,13 @@ brand" is the product name.
 came from `/code-review` and `/ci-review`, so an effect naming one of them is named by number
 only (C11).
 
-**The transcript could not be read.** The round ran under another account on another machine
-(Windows paths, a different commit author), and no transcript on this machine holds its
-answers. The agent that searched for it looked for the owner's exact words, the option glosses,
-the card's identifiers and the branch name, and found only later sessions citing the round. So
-**every answer below reads `unverified` under C14**, which is the fail-closed ruling working as
-written. On the team's own machine, their codemap would read their transcript.
+**The transcript could not be read, because it was never here.** The round was run by a
+downstream teammate's Claude Code user, on their own machine: the record names Windows worktrees,
+and a different author committed it. The "owner" in its `owner.md` is that teammate, not this
+project's owner. No transcript on this machine holds the answers; the owner's exact words appear
+only in sessions that quoted them. So **every answer below reads `unverified` under C14**, which
+is the fail-closed ruling working as written. The general point is below, under *Verification
+happens where the question was asked*.
 
 | # | decision (as `owner.md` records it) | effects, if posted | the answer | shape | under the plan |
 |---|---|---|---|---|---|
@@ -144,6 +145,27 @@ It is the errant-summary threat R5 names, found in the run that named it, and it
 case C22 exists for: under C22 neither approval could settle. The owner answered the six-item
 question about I5 by name, so what was approved is not in doubt here. What the record claims
 was shown is.
+
+## Verification happens where the question was asked — ruled 2026-09-23
+
+A transcript lives only on the machine that asked, and C14 reads only the local one. Case 1 is
+the ordinary shape of that, not an edge: downstream rounds are asked on the downstream team's
+machines. The owner, on it:
+
+> Correct, what needs to happen is the agent makes a codemap MCP call along the lines of
+> LogQuestion that has the info about the AskUserQuestion call to durable log and confirm it.
+
+What that changes, as the session reads it (I8e and collision 3 are to be redrafted from it; neither is yet):
+
+- **The check runs once, at call time, on the asking machine.** The agent passes the call's
+  identity (`session`, `toolUseId`). Codemap reads its own machine's transcript and confirms it
+  there, under C14 and C16 as they stand.
+- **What enters the log is the call itself, not a hash of it:** the questions and options as
+  sent, and the answers as returned, copied from the transcript, alongside `session` and
+  `toolUseId`. Every clone can then read what was asked and what was said. A `resultHash`
+  alone gave a teammate nothing to read.
+- **A teammate trusts the machine that logged it,** as they already trust the machine that
+  took a witness hash. Hand-forging a log entry remains the residual R5 accepts.
 
 ## Marking the C-list — proposed marks, with the evidence
 
