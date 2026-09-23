@@ -545,3 +545,243 @@ text is one more element of that list (e.g. `["Hold as posting event", "There's 
 - **The diagnosis's four sentences, as these rulings mark them:** 1 right; 2 right; 3 moot
   (effects name codemap ids, and posting a decision that names an unrecorded finding is refused);
   4 right.
+
+## The decision-rounds-2 review round — ruled 2026-09-23
+
+The rulings the review round `2026-09-23-decision-rounds-2-review` was planned on, verbatim from its
+`owner.md`; the code cites them as B1.1–B5.4 and H1–H8. They supersede "The model these rulings
+give" above in four places: there are four views (*Parked* is the fourth); a replaced question's
+ruling keeps its hold, and its place under *ruled, not carried out*, until the replacement rules;
+an answer that is not the person's own never displaces one that is; and every typed reply is the
+reader's to bind — nothing is parsed.
+
+Questions put to the owner and their answers, verbatim. A picked option is quoted as its label; its
+description is the session's, not the owner's.
+
+### Session d5793383, 2026-09-23 — opening
+
+- **Q.** How do you want to proceed with this round? Options: Start Planning Now / Discuss First.
+  **A (picked):** "Start Planning Now"
+
+### Session d5793383, 2026-09-23 — planning batch 1
+
+- **B1.1 (goal; the session's derived wording).** "Settle the rules the review found missing
+  under the rebuild (which answer counts, what an answer may carry out, and what enforces the
+  hold), then fix decision-rounds-2 against them, so the branch is stable enough to resume the
+  skill work (/triage-review writing through MCP, the import) and I9." Scope point put with it:
+  the close-on-answer path is latent today (nothing can post a pre-staged round). Options: Use it,
+  whole round / Live paths only.
+  **A (picked):** "Use it, whole round" — the session's description: rule and build everything
+  now, the latent close path included.
+- **B1.2 (critical; multi-select).** Which, if still possible, would stop you calling
+  decision-rounds-2 stable? Each picked becomes a gating check. Options: Ruling overwritten (by an
+  identical question in another round, a stale "D2 A", or an agent's unconfirmed words) / Closed
+  unseen (a finding closed through a question you never saw) / Held offered as work (a finding
+  you ruled "not a defect" shown to agents as ordinary fix work) / Silently vanishes (a decision
+  or ruling drops out of every view).
+  **A (picked, all four):** "Ruling overwritten", "Closed unseen", "Held offered as work",
+  "Silently vanishes"
+- **B1.3 (the hold, Q3).** Settle rulings hold a finding "not offered as open work"; you ruled the
+  ratchet enforces it via confirmations the import logs; the import is unbuilt. Today
+  review_queue and the findings lists still offer a held finding as ordinary work. What holds it
+  until the import exists? Options: Queues skip held (Rec.) / Page only until import / Log
+  confirmations now.
+  **A (picked):** "Queues skip held (Rec.)" — the session's description: the agent work queues
+  leave held findings out and say why; closing stays under the ratchet; this is the "findings
+  read decisions" direction passed over for enforcement, used for listing only.
+- **B1.4 (which question an answer belongs to, Q7 + Q9).** Cases: an identical question in round
+  R2 overwrites R1's ruling; a verified "D2 A" typed for R5 can be relayed to D2 in any round,
+  even one posted later. Options: One round, once (Rec.) / Newest open match.
+  **A (picked):** "One round, once (Rec.)" — the session's description: an answer binds only to
+  the round it was asked for and a question posted before it; each call or message answers once;
+  anything else is refused; correcting yourself is answering the same question again.
+
+### Session d5793383, 2026-09-23 — planning batch 2
+
+- **B2.1 (unverified vs verified, Q8).** You click "Not a defect" on D1 (verified); an agent then
+  relays "D1 B" the transcript cannot confirm; today the relay stands and F1 goes out as fix work.
+  C8 says unverified words only unblock. Options: Verified outranks (Rec.) / Newest wins, flagged.
+  **A (picked):** "Verified outranks (Rec.)" — the session's description: unconfirmed words cannot
+  replace a verified answer; they are recorded and shown under "waiting on me" as a conflict; your
+  own verified correction still replaces.
+- **B2.2 (a reading onto a question not shown, Q4).** C2 lets the reader map words onto any open
+  question in the round; a close-on-answer option fires only after its question was asked. Words
+  on D1 are mapped onto pre-staged D2 "Agree, close F2 as refuted", never shown; today F2 closes.
+  Options: Rules, but held (Rec.) / Closes too.
+  **A (picked):** "Rules, but held (Rec.)" — the session's description: D2 counts as ruled and F2
+  is held for the verifier like any settle; only your own verified answer to D2 itself closes on
+  answer.
+- **B2.3 (close once, Q5 + Q6).** Cases: a reopened F9 re-closed by an unrelated reading; an answer
+  recorded, the op crashes before the close, and the retry is dropped as a duplicate. Proposed:
+  each (answer, finding) close carried out at most once, and retried until done. Options: Once,
+  retried (Rec.) / Once, then verifier.
+  **A (picked):** "Once, retried (Rec.)" — the session's description: a close that happened never
+  happens again, even after a reopen; one that has not happened is retried on the next call or
+  reading until it lands.
+- **B2.4 (a replaced question's ruling, Q1).** D1 answered "Not a defect" (F1 held, not closed);
+  D1b posted replacing D1; today the D1 ruling drops out and F1 is only undecided under D1b.
+  Options: Holds till D1b answered (Rec.) / Holds regardless / Replacement releases.
+  **A (picked):** "Holds till D1b answered (Rec.)" — the session's description: F1 stays held under
+  the D1 ruling; when D1b is answered its answer takes over ("Real, fix it" releases F1 as fix
+  work).
+
+### Session d5793383, 2026-09-23 — planning batch 3
+
+- **B3.1 (park words, Q19).** The I8a ruling "Arbitration mapping to park should probably set an
+  awaits you flag, agreed" is built for unverified parks only; verified words read as a park apply
+  directly. Did the ruling mean verified words too? Options: Yes, wait for me / No, verified
+  applies.
+  **A (typed):** "Probably makes sense to have a separate park queue where I can still see parked
+  issues. If the phrasing is ambiguous per the verifier agent, it shouldn't park."
+- **B3.2 (reader id, Q10).** record_reading takes the reader's transcript id as given; deferred to
+  I9 by the recovery plan. Options: Check it now (Rec.) / Leave for I9.
+  **A (typed):** "Would probably have to think this through, not sure how feasible it is to detect
+  subagent separation. We should check it."
+- **B3.3 (bulk 1).** (1) a held finding stops showing as held once closed; (2) an answer that rules
+  nothing keeps its decision under "waiting on me"; (3) a park whose date passes comes back under
+  "waiting on me", its findings held as undecided until answered; (4) a follow-up to a reading's
+  copy attaches to that decision; (5) a decisions scope with a broken sidecar reads as blocked and
+  writes on it refuse; (6) a person's close of an already-closed finding leaves it closed with its
+  first reason (R21); (7) the finding lookup goes through the store and refuses an ambiguous id.
+  Options: Approve all as written / Rule on some separately.
+  **A (picked):** "Approve all as written"
+- **B3.4 (bulk 2).** (8) posting refuses duplicate decision ids in a round and duplicate option
+  labels in a decision — both sites fixed, not a missing rule; (9) posting refuses two decisions
+  replacing the same question; (10) a decision may name only a finding published to the sidecar.
+  Options: Approve all as written / Rule on some separately.
+  **A (picked):** "Approve all as written"
+
+### Session d5793383, 2026-09-23 — confirming the typed answers
+
+- **B4.1 (park).** The session's reading of B3.1: (a) a fourth view, "Parked", lists every parked
+  decision with its date; (b) words read as a park apply only when the reading is unambiguous,
+  otherwise nothing parks and the decision stays under "waiting on me"; (c) when the date passes it
+  leaves "Parked" and returns to "waiting on me". Who judges ambiguity? Options: Reader judges
+  (Rec.) / Verifier judges (I9).
+  **A (picked):** "Reader judges (Rec.)" — the session's description: ambiguous unless the reader
+  and the session map the words to the same park; parks from words can happen before I9.
+- **B4.2 (reader id).** Proposed: measure first what a reader subagent leaves on this machine that
+  the relaying session cannot produce; build the check if it separates them; otherwise stop and
+  bring it back rather than build a weaker one. Options: Measure, then build (Rec.) / Build best
+  effort.
+  **A (picked):** "Measure, then build (Rec.)"
+
+### Session d5793383, 2026-09-23 — after the coherence check
+
+- **B5.1 (a replaced question's view).** Keeping B2.4's hold visible lists the replaced D1 under
+  "ruled, not carried out" until D1b is answered, against Q16.6 "replaced questions get no view".
+  Options: Override for that view (Rec.) / Show it under D1b.
+  **A (picked):** "Override for that view (Rec.)" — Q16.6 is **superseded for that one view only**;
+  the rest of Q16.6 (no other view, supersession stays in the log) stands.
+- **B5.2 (catalogue lists).** Options: Mark in catalogues (Rec.) / Drop from all lists.
+  **A (picked):** "Mark in catalogues (Rec.)" — refines B1.3: work queues drop held findings; the
+  `findings` and `shared_findings` catalogues mark them `held`.
+- **B5.3 (bulk item 6's scope).** Options: Decision closes only (Rec.) / Every close.
+  **A (picked):** "Decision closes only (Rec.)" — narrows B3.3 item 6 to closes that carry out a
+  ruling.
+- **B5.4 (typed reply round).** Options: Refuse if ambiguous (Rec.) / Latest round wins.
+  **A (picked):** "Refuse if ambiguous (Rec.)" — the session's description: more than one open
+  round with that ref when typed → refused, name the round ("R5 D2 A"); only one → binds there.
+  **Superseded by H5** (every typed reply is bound by the reader); nothing of it still stands.
+
+### Session d5793383, 2026-09-23 — after the plan was shown
+
+- **(the plan's two remaining details: `log_question` takes a required `round`; re-asking a
+  replaced question replaces its replacement, so the chain stays linear.)**
+  **A (typed):** "These both make sense, record as decided."
+- **(unprompted, owner):** "Since this plan is the second round of deciding assumptions that were
+  caught in review, let's review the plan for hidden assumptions an implementing agent would have to
+  make."
+
+### Session d5793383, 2026-09-23 — hidden-assumption review of the plan, batch 1
+
+Two independent readers (a fresh Opus agent, and Codex on gpt-6-astra) plus the session's own
+self-check reviewed `plan.md` for decisions an implementer would have to make. Questions from it:
+
+- **H1 (a close that never landed, then a reopen).** Answer to pre-staged D2 "close F9 as refuted";
+  a teammate's clone already closed F9 as invalid, so the close did nothing; later F9 is reopened.
+  Does "retry until it lands" re-close it? Options: Reopen wins (Rec.) / Retry closes it.
+  **A (picked):** "Reopen wins (Rec.)"
+- **H2 (how a typed reply identifies its question).** Refs restart at D1 per round; "open" is
+  undefined. Options: Unique refs (Rec.) / Round-qualified / Latest round only.
+  **A (typed):** "Both 1 and 2 will likely fail due to collisions across different team members,
+  it has to be scoped to a round, perhaps the question should just say \"Close D13
+  (f_09deadcafef3)?\""
+- **H3 (free text with no ref).** Codemap verifies the words, not which question they answered.
+  Options: Shown just before (Rec.) / Agent's word, flagged / Not via typed text.
+  **A (typed):** "agent should relay context, reader decides if it is unclear and should be
+  escalated"
+- **H4 (a replacement naming fewer findings).** D1 settles F1, F2; D1b replaces it asking only
+  about F1, answered "Real, fix F1". Options: Per finding (Rec.) / Whole question / Refuse it.
+  **A (picked):** "Per finding (Rec.)"
+
+### Session d5793383, 2026-09-23 — hidden-assumption review, batch 2
+
+- **H5 (the typed-reply model, confirming H2 + H3).** The session's reading: refs stay per round and
+  every question shown carries what it acts on ("Close D13 (f_09deadcafef3)?"); relay_answer sends
+  the whole message plus the context the agent says it answered (round and question); the reader
+  decides which question the words answer, checking that context against what the transcript shows
+  the session said just before the message; unclear → escalated to "waiting on me", nothing binds.
+  Open point: does a bare "D13 A" skip the reader? Options: Reader binds all (Rec.) / Parse if
+  unambiguous.
+  **A (picked):** "Reader binds all (Rec.)" — every typed reply goes through the reader.
+  **Supersedes B5.4** ("Refuse if ambiguous", "R5 D2 A") entirely, and the typed-reply half of
+  B1.4's mechanism; B1.4's rule (the round it was asked for, a question posted before it, once)
+  stands, now judged by the reader against the transcript.
+- **H6 (bulk A, items 1–8)** and **H7 (bulk B, items 9–15)**, as put in the question text:
+  (1) a crashed logged call records its missing answers on retry; "answers once" is per call and
+  question; (2) only a verified answer on a replacement ends a verified hold its predecessor left;
+  (3) a hold passes along a replacement chain until a later one answers; (4) of two concurrent
+  replacements the first in log order replaces, the second stays live and is listed under "waiting
+  on me" as a conflicting replacement; (5) parked decisions are not in "waiting on me", unread free
+  text waits on an agent, Q11's "rules nothing" means read and ruled nothing; (6) a park holds
+  through its whole date, by UTC date; (7) "Other" text mapped by the reader to a close option is
+  ruled but held; (8) an unconfirmed answer picking the same option is not a conflict, and a
+  conflicting unconfirmed free-text answer is not sent to the reader; (9) between two verified
+  answers, the later by when given wins; (10) an answer's time is its transcript entry's or the
+  page click's, against the round's posting time, no skew allowance, a refusal states both;
+  (11) "carried out once" is recorded by the findings fold (applied closes per answer; a second
+  close from the same answer is ignored); (12) no migration — events lacking the new fields are
+  dropped, the bump rebuilds; (13) `findings` marks held findings, `shared_findings queue:true`
+  marks them, only review_queue's assigned-work list drops them; (14) a blocked decisions scope
+  makes the work queue refuse with the diagnostic and catalogues mark hold status "unknown";
+  (15) an explicit assignment of a held finding wins, marked held.
+  **A (both picked):** "Approve all as written"
+- **Supersedes, in part, B5.2's application:** `shared_findings queue:true` was listed in the plan
+  as dropping held findings; item 13 corrects it to marking. B5.2's rule (work queues drop,
+  catalogues mark) stands.
+
+### Session d5793383, 2026-09-23 — second coherence check
+
+- **H8 (is a reader-bound typed reply the person's own answer?).** The plan had inferred, unruled,
+  that a typed reply never closes on answer. You type "D13 A"; the reader binds it to D13 against
+  the transcript. Options: Own answer after P7 / Own answer now / A reading, held.
+  **A (picked):** "Own answer after P7" — the session's description: it is the person's own
+  verified answer (verified for precedence, can end a replaced question's hold, closes a pre-staged
+  option) once the reader's independence is checked (P7 passes); until then, or if P7 fails, it is
+  ruled but held.
+
+### What a reader subagent leaves on this machine — measured 2026-09-23 (P7 step 1)
+
+A reader launched as a background `Agent` from the session that relays the words (Claude Code, this
+machine, session `0ff94697…`), asked to reply with one line and use no tools:
+
+- **Its transcript** is `<project>/<session>/subagents/agent-<agentId>.jsonl` — beside the
+  session's own `<session>.jsonl`, never at the top level — with `agent-<agentId>.meta.json`
+  holding `agentType`, `description`, `toolUseId` (the parent's `Agent` call), `spawnDepth`,
+  `requestShape`, `model`.
+- **Every entry** carries `isSidechain: true`, `agentId: <agentId>` and `sessionId: <parent session>`.
+- **The agent id** is a 17-character `a…` string (`a263b7e5098218522`).
+- **The parent's transcript** records the launch — an assistant `tool_use` named `Agent`, then a
+  `tool_result` whose `toolUseResult` holds `isAsync`, `status: "async_launched"`, `agentId`,
+  `resolvedModel` and the prompt — and the result: a `queued_command` attachment whose
+  `origin` is `{kind: "peer", from: <agentId>, senderTaskId, body: <the report>, handback: true}`,
+  then a `task-notification`.
+- **Could the relaying session produce these itself?** Not through the harness: all of the above
+  is written by Claude Code, not by the model, and the entries cross-reference (the meta file's
+  `toolUseId` is the parent's call; the result names the `agentId`; the sidechain entries carry it).
+  **But every one is an ordinary file the session can write** with its shell or file tools — the
+  transcript files are mode 0600 and owned by the same user. Nothing in them is signed. That is the
+  same strength as every other transcript check codemap makes (C14: the person's own message is a
+  line in the same file), and no stronger.
+
