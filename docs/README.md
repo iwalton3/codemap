@@ -58,6 +58,14 @@ Decided, not yet built. This is the work queue.
 | [`docs/close-audit-2026-09-21-asym.jsonl`](close-audit-2026-09-21-asym.jsonl) | 16 | the same items under §8.7's asymmetric roles. Data, not prose. |
 | [`docs/close-audit-2026-09-22-paired.jsonl`](close-audit-2026-09-22-paired.jsonl) | 24 | §8.8's paired pre/post-repair run. Data, not prose. |
 
+## Active Design Drafts
+
+Agreed direction with unresolved contract details; not implementation-ready plans.
+
+| doc | status |
+|---|---|
+| [`docs/rulings-contract.md`](rulings-contract.md) | Round five: questionnaires for stakeholders, durable answers, reader-validated closure, conflict resolution, and explicit withdrawal/revision. Owner case rulings recorded; remaining design details marked. No legacy rulings exist to migrate. |
+
 ## Decision Record
 
 Why the code looks the way it does. Finished; kept for the argument, not as a to-do.
