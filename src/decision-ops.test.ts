@@ -1206,3 +1206,18 @@ test("GATE (codex round, vanishing): words that could still change another quest
     });
   } finally { u.cleanup(); }
 });
+
+test("F4 (run 2026-09-24-decision-rounds-2-codex-round-review): a multi-select reading given out of order posts a confirm the fold accepts", async () => {
+  const u = await universe();
+  try {
+    const f = await withFinding(u);
+    const multi = { ...decision("d1", f), payload: { ...payloadFor(f), multiSelect: true } };
+    await asAgent(async () => {
+      await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [multi] });
+      transcript(u.transcripts).typed("m1", "both of them", later(1));
+      const a = (await relayAnswer(u.root, { round: "R1", decision: "d1", session: SESSION, entryId: "m1" }, {}, u.transcripts) as any).answer;
+      const c = await confirmReading(u.root, { answer: a, maps: [{ decision: "d1", option: "Real, fix it" }, { decision: "d1", option: "Not a defect" }] }) as any;
+      assert.equal(c.ok, true, JSON.stringify(c));
+    });
+  } finally { u.cleanup(); }
+});

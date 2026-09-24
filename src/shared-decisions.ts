@@ -257,8 +257,9 @@ function actionLine(t: Pick<Decision, "ref" | "kind" | "options">, picks: (strin
  * the person's own words, read like any reply), or the two readings of a dispute as options.
  */
 export function confirmPayload(decisions: Map<string, FoldedDecision>, d: FoldedDecision, a: FoldedAnswer, readings: Mapping[][], ref: string): AskedQuestion {
-  // Lines in one order whatever order the reading was given in, so one reading is one text.
-  const rendered = readings.map((r) => [...byDecision([...r].sort((x, y) => mapsKey([x]).localeCompare(mapsKey([y]))))].map(([id, picks]) => actionLine(decisions.get(id)!, picks)));
+  // Lines in one order whatever order the reading was given in, so one reading is one text. The
+  // fold checks each line against the STORED reading's order, so a poster stores `canonicalMaps` too.
+  const rendered = readings.map((r) => [...byDecision(canonicalMaps(r))].map(([id, picks]) => actionLine(decisions.get(id)!, picks)));
   // JSON-quoted, so words with a newline stay on one line and cannot pass for an action line.
   const words = `You typed at ${a.givenAt}:\n${JSON.stringify(a.words)}`;
   if (readings.length === 1) {
@@ -445,6 +446,9 @@ export const validMaps = (m: unknown): Mapping[] | null => Array.isArray(m) && m
 /** A reader's verdict: a reading, or — only when it says unclear — nothing. */
 export const validVerdict = (m: unknown, unclear: unknown): Mapping[] | null =>
   str(unclear) ? (Array.isArray(m) && !m.length ? [] : null) : validMaps(m);
+
+/** A reading's lines in one order: the order a confirm renders and stores them in. */
+export const canonicalMaps = (ms: Mapping[]): Mapping[] => [...ms].sort((x, y) => mapsKey([x]).localeCompare(mapsKey([y])));
 
 /** Two readings are the same reading when they map the same lines, in any order. */
 export const mapsKey = (ms: Mapping[]): string => ms.map((m) => `${m.decision}\0${m.option ?? ""}`).sort().join("\n");
