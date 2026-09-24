@@ -225,6 +225,7 @@ async function outcome(root: string, d: Pick<FoldedDecision, "id" | "ref">, id: 
 
 /** What an answer on a confirm did to the words it asks about. */
 function confirmOutcome(s: SharedDecisions, c: FoldedDecision, a: FoldedDecision["answers"][number]): string {
+  if (c.cancellation) return `cancelled: ${c.cancellation.reason}; this answer cannot revive the reading`;
   if (c.confirms!.invalid) return `not a confirm codemap can verify (${c.confirms!.invalid}): this answer binds nothing — ask for a new confirm`;
   const t = confirmedWords(new Map(s.decisions.map((x) => [x.id, x])), c);
   if (a.free) return "their own words on the confirm: have a reader read them (reader_brief, then record_reading), like any typed reply";
@@ -410,6 +411,7 @@ export async function readerBrief(root: string, input: { answer: string; maps: M
   const x = found(s, input?.answer);
   if (!x) return { error: `no answer ${String(input?.answer)}` };
   const { d, a } = x;
+  if (a.cancelled) return { error: a.cancelled.reason, cancelledBy: a.cancelled.by };
   if (d.kind === "words") return { error: `${d.ref} takes words: they are the answer, never read` };
   if (!a.free || a.elsewhere) return { error: `answer ${a.id} is not words waiting for a reading` };
   if (a.reading) return { error: `answer ${a.id} is already read (${a.reading.id}): one reading per answer` };
@@ -448,6 +450,7 @@ export async function submitVerdict(root: string, input: { answer: string; verdi
   const x = found(w.s, input?.answer);
   if (!x) return { error: `no answer ${String(input?.answer)}` };
   const { d, a } = x;
+  if (a.cancelled) return { error: a.cancelled.reason, cancelledBy: a.cancelled.by };
   if (a.reading) return { ok: false, refused: `answer ${a.id} is already read: an earlier reader's verdict counts, one reading per answer` };
   const req = requestOf(root, a.id);
   if (!req) return { ok: false, refused: `no reader_brief was issued for ${a.id} on this machine` };
@@ -488,6 +491,7 @@ async function settleAnswer(root: string, b: Bound, answer: string, dir: string)
   const held = heldFor(root, answer), req = requestOf(root, answer), x = found(w.s, answer);
   const pending = held.filter((h) => h.state === "pending");
   if (!x || !req) { for (const h of pending) settle(root, h.seq, "invalid", `answer ${answer} is no longer words here`); return; }
+  if (x.a.cancelled) { for (const h of pending) settle(root, h.seq, "invalid", x.a.cancelled.reason); return; }
   if (x.a.reading) { for (const h of pending) settle(root, h.seq, "superseded", `answer ${answer} is already read (${x.a.reading.id})`); return; }
   const { d, a } = x;
   const byId = new Map(w.s.decisions.map((y) => [y.id, y]));
@@ -553,6 +557,7 @@ export async function recordReading(root: string, input: { answer: string }, via
   if ("error" in w) return w;
   const x = found(w.s, input?.answer);
   if (!x) return { error: `no answer ${String(input?.answer)}` };
+  if (x.a.cancelled) return { ok: false, cancelled: true, cancelledBy: x.a.cancelled.by, note: x.a.cancelled.reason };
   const r = x.a.reading;
   if (r) {
     return {
@@ -593,6 +598,7 @@ export async function confirmReading(root: string, input: { answer: string; maps
   const x = found(s, input?.answer);
   if (!x) return { error: `no answer ${String(input?.answer)}` };
   const { d, a } = x;
+  if (a.cancelled) return { error: a.cancelled.reason, cancelledBy: a.cancelled.by };
   if (d.confirms) return { error: `${d.ref} is itself a confirm: words on it are read like any other reply (reader_brief, then record_reading)` };
   if (d.kind === "words") return { error: `${d.ref} takes words: they are the answer, never read onto options` };
   if (!a.free || a.elsewhere) return { error: `answer ${a.id} is not words waiting for a binding` };
@@ -645,6 +651,7 @@ export async function answerDirect(root: string, input: { decision: string; opti
   if ("error" in w) return w;
   const d = w.s.decisions.find((x) => x.id === input.decision);
   if (!d) return { error: `no decision ${input.decision}` };
+  if (d.cancellation) return { error: d.cancellation.reason, cancelledBy: d.cancellation.by };
   const { decision: _d, ...rest } = input;
   return { ok: true, ...(await record(root, b, d, { kind: "direct", ...rest })) };
 }

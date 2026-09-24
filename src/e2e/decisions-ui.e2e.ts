@@ -123,4 +123,28 @@ describe("the decisions UI", { skip: pw ? false : "playwright not resolvable (se
     assert.deepEqual(errors, []);
     await page.close();
   });
+
+  test("changed response shows cancellation history and disables its pending confirmation", async () => {
+    const { page, errors } = await open(`/u/${universe}/decisions/R1/`);
+    const question = page.locator(".op-card").filter({ hasText: "D1: is the currency finding" });
+    await question.locator("input").fill("the premise is wrong");
+    await question.locator("input").press("Tab");
+    await question.locator("button").filter({ hasText: /^send$/ }).click();
+    await page.waitForSelector("text=the premise is wrong", { timeout: 10_000 });
+    const first = await ops.decisionRound(root, "R1") as any;
+    const answer = first.decisions.find((d: any) => d.id === "d1").answers.find((a: any) => a.words === "the premise is wrong");
+    const confirmation = await asAgent(() => ops.confirmReading(root, { answer: answer.id, maps: [{ decision: "d1", option: "Not a defect" }] })) as any;
+    assert.equal(confirmation.ok, true, JSON.stringify(confirmation));
+    await question.locator("input").fill("the premise is right; investigate it");
+    await question.locator("input").press("Tab");
+    await question.locator("button").filter({ hasText: /^send$/ }).click();
+    await page.waitForSelector("text=Cancelled: response changed", { timeout: 10_000 });
+    const cancelled = page.locator(".op-card").filter({ hasText: "Cancelled: response changed" });
+    assert.equal(await cancelled.locator("button").count(), 0);
+    assert.match((await question.textContent())!, /Previous answer:.*the premise is wrong/);
+    assert.match((await cancelled.textContent())!, /no longer needed/);
+    assert.deepEqual(errors, []);
+    await page.close();
+  });
+
 });

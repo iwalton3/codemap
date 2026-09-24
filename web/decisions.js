@@ -64,7 +64,7 @@ class DecisionsPage extends Component {
   decision(d, blocked) {
     // Blocked, answering is refused anyway (P3.1 (4)): no controls that cannot work.
     const s = d.standing, busy = this.state.busy === d.id;
-    const moved = !!d.replacedBy, inactive = blocked || !!d.confirms?.invalid || !!d.resolutionInvalid;
+    const moved = !!d.replacedBy, inactive = blocked || !!d.cancellation || !!d.confirms?.invalid || !!d.resolutionInvalid;
     const replaced = moved || inactive;
     const checked = this.state.checked[d.id] || [];
     return html`<div class="op-card ${replaced ? 'moved' : ''}">
@@ -75,6 +75,8 @@ class DecisionsPage extends Component {
       </div>
       <div class="fs">${d.payload.question}</div>
       ${each(d.options, (o) => html`<div class="fs dim">• <b>${o.label}</b>${d.confirms?.invalid ? ' — inactive' : o.effects.length ? ' — ' + o.effects.map((e) => `${e.on === 'settle' ? 'close as ' + e.as : 'fix'}: ${e.findings.join(', ')}`).join('; ') : ''}</div>`, (o) => o.label)}
+      ${when(!!d.cancellation, () => html`<div class="fs dim">Cancelled: ${d.cancellation.reason}</div>`)}
+      ${each(d.answers.filter((a) => a.cancelled), (a) => html`<div class="fs dim">Previous answer: “${a.words}” — ${a.cancelled.reason}${a.reading ? '; reading ' + a.reading.id + ' retained as history' : ''}</div>`, (a) => a.id)}
       ${when(!!d.resolutionInvalid, () => html`<div class="fs dim">This resolution is invalid: ${d.resolutionInvalid}. Ask a valid question showing both exact answers.</div>`)}
       ${when(!!d.confirms?.invalid, () => html`<div class="fs dim">Invalid confirmation: ${d.confirms.invalid}. Its options cannot act on findings; ask a valid question.</div>`)}
       ${when(!!s, () => html`<div class="fs">you said: <b>${s.words}</b>${s.options.length ? ' → ' + s.options.join(', ') : ''}${s.park ? ' → parked until ' + s.park : ''}</div>`)}

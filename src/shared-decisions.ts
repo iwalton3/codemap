@@ -67,10 +67,14 @@ export interface FoldedAnswer {
   concurrentWith?: string[];
   /** A verified choice keeps this source visible but removes it from actionable ranking. */
   resolvedOutBy?: string;
+  /** Changed source response: historical evidence remains, pending authority does not. */
+  cancelled?: { by: string; reason: string };
   /** What it was given through, so one call or message answers a decision once (B1.4). */
   once?: string;
   /** The person's words as recorded — never an agent's summary of them. */
   words: string;
+  /** Identity of the response before interpretation (selected options versus free text). */
+  responseHash: string;
   /** The options (or bulk items) this answer ruled, directly or through a binding. */
   options: string[];
   /** What those options rule, finding by finding. */
@@ -129,6 +133,7 @@ export interface FoldedDecision extends Decision {
    *  that carries a confirm's meaning: the request is answered (Q1.3). */
   confirms?: Confirms & { invalid?: string; never?: true; picked?: string };
   resolutionInvalid?: string;
+  cancellation?: { by: string; reason: string };
 }
 
 export interface SharedDecisions {
@@ -617,6 +622,7 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
         const a: FoldedAnswer = {
           id: e.id, by: e.actor, at: e.at, via: (data.via as AnswerVia).kind, verified: r.verified, givenAt, seq: pos, knownReplacements: [],
           ...(r.once ? { once: r.once } : {}),
+          responseHash: createHash("sha256").update(canonical({ words: r.words, free: r.free, picked: r.picked.map((o) => o.label), park: r.park ?? null })).digest("hex"),
           words: r.words, options: [], ruled: [], unruled: [], free: r.free,
           ...(str(data.relayedBy) ? { relayedBy: data.relayedBy } : {}),
         };
@@ -734,6 +740,35 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
     }
   }
 
+  // Compare original responses, never a reader's copies or a confirmation timestamp.
+  // Given-time order also handles a correction arriving before its earlier source.
+  for (const d of decisions.values()) {
+    const originals = d.answers.filter((a) => a.verified && !a.sourceAnswer);
+    for (const a of originals) {
+      if (!a.free && !a.reading && !a.confirmed) continue;
+      const changed = originals.filter((b) => b.by.principal === a.by.principal && b.responseHash !== a.responseHash && outranksByTime(b, a));
+      const newer = best(changed);
+      if (newer) a.cancelled = { by: newer.id, reason: `response changed by ${newer.id}; a new reading is required` };
+    }
+  }
+  // A confirmation can itself have interpreted words copied onto another question.
+  // Propagate through source links until every dependent pending use is cancelled.
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const d of decisions.values()) {
+      if (d.confirms && !d.cancellation) {
+        const source = answersById.get(d.confirms.answer)?.a;
+        if (source?.cancelled) { d.cancellation = source.cancelled; changed = true; }
+      }
+      for (const a of d.answers) {
+        if (a.cancelled) continue;
+        const cancellation = d.cancellation ?? (a.sourceAnswer ? answersById.get(a.sourceAnswer)?.a.cancelled : undefined);
+        if (cancellation) { a.cancelled = cancellation; changed = true; }
+      }
+    }
+  }
+
   // Candidate concurrency is derived from original answer events, including bound human
   // words copied to another question. A relayer's causal knowledge is not proof of what
   // the human knew when speaking; callers see that uncertainty in the candidate view.
@@ -760,7 +795,7 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
   for (const d of decisions.values()) if (d.resolves && !d.resolutionInvalid) {
     const byPrincipal = new Map<string, FoldedAnswer>();
     for (const answer of d.answers) {
-      if (!answer.verified || answer.resolvedOutBy) continue;
+      if (!answer.verified || answer.resolvedOutBy || answer.cancelled) continue;
       const prev = byPrincipal.get(answer.by.principal);
       if (!prev || outranksByTime(answer, prev)) byPrincipal.set(answer.by.principal, answer);
     }
@@ -796,6 +831,7 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
  *  in the admission context — an unknown time satisfies neither — and each is picked once,
  *  or `(none)` alone, unless it is multi-select (R3). */
 export function bindRefusal(decisions: Map<string, FoldedDecision>, d: FoldedDecision, a: FoldedAnswer, maps: Mapping[], knownReplacements: string[] = a.knownReplacements): string | null {
+  if (a.cancelled) return a.cancelled.reason;
   const given = ms(a.givenAt);
   if (given === undefined) return "the words have no time that parses";
   const picks = new Map<string, (string | null)[]>();
@@ -936,7 +972,7 @@ function resolve(d: FoldedDecision, via: AnswerVia, actor: Actor, questions: Map
 
 /** In the ranking: every answer something has bound — a pick, a park, a bulk answer, words
  *  read or confirmed, including words that rule nothing — and not one about other questions. */
-const ranks = (a: FoldedAnswer): boolean => !a.free && !a.elsewhere && !a.resolvedOutBy;
+const ranks = (a: FoldedAnswer): boolean => !a.free && !a.elsewhere && !a.resolvedOutBy && !a.cancelled;
 
 /** `x` outranks `y`: verified first, then the later given, then the later in the log. */
 const outranks = (x: FoldedAnswer, y: FoldedAnswer): boolean =>
@@ -949,7 +985,7 @@ const best = (as: FoldedAnswer[]): FoldedAnswer | undefined => as.reduce<FoldedA
 export const standing = (d: FoldedDecision): FoldedAnswer | undefined => best(d.answers.filter(ranks));
 
 /** Words still waiting for a binding on `d`: unread, read as unclear, or read two ways. */
-const pending = (d: FoldedDecision): FoldedAnswer[] => d.answers.filter((a) => a.free && !a.elsewhere);
+const pending = (d: FoldedDecision): FoldedAnswer[] => d.answers.filter((a) => a.free && !a.elsewhere && !a.cancelled);
 
 /** Whether the answer ruled — picked something — rather than parked, awaited or ruled nothing. */
 const decides = (a: FoldedAnswer | undefined): boolean => !!a && !a.free && !a.nothing && a.park === undefined && a.parkWaits === undefined;
@@ -976,6 +1012,7 @@ function chainRuled(byId: Map<string, FoldedDecision>, d: FoldedDecision, verifi
  * nothing down the chain took over (Q3.3 (b)).
  */
 function couldChange(byId: Map<string, FoldedDecision>, d: FoldedDecision, a: FoldedAnswer): boolean {
+  if (a.cancelled) return false;
   if (d.replacedBy && !a.reading) return false;
   return readable(byId, d, a).some((t) => {
     if (t.confirms && t.options.every((o) => !o.effects.length)) return false;
@@ -1013,6 +1050,7 @@ export function confirmedWords(byId: Map<string, FoldedDecision>, c: FoldedDecis
 export type ConfirmState = "open" | "answered" | "no longer needed" | "unverifiable";
 export function confirmState(byId: Map<string, FoldedDecision>, c: FoldedDecision): ConfirmState | undefined {
   if (!c.confirms) return undefined;
+  if (c.cancellation) return "no longer needed";
   if (c.confirms.picked) return "answered";
   if (c.confirms.invalid && c.confirms.never) return "unverifiable";
   const t = confirmedWords(byId, c);
@@ -1084,7 +1122,7 @@ export interface IntentCandidate {
 
 /** Mechanical candidates only. Semantic conflict and original human knowledge still need review. */
 export function intentCandidates(s: SharedDecisions): IntentCandidate[] {
-  const all = s.decisions.flatMap((d) => d.answers.filter((a) => a.verified && !a.resolvedOutBy && !d.resolves && !d.confirms?.invalid).map((a) => ({ d, a })));
+  const all = s.decisions.flatMap((d) => d.answers.filter((a) => a.verified && !a.resolvedOutBy && !a.cancelled && !d.resolves && !d.confirms?.invalid).map((a) => ({ d, a })));
   const out: IntentCandidate[] = [];
   const seenPairs = new Set<string>();
   for (let i = 0; i < all.length; i++) for (let j = i + 1; j < all.length; j++) {
@@ -1124,6 +1162,7 @@ export function waitingOnMe(s: SharedDecisions, today: string): WaitingItem[] {
   const out: WaitingItem[] = [];
   const byId = new Map(s.decisions.map((x) => [x.id, x]));
   for (const d of s.decisions) {
+    if (d.cancellation) continue;
     if (d.confirms?.invalid) {
       out.push({ decision: d.id, round: d.round, ref: d.ref, why: `not a confirm codemap can verify (${d.confirms.invalid}) — answering it binds nothing; ask for a new confirm` });
       continue;

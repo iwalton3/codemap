@@ -635,20 +635,20 @@ test("R2 (P1.2): a reader whose reading the fold rejected was never used — it 
   try {
     const [f, g] = [await withFinding(u), await withFinding(u)];
     await asAgent(async () => {
-      await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f), decision("d2", g, {}, "D2")] });
+      await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f), decision("d2", g, {}, "D2"), decision("d3", f, {}, "D3")] });
       await new Promise((r) => setTimeout(r, 30));
       await postRound(u.root, { round: { id: "R2", source: "x" }, decisions: [{ ...decision("d2b", g, {}, "D9", "R2"), supersedes: "d2" }] });
       const t = transcript(u.transcripts);
       t.typed("m1", "D2 is real", later(1));
-      t.typed("m2", "D1 is not a defect", later(1));
+      t.typed("m2", "D3 is not a defect", later(1));
       const a1 = (await relayAnswer(u.root, { round: "R1", decision: "d1", session: SESSION, entryId: "m1" }, {}, u.transcripts) as any).answer;
-      const a2 = (await relayAnswer(u.root, { round: "R1", decision: "d1", session: SESSION, entryId: "m2" }, {}, u.transcripts) as any).answer;
+      const a2 = (await relayAnswer(u.root, { round: "R1", decision: "d3", session: SESSION, entryId: "m2" }, {}, u.transcripts) as any).answer;
       const brief1 = await briefOf(u.root, a1, [{ decision: "d1", option: "Real, fix it" }]);
       const x = nextReader();
       // A foreign writer's reading of a1 by x, naming D2 — replaced before the words were typed.
       const b = bindDecisions(u.root) as any;
       await recordReadingEvent(b.cfg.path, b.cfg.universe, b.actor, { answer: a1, session: { maps: [{ decision: "d2", option: "Real, fix it" }] }, reader: { agent: x, verdict: [{ decision: "d2", option: "Real, fix it" }], launchedAt: later(3), brief: brief1, verified: { session: SESSION, toolUseId: "t" } } });
-      const r = await reads(u, t, a2, "D1 → Not a defect", { prompt: await briefOf(u.root, a2, [{ decision: "d1", option: "Not a defect" }]), agentId: x });
+      const r = await reads(u, t, a2, "D3 → Not a defect", { prompt: await briefOf(u.root, a2, [{ decision: "d3", option: "Not a defect" }]), agentId: x });
       assert.equal(r.rec.agree, true, JSON.stringify(r));
 
       const refused = await submitVerdict(u.root, { answer: a1, verdict: "D2 → Real, fix it" }, {}, u.transcripts) as any;
@@ -1259,7 +1259,7 @@ test("GATE (codex round, held offered as work): a (none) confirm holds, a findin
   } finally { w.cleanup(); }
 });
 
-test("GATE (codex round, vanishing): words that could still change another question stay listed, a no-longer-needed confirm's own words go to a reader, and a confirm of words never recorded waits on the person", async () => {
+test("Round five replaces vanishing gate: cancelled replies remain visible; missing confirmation evidence still waits on the person", async () => {
   const u = await universe();
   try {
     const [f, g] = [await withFinding(u), await withFinding(u)];
@@ -1274,11 +1274,12 @@ test("GATE (codex round, vanishing): words that could still change another quest
       a = (await relayAnswer(u.root, { round: "R1", decision: "d1", session: SESSION, entryId: "m1" }, {}, u.transcripts) as any).answer;
     });
     await tick();
-    await asPerson(async () => { await answerDirect(u.root, { decision: "d1", option: "Not a defect" }); });
-    assert.ok((await decisionRounds(u.root) as any).awaitingReading.some((x: any) => x.answer === a), "outranked on D1, and D2 could still change");
     await asAgent(async () => {
       c = await confirmReading(u.root, { answer: a, maps: [{ decision: "d2", option: "Real, fix it" }] });
       assert.equal(c.ok, true, JSON.stringify(c));
+      await tick();
+      await asPerson(async () => { await answerDirect(u.root, { decision: "d1", option: "Not a defect" }); });
+      assert.ok(!(await decisionRounds(u.root) as any).awaitingReading.some((x: any) => x.answer === a));
       await tick();
       t.ask("toolu_other", [c.ask], { [c.ask.question]: "leave D1 open" }, later(0));
       await logQuestion(u.root, { toolUseId: "toolu_other", round: "R1" }, {}, u.transcripts);
@@ -1287,7 +1288,8 @@ test("GATE (codex round, vanishing): words that could still change another quest
     await asPerson(async () => { await answerDirect(u.root, { decision: "d2", option: "Not a defect" }); });
     const round = await decisionRound(u.root, "R1") as any;
     assert.equal(round.decisions.find((x: any) => x.id === c.confirm)?.confirm.state, "no longer needed", JSON.stringify(round.decisions.map((x: any) => x.confirm)));
-    assert.ok(round.awaitingReading.some((x: any) => x.decision === c.confirm && x.words === "leave D1 open"), JSON.stringify(round.awaitingReading));
+    assert.ok(!round.awaitingReading.some((x: any) => x.decision === c.confirm));
+    assert.ok(round.decisions.find((x: any) => x.id === c.confirm).answers.some((x: any) => x.words === "leave D1 open" && x.cancelled));
     await asAgent(async () => {
       const b = bound(u);
       const never = otherClone(c, "never-recorded", [[{ decision: "d2", option: "Real, fix it" }]], (q) => q.replace(/^D3:/, "D9:"), "D9");
@@ -1333,6 +1335,46 @@ test("Q4: confirmReading refuses a ref shared by two posted questions", async ()
       await postConfirmEvent(b.cfg.path, b.cfg.universe, b.actor, duplicate);
       const again = await confirmReading(u.root, { answer: a, maps: [{ decision: "d1", option: "Real, fix it" }] }) as any;
       assert.match(String(again.error), /two questions.*ambiguous/);
+    });
+  } finally { u.cleanup(); }
+});
+
+test("round five: changed response cancels a completed reading and its pending confirmation through ops", async () => {
+  const u = await universe();
+  try {
+    const f = await withFinding(u);
+    await asAgent(async () => {
+      await postRound(u.root, { round: { id: "R1", source: "round-five" }, decisions: [decision("d1", f)] });
+      const t = transcript(u.transcripts);
+      t.typed("original", "not a defect, keep the explanation", later(1));
+      const original = await relayAnswer(u.root, { round: "R1", decision: "d1", session: SESSION, entryId: "original" }, {}, u.transcripts) as any;
+      const maps = [{ decision: "d1", option: "Not a defect" }];
+      const prompt = await briefOf(u.root, original.answer, maps);
+      const read = await reads(u, t, original.answer, "D1 → Real, fix it", { prompt });
+      assert.equal(read.rec.recorded, true);
+      assert.equal(read.rec.agree, false);
+      const confirmation = await confirmReading(u.root, { answer: original.answer }, {}, u.transcripts) as any;
+      assert.equal(confirmation.ok, true, JSON.stringify(confirmation));
+      t.typed("correction", "leave it open; the premise was right", later(20));
+      const correction = await relayAnswer(u.root, { round: "R1", decision: "d1", session: SESSION, entryId: "correction" }, {}, u.transcripts) as any;
+      assert.equal(correction.recorded, true);
+      const view = await decisionRound(u.root, "R1") as any;
+      const d = view.decisions.find((x: any) => x.id === "d1");
+      const historic = d.answers.find((a: any) => a.id === original.answer);
+      assert.equal(historic.cancelled.by, correction.answer);
+      assert.ok(historic.reading.id);
+      assert.equal(view.decisions.find((x: any) => x.id === confirmation.confirm).confirm.state, "no longer needed");
+      assert.ok(!view.waitingOnYou.some((x: any) => x.decision === confirmation.confirm));
+      assert.deepEqual(view.awaitingReading.map((x: any) => x.answer), [correction.answer]);
+      assert.match(String(err(await readerBrief(u.root, { answer: original.answer, maps }))), /response changed/);
+      assert.match(String(err(await confirmReading(u.root, { answer: original.answer }, {}, u.transcripts))), /response changed/);
+      assert.match(String(err(await submitVerdict(u.root, { answer: original.answer, verdict: "D1 → Not a defect" }, {}, u.transcripts))), /response changed/);
+      const recorded = await recordReading(u.root, { answer: original.answer }, {}, u.transcripts) as any;
+      assert.equal(recorded.ok, false);
+      assert.equal(recorded.cancelledBy, correction.answer);
+      await asPerson(async () => {
+        assert.match(String(err(await answerDirect(u.root, { decision: confirmation.confirm, option: "Reading 1" }))), /response changed/);
+      });
     });
   } finally { u.cleanup(); }
 });

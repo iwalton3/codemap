@@ -375,12 +375,12 @@ test("P3.3: once the words are moot, an open confirm stops holding and waiting, 
 // --- Q1.3 (owner, "The request only"): a confirm's state describes the request
 
 const stateOf = (out: SharedDecisions, id: string) => confirmState(new Map(out.decisions.map((d) => [d.id, d])), out.decisions.find((d) => d.id === id)!);
-test("Q1.3 (F9): a late Yes on a confirm no longer needed answers it, binds, and changes no standing answer", () => {
+test("Round five replaces Q1.3 F9: a late Yes retains history but cannot revive a cancelled reading", () => {
   n = 1;
   const evs = [...clicked(), ...others()], first = fold(evs), a = first.b.d1!.answers.at(-1)!.id;
   const C = confirmOf(first.b, "d1", a, leave), later = page(d1, { option: "Settle" }), yes = call(C.data.decision, CONFIRM_YES);
   const { b, out } = fold([...evs, C, later, ...yes]);
-  assert.ok(stateOf(out, "c1") === "answered" && standing(b.d1!)!.options[0] === "Settle" && !!b.d1!.answers.find((x) => x.id === a)!.confirmed && !waits(out, "c1"), dump(b, out));
+  assert.ok(stateOf(out, "c1") === "no longer needed" && standing(b.d1!)!.options[0] === "Settle" && b.d1!.answers.find((x) => x.id === a)!.cancelled?.by === later.id && !waits(out, "c1"), dump(b, out));
 });
 test("Q1.3 (A3, F10): words typed on a confirm after a No never reopen it — read as nothing on it, it stays answered and holds nothing", () => {
   n = 1;
@@ -395,14 +395,14 @@ test("Q1.3 (A3, F10): words typed on a confirm after a No never reopen it — re
       && !waits(out, "c1") && waits(out, "d1", /not what you meant/), dump(b, out));
   }
 });
-both("Q1.3 (A2, F5/F7): a confirm no longer needed still sends its own typed words to a reader while they could change something", () => {
+both("Round five replaces Q1.3 F5/F7: cancelled confirmation replies stay historical", () => {
   n = 1;
   const evs = clicked(), first = fold(evs), a = first.b.d1!.answers.at(-1)!.id;
-  // D4 answered between the original words and the reply: the original words become moot, the reply does not.
+  // Even a reply about D4 cannot revive a confirmation cancelled by the changed D1 response.
   const C = confirmOf(first.b, "d1", a, leave), d4B = page(d4, { option: "B" }), other = call(C.data.decision, "Actually A on D4"), later = page(d1, { option: "Settle" });
   const O = others().slice(0, 2);
   return { first: [...evs, C, d4B, ...other, later, ...O], second: [...evs, C, later, ...O, d4B, ...other] };
-}, (b, out) => stateOf(out, "c1") === "no longer needed" && awaitingReading(out).some((u) => u.decision === "c1" && u.words === "Actually A on D4") && !waits(out, "c1", /confirm what/));
+}, (b, out) => stateOf(out, "c1") === "no longer needed" && !awaitingReading(out).some((u) => u.decision === "c1") && b.c1!.answers.some((a) => a.words === "Actually A on D4" && a.cancelled) && !waits(out, "c1", /confirm what/));
 test("Q2.3 (4) (A4, F13): a confirm of words never recorded is not one codemap can verify — it waits on you and binds nothing; a cut target is no longer needed", () => {
   n = 1;
   const evs = clicked(), first = fold(evs), a = first.b.d1!.answers.at(-1)!.id;
@@ -969,37 +969,39 @@ const aboutD4 = () => {
   const O = [page(d2, { option: "None — approve all" }), page(d3, { option: "Now" })];
   return { O, old, W, later };
 };
-both("Q1.2: words outranked on their own question stay listed while another question they may be read onto has nothing given after them — and a reading binds them there", () => {
+both("Round five replaces Q1.2: changed response cancels its reading copies across questions", () => {
   n = 1;
   const { O, old, W, later } = aboutD4();
   const R = reading(W, [{ decision: "d4", option: "A" }]);
+  fold([old, W, R]); // Freeze the brief before the changed response arrives.
   return { first: [...O, old, W, later, R], second: [...O, later, W, old, R] };
-}, (b) => standing(b.d4!)!.options[0] === "A" && standing(b.d1!)!.options[0] === "Settle");
-both("Q1.2: ...unread, they wait for a reader, and D1 stays flagged", () => {
+}, (b) => standing(b.d4!)!.options[0] === "B" && standing(b.d1!)!.options[0] === "Settle" && b.d4!.answers.some((a) => a.sourceAnswer && a.cancelled));
+both("Round five replaces Q1.2: cancelled unread response remains history, not reader work", () => {
   n = 1;
   const { O, old, W, later } = aboutD4();
   return { first: [...O, old, W, later], second: [...O, later, W, old] };
-}, (b, out) => awaitingReading(out).some((u) => u.decision === "d1") && flagged(b.d1!));
+}, (b, out) => !awaitingReading(out).some((u) => u.decision === "d1") && !flagged(b.d1!) && b.d1!.answers.some((a) => a.cancelled));
 both("Q1.2: once D4 has a later answer too, the words leave all four lists, and a reading of them changes nothing standing", () => {
   n = 1;
   const { O, old, W, later } = aboutD4();
   const again = page(d4, { option: "B" });
   return { first: [...O, old, W, later, again], second: [...O, again, later, W, old] };
 }, (b, out) => !awaitingReading(out).length && !readingsInDispute(out).length && !waits(out, "d1") && !flagged(b.d1!) && standing(b.d4!)!.options[0] === "B");
-test("Q1.2: a reading of moot words binds, and changes no standing answer", () => {
+test("Round five: historical reading copies survive without authority after response cancellation", () => {
   n = 1;
   const { O, old, W, later } = aboutD4();
   const again = page(d4, { option: "B" }), R = reading(W, [{ decision: "d4", option: "A" }]);
+  fold([old, W, R]);
   for (const evs of [[...O, old, W, later, again, R], [...O, R, again, later, W, old]]) {
     const { b, out } = fold(evs);
     assert.ok(standing(b.d4!)!.options[0] === "B" && standing(b.d1!)!.options[0] === "Settle" && b.d4!.answers.some((a) => a.id === `${R.id}/d4`), dump(b, out));
   }
 });
-run("Q1.2: at an equal given time a copy ranks at the binding's log position, so words recorded before D4's answer still count on D4", () => {
+run("Round five replaces Q1.2: a potential copy cannot keep a changed response readable", () => {
   const old = page(d4, { option: "B" }), W = msg(d1, "actually A on D4", "u1", old.at), later = page(d1, { option: "Settle" });
   return [W, old, later, ...others().slice(0, 2)];
-}, (b, out) => awaitingReading(out).some((u) => u.decision === "d1"));
-test("Q1.2 (pinned consequence): binding moot words older than a standing answer can move when that question's hold began", () => {
+}, (b, out) => !awaitingReading(out).some((u) => u.decision === "d1") && b.d1!.answers.some((a) => a.cancelled));
+test("Round five replaces Q1.2: cancelled reading cannot rewrite another question's hold chronology", () => {
   n = 1;
   const W = msg(d1, "B on D4"), P = page(d1, { option: "Settle" }), A = page(d4, { option: "A" });
   const O = [page(d2, { option: "None — approve all" }), page(d3, { option: "Now" })];
@@ -1008,8 +1010,8 @@ test("Q1.2 (pinned consequence): binding moot words older than a standing answer
   assert.ok(since(before.out, "F30")[0] === round.at && !awaitingReading(before.out).length, dump(before.b, before.out));
   for (const evs of [[...O, W, P, A, R], [...O, A, P, W, R]]) {
     const { b, out } = fold(evs);
-    // Unblocked by the words at their typed time, then held again by A: the hold began at A (S0.4).
-    assert.ok(standing(b.d4!)!.options[0] === "A" && since(out, "F30")[0] === A.at, dump(b, out));
+    // Cancelled interpretation is historical and cannot release this hold.
+    assert.ok(standing(b.d4!)!.options[0] === "A" && since(out, "F30")[0] === round.at, dump(b, out));
   }
 });
 test("Q3: neither a valid nor an effect-bearing invalid confirm lets unrelated words act", () => {
@@ -1194,4 +1196,56 @@ test("Q2 human conflict: concurrent proven rulings hold work until a shown human
   assert.ok(heldFindings(changed, () => true).get("F3")?.length, "affected work stays held until the new intent has an actionable question");
   assert.ok(waits(changed, "resolve-1", /new intent.*fresh valid question/));
   assert.equal(changed.decisions.find((d) => d.id === "resolve-1")!.answers[0]!.words, "Keep the work open and ask for a narrower fix");
+});
+
+
+test("Round five: completed reading is cancelled by changed words, with its evidence preserved", () => {
+  n = 1;
+  const W = msg(d1, "not a defect"), R = reading(W, [{ decision: "d1", option: "Settle" }]);
+  const before = fold([W, R]);
+  assert.equal(standing(before.b.d1!)?.id, W.id);
+  assert.ok(ruledNotCarriedOut(before.out, () => true).some((x) => x.answer === W.id));
+  const changed = msg(d1, "actually leave this open", "u2");
+  for (const events of [[W, R, changed], [changed, W, R]]) {
+    const { b, out } = fold(events);
+    const original = b.d1!.answers.find((a) => a.id === W.id)!;
+    assert.equal(original.reading?.id, R.id);
+    assert.equal(original.cancelled?.by, changed.id);
+    assert.equal(standing(b.d1!), undefined);
+    assert.ok(!ruledNotCarriedOut(out, () => true).some((x) => x.answer === W.id));
+    assert.deepEqual(awaitingReading(out).map((x) => x.answer), [changed.id]);
+    assert.ok(heldFindings(out, () => true).get("F3")?.some((h) => h.why === "undecided"));
+  }
+});
+
+test("Round five: unrelated answers and unverified claims do not cancel a completed reading", () => {
+  n = 1;
+  const W = msg(d1, "not a defect"), R = reading(W, [{ decision: "d1", option: "Settle" }]);
+  const other = answer(d1, { kind: "direct", words: "leave open" }, { principal: "bob" });
+  const { b, out } = fold([W, R, other, page(d4, { option: "B" }), unv(d1, "changed")]);
+  assert.equal(b.d1!.answers.find((a) => a.id === W.id)?.cancelled, undefined);
+  assert.equal(standing(b.d1!)?.id, W.id);
+  assert.ok(intentCandidates(out).some((c) => c.answers.includes(W.id) && c.answers.includes(other.id)));
+});
+
+test("Round five: changing a response back does not revive the first reading", () => {
+  n = 1;
+  const W = msg(d1, "not a defect"), R = reading(W, [{ decision: "d1", option: "Settle" }]);
+  const changed = msg(d1, "leave open", "u2"), back = msg(d1, "not a defect", "u3");
+  const { b, out } = fold([W, R, changed, back]);
+  assert.ok(b.d1!.answers.find((a) => a.id === W.id)?.cancelled);
+  assert.equal(standing(b.d1!), undefined);
+  assert.deepEqual(awaitingReading(out).map((x) => x.answer), [back.id]);
+});
+
+test("Round five: selection semantics are part of a changed response, identical free text is not", () => {
+  n = 1;
+  const W = msg(d1, "Settle"), R = reading(W, [{ decision: "d1", option: "No" }]);
+  fold([W, R]);
+  const repeated = msg(d1, "Settle", "u2");
+  assert.equal(fold([W, R, repeated]).b.d1!.answers.find((a) => a.id === W.id)?.cancelled, undefined);
+  const selected = page(d1, { option: "Settle" });
+  const { b } = fold([W, R, repeated, selected]);
+  assert.equal(b.d1!.answers.find((a) => a.id === W.id)?.cancelled?.by, selected.id);
+  assert.equal(standing(b.d1!)?.id, selected.id);
 });

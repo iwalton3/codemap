@@ -231,7 +231,8 @@ import { readScopeChecked, sortEvents, SHARD_EXT, type LogEvent, type ScopeDiagn
 // resolution change projections of unchanged decision shards (2026-09-24 Codex round).
 // 32 -> 33: round-five confirmation and conflict derivations change existing decision rows
 // without moving their shards. Refold so old cached authority and holds are not served.
-export const MATERIALIZER_VERSION = 33;
+// 33 -> 34: changed responses cancel pending readings and confirmations on existing shards.
+export const MATERIALIZER_VERSION = 34;
 
 /**
  * What the events in a scope are, cheaply.

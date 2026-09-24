@@ -420,3 +420,25 @@ Sources: [latest diagnosis](postmortems/2026-09-24-decision-rounds-2-round4-revi
 `.git/triage/2026-09-24-decision-rounds-2-codex-round-review/` and
 `.git/triage/2026-09-24-decision-rounds-2-round4-review/`. Local `.git` records do not
 travel; the controlling owner statements for this draft are reproduced above.
+
+## Implementation checkpoint — response-reading cancellation (2026-09-24)
+
+A verified changed response from the same principal now cancels pending interpretation
+of the earlier response. Ordering uses the time the human answered, then log order
+for ties. The original response identity includes free-text versus selected-option
+semantics; comparison is against the response before any reading. Another principal's
+answer stays a separate conflict candidate, and unrelated activity does not cancel a
+reading.
+
+Cancellation is projected from source answers, including late arrivals. The earlier
+answer, reading and confirmation receipts remain visible as history, with the changed
+answer's ID and reason. Their interpretation copies cannot authorize pending work or
+become current through a late confirmation. Changing the response back requires new
+evidence. Reader and confirmation operations refuse reuse; the web view shows the
+history and removes cancelled confirmation controls. No issue lifecycle is changed by
+this derivation, so executed closures are untouched.
+
+This is a partial implementation checkpoint, not completion of C1–C7. Explicit
+revision/withdrawal, questionnaire submission, semantic comparison, typed bug
+eligibility and one-shot issue application remain separate outstanding work. Existing
+automatic question supersession also remains to be removed.
