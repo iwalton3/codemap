@@ -37,6 +37,10 @@ export interface DecisionsView {
 
 const EMPTY: SharedDecisions = { rounds: [], decisions: [], questions: [] };
 
+let builds = 0;
+/** How many times the hold maps have been built in this process. For tests; no production caller. */
+export const holdBuilds = (): number => builds;
+
 /** This store has folded decisions from a sidecar before — at least one event (S0.8(b)): a
  *  zero-event read, like opening the page on a universe with none, is not evidence of any. */
 function foldedBefore(root: string, universe?: string): boolean {
@@ -59,11 +63,17 @@ export async function decisionsView(root: string): Promise<DecisionsView> {
   const isOpen = (id: string) => open.get(id) ?? false;
 
   const view = (s: SharedDecisions, status: ScopeStatus, unknown?: string): DecisionsView => {
-    const held = unknown ? undefined : heldFindings(s, isOpen);
-    const flagged = supersededFindings(s);
+    // Built on the first mark read, once per view: a write reads the view for its rows only
+    // (P2.2 (7)).
+    let marks: { held?: Map<string, Hold[]>; flagged: ReturnType<typeof supersededFindings> } | undefined;
+    const built = () => {
+      if (!marks) { builds++; marks = { ...(unknown ? {} : { held: heldFindings(s, isOpen) }), flagged: supersededFindings(s) }; }
+      return marks;
+    };
     return {
       s, status, ...(unknown ? { unknown } : {}), isOpen,
       mark: (id) => {
+        const { held, flagged } = built();
         const h = held ? held.get(id) : "unknown";
         const p = flagged.get(id);
         return { ...(h === "unknown" || h?.length ? { held: h } : {}), ...(p ? { possiblySuperseded: p } : {}) };

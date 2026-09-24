@@ -21,6 +21,7 @@ import { shareFinding, closeFinding, bindDecisions, reassignFinding, sharedFindi
 import { reviewQueue } from "./ops/annotations.js";
 import { postRound, postPrevalidated, logQuestion, relayAnswer, answerDirect, decisionRounds, decisionRound, readerBrief, recordReading, confirmReading, parseVerdict } from "./ops/decisions.js";
 import { discard } from "./test-tmp.js";
+import { decisionsView, holdBuilds } from "./ops/decision-holds.js";
 import { decisionScope, foldDecisions, logQuestionEvent, recordReadingEvent } from "./shared-decisions.js";
 
 const state: State = { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State;
@@ -612,6 +613,44 @@ test("GATE (vanishing) / R13: words typed on D1 before it was replaced, relayed 
       const c = await confirmReading(u.root, { answer: a, maps: [{ decision: "d1", option: "Not a defect" }] }) as any;
       assert.equal(c.ok, true, JSON.stringify(c));
       assert.equal(c.round, "R1");
+    });
+  } finally { u.cleanup(); }
+});
+
+test("R17 (P2.2 (7)): the holds are built only when a mark is read — once per view — never by a write", async () => {
+  const u = await universe();
+  try {
+    const [f, g] = [await withFinding(u), await withFinding(u)];
+    await asAgent(async () => {
+      await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f), decision("d2", g, {}, "D2")] });
+      let n = holdBuilds();
+      await decisionsView(u.root);
+      assert.equal(holdBuilds() - n, 0, "reading the rows builds nothing");
+      transcript(u.transcripts).ask("toolu_1", [payloadFor(f), payloadFor(g, "D2")], { [payloadFor(f).question]: "Not a defect", [payloadFor(g, "D2").question]: "Real, fix it" });
+      n = holdBuilds();
+      assert.equal(((await logQuestion(u.root, { toolUseId: "toolu_1", round: "R1" }, {}, u.transcripts)) as any).answered.length, 2);
+      assert.equal(holdBuilds() - n, 0, "answering two decisions builds nothing");
+      n = holdBuilds();
+      const round = await decisionRound(u.root, "R1") as any;
+      assert.equal(round.held.length, 1, "f is ruled and held; g released");
+      assert.equal(holdBuilds() - n, 1, "a caller reading marks builds them once for its view");
+    });
+  } finally { u.cleanup(); }
+});
+
+test("R18 (P2.2 (9)): a round's held list shows every hold on its findings, including one another round places", async () => {
+  const u = await universe();
+  try {
+    const f = await withFinding(u);
+    await asAgent(async () => {
+      await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f)] });
+      await postRound(u.root, { round: { id: "R2", source: "x" }, decisions: [decision("d2", f, {}, "D1", "R2")] });
+    });
+    await asPerson(async () => { await answerDirect(u.root, { decision: "d2", option: "Real, fix it" }); });
+    await asAgent(async () => {
+      const r2 = await decisionRound(u.root, "R2") as any;
+      const row = r2.held.find((h: any) => h.finding === f);
+      assert.ok(row && row.held.some((x: any) => x.decision === "d1") && !row.held.some((x: any) => x.decision === "d2"), JSON.stringify(r2.held));
     });
   } finally { u.cleanup(); }
 });

@@ -1072,10 +1072,9 @@ export interface Hold {
   since: string;
 }
 
-/** Whether `d`, with only `answers` given so far, holds `finding` from open work. */
-function holdsWith(d: FoldedDecision, answers: FoldedAnswer[], finding: string): boolean {
+/** Whether `d`, with `a` its standing answer so far, holds `finding` from open work. */
+function holdsWith(d: FoldedDecision, a: FoldedAnswer | undefined, finding: string): boolean {
   if (!named(d).includes(finding)) return false;
-  const a = best(answers);
   if (!decides(a)) return true;
   if (a!.ruled.some((r) => r.finding === finding && r.on === "settle")) return true;
   if (a!.unruled.includes(finding)) return true;
@@ -1089,12 +1088,15 @@ function holdsWith(d: FoldedDecision, answers: FoldedAnswer[], finding: string):
  */
 function holdSince(s: SharedDecisions, byId: Map<string, FoldedDecision>, d: FoldedDecision, finding: string): string | undefined {
   const prev = d.supersedes ? byId.get(d.supersedes) : undefined;
-  const inherited = prev && prev.replacedBy === d.id && holdsWith(prev, prev.answers.filter(ranks), finding) ? holdSince(s, byId, prev, finding) : undefined;
+  const inherited = prev && prev.replacedBy === d.id && holdsWith(prev, standing(prev), finding) ? holdSince(s, byId, prev, finding) : undefined;
   const given = d.answers.filter(ranks).sort((x, y) => (outranksByTime(x, y) ? 1 : -1));
-  let since = holdsWith(d, [], finding) ? inherited ?? d.postedAt : undefined;
-  for (let i = 0; i < given.length; i++) {
-    const now = holdsWith(d, given.slice(0, i + 1), finding);
-    if (now && since === undefined) since = given[i]!.givenAt;
+  let since = holdsWith(d, undefined, finding) ? inherited ?? d.postedAt : undefined;
+  // The standing answer of each prefix, kept as it grows: `best` is a left fold, so this is it.
+  let top: FoldedAnswer | undefined;
+  for (const g of given) {
+    if (!top || outranks(g, top)) top = g;
+    const now = holdsWith(d, top, finding);
+    if (now && since === undefined) since = g.givenAt;
     else if (!now) since = undefined;
   }
   return since;
