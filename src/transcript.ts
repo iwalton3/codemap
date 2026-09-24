@@ -8,7 +8,8 @@
  *
  * The person's words are read only from the session's own top-level `<session>.jsonl`.
  * Subagents write to `<session>/subagents/`, so their words cannot be mistaken for the
- * person's by construction; that directory is read only by `readSubagent`, to check a reader.
+ * person's by construction; that directory is read only by `readReader` and
+ * `findVerdictCalls`, to check a reader.
  */
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
@@ -190,13 +191,11 @@ export function classifyAnswer(q: AskedQuestion, answer: string | string[]): Ans
 
 // --- the reader ------------------------------------------------------------------------------
 
-/** A reader agent, as the harness recorded it: launched, and — once finished — handing back. */
+/** A reader agent, as the harness recorded it: launched, and calling `submit_verdict` itself. */
 export interface ReaderAgent {
   agentId: string; session: string; toolUseId: string;
   /** When the parent's `Agent` call was made: the reader cannot have read words typed after it. */
   launchedAt: string;
-  /** Its final report, as the harness delivered it to the parent. */
-  report: string;
   /** What it was launched with: the parent's `Agent` call input. */
   prompt: string;
   subagentType: string;
@@ -204,20 +203,34 @@ export interface ReaderAgent {
 
 const AGENT = /^a[A-Za-z0-9]{6,63}$/;
 
+function jsonl(file: string): Record<string, any>[] | undefined {
+  let raw: string;
+  try { raw = readFileSync(file, "utf8"); } catch { return undefined; }
+  const out: Record<string, any>[] = [];
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    try { const v = JSON.parse(line); if (v && typeof v === "object" && !Array.isArray(v)) out.push(v); } catch { /* a torn last line */ }
+  }
+  return out;
+}
+
+/** Whether `e` holds an assistant `tool_use` with id `id`. */
+const callsTool = (e: Record<string, any>, id: string): boolean =>
+  e.type === "assistant" && Array.isArray(e.message?.content) && e.message.content.some((x: any) => x?.type === "tool_use" && x.id === id);
+
 /**
- * The subagent `agentId`, verified as a separate agent the harness launched on this machine,
- * and finished (docs/decision-rounds-worked-cases.md, "What a reader subagent leaves", measured
- * 2026-09-23): its own `<session>/subagents/agent-<id>.jsonl`, every entry a sidechain carrying
- * its id; a meta file naming the parent's call; and, in the parent's own transcript, that
- * `Agent` call, a launch result naming the id, and its hand-back. Plain files, so this is C14's
- * strength and no more (owner, the P7 gate). Fails closed on any shape it does not know.
+ * The subagent `agentId`, verified as a separate agent the harness launched on this machine, up
+ * to its call `callId` (docs/decision-rounds-worked-cases.md, "What a reader subagent leaves",
+ * measured 2026-09-23; the MCP call measured 2026-09-24): its own
+ * `<session>/subagents/agent-<id>.jsonl`, every entry a sidechain carrying its id, holding that
+ * call; a meta file naming the parent's `Agent` call; and, in the parent's own transcript, that
+ * call and a launch result naming the id. Plain files, so this is C14's strength and no more
+ * (owner, the P7 gate). Fails closed on any shape it does not know.
  *
- * The report is the PARENT's record of the hand-back — an entry, or a queued attachment, whose
- * `origin` is `{kind: "peer", from: <id>, handback: true, body}` — not the subagent's last
- * text: measured 2026-09-23, a reader goes on writing after it hands back, so its last text is
- * not its verdict. A reader with no hand-back is still running and is refused (S0.8(c)).
+ * A message sent into it counts only BEFORE `callId` (Codex plan review, 2): one sent after the
+ * reader has given its verdict cannot have shaped it.
  */
-export function readSubagent(agentId: string, dir: string = transcriptDir()): ReaderAgent | Unverified {
+export function readReader(agentId: string, callId: string, dir: string = transcriptDir()): ReaderAgent | Unverified {
   if (!AGENT.test(agentId)) return { unverified: `not a subagent id: ${JSON.stringify(agentId)}` };
   let sessions: string[];
   try { sessions = readdirSync(dir).filter((s) => SESSION.test(s)); } catch { return { unverified: `no transcripts in ${dir}` }; }
@@ -227,29 +240,28 @@ export function readSubagent(agentId: string, dir: string = transcriptDir()): Re
   try { meta = JSON.parse(readFileSync(join(dir, session, "subagents", `agent-${agentId}.meta.json`), "utf8")); } catch { return { unverified: `subagent ${agentId} has no readable meta file` }; }
   const toolUseId = meta?.toolUseId;
   if (typeof toolUseId !== "string" || !toolUseId) return { unverified: `subagent ${agentId}'s meta file names no call` };
-  let own: Record<string, any>[] = [];
-  try {
-    for (const line of readFileSync(join(dir, session, "subagents", `agent-${agentId}.jsonl`), "utf8").split("\n")) {
-      if (!line.trim()) continue;
-      try { const v = JSON.parse(line); if (v && typeof v === "object" && !Array.isArray(v)) own.push(v); } catch { /* a torn last line */ }
-    }
-  } catch { return { unverified: `subagent ${agentId}'s transcript is unreadable` }; }
+  const own = jsonl(join(dir, session, "subagents", `agent-${agentId}.jsonl`));
+  if (!own) return { unverified: `subagent ${agentId}'s transcript is unreadable` };
   // A fork inherits the conversation, and with it the agent's own reading (measured 2026-09-23:
   // its meta says `isFork`, and its transcript opens on a `fork-context-ref`, not its sidechain).
   if (meta?.isFork === true || meta?.agentType === "fork") return { unverified: `subagent ${agentId} is a fork: it inherits the conversation, so it is not blind to your reading` };
   if (!own.length || own.some((e) => e.isSidechain !== true || e.agentId !== agentId || e.sessionId !== session)) {
     return { unverified: `subagent ${agentId}'s transcript is not all its own sidechain` };
   }
+  const at = own.findIndex((e) => callsTool(e, callId));
+  if (at < 0) return { unverified: `subagent ${agentId}'s transcript does not hold call ${callId}` };
   // A second channel: a message sent into it after launch (`SendMessage`) — measured 2026-09-23 as
-  // a `user` entry with an `origin` and text, where a reader's own turns are tool results only.
+  // a `user` entry with an `origin` and text, where a reader's own turns are tool results. The
+  // harness's own reminders are `isMeta` with no origin (measured 2026-09-24, right after launch).
   // It sees what the harness records in the sidechain, not text riding inside a tool result.
-  if (own.slice(1).some((e) => e.type === "user" && (e.origin !== undefined || !Array.isArray(e.message?.content) || !e.message.content.some((x: any) => x?.type === "tool_result")))) {
+  if (own.slice(1, at).some((e) => e.type === "user" && !(e.isMeta === true && e.origin === undefined)
+    && (e.origin !== undefined || !Array.isArray(e.message?.content) || !e.message.content.some((x: any) => x?.type === "tool_result")))) {
     return { unverified: `subagent ${agentId} was sent a message after it was launched: it may have been told how to read the words` };
   }
   const parent = entries(session, dir);
   if (isUnverified(parent)) return parent;
-  const call = parent.find((e) => e.type === "assistant" && e.isSidechain !== true && Array.isArray(e.message?.content)
-    && e.message.content.some((x: any) => x?.type === "tool_use" && x.id === toolUseId && x.name === "Agent"));
+  const call = parent.find((e) => e.isSidechain !== true && Array.isArray(e.message?.content)
+    && e.type === "assistant" && e.message.content.some((x: any) => x?.type === "tool_use" && x.id === toolUseId && x.name === "Agent"));
   const launched = parent.some((e) => e.type === "user" && e.isSidechain !== true && e.toolUseResult?.agentId === agentId
     && Array.isArray(e.message?.content) && e.message.content.some((x: any) => x?.type === "tool_result" && x.tool_use_id === toolUseId));
   if (!call || !launched) return { unverified: `session ${session} does not record launching subagent ${agentId}` };
@@ -258,10 +270,54 @@ export function readSubagent(agentId: string, dir: string = transcriptDir()): Re
   if (input.subagent_type === "fork") return { unverified: `subagent ${agentId} is a fork: it inherits the conversation, so it is not blind to your reading` };
   const launchedAt = stampOf(call);
   if (isUnverified(launchedAt)) return launchedAt;
-  const handback = (o: any) => o && o.kind === "peer" && o.from === agentId && o.handback === true && typeof o.body === "string" ? o.body as string : undefined;
-  const reports = parent.filter((e) => e.isSidechain !== true).map((e) => handback(e.origin) ?? handback(e.attachment?.origin)).filter((b): b is string => b !== undefined);
-  if (!reports.length) return { unverified: `subagent ${agentId} has not handed back a report: it may still be running` };
-  return { agentId, session, toolUseId, launchedAt, report: reports.at(-1)!, prompt: input.prompt, subagentType: typeof input.subagent_type === "string" ? input.subagent_type : "" };
+  return { agentId, session, toolUseId, launchedAt, prompt: input.prompt, subagentType: typeof input.subagent_type === "string" ? input.subagent_type : "" };
+}
+
+/** A `submit_verdict` call found on disk: in a subagent's sidechain (`agentId`) or a session's
+ *  own conversation. `at` is the calling entry's timestamp, which orders calls. */
+export interface VerdictCall { session: string; agentId?: string; callId: string; at: string }
+
+const SUBMIT = /(^|__)submit_verdict$/;
+
+/**
+ * Every `submit_verdict` call in this machine's transcripts carrying exactly `answer` and
+ * `verdict`, oldest first. A call is written to its transcript only after it returns (~12 ms,
+ * measured 2026-09-24), so the caller's own call is never here yet. Files untouched since
+ * `since` (ms) are skipped: the request was issued then, so no call to it can be older.
+ */
+export function findVerdictCalls(answer: string, verdict: string, since: number, dir: string = transcriptDir()): VerdictCall[] {
+  const files: { file: string; session: string; agentId?: string }[] = [];
+  let top: string[];
+  try { top = readdirSync(dir); } catch { return []; }
+  for (const name of top) {
+    if (name.endsWith(".jsonl") && SESSION.test(name.slice(0, -6))) files.push({ file: join(dir, name), session: name.slice(0, -6) });
+    else if (SESSION.test(name)) {
+      let subs: string[] = [];
+      try { subs = readdirSync(join(dir, name, "subagents")); } catch { /* no subagents */ }
+      for (const s of subs) {
+        const m = /^agent-(a[A-Za-z0-9]{6,63})\.jsonl$/.exec(s);
+        if (m) files.push({ file: join(dir, name, "subagents", s), session: name, agentId: m[1]! });
+      }
+    }
+  }
+  const out: VerdictCall[] = [];
+  for (const f of files) {
+    try { if (statSync(f.file).mtimeMs < since) continue; } catch { continue; }
+    let raw: string;
+    try { raw = readFileSync(f.file, "utf8"); } catch { continue; }
+    if (!raw.includes("submit_verdict") || !raw.includes(answer)) continue;
+    for (const e of jsonl(f.file) ?? []) {
+      if (e.type !== "assistant" || !Array.isArray(e.message?.content)) continue;
+      // A subagent's calls are its own sidechain's; a session's, never a sidechain's.
+      if (f.agentId ? e.isSidechain !== true || e.agentId !== f.agentId : e.isSidechain === true) continue;
+      for (const x of e.message.content) {
+        if (x?.type !== "tool_use" || typeof x.name !== "string" || !SUBMIT.test(x.name) || typeof x.id !== "string") continue;
+        if (x.input?.answer !== answer || x.input?.verdict !== verdict) continue;
+        out.push({ session: f.session, ...(f.agentId ? { agentId: f.agentId } : {}), callId: x.id, at: typeof e.timestamp === "string" ? e.timestamp : "" });
+      }
+    }
+  }
+  return out.sort((x, y) => x.at.localeCompare(y.at));
 }
 
 // --- the person's typed words ----------------------------------------------------------------

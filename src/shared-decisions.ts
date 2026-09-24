@@ -314,7 +314,8 @@ function confirmRefusal(decisions: Map<string, FoldedDecision>, c: FoldedDecisio
 //
 // Codemap writes what the reader is told, so it cannot carry the agent's own reading. The op
 // compares the reader's launch prompt with it exactly; the fold, which cannot read transcripts,
-// checks the stored text's STRUCTURE — so a later build that rewords it strands nothing.
+// checks the stored text's STRUCTURE — so a later build that rewords it strands nothing. The
+// reader ends by calling `submit_verdict` itself (owner, Q2.2): see `ops/decisions.ts`.
 
 const BRIEF_WORDS = "Their words, exactly as typed (JSON-quoted):";
 const BRIEF_Q = /^(D\d+): (".*")$/, BRIEF_OPTS = /^ {2}options: (\[.*\])$/;
@@ -339,14 +340,14 @@ export function readerBrief(decisions: Map<string, FoldedDecision>, d: FoldedDec
     ...qs.flatMap((t) => [`${t.ref}: ${JSON.stringify(t.payload.question)}`, `  options: ${JSON.stringify(t.options.map((o) => o.label))}`]),
     ...shared.map((r) => `Two questions share the ref ${r}: a line naming ${r} is refused as ambiguous.`),
     "",
-    `End your report with a blank line and then the verdict, and write nothing after it: one line per pick, \`D<n> → <exact option label>\`; \`D<n> → ${NONE}\` where the words answer that question with none of its options; or, if you cannot tell which question they answer, the single line \`unclear: <why>\`.`,
+    `When you have decided, call the codemap MCP tool \`submit_verdict\` yourself, once, with \`answer: "${a.id}"\` and \`verdict\`: one line per pick, \`D<n> → <exact option label>\`; \`D<n> → ${NONE}\` where the words answer that question with none of its options; or, if you cannot tell which question they answer, the single line \`unclear: <why>\`. That call is your answer; then stop.`,
   ].join("\n");
 }
 
-/** Why a stored brief is not one codemap wrote for words `a` on `d` with this verdict, or null:
- *  it quotes the words exactly, every question it lists is one the words may be read onto with
- *  its exact labels, and every decision the verdict names is listed. */
-function briefRefusal(decisions: Map<string, FoldedDecision>, d: FoldedDecision, a: FoldedAnswer, brief: string, verdict: Mapping[]): string | null {
+/** The questions a stored brief lists, or why it is not one codemap wrote for words `a` on `d`:
+ *  it quotes the words exactly, and every question it lists is one the words may be read onto,
+ *  with its exact labels. */
+export function briefListing(decisions: Map<string, FoldedDecision>, d: FoldedDecision, a: FoldedAnswer, brief: string): FoldedDecision[] | string {
   const lines = brief.split("\n");
   const w = lines.indexOf(BRIEF_WORDS);
   let words: unknown;
@@ -364,6 +365,16 @@ function briefRefusal(decisions: Map<string, FoldedDecision>, d: FoldedDecision,
     if (!t) return `the reader's brief lists ${m[1]} as a question these words cannot be read onto, or with other labels`;
     listed.add(t.id);
   }
+  return [...listed].map((id) => decisions.get(id)!);
+}
+
+/** Why a stored brief is not one codemap wrote for words `a` on `d` with this verdict, or null:
+ *  `briefListing`'s checks, every decision the verdict names is listed, and none is a ref two
+ *  listed questions share. With no verdict, whether the brief itself still stands. */
+export function briefRefusal(decisions: Map<string, FoldedDecision>, d: FoldedDecision, a: FoldedAnswer, brief: string, verdict: Mapping[]): string | null {
+  const got = briefListing(decisions, d, a, brief);
+  if (typeof got === "string") return got;
+  const listed = new Set(got.map((t) => t.id));
   const missing = verdict.find((m) => !listed.has(m.decision));
   if (missing) return `the verdict names ${decisions.get(missing.decision)?.ref ?? missing.decision}, which the reader's brief did not list`;
   // Judged against the brief the reader read, never the round as folded now (owner, Q2.1): a
@@ -696,9 +707,11 @@ const canBind = (decisions: Map<string, FoldedDecision>, d: FoldedDecision, a: F
 /**
  * Why a reading of words `a` on `d` would not be accepted, or null — one predicate for the op,
  * which asks it before writing, and the fold (plan P-b). Each end checks the slots (one reading
- * per answer, one answer per reader) against its own record. Every side the reading carries
- * must be able to bind: a disagreement's both sides, an unclear reading's session side — so a
- * dispute's confirm can always bind whichever the person picks.
+ * per answer, one answer per reader) against its own record. The reader's verdict must be able
+ * to bind, and an unclear reading's session side. A disagreement whose session side cannot bind
+ * still claims the slot — the first verdict counts (owner, Q2.2) — and its confirm offers the
+ * reader's reading alone; `reader_brief` refuses such a session side, so only a hand-built
+ * event reaches it.
  */
 export function readingRefusal(decisions: Map<string, FoldedDecision>, d: FoldedDecision, a: FoldedAnswer,
   r: { verdict: unknown; unclear?: unknown; session: unknown; launchedAt: unknown; brief: unknown }): string | null {
@@ -710,7 +723,7 @@ export function readingRefusal(decisions: Map<string, FoldedDecision>, d: Folded
   const verdict = validVerdict(r.verdict, r.unclear), session = validMaps(r.session);
   if (!verdict) return "the reader's verdict is empty, and it does not say unclear";
   if (!session) return "the session's reading is empty";
-  const sides = str(r.unclear) ? [session] : mapsKey(verdict) === mapsKey(session) ? [verdict] : [verdict, session];
+  const sides = str(r.unclear) ? [session] : [verdict];
   for (const side of sides) {
     const why = bindRefusal(decisions, d, a, side);
     if (why) return `${side === verdict ? "the reader's verdict" : "your reading"} cannot bind: ${why}`;
@@ -1217,9 +1230,10 @@ export const recordAnswerEvent = (logRoot: string, universe: string, actor: Acto
 
 export interface ReadingEvent {
   answer: string;
-  /** Codemap's parse of the reader's own handback, never the session's copy of it (plan B1). */
-  /** `brief`: the prompt the reader was launched with, which is codemap's own (P1.4). */
-  reader: { agent: string; verdict: Mapping[]; unclear?: string; launchedAt: string; brief: string; verified: { session: string; toolUseId: string } };
+  /** Codemap's parse of the reader's own `submit_verdict` call, never the session's copy of it
+   *  (plan B1, Q2.2). `brief`: the prompt it was launched with, which is codemap's own (P1.4);
+   *  `verified.toolUseId` its launch, `verified.call` its submit. */
+  reader: { agent: string; verdict: Mapping[]; unclear?: string; launchedAt: string; brief: string; verified: { session: string; toolUseId: string; call?: string } };
   /** What the asking session requested — the mapping the reader is compared against. */
   session: { reading?: string; maps: Mapping[] };
   asks?: string;

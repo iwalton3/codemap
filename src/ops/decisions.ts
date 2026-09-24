@@ -14,13 +14,14 @@ import { isAgentActor } from "../identity.js";
 import { bindDecisions, type Bound, type Via } from "../ops-shared.js";
 import { lookupFinding } from "../store.js";
 import {
-  CONFIRM_NO, CONFIRM_YES, NONE, readable, readingRefusal, readerBrief as briefFor, bindRefusal, checkDecision, confirmPayload, confirmState, confirmedWords, decisionHash, logQuestionEvent,
+  CONFIRM_NO, CONFIRM_YES, NONE, briefListing, briefRefusal, readingRefusal, readerBrief as briefFor, bindRefusal, checkDecision, confirmPayload, confirmState, confirmedWords, decisionHash, logQuestionEvent,
   mapsKey, named, possiblySuperseded, postConfirmEvent, postRoundEvent, validMaps,
   readingsInDispute, recordAnswerEvent, recordReadingEvent, ruledNotCarriedOut, standing, waitingOnMe, awaitingReading, parked,
   type AnswerVia, type FoldedDecision, type Mapping, type SharedDecisions,
 } from "../shared-decisions.js";
 import { decisionsView } from "./decision-holds.js";
-import { isUnverified, readCall, readMessage, readSubagent, sameQuestion, sessionHolding, transcriptDir } from "../transcript.js";
+import { findVerdictCalls, isUnverified, readCall, readMessage, readReader, sameQuestion, sessionHolding, transcriptDir } from "../transcript.js";
+import { db } from "../db.js";
 import type { AskedQuestion, Decision, DecisionRound } from "../schema.js";
 import type { ScopeStatus } from "../eventlog.js";
 
@@ -88,9 +89,10 @@ export async function checkRound(root: string, r: NewRound): Promise<string | nu
 }
 
 /** Post a round of decisions, each with the exact `AskUserQuestion` payload it will be asked with. */
-export async function postRound(root: string, r: NewRound, via: Via = {}) {
+export async function postRound(root: string, r: NewRound, via: Via = {}, dir: string = transcriptDir()) {
   const b = bindDecisions(root, via);
   if ("error" in b) return b;
+  await recordHeld(root, b, dir);
   if ((r?.round as any)?.prevalidated !== undefined) return { error: "only import_round marks a round pre-validated — it comes from a skill's sort of two sorters and an arbitrator" };
   const bad = await checkRound(root, r);
   if (bad) return { error: bad };
@@ -120,6 +122,13 @@ const superseding = (s: SharedDecisions) => s.decisions.flatMap((d) => {
   return p.length ? [{ decision: d.id, round: d.round, ref: d.ref, words: p }] : [];
 });
 
+/** Unread words a reader's verdict is held for, marked so a verdict nobody records is visible. */
+function withHeld<T extends { answer: string }>(root: string, list: T[]): (T & { verdict?: string })[] {
+  let held: Set<string>;
+  try { held = new Set((db(root).prepare("SELECT DISTINCT answer FROM reader_verdicts WHERE state = 'pending'").all() as { answer: string }[]).map((r) => r.answer)); } catch { return list; }
+  return list.map((u) => (held.has(u.answer) ? { ...u, verdict: "a reader's verdict is held; record_reading records it" } : u));
+}
+
 /**
  * Every round, and the three things the person reads (owner, 2026-09-23). A read DEGRADES: a
  * broken or missing sidecar serves the rows this store holds, marked `blocked` (P3.2 (7)).
@@ -136,7 +145,7 @@ export async function decisionRounds(root: string) {
     parked: parked(s, now),
     possiblySuperseded: superseding(s),
     // Waiting on an agent, not on the person: shown so it is not mistaken for nothing.
-    awaitingReading: awaitingReading(s),
+    awaitingReading: withHeld(root, awaitingReading(s)),
   };
 }
 
@@ -161,7 +170,7 @@ export async function decisionRound(root: string, id: string) {
     ruledNotCarriedOut: ruledNotCarriedOut(s, v.isOpen).filter(mine),
     readingsInDispute: readingsInDispute(s).filter(mine),
     parked: parked(s, now).filter(mine),
-    awaitingReading: awaitingReading(s).filter(mine),
+    awaitingReading: withHeld(root, awaitingReading(s).filter(mine)),
   };
 }
 
@@ -216,6 +225,7 @@ function confirmOutcome(s: SharedDecisions, c: FoldedDecision, a: FoldedDecision
 export async function logQuestion(root: string, input: { session?: string; toolUseId: string; round: string | string[] }, via: Via = {}, dir: string = transcriptDir()) {
   const b = bindDecisions(root, via);
   if ("error" in b) return b;
+  await recordHeld(root, b, dir);
   // From the caller, and required: the transcript cannot say which round a call was for, and
   // an identical question in another round must not take the answer (owner, B1.4; P2.4).
   const named = [...new Set((Array.isArray(input.round) ? input.round : [input.round]).filter((r) => typeof r === "string" && r.trim()))];
@@ -280,6 +290,7 @@ export async function logQuestion(root: string, input: { session?: string; toolU
 export async function relayAnswer(root: string, input: { round: string; decision: string; session?: string; entryId: string; words?: string; relayedBy?: string }, via: Via = {}, dir: string = transcriptDir()) {
   const b = bindDecisions(root, via);
   if ("error" in b) return b;
+  await recordHeld(root, b, dir);
   const w = await writable(root);
   if ("error" in w) return w;
   const d = w.s.decisions.find((x) => x.id === input.decision);
@@ -339,71 +350,185 @@ export function parseVerdict(report: string, listed: Pick<FoldedDecision, "id" |
   return { maps };
 }
 
+// --- the reader records its own verdict (owner, Q2.2 "Reader records it") -------------------
+//
+// The agent's reading is taken when it asks for the brief, before any reader exists, and the
+// brief is then fixed. The reader ends by calling `submit_verdict` itself; codemap HOLDS it on
+// this machine, because a call is written to its transcript only after it returns. The next
+// decisions call here that may write checks each held verdict against the reader's own
+// transcript and only then writes it to the shared log; the first held verdict that verifies
+// counts. Guards overreach and honest mistakes, not a deceptive parent (owner, after the plan).
+// Two gaps are left open and documented (Q3.2, Q4.1): an agent can stop a reader before it
+// submits and launch another, and a parent can build the brief — it is deterministic — and
+// launch a reader before asking codemap for it.
+
+/** How long a held verdict may go unfound on disk before it is invalid. The call reaches its
+ *  transcript ~12 ms after it returns (measured 2026-09-24). */
+const graceMs = () => Number(process.env.CODEMAP_VERDICT_GRACE_MS ?? 60_000);
+
+interface ReaderRequest { answer: string; maps: Mapping[]; reading?: string; asks?: string; brief: string; issuedAt: string }
+type HeldState = "pending" | "recorded" | "invalid" | "superseded";
+interface HeldVerdict { seq: number; answer: string; verdict: string; heldAt: string; state: HeldState; why?: string; call?: string }
+
+const requestOf = (root: string, answer: string): ReaderRequest | undefined => {
+  const r = db(root).prepare("SELECT body FROM reader_requests WHERE answer = ?").get(answer) as { body: string } | undefined;
+  return r ? JSON.parse(r.body) : undefined;
+};
+const heldFor = (root: string, answer: string): HeldVerdict[] =>
+  (db(root).prepare("SELECT seq, answer, verdict, held_at AS heldAt, state, why, call FROM reader_verdicts WHERE answer = ? ORDER BY seq").all(answer) as unknown as HeldVerdict[])
+    .map((h) => ({ ...h, why: h.why ?? undefined, call: h.call ?? undefined }));
+const settle = (root: string, seq: number, state: HeldState, why?: string, call?: string) =>
+  db(root).prepare("UPDATE reader_verdicts SET state = ?, why = ?, call = COALESCE(?, call) WHERE seq = ?").run(state, why ?? null, call ?? null, seq);
+
 /**
- * The exact prompt to launch a reader with, for answer `answer` (owner, P1.4): the person's
- * words, the questions they may be read onto, and the verdict format — nothing of your reading.
- * `record_reading` refuses a reader launched with anything else.
+ * The exact prompt to launch a reader with, for answer `answer` (owner, P1.4), and the moment
+ * your own reading of the words is taken (Q2.2): before any reader exists. Issued once and then
+ * fixed — asking again returns the same brief, and a different reading is refused — until the
+ * round changes under it and no verdict is held for it.
  */
-export async function readerBrief(root: string, input: { answer: string }) {
+export async function readerBrief(root: string, input: { answer: string; maps: Mapping[]; reading?: string; asks?: string }) {
   const { s } = await decisionsView(root);
   const x = found(s, input?.answer);
   if (!x) return { error: `no answer ${String(input?.answer)}` };
   const { d, a } = x;
   if (d.kind === "words") return { error: `${d.ref} takes words: they are the answer, never read` };
   if (!a.free || a.elsewhere) return { error: `answer ${a.id} is not words waiting for a reading` };
-  return {
-    ok: true, answer: a.id, prompt: briefFor(new Map(s.decisions.map((y) => [y.id, y])), d, a),
-    note: "launch a NEW general-purpose subagent (not a fork) with exactly this as its prompt, send it nothing else, then record_reading with its agent id",
-  };
+  if (a.reading) return { error: `answer ${a.id} is already read (${a.reading.id}): one reading per answer` };
+  // Never read (H6.8): after a verified ruling, unconfirmed words are shown to the person, not bound.
+  if (!a.verified && standing(d)?.verified) return { error: `answer ${a.id} is unconfirmed and came after ${d.ref}'s verified ruling: it is shown to the person, never read` };
+  const maps = validMaps(input?.maps);
+  if (!maps) return { error: "maps is your own reading of the words, at least one line: [{ decision, option | null }] — taken now, before any reader exists" };
+  const byId = new Map(s.decisions.map((y) => [y.id, y]));
+  const why = bindRefusal(byId, d, a, maps);
+  if (why) return { error: `your reading cannot bind: ${why}` };
+  const note = `launch a NEW general-purpose subagent (not a fork) with exactly this as its prompt, and send it nothing else. It calls submit_verdict itself; then record_reading(${a.id}) records its verdict — any later decisions call here does too`;
+  const prev = requestOf(root, a.id);
+  if (prev && !briefRefusal(byId, d, a, prev.brief, [])) {
+    if (mapsKey(prev.maps) !== mapsKey(maps)) return { error: `your reading of ${a.id} was taken when its brief was issued (${prev.issuedAt}), and a reader may have read since: it cannot change` };
+    return { ok: true, answer: a.id, prompt: prev.brief, existing: true, note };
+  }
+  if (prev && heldFor(root, a.id).some((h) => h.state === "pending")) return { error: `the round changed under the brief issued for ${a.id}, but a reader's verdict is held for it: record_reading first` };
+  const brief = briefFor(byId, d, a);
+  const req: ReaderRequest = { answer: a.id, maps, ...(input.reading ? { reading: input.reading } : {}), ...(input.asks ? { asks: input.asks } : {}), brief, issuedAt: new Date().toISOString() };
+  db(root).prepare("INSERT OR REPLACE INTO reader_requests(answer, body) VALUES(?, ?)").run(a.id, JSON.stringify(req));
+  return { ok: true, answer: a.id, prompt: brief, note };
 }
 
 /**
- * Bind the person's free text by a reader's verdict (C17, C19; plan B1, B2). The reader is a
- * subagent the harness launched on this machine AFTER the words were typed, that has handed
- * back its report, and that reads this one answer only. It was never shown the session's
- * request; codemap parses the reader's own report and compares it with `session.maps` — agree
- * and it binds, disagree and it waits for the person, unclear and it waits for the person.
+ * The reader's own verdict (owner, Q2.2): called BY the reader subagent, never its parent. It
+ * is parsed against the brief as issued and HELD on this machine — it writes nothing to the
+ * log. Refused once an earlier reader's verdict for the answer has been recorded.
  */
-export async function recordReading(root: string, input: { answer: string; reader: string; session: { reading?: string; maps: Mapping[] }; asks?: string }, via: Via = {}, dir: string = transcriptDir()) {
+export async function submitVerdict(root: string, input: { answer: string; verdict: string }, via: Via = {}, dir: string = transcriptDir()) {
   const b = bindDecisions(root, via);
   if ("error" in b) return b;
+  await recordHeld(root, b, dir);
   const w = await writable(root);
   if ("error" in w) return w;
-  const x = found(w.s, input.answer);
-  if (!x) return { error: `no answer ${input.answer}` };
+  const x = found(w.s, input?.answer);
+  if (!x) return { error: `no answer ${String(input?.answer)}` };
   const { d, a } = x;
-  if (a.reading) return { ok: true, recorded: false, already: a.reading.id, agree: a.reading.agree };
-  if (!a.free) return { error: `answer ${a.id} is not words waiting for a reading` };
-  // Never read (H6.8): after a verified ruling, unconfirmed words are shown to the person, not bound.
-  if (!a.verified && standing(d)?.verified) return { error: `answer ${a.id} is unconfirmed and came after ${d.ref}'s verified ruling: it is shown to the person, never read` };
-  const sm = validMaps(input.session?.maps);
-  if (!sm) return { error: "session.maps is your reading, at least one line: [{ decision, option | null }]" };
-  const agent = readSubagent(typeof input.reader === "string" ? input.reader : "", dir);
-  if (isUnverified(agent)) return { ok: false, unverified: agent.unverified, note: "nothing was written: the reader must be a subagent of this machine, launched to read, finished, and passing its own agent id" };
-  // Only an accepted reading counts, so this is the one a reader can have used (owner, P1.2).
-  const other = w.s.decisions.flatMap((y) => y.answers).find((y) => y.reading?.reader.agent === agent.agentId);
-  if (other) return { ok: false, unverified: `subagent ${agent.agentId} already read answer ${other.id}: one reader reads one answer`, note: "nothing was written" };
+  if (a.reading) return { ok: false, refused: `answer ${a.id} is already read: an earlier reader's verdict counts, one reading per answer` };
+  const req = requestOf(root, a.id);
+  if (!req) return { ok: false, refused: `no reader_brief was issued for ${a.id} on this machine` };
+  if (typeof input.verdict !== "string") return { ok: false, refused: "verdict is your verdict lines, as text" };
   const byId = new Map(w.s.decisions.map((y) => [y.id, y]));
-  const brief = briefFor(byId, d, a);
-  // Exact, at C14's strength: the one check that the reader never saw your reading (P1.4).
-  if (agent.prompt !== brief) return { ok: false, unverified: `subagent ${agent.agentId} was not launched with reader_brief's prompt for ${a.id} — or the round changed since the brief was issued`, note: "nothing was written; launch a new reader with reader_brief's prompt" };
-  const v = parseVerdict(agent.report, readable(byId, d, a), d.round);
-  if ("error" in v) return { ok: false, unverified: v.error, note: "nothing was written" };
-  // Exactly what the fold would not accept, with its reason — never an event it will drop.
-  const why = readingRefusal(byId, d, a, { verdict: v.maps, unclear: v.unclear, session: sm, launchedAt: agent.launchedAt, brief });
-  if (why) return { ok: false, unverified: why, note: "nothing was written; this reader was not used, so it may read another answer" };
-  await recordReadingEvent(b.cfg.path, b.cfg.universe, b.actor, {
-    answer: a.id, session: { ...(input.session.reading ? { reading: input.session.reading } : {}), maps: sm },
-    reader: { agent: agent.agentId, verdict: v.maps, ...(v.unclear ? { unclear: v.unclear } : {}), launchedAt: agent.launchedAt, brief, verified: { session: agent.session, toolUseId: agent.toolUseId } },
-    ...(input.asks ? { asks: input.asks } : {}),
-  });
-  const after = found((await decisionsView(root)).s, a.id);
-  const r = after?.a.reading;
-  if (!r) return { ok: false, recorded: false, why: "the fold did not accept this reading: the decisions log changed while it was being recorded — read the round again" };
-  return {
-    ok: true, agree: r.agree, reader: r.reader.maps,
-    ...(r.agree ? {} : { note: r.unclear ? "unclear, so nothing binds and it waits for the person — re-ask the original question" : "the reader and your reading disagree, so nothing binds and it waits for the person — confirm_reading offers them both readings" }),
-  };
+  const listed = briefListing(byId, d, a, req.brief);
+  if (typeof listed === "string") return { ok: false, refused: `the brief you were given no longer matches the round (${listed}): stop; your parent must ask for a new brief` };
+  const v = parseVerdict(input.verdict, listed, d.round);
+  if ("error" in v) return { ok: false, refused: v.error, note: "not held: correct the verdict and call submit_verdict again" };
+  const why = v.unclear ? null : bindRefusal(byId, d, a, v.maps);
+  if (why) return { ok: false, refused: `that verdict cannot bind: ${why}`, note: "not held: correct the verdict and call submit_verdict again" };
+  db(root).prepare("INSERT INTO reader_verdicts(answer, verdict, held_at, state) VALUES(?, ?, ?, 'pending')").run(a.id, input.verdict, new Date().toISOString());
+  return { ok: true, held: true, note: "held on this machine; codemap records it once it finds this call in your own transcript. You are done: stop now." };
+}
+
+/** Records every held verdict that now verifies — the "next call" of Q2.2. Asked first by every
+ *  decisions op an agent reaches that may write. Never fails its caller. */
+async function recordHeld(root: string, b: Bound, dir: string): Promise<void> {
+  let answers: string[];
+  try { answers = (db(root).prepare("SELECT DISTINCT answer FROM reader_verdicts WHERE state = 'pending'").all() as { answer: string }[]).map((r) => r.answer); } catch { return; }
+  for (const answer of answers) {
+    try { await settleAnswer(root, b, answer, dir); } catch { /* left pending: the next call tries again */ }
+  }
+}
+
+/**
+ * Settles `answer`'s held verdicts, first held first. A verdict whose call is not on disk yet
+ * keeps its place, so everything held after it waits (Codex plan review, 5); invalid means its
+ * call was found and failed a check, or was never found within the grace.
+ */
+async function settleAnswer(root: string, b: Bound, answer: string, dir: string): Promise<void> {
+  const w = await writable(root);
+  if ("error" in w) return;
+  const held = heldFor(root, answer), req = requestOf(root, answer), x = found(w.s, answer);
+  const pending = held.filter((h) => h.state === "pending");
+  if (!x || !req) { for (const h of pending) settle(root, h.seq, "invalid", `answer ${answer} is no longer words here`); return; }
+  if (x.a.reading) { for (const h of pending) settle(root, h.seq, "superseded", `answer ${answer} is already read (${x.a.reading.id})`); return; }
+  const { d, a } = x;
+  const byId = new Map(w.s.decisions.map((y) => [y.id, y]));
+  const claimed = new Set(held.map((h) => h.call).filter(Boolean));
+  const since = Date.parse(req.issuedAt) - 1000;
+  for (const h of pending) {
+    const call = findVerdictCalls(answer, h.verdict, since, dir).find((c) => !claimed.has(c.callId));
+    if (!call) {
+      if (Date.now() - Date.parse(h.heldAt) > graceMs()) { settle(root, h.seq, "invalid", "its submit_verdict call was never found in this machine's transcripts"); continue; }
+      return;   // keeps its place
+    }
+    claimed.add(call.callId);
+    const bad = (why: string) => settle(root, h.seq, "invalid", why, call.callId);
+    if (!call.agentId) { bad(`submitted from session ${call.session}'s own conversation, not by a reader subagent`); continue; }
+    const r = readReader(call.agentId, call.callId, dir);
+    if (isUnverified(r)) { bad(r.unverified); continue; }
+    // Exact, at C14's strength: the one check that the reader never saw your reading (P1.4).
+    if (r.prompt !== req.brief) { bad(`subagent ${r.agentId} was not launched with the brief issued for ${answer}`); continue; }
+    // Only an accepted reading counts, so this is the one a reader can have used (owner, P1.2).
+    const other = w.s.decisions.flatMap((y) => y.answers).find((y) => y.reading?.reader.agent === r.agentId);
+    if (other) { bad(`subagent ${r.agentId} already read answer ${other.id}: one reader reads one answer`); continue; }
+    const listed = briefListing(byId, d, a, req.brief);
+    const v = typeof listed === "string" ? { error: listed } : parseVerdict(h.verdict, listed, d.round);
+    if ("error" in v) { bad(v.error); continue; }
+    const why = readingRefusal(byId, d, a, { verdict: v.maps, unclear: v.unclear, session: req.maps, launchedAt: r.launchedAt, brief: req.brief });
+    if (why) { bad(why); continue; }
+    await recordReadingEvent(b.cfg.path, b.cfg.universe, b.actor, {
+      answer, session: { ...(req.reading ? { reading: req.reading } : {}), maps: req.maps },
+      reader: { agent: r.agentId, verdict: v.maps, ...(v.unclear ? { unclear: v.unclear } : {}), launchedAt: r.launchedAt, brief: req.brief, verified: { session: r.session, toolUseId: r.toolUseId, call: call.callId } },
+      ...(req.asks ? { asks: req.asks } : {}),
+    });
+    const after = found((await decisionsView(root)).s, answer);
+    if (!after?.a.reading) { bad("the fold did not accept it: the decisions log changed while it was being recorded"); return; }
+    settle(root, h.seq, "recorded", undefined, call.callId);
+    for (const rest of pending.filter((p) => p.seq > h.seq)) settle(root, rest.seq, "superseded", "an earlier held verdict was recorded");
+    return;
+  }
+}
+
+/**
+ * Record the reader's held verdict for `answer` now (C17, C19; plan B1, B2; Q2.2) — the explicit
+ * call when nothing else follows. Codemap finds the reader's own `submit_verdict` call on this
+ * machine and checks it: a subagent launched after the words with exactly the issued brief, not
+ * a fork, sent nothing before it submitted, reading one answer. Agree and it binds, disagree and
+ * it waits for the person, unclear and it waits for the person.
+ */
+export async function recordReading(root: string, input: { answer: string }, via: Via = {}, dir: string = transcriptDir()) {
+  const b = bindDecisions(root, via);
+  if ("error" in b) return b;
+  await recordHeld(root, b, dir);
+  const w = await writable(root);
+  if ("error" in w) return w;
+  const x = found(w.s, input?.answer);
+  if (!x) return { error: `no answer ${String(input?.answer)}` };
+  const r = x.a.reading;
+  if (r) {
+    return {
+      ok: true, recorded: true, agree: r.agree, reader: r.reader.maps,
+      ...(r.agree ? {} : { note: r.unclear ? "unclear, so nothing binds and it waits for the person — re-ask the original question" : "the reader and your reading disagree, so nothing binds and it waits for the person — confirm_reading offers them the reading(s)" }),
+    };
+  }
+  const held = heldFor(root, x.a.id);
+  if (held.some((h) => h.state === "pending")) return { ok: false, pending: true, note: "a reader's verdict is held, and its call is not in the transcript yet: call record_reading again in a moment" };
+  if (!held.length) return { ok: false, note: `no verdict is held for ${x.a.id}: the reader calls submit_verdict itself — launch one with reader_brief's prompt` };
+  return { ok: false, invalid: held.map((h) => ({ state: h.state, why: h.why })), note: "no held verdict verified, so no reader was used: launch a new one with reader_brief's prompt" };
 }
 
 /** A confirm's id, from the words and its whole posted text: two clones' wordings of one reading
@@ -419,9 +544,10 @@ export const confirmId = (answer: string, d: Pick<Decision, "kind" | "payload" |
  * as of when they typed the words; "No — ask me again" records the rejection; their own words
  * under Other are read by a reader like any reply and carry none of this meaning.
  */
-export async function confirmReading(root: string, input: { answer: string; maps?: Mapping[] }, via: Via = {}) {
+export async function confirmReading(root: string, input: { answer: string; maps?: Mapping[] }, via: Via = {}, dir: string = transcriptDir()) {
   const b = bindDecisions(root, via);
   if ("error" in b) return b;
+  await recordHeld(root, b, dir);
   const w = await writable(root);
   if ("error" in w) return w;
   const s = w.s, byId = new Map(s.decisions.map((y) => [y.id, y]));
@@ -434,7 +560,8 @@ export async function confirmReading(root: string, input: { answer: string; maps
   // An unclear reading has no mapping to confirm: re-ask the question (owner, "Agreed").
   if (a.reading?.unclear) return { error: `the reader could not tell which question these words answer (${a.reading.unclear}): re-ask ${d.ref} itself` };
   let readings: Mapping[][];
-  if (a.reading && !a.reading.agree) readings = [a.reading.reader.maps, a.reading.session.maps];
+  // A session side that cannot bind is not offered: the reader's reading alone (Q2.2, Step 6 part 7).
+  if (a.reading && !a.reading.agree) readings = bindRefusal(byId, d, a, a.reading.session.maps) ? [a.reading.reader.maps] : [a.reading.reader.maps, a.reading.session.maps];
   else {
     const maps = validMaps(input?.maps);
     if (!maps) return { error: "give your own reading of their words as maps: [{ decision, option | null }]" };

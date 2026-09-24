@@ -649,10 +649,14 @@ run("R2 (F12): a reading of words cut as given after their question was replaced
   r2.data.reader.agent = r1.data.reader.agent;
   return [R1b, cut, M2, r1, r2];
 }, (b) => !b.d1!.answers.length && !!b.d4!.answers.find((a) => a.via === "message" && a.words === "B")?.reading && rules(b.d4!, "F30", "unblock"));
-run("R1: a disagreement with a side that could never bind is rejected — the words wait for another reader", () => {
+run("Q2.2 (Step 6 part 7, reverses R1's fold half): a bindable verdict claims its slot even when the session side could never bind — disputed, not freed for another reader", () => {
   const M = msg(d1, "hmm");
   return [M, reading(M, [{ decision: "d1", option: "Settle" }], [{ decision: "d5", option: null }])];
-}, (b, out) => !b.d1!.answers[0]!.reading && awaitingReading(out).length === 1 && !readingsInDispute(out).length);
+}, (b, out) => !!b.d1!.answers[0]!.reading && !b.d1!.answers[0]!.reading!.agree && !awaitingReading(out).length && readingsInDispute(out).length === 1);
+run("...but a verdict that could never bind is still refused, and the words wait for another reader", () => {
+  const M = msg(d1, "hmm");
+  return [M, reading(M, [{ decision: "d5", option: null }], [{ decision: "d1", option: "Settle" }])];
+}, (b, out) => !b.d1!.answers[0]!.reading && awaitingReading(out).length === 1);
 run("R3: two picks on a single-select question are no reading — the finding stays held, the words wait for a reader", () => {
   const M = msg(d1, "both?");
   return [M, reading(M, [{ decision: "d1", option: "Settle" }, { decision: "d1", option: "No" }])];

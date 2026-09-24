@@ -73,7 +73,7 @@ const MCP_REQUIRED = [
   // is why an agent must be able to reach both the queue and the repair.
   "findingBacklog", "rewitnessOn",
   // The default path for relaying the person's answers (owner, R13), and what they left open.
-  "logQuestion", "relayAnswer", "readerBrief", "recordReading", "confirmReading", "decisionRounds", "decisionRound", "postRound",
+  "logQuestion", "relayAnswer", "readerBrief", "submitVerdict", "recordReading", "confirmReading", "decisionRounds", "decisionRound", "postRound",
 ];
 /** And these must NOT be agent-reachable, for the reason in the note above. */
 const MCP_FORBIDDEN = [

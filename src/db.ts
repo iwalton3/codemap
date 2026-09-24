@@ -881,6 +881,15 @@ function migrate(d: DatabaseSync): void {
       scope TEXT NOT NULL, id TEXT NOT NULL, body TEXT NOT NULL,
       PRIMARY KEY (scope, id)
     );
+    -- A reader's request (the agent's reading and the brief as issued) and the verdicts readers
+    -- submitted, held on THIS machine until checked against its transcripts (owner, Q2.2). One
+    -- machine's pending state, like cover rules: never a scope, never folded. See ops/decisions.ts.
+    CREATE TABLE IF NOT EXISTS reader_requests (answer TEXT PRIMARY KEY, body TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS reader_verdicts (
+      seq INTEGER PRIMARY KEY AUTOINCREMENT, answer TEXT NOT NULL, verdict TEXT NOT NULL,
+      held_at TEXT NOT NULL, state TEXT NOT NULL, why TEXT, call TEXT
+    );
+    CREATE INDEX IF NOT EXISTS ix_reader_verdicts_answer ON reader_verdicts(answer);
 
     -- Requirements (COD-29). A separate table from nodes/node_versions on purpose,
     -- not a new LogicalNodeType: the two kinds have inverted truthmakers, and sharing
