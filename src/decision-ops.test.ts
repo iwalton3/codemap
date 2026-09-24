@@ -398,7 +398,7 @@ test("B1 + B2: the reader's verdict is read from its own hand-back — a mis-cop
       assert.match(String((await recordReading(u.root, { answer: a1, reader: running, session: { maps: mine } }, {}, u.transcripts) as any).unverified), /has not handed back/);
       const early = nextReader(); t.reader(early, "D1 → Not a defect", { launchedAt: new Date(Date.now() - 60_000).toISOString(), prompt });
       assert.match(String((await recordReading(u.root, { answer: a1, reader: early, session: { maps: mine } }, {}, u.transcripts) as any).unverified), /before the words were typed/);
-      for (const [report, re] of [["I think they meant not a defect", /does not end with a verdict/], ["D1 → Not a bug", /not an option of D1/], ["D9 → Real, fix it", /not a question in round R1/], ["unclear: two open\nD1 → Not a defect", /both unclear and a mapping/]] as const) {
+      for (const [report, re] of [["I think they meant not a defect", /does not end with a verdict/], ["D1 → Not a bug", /not an option of D1/], ["D9 → Real, fix it", /not a question the reader.s brief listed for round R1/], ["unclear: two open\nD1 → Not a defect", /both unclear and a mapping/]] as const) {
         const r = nextReader(); t.reader(r, report, { prompt });
         assert.match(String((await recordReading(u.root, { answer: a1, reader: r, session: { maps: mine } }, {}, u.transcripts) as any).unverified), re, report);
       }
@@ -412,7 +412,7 @@ test("B1 + B2: the reader's verdict is read from its own hand-back — a mis-cop
       assert.ok(!view.ruledNotCarriedOut.some((x: any) => x.finding === f), "nothing bound");
       // One reader reads one answer.
       assert.match(String((await recordReading(u.root, { answer: a2, reader: honest, session: { maps: [{ decision: "d2", option: "Real, fix it" }] } }, {}, u.transcripts) as any).unverified), /already read answer/);
-      assert.deepEqual(parseVerdict("D2 → (none)", (await decisionRound(u.root, "R1") as any) as any, "R1"), { maps: [{ decision: "d2", option: null }] });
+      assert.deepEqual(parseVerdict("D2 → (none)", (await decisionRound(u.root, "R1") as any).decisions, "R1"), { maps: [{ decision: "d2", option: null }] });
     });
   } finally { u.cleanup(); }
 });
@@ -457,7 +457,7 @@ test("R2 (P1.2): a reader whose reading the fold rejected was never used — it 
 
       const y = nextReader(); t.reader(y, "D2 → Real, fix it", { prompt: await briefOf(u.root, a1) });
       const refused = await recordReading(u.root, { answer: a1, reader: y, session: { maps: [{ decision: "d2", option: "Real, fix it" }] } }, {}, u.transcripts) as any;
-      assert.match(String(refused.unverified), /D2 was replaced before the words were typed/, JSON.stringify(refused));
+      assert.match(String(refused.unverified), /names D2, which is not a question the reader's brief listed/, JSON.stringify(refused));
       assert.match(String(refused.note), /nothing was written/);
     });
   } finally { u.cleanup(); }
@@ -497,10 +497,10 @@ test("R6 + R15: only the report's final block is the verdict; a ref two question
   const dd = (id: string, ref: string, f: string) => ({ id, round: "R1", ref, kind: "options", payload: q(`${ref}: ${f}?`), options: [{ label: "A", effects: [{ findings: [f], on: "unblock" }] }, { label: "B", effects: [] }] });
   const ev = (decisions: any[]) => [{ id: "e1", kind: "decision.round.posted", subject: "s", actor: { principal: "p" }, at: "2026-09-23T00:00:01Z", after: [], data: { round: { id: "R1", source: "x" }, decisions } }] as any;
   const one = foldDecisions(ev([dd("d1", "D1", "F1")]));
-  assert.deepEqual(parseVerdict("They wrote:\nD1 → B\nbut meant close.\n\nD1 → A", one, "R1"), { maps: [{ decision: "d1", option: "A" }] });
-  assert.deepEqual(parseVerdict("D1 → A\n\n", one, "R1"), { maps: [{ decision: "d1", option: "A" }] });
+  assert.deepEqual(parseVerdict("They wrote:\nD1 → B\nbut meant close.\n\nD1 → A", one.decisions, "R1"), { maps: [{ decision: "d1", option: "A" }] });
+  assert.deepEqual(parseVerdict("D1 → A\n\n", one.decisions, "R1"), { maps: [{ decision: "d1", option: "A" }] });
   const two = foldDecisions(ev([dd("d1", "D1", "F1"), dd("d1x", "D1", "F9")]));
-  assert.match(String((parseVerdict("D1 → A", two, "R1") as any).error), /two questions in round R1 share: it is ambiguous/);
+  assert.match(String((parseVerdict("D1 → A", two.decisions, "R1") as any).error), /two questions in round R1 share: it is ambiguous/);
 });
 
 test("the discussion + S0.1: confirm_reading POSTS the confirm into the words' round; answered Yes through log_question, it binds the reading as of when the words were typed", async () => {

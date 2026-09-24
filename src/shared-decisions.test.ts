@@ -479,7 +479,7 @@ both("(c) a pick and a reading of the same words, recorded in either order, give
   const Y = call(C.data.decision, CONFIRM_YES);
   return { first: [...base, C, ...Y, R], second: [...base, R, C, ...Y] };
 }, (b) => standing(b.d1!)!.options[0] === "No" && !!standing(b.d1!)!.confirmed);
-test("P2.1 (4): an action line naming a ref two confirms share voids the confirm that uses it", () => {
+test("Q2.1 (reverses the fold half of P2.1 (4)): a confirm naming a ref two confirms share is judged as posted — only confirm_reading checks it", () => {
   n = 1;
   const evs = clicked(), first = fold(evs), a = first.b.d1!.answers.at(-1)!.id;
   // Two clones each confirm the same words at once, and both take D9.
@@ -488,10 +488,49 @@ test("P2.1 (4): an action line naming a ref two confirms share voids the confirm
   const second = fold([...evs, C1, C2, M]);
   const C3 = confirmOf(second.b, "d4", second.b.d4!.answers[0]!.id, [[{ decision: "c1", option: CONFIRM_YES }]], "D11", "c3");
   const { b } = fold([...evs, C1, C2, M, C3]);
-  assert.match(String(b.c3!.confirms!.invalid), /D9 names two questions in round R1/);
-  const alone = fold([...evs, C1, M]);
-  const C4 = confirmOf(alone.b, "d4", alone.b.d4!.answers[0]!.id, [[{ decision: "c1", option: CONFIRM_YES }]], "D11", "c3");
-  assert.equal(fold([...evs, C1, M, C4]).b.c3!.confirms!.invalid, undefined, "the same confirm with D9 unshared is valid");
+  assert.equal(b.c3!.confirms!.invalid, undefined);
+});
+/** Q2.1's pull case (premises P2): D2 answered B; words on D1 read "A on D2"; a confirm; Yes. */
+const pullCase = () => {
+  const old = page(d4, { option: "B" }), W = msg(d1, "A on D4"), first = fold([old, W]);
+  const C = confirmOf(first.b, "d1", W.id, [[{ decision: "d4", option: "A" }]], "D9", "c1");
+  return { old, W, C, yes: call(C.data.decision, CONFIRM_YES) };
+};
+test("Q2.1: a later pull bringing a second question numbered like one a confirm names never undoes the Yes already given", () => {
+  n = 1;
+  const { old, W, C, yes } = pullCase();
+  // Another clone's confirm, pulled later, that also took the ref D4.
+  const pulled = structuredClone(C);
+  pulled.data.decision = { ...pulled.data.decision, id: "c2", ref: "D4", payload: { ...pulled.data.decision.payload, question: pulled.data.decision.payload.question.replace(/^D9:/, "D4:") } };
+  for (const evs of [[old, W, C, ...yes], [old, W, C, pulled, ...yes], [old, W, C, ...yes, pulled]]) {
+    const { b, out } = fold(evs);
+    assert.ok(standing(b.d4!)!.options[0] === "A" && stateOf(out, "c1") === "answered" && !b.c1!.confirms!.invalid, dump(b, out));
+  }
+});
+/** Codex F7: D1 and a second D1 in one round; words on D2 read as "D1 → A". */
+const sharedRefCase = () => {
+  const dx = D("dx", "D1", q("D1: a second question about F40?", ["A", "B"]), [{ label: "A", effects: [settle("F40")] }, { label: "B", effects: [] }], { round: "RS" });
+  const d1s = { ...d1, id: "d1s", round: "RS" }, d2s = { ...d4, id: "d4s", round: "RS" };
+  return { dx, d1s, d2s };
+};
+test("Q2.1 (D1, Codex F7): a reading naming a ref the reader's brief showed as shared is refused by the fold, as by the op", () => {
+  n = 1;
+  const { dx, d1s, d2s } = sharedRefCase();
+  const R = post("RS", [d1s, dx, d2s]), old = page(d1s, { option: "No" }), W = msg(d2s, "A on D1", "u1");
+  W.data.via.round = "RS";
+  const RD = reading(W, [{ decision: "d1s", option: "Settle" }]);
+  const { b, out } = fold([R, old, W, RD]);
+  assert.ok(!b.d4s!.answers[0]!.reading && standing(b.d1s!)!.options[0] === "No" && awaitingReading(out).some((u) => u.answer === W.id), dump(b, out));
+});
+test("Q2.1 (control): a reading accepted before a pull brought a same-numbered question stays accepted", () => {
+  n = 1;
+  // Another clone's confirm numbered D4, posted BEFORE the words — so readable — and pulled after the reading.
+  const W0 = msg(d1, "hmm", "u0"), C = confirmOf(fold([W0]).b, "d1", W0.id, [[{ decision: "d1", option: "No" }]], "D4", "c9");
+  const old = page(d4, { option: "B" }), W = msg(d1, "A on D4", "u1"), RD = reading(W, [{ decision: "d4", option: "A" }]);
+  const accepted = fold([W0, old, W, RD]);
+  assert.ok(standing(accepted.b.d4!)!.options[0] === "A" && !RD.data.reader.brief.includes("share the ref"));
+  const { b, out } = fold([W0, old, W, RD, C]);
+  assert.ok(!!b.d1!.answers.find((x) => x.id === W.id)!.reading && standing(b.d4!)!.options[0] === "A", dump(b, out));
 });
 
 // --- carrying out is the finding record's to answer

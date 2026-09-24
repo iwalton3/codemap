@@ -14,7 +14,7 @@ import { isAgentActor } from "../identity.js";
 import { bindDecisions, type Bound, type Via } from "../ops-shared.js";
 import { lookupFinding } from "../store.js";
 import {
-  CONFIRM_NO, CONFIRM_YES, NONE, readingRefusal, readerBrief as briefFor, bindRefusal, checkDecision, confirmPayload, confirmState, confirmedWords, decisionHash, logQuestionEvent,
+  CONFIRM_NO, CONFIRM_YES, NONE, readable, readingRefusal, readerBrief as briefFor, bindRefusal, checkDecision, confirmPayload, confirmState, confirmedWords, decisionHash, logQuestionEvent,
   mapsKey, named, possiblySuperseded, postConfirmEvent, postRoundEvent, validMaps,
   readingsInDispute, recordAnswerEvent, recordReadingEvent, ruledNotCarriedOut, standing, waitingOnMe, awaitingReading, parked,
   type AnswerVia, type FoldedDecision, type Mapping, type SharedDecisions,
@@ -308,8 +308,9 @@ const UNCLEAR = /^\s*unclear:\s*(.+?)\s*$/i;
  * `D<n> → <label>` (`->` also), `D<n> → (none)` for words that fit no option there, or one
  * `unclear: <why>`. Other lines are the reader's prose and are ignored. Anything it cannot
  * resolve exactly is refused, so a reader's typo never becomes a dispute the person must settle.
+ * `listed` is the questions the reader's brief listed.
  */
-export function parseVerdict(report: string, s: SharedDecisions, round: string): { maps: Mapping[]; unclear?: string } | { error: string } {
+export function parseVerdict(report: string, listed: Pick<FoldedDecision, "id" | "ref" | "options">[], round: string): { maps: Mapping[]; unclear?: string } | { error: string } {
   const maps: Mapping[] = [];
   const unclear: string[] = [];
   // Only the report's final block is the verdict (R6): a line quoted in the reader's prose is not.
@@ -321,11 +322,12 @@ export function parseVerdict(report: string, s: SharedDecisions, round: string):
     const u = UNCLEAR.exec(line);
     if (u) { unclear.push(u[1]!); continue; }
     const m = ARROW.exec(line)!;
-    const ts = s.decisions.filter((d) => d.round === round && d.ref === m[1]);
+    // Resolved against the questions the reader's brief listed, as it was shown (owner, Q2.1).
+    const ts = listed.filter((d) => d.ref === m[1]);
     // Two questions posted with one ref: which it names cannot be told (owner, P2.1 (4)).
     if (ts.length > 1) return { error: `the reader's line "${line.trim()}" names ${m[1]}, which two questions in round ${round} share: it is ambiguous` };
     const t = ts[0];
-    if (!t) return { error: `the reader's line "${line.trim()}" names ${m[1]}, which is not a question in round ${round}` };
+    if (!t) return { error: `the reader's line "${line.trim()}" names ${m[1]}, which is not a question the reader's brief listed for round ${round}` };
     const label = m[2]!;
     if (label !== NONE && !t.options.some((o) => o.label === label)) return { error: `the reader's line "${line.trim()}" names "${label}", which is not an option of ${t.ref} (${t.options.map((o) => o.label).join(" / ")})` };
     maps.push({ decision: t.id, option: label === NONE ? null : label });
@@ -385,7 +387,7 @@ export async function recordReading(root: string, input: { answer: string; reade
   const brief = briefFor(byId, d, a);
   // Exact, at C14's strength: the one check that the reader never saw your reading (P1.4).
   if (agent.prompt !== brief) return { ok: false, unverified: `subagent ${agent.agentId} was not launched with reader_brief's prompt for ${a.id} — or the round changed since the brief was issued`, note: "nothing was written; launch a new reader with reader_brief's prompt" };
-  const v = parseVerdict(agent.report, w.s, d.round);
+  const v = parseVerdict(agent.report, readable(byId, d, a), d.round);
   if ("error" in v) return { ok: false, unverified: v.error, note: "nothing was written" };
   // Exactly what the fold would not accept, with its reason — never an event it will drop.
   const why = readingRefusal(byId, d, a, { verdict: v.maps, unclear: v.unclear, session: sm, launchedAt: agent.launchedAt, brief });

@@ -275,7 +275,9 @@ export function confirmPayload(decisions: Map<string, FoldedDecision>, d: Folded
 /**
  * Why posted confirm `c` is not one codemap could have written for the log as folded, or null
  * (P3.4). It is kept either way — the fold never drops a posted question (P2.1 (4)) — but only
- * a confirm that passes carries a confirm's meaning.
+ * a confirm that passes carries a confirm's meaning. A ref two questions share is NOT checked
+ * here: it is judged as the posting clone saw the round, which only `confirm_reading` can
+ * (owner, Q2.1), so a later pull never voids a pick already given.
  */
 function confirmRefusal(decisions: Map<string, FoldedDecision>, c: FoldedDecision, target: { a: FoldedAnswer; d: FoldedDecision } | undefined): string | null {
   const cf = c.confirms!;
@@ -301,9 +303,6 @@ function confirmRefusal(decisions: Map<string, FoldedDecision>, c: FoldedDecisio
     for (const [id, picks] of want) {
       const t = decisions.get(id)!, head = lineHead(t, picks);
       if (!heads.some((l) => l === head || l.startsWith(`${head} (`))) return `it has no action line ${head}`;
-      // A ref two decisions share means two questions (P2.1 (4)) — judged against the round as
-      // folded now, so another clone's same-numbered confirm, pulled later, voids this one.
-      if ([...decisions.values()].filter((x) => x.round === c.round && x.ref === t.ref).length > 1) return `${t.ref} names two questions in round ${c.round}`;
       const missing = named(t).find((f) => !q.includes(f));
       if (missing) return `its question does not name ${missing}, which ${t.ref} acts on`;
     }
@@ -366,7 +365,12 @@ function briefRefusal(decisions: Map<string, FoldedDecision>, d: FoldedDecision,
     listed.add(t.id);
   }
   const missing = verdict.find((m) => !listed.has(m.decision));
-  return missing ? `the verdict names ${decisions.get(missing.decision)?.ref ?? missing.decision}, which the reader's brief did not list` : null;
+  if (missing) return `the verdict names ${decisions.get(missing.decision)?.ref ?? missing.decision}, which the reader's brief did not list`;
+  // Judged against the brief the reader read, never the round as folded now (owner, Q2.1): a
+  // question pulled later cannot make an accepted line ambiguous.
+  const refs = [...listed].map((id) => decisions.get(id)!.ref);
+  const shared = verdict.find((m) => refs.filter((r) => r === decisions.get(m.decision)!.ref).length > 1);
+  return shared ? `the verdict names ${decisions.get(shared.decision)!.ref}, which two questions in the reader's brief share: it is ambiguous` : null;
 }
 
 // --- the fold -------------------------------------------------------------------------
