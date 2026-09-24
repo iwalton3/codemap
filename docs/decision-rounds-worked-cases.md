@@ -1137,6 +1137,14 @@ is `.git/triage/2026-09-23-decision-rounds-2-impl-2-review/plan.md`.
 Questions put to the owner and their answers, verbatim. A picked option is quoted as its label; its
 description is the session's, not the owner's. The route questions are in that record's `sort.md`.
 
+> **Note (2026-09-24, the Codex review round below):** the rulings here stand, but these readings
+> in that round's plan were reversed or superseded: Step 6's *(mine)* "`(none)` names nothing to
+> hold" (Q2.3 (2)); Step 6's *(mine)* "a line that was unambiguous when posted can become
+> ambiguous after a pull … loses its special meaning" (Q2.1); Step 6's "A confirm that fails
+> these is kept", as far as `checkDecision` — such a confirm is dropped (Q2.3 (3)); Step 6's
+> confirm id, which folded two clones' postings into one (Q2.3 (1)); and Step 4's T1 reasoning,
+> "a bindable verdict keeps the slot" as the defence against reader-swapping (Q2.2's mechanism).
+
 ### Session f75a592d, 2026-09-23 — the opening (ez-plan, --round)
 
 - **Q.** How do you want to proceed with this round? Options: Discuss First (Rec.) / Start
@@ -1216,10 +1224,15 @@ lists as unanswered".
 
 - **P3.1 (the confirm's round).** "The confirm goes into D1's own round, as ruled. Consequence: two agents on two clones each post a confirm for the same words at once. Both get the next free ref (say D14), and the round then has two D14s. A reader line or confirm naming D14 is then refused as ambiguous (your default 4), which assumed only a foreign writer could cause that. Keep the confirm in D1's round?" Options: Keep D1's round (Rec.) / Own round per confirm.
   **A (picked):** "Keep D1's round (Rec.)"
+  > *Note (2026-09-24):* the build folded two clones' confirms into one id instead of keeping the
+  > two D14s this question assumed; Q2.3 (1) below restores two decisions.
 - **P3.2 (what Other downgrades).** "You pick Yes on the confirm at 10:10. At 10:12 you type something in Other on the same confirm. You ruled that Other downgrades it to a regular decision. Does that undo the 10:10 Yes?" Options: Latest pick decides (Rec.) — the session's description: your Yes stands as the confirm's special answer; the 10:12 words are read like any typed reply and, if bound, rank by when typed; a later picked No or Yes replaces the earlier pick / Other ends it for good.
   **A (picked):** "Latest pick decides (Rec.)"
 - **P3.3 (moot words and confirms).** "Some pending things stop being able to change anything: words a later answer already outranks, words bound another way, and words on a replaced question whose replacement has since ruled. What happens to them, and to an open confirm about them?" Options: Stop surfacing (Rec.) — the session's description: they drop off 'waiting on me', the reader queue and the flag; an open confirm about them stops holding and waiting, and stays listed on its round as 'no longer needed', never dropped / Keep showing.
   **A (picked):** "Stop surfacing (Rec.)"
+  > *Note (2026-09-24):* what "can no longer change anything" means is Q1.2 below — words stay
+  > listed while some question they may be read onto could still change — and a confirm's state
+  > describes the request only (Q1.3).
 - **P3.4 (checking codemap's own text).** "The fold checks a posted confirm (and the reader's brief) is codemap's own text. It can recompute the exact text, or check only the structure: that it names the answer, the mapping lines match real options, and so on. Case: a later codemap build rewords the confirm template while one is open. Under exact recompute, your Yes to the old wording then binds nothing." Options: Structure only (Rec.) / Exact recompute.
   **A (picked):** "Structure only (Rec.)"
 - **P3.5 (the confirm's hold and queued work).** "You assigned F1 as fix work yourself at 09:00. At 10:05 you type words that may overturn D1's 'Real, fix it', so F1 is only marked, still on the queue. At 10:20 an agent posts a confirm for those words, which holds F1 (your earlier ruling), and under 'a person's assignment keeps it only if made after the latest hold began' F1 now leaves the agents' queue. So whether F1 is offered as work depends on whether an agent has posted the confirm yet. Accept that?" Options: Accept it (Rec.) / Confirm holds no queued work.
@@ -1239,3 +1252,86 @@ Measured on this machine's own transcripts, for P1.4's two channels the ruling d
   first entry are tool results only, so `record_reading` refuses a reader whose sidechain holds a
   `user` entry with an `origin`, or with no tool result, after the first. What this cannot see:
   text riding inside a tool result, and anything the harness does not record in the sidechain.
+
+### What a reader's own MCP call leaves — measured 2026-09-24 (Codex-round Step 6)
+
+Measured with a general-purpose subagent calling one read-only MCP tool:
+
+- **The call** lands in the subagent's own sidechain like a Bash call: an `assistant` entry whose
+  `tool_use` is named `mcp__<server>__<tool>` with its exact `input` and an id, followed by the
+  `tool_result`. So `submit_verdict` is verified from the reader's own sidechain, on a later call.
+- **The harness's own reminder**: right after the launch prompt the sidechain now holds a `user`
+  entry with `isMeta: true`, no `origin` and string content (a note about `SubagentHandback`). It
+  is not a message sent in; the check above had to learn to skip it, or it refused every reader.
+  That check now reads only the entries before the reader's `submit_verdict` call: a message sent
+  after the verdict cannot have shaped it (Codex plan review, 2).
+
+## The decision-rounds-2 implementation review round 3 (Codex) — ruled 2026-09-23
+
+The rulings the review round `2026-09-23-decision-rounds-2-impl-2-codex` was planned and built on,
+verbatim from its `owner.md`; the code cites them as Q1.1–Q4.1. Where they and the sections above
+disagree, these win: words are moot only when no question they may be read onto could change
+(Q1.2); a confirm's state is the request, and words typed on it never reopen it (Q1.3); a shared
+ref is judged as it was shown (Q2.1); the reader records its own verdict (Q2.2). The plan is
+`.git/triage/2026-09-23-decision-rounds-2-impl-2-codex/plan.md`.
+
+Questions put to the owner and their answers, verbatim. A picked option is quoted as its label; its
+description is the session's, not the owner's.
+
+### Session 3507fb25, 2026-09-23 — the route
+
+- **Q.** "Every issue Codex found sits in code written this session to apply the last review, most of it in the new posted-confirm design. Several of them come from two things nobody wrote down. First, what 'moot' means for words that could still rule a different question. Second, a confirm's state mixes up 'the confirm request' with 'the confirm as an ordinary question with its own answers'. Should this round be diagnosed first (the loop-diagnosis route: an evidence pack, two blind readers and a triager write a report on why fixes keep landing on fixes), or go straight to planning with /ez-plan?" Options: Diagnose first (Rec.) / Plan directly.
+  **A (typed):** "Sounds like this is once again from a design change because I ripped other functionality that caused the previous round out of the plan"
+- **(the session then set out which items the design change explains and which it does not, and asked: diagnose first, or plan directly?)**
+  **A (typed):** "I think planning directly makes sense because we could name the cause. We should have codex do adversarial review of the plan once we decide everything in addition to the regular coherence check too."
+
+### Session 3507fb25, 2026-09-23 — ez-plan opening
+
+- **Q.** "How do you want to proceed with this round?" Options: Discuss First (Rec.) / Start Planning Here / Plan Later in a New Session.
+  **A (picked):** "Plan Later in a New Session"
+
+### Session bf3bf66d, 2026-09-23 — ez-plan opening (resumed)
+
+- **Q.** "How do you want to proceed with this round?" Options: Start Planning Now (Rec.) / Discuss First.
+  **A (picked):** "Start Planning Now"
+
+### Session bf3bf66d, 2026-09-23 — planning batch 1
+
+- **Q1.1 (goal and critical).** "Goal (my wording, correct it if wrong): \"Settle what makes typed words moot and what a confirm's state means, then fix the rest of the Codex round, so decision-rounds-2 is stable enough for I9 and the skill fork.\" And keep the same four gates as what counts as critical: a ruling overwritten, a finding closed unseen, a held finding offered as work, a decision silently vanishing?" Options: Keep both (Rec.) / Change the goal / Change the gates.
+  **A (picked):** "Keep both (Rec.)"
+- **Q1.2 (moot words — B1).** "When do your typed words stop mattering, so they drop off 'waiting on me', the reader queue and the 'possibly superseded' flag? Words can be read onto ANY question in their round (your S0.3 'Admit, ranked'). Case: at 10:00 you pick B on D2. At 10:05 you type on D1 \"actually A on D2\". At 10:10 you pick an option on D1 directly. Today the 10:05 words count as done because D1's 10:10 pick outranks them on D1, so they vanish from every list — yet a reader, or your Yes on a confirm of them, can still bind them onto D2 and change it to A, unseen." Options: While they could change something (Rec.) — the session's description: words stay listed while some question they could be read onto has nothing given after them (here D2, last answered at 10:00); they drop off once every such question has a later answer, and binding them then changes nothing, so no extra guard is needed; cost: an unanswered question in the round keeps older words listed until a reader reads them / Their own question only.
+  **A (picked):** "While they could change something (Rec.)"
+- **Q1.3 (a confirm's state — A2, A3).** "A confirm is two things at once: the request (\"confirm how your words on D1 were read\", which holds D1's findings while open and waits on you) and an ordinary question you can type your own answer into. Which does its state describe? Case 1: you pick No at 10:10, then at 10:12 type \"nothing\" on the confirm, and a reader reads that as ruling nothing on it. Today the confirm reopens: it holds F1 and waits on you again. Case 2: a later pick on D1 makes the request 'no longer needed', but at 10:12 you had typed \"actually keep F1 open\" on the confirm. Today those words drop off every list, unread." Options: The request only (Rec.) — the session's description: your picks answer it, and only a later pick changes which reading stands (your 'latest pick decides'); words typed on it never reopen it: they are read like any words, can bind onto D1 or any question in the round, and stay listed while they could change something, even after the request is no longer needed; case 1 stays answered; case 2's words go to a reader / Both, as today.
+  **A (picked):** "The request only (Rec.)"
+- **Q1.4 (a finding a replacement drops — C2).** "D1 asks about F1 and F2 and has no ruling yet (unanswered, or your words on it were read as ruling nothing). D1b replaces it and asks about F1 only. Is F2 offered as work? Today: yes, the moment D1b is posted. That predates this round, but words on a replaced question (your 'Read on D1') now reach it. By contrast, a ruling on D1 that holds F2 keeps holding it, because nothing down the chain ever takes F2 over." Options: Held until D1b rules (Rec.) — the session's description: F2 stays held as undecided until D1b (or whatever replaces it) has a ruling; nothing on that chain will ever ask about F2 again, so F2 is then released as work with no ruling on it / Released at once.
+  **A (picked):** "Held until D1b rules (Rec.)"
+
+### Session bf3bf66d, 2026-09-23 — planning batch 2
+
+- **Q2.1 (when a shared ref is judged — D1, and a case the session ran: a pull voids a Yes already given).** "Two questions in one round can end up sharing a number, say D14, when two clones each post a confirm at the same moment (you accepted that in P3.1). A reader's line or a confirm's line naming a shared number is refused as ambiguous (your P2.1 (4)). But WHEN is that judged? Case I ran today: a confirm says \"D2 → A\"; you pick Yes, and D2 becomes A. A pull then brings a second question numbered D2 into the round. The fold now calls the line ambiguous, and D2 silently goes back to B, while the confirm still reads 'answered'. The reverse also exists (Codex found it): the fold accepts a reader's line naming a shared number that codemap's own tool refuses." Options: As it was when shown (Rec.) — the session's description: judged against what the reader or you actually saw; for a reading, that is its brief, which already lists shared numbers, so the fold refuses such a line as the tool does; for a confirm, it is the round as the posting clone saw it, which only the tool can check; a later pull never undoes an accepted reading or your pick; cost: the fold cannot re-check a confirm's numbers, so a hand-built event could post an ambiguous one / Against the log now.
+  **A (picked):** "As it was when shown (Rec.)"
+- **Q2.2 (reader-shopping — D2).** "'One reading per answer, one answer per reader' only guards what gets recorded. An agent that dislikes a reader's verdict can simply not record it, launch a second reader, and record that one if it agrees with the agent. Nothing stops this today. Codex's narrower case: a recorded disagreement is thrown out whole when the agent's own side of it is invalid, which frees the slot for a second reader. Should codemap stop an agent picking among readers?" Options: First reader counts (Rec.) / Accept and document.
+  **A (typed):** "Can't the reader itself make the MCP call? It doesn't need to go back up to the parent agent."
+  *(session, before re-asking: measured 2026-09-24T03:12Z — a subagent's in-flight tool call is NOT in its sidechain transcript while the call runs (written ~12 ms after it returns), so codemap cannot confirm the caller inside the reader's own call, only on a later call; and today the agent gives its own reading to `record_reading` only after seeing the reader's verdict, so it can copy it.)*
+- **Q2.2 re-asked.** "How should a reader's verdict reach codemap, so an agent cannot pick among readers? Today the agent records the reader, and gives its own reading only AFTER seeing the reader's verdict, so it can both bury a verdict it dislikes and copy one to get agreement." Options: Reader records it (Rec.) — the session's description: the agent's reading is taken when it asks for the brief, before any reader exists; the reader ends with a codemap call carrying its verdict, which codemap holds on this machine; it is checked against the reader's own transcript on the next call, and only then enters the shared log; the first verdict held for an answer counts, and later readers are refused; cost: a new tool, and a two-step record / First reader counts / Accept and document.
+  **A (picked):** "Reader records it (Rec.)"
+- **Q2.3 (bulk defaults).** "Defaults to approve, or pick some out by number. (1) Two clones posting a confirm for the same words each post their own, as your P3.1 assumed (\"the round then has two D14s\"): the confirm's id comes from its whole posted text, so your answer to one clone's wording is never dropped in favour of the other's. Reusing an identical confirm already open on this clone stays. (2) An open confirm offering \"D1 → (none)\" holds D1's findings like any other reading, as its own text says (\"its findings stay held\") and as you ruled the hold applies to confirms. Today it holds nothing. (3) A posted confirm that fails the basic check every posted question passes is dropped, as a malformed question in a round always has been; the last plan's line saying such a confirm is kept is corrected. Only a hand-built event reaches it. (4) A confirm about words that were never recorded reads 'not a confirm codemap can verify' (waits on you, binds nothing), not 'no longer needed'; only words that existed and were cut or stopped mattering make it 'no longer needed'. Only a hand-built event reaches it." Options: Approve all as written / Rule on some separately.
+  **A (picked):** "Approve all as written"
+
+### Session bf3bf66d, 2026-09-23 — planning batch 3 (after the coherence check and the Codex plan review)
+
+- **Q3.1 (a ruling on a replaced question over a finding its replacement dropped — Codex plan review, 1).** "D1 asks about F1 and F2. You rule on D1 \"Not a defect\" for both, which holds them for the verifier. Later D1b replaces D1 and asks about F1 only, and D1b gets answered. F1 now follows D1b. What happens to F2, which no later question mentions? Today it stays held by the old D1 ruling for good. Codex found that this also lets a reader, even after D1b is answered, bind your old words on D1 and newly hold F2, while those words show on no list. You already ruled that an UNDECIDED F2 in this spot is released once D1b rules." Options: Held for good (Rec.) / Released when D1b rules.
+  **A (typed):** "If a superceded decision is still holding something (incomplete replacement) it should probably still be possible to find it."
+- **Q3.2 (a reader stopped before it submits).** "With the reader recording its own verdict, one path is left open: an agent can watch a reader and stop it before it submits, then launch another. Close it within one session by refusing a later reader when this session already launched one with the same brief?" Options: Leave it open (Rec.) — the session's description: documented as a known gap; stopping a reader mid-run is deliberate and visible in the transcript, and closing it has a cost: a first reader that crashes before submitting would strand the words in that session / Close it.
+  **A (picked):** "Leave it open (Rec.)"
+- **Q3.3 (the session's reading of Q3.1, put back).** "My reading of \"it should probably still be possible to find it\", to mark wrong: (a) F2 stays held by the old D1 ruling, as today, and stays listed where it already is: held on the finding, and under 'rulings not yet carried out', marked replaced. (b) While replaced D1 still holds a finding its replacement never took over, D1 still counts as a question your words could change. So your unbound words on D1 stay on 'waiting on me' and the reader queue beside D1b, instead of vanishing when D1b rules. Once D1 holds nothing D1b does not cover, they drop off as before. (c) An UNDECIDED F2 in that spot is still released when D1b rules, as you ruled before. Is that what you meant?" Options: Yes, as written (Rec.) / Yes, but undecided too / Not quite.
+  **A (picked):** "Yes, as written (Rec.)"
+
+### Session bf3bf66d, 2026-09-23 — after the plan was shown
+
+- **(owner, typed):** "Regarding manipulating agents, an agent could still have the correct initial message as evaluated by codemap and have a subsequent contaminated message sent to it by the model before it rules. Ultimately to a point, you have to depend on the agent and auto mode classifier ensuring completion drive and misalignment are kept at bay. I have never had these problems with Claude and the note in claude.md seems to help, the main worry is an agent going beyond desired intent and not hitting a guardrail, which is fairly well covered.
+
+  The readings you posted make sense."
+- *(session: the "subsequent contaminated message" case is caught by `readSubagent`'s no-message-after-launch check, at C14's strength, which the plan keeps up to the reader's `submit_verdict` call. "The readings you posted" = the plan's "Open for the owner to mark wrong" list: D1 stays flagged; a hold's start can move; `chainRuled`'s verification test; Step 6's shape beyond the ruling. Read as approved.)*
+- **Q4.1 (the brief's one-time token).** "Given your threat model (overreach, not a deliberately deceptive agent), should Step 6 drop the one-time token in the reader's brief? It only stops a parent that builds the brief itself and launches a reader before asking codemap for it: a deliberate act, not an overreach. Everything else in Step 6 guards honest mistakes and stays." Options: Drop the token (Rec.) — the session's description: Step 6 loses the token and its fold allowance; the brief stays fixed as issued, and the agent's reading is still taken first; the docs name the pre-launch path as a known gap, beside the stopped-reader one / Keep it.
+  **A (picked):** "Drop the token (Rec.)"

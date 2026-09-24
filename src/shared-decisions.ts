@@ -18,7 +18,7 @@
  * rulings in two orders.
  *
  * **Verification happens before the log** (owner: "verification needs to happen before it ends
- * up in the fold"). A logged question, a relayed message or a reader's handback was checked
+ * up in the fold"). A logged question, a relayed message or a reader's `submit_verdict` was checked
  * against the transcript on the machine that asked; a clone cannot re-read that transcript and
  * trusts the logger for it. Everything that travels is checked here.
  */
@@ -83,7 +83,7 @@ export interface FoldedAnswer {
   /** Bound, and about OTHER questions only: it answers nothing here and never ranks here. */
   elsewhere?: true;
   relayedBy?: string;
-  /** The reader's verdict, parsed by codemap from the reader's own handback (plan B1). */
+  /** The reader's verdict, parsed by codemap from the reader's own `submit_verdict` call (plan B1, Q2.2). */
   reading?: {
     id: string; agree: boolean;
     reader: { agent: string; maps: Mapping[]; launchedAt: string };
@@ -195,7 +195,8 @@ export function checkDecision(d: Decision): string | null {
 // A POSTED decision, in the words' own round: `confirm_reading` writes it with codemap's text,
 // the person is asked it verbatim and it is logged like any question. The fold checks its
 // STRUCTURE against the real answer and options (P3.4), never its wording, so a later build that
-// rewords it strands no open confirm. One that fails the check is kept as a plain question.
+// rewords it strands no open confirm. One that fails that check is kept as a plain question; one
+// that fails `checkDecision`, like any posted question, is dropped (owner, Q2.3 (3)).
 
 export const CONFIRM_YES = "Yes";
 export const CONFIRM_NO = "No — ask me again";

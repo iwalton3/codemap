@@ -221,7 +221,13 @@ import { readScopeChecked, sortEvents, SHARD_EXT, type LogEvent, type ScopeDiagn
 // an accepted reading claims a slot, a reading carries its brief, an answer with no time is
 // dropped. The reason 18 -> 19 gives: an old fold drops the new kind, and after an upgrade the
 // shards have not moved.
-export const MATERIALIZER_VERSION = 30;
+//
+// 30 -> 31: the decisions fold (review round 2026-09-23-decision-rounds-2-impl-2-codex), from the
+// same events: a confirm records the pick that answered it and whether its words were never
+// recorded (`confirms.picked`, `never`), no longer voids itself on a ref shared in the round as
+// folded now, and a reading is refused on a ref its brief showed as shared and accepted when
+// only its session side cannot bind. The same shards, a different fold — 18 -> 19's reason.
+export const MATERIALIZER_VERSION = 31;
 
 /**
  * What the events in a scope are, cheaply.
