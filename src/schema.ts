@@ -2305,7 +2305,7 @@ export interface DecisionRound {
   /** "Decided rather than asked" lines: notes with no effects. */
   notes?: string[];
   /** Set only by the import of a skill round whose record says two sorters and an arbitrator
-   *  sorted it. It closes nothing (close-on-answer was cut); it is kept as provenance, which
+   *  sorted it. It closes nothing — no answer closes a finding; it is kept as provenance, which
    *  may decide how much reading later work needs (owner, 2026-09-23). */
   prevalidated?: { record: string; sortedBy: string };
   postedBy: Actor;

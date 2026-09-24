@@ -3,8 +3,8 @@
  * typed words onto options. The fold and the rulings are in `shared-decisions.ts`; the rulings
  * verbatim in docs/decision-rounds-worked-cases.md and the review rounds' `owner.md` files.
  *
- * Nothing here closes a finding. A ruling is carried out by the verifier (I9) or by a person in
- * session; close-on-answer was cut (owner, 2026-09-23).
+ * Nothing here closes a finding: no answer closes one (owner, 2026-09-23). A ruling is carried
+ * out by the verifier (I9) or by a person in session.
  *
  * Verification happens HERE, on the machine that asked — the transcript never travels
  * (owner: "verification needs to happen before it ends up in the fold").

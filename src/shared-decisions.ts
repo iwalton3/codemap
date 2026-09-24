@@ -558,7 +558,7 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
       case "decision.reading.recorded": {
         const answer = str(data?.answer), agent = str(data?.reader?.agent);
         // A reading without codemap's own parse of the reader's verdict is dropped (S0.7, H7.12):
-        // it carries the mapping the session passed in, which is how a mis-copy once bound.
+        // its mapping is the session's, not the reader's, so it cannot bind.
         // Nor one without the brief the reader was launched with (P3.4), which a build before
         // codemap wrote the brief could not record: those words go back to unread.
         if (!answer || !agent || !validVerdict(data.reader.verdict, data.reader.unclear) || !str(data.reader.launchedAt) || !str(data.reader?.verified?.session) || !str(data.reader.brief)

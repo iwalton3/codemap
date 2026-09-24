@@ -1075,6 +1075,12 @@ there under *Step 0 corrections*). The owner ruled the rest, each question quote
   and Yes binds at 10:07; the confirm holds no findings and never lists as unanswered; if the same
   words are confirmed twice with different readings, the later confirmation wins / Posted as a decision.
   **A (picked):** "Derived, names words (Rec.)"
+
+  > **Note (2026-09-23, the second implementation review round below):** superseded. The confirm
+  > is now a POSTED decision in the words' own round, answered through `log_question`, which holds
+  > the findings its readings act on and waits on you while open; "Other" on it is words read by a
+  > reader, not a typed answer on the original decision. See § "The decision-rounds-2
+  > implementation review round 2".
 - **S0.3 (S4, HA-03 — a reading onto an answered decision).** "D2 was ruled \"Real, fix it\" by a
   click at 10:00. At 10:05 you type \"actually D2 is not a defect\", but the agent relays it against
   D1. The reader correctly maps it to D2. Today the fold refuses this because D2 already has an answer
@@ -1118,3 +1124,118 @@ there under *Step 0 corrections*). The owner ruled the rest, each question quote
 - **S0.8 (bulk — S6, S8, S9/HA-04, S12, S13).** The question listed (a)–(e) verbatim as they now stand
   in the plan's *Step 0 rulings* section. Options: Approve all as written / Rule on some separately.
   **A (picked):** "Approve all as written"
+
+## The decision-rounds-2 implementation review round 2 — ruled 2026-09-23
+
+The rulings the review round `2026-09-23-decision-rounds-2-impl-2-review` was planned and built on,
+verbatim from its `owner.md`; the code cites them as P1.1–P3.5 and "the discussion". Where they and
+the sections above disagree, these win: the confirm-this-reading question is a posted decision
+(S0.2 is superseded); a reading the fold rejects never counted; words typed on a question before it
+was replaced are read on it until its replacement rules; codemap writes the reader's brief. The plan
+is `.git/triage/2026-09-23-decision-rounds-2-impl-2-review/plan.md`.
+
+Questions put to the owner and their answers, verbatim. A picked option is quoted as its label; its
+description is the session's, not the owner's. The route questions are in that record's `sort.md`.
+
+### Session f75a592d, 2026-09-23 — the opening (ez-plan, --round)
+
+- **Q.** How do you want to proceed with this round? Options: Discuss First (Rec.) / Start
+  Planning Here / Plan Later in a New Session.
+  **A (picked):** "Discuss First (Rec.)"
+
+### Session f75a592d, 2026-09-23 — the discussion (Discuss First)
+
+What the discussion settled, the owner's words verbatim; the session's readings between them are
+marked as the session's.
+
+- *(session: the confirm question's fragility comes from S0.2's choice to derive it and recognise it
+  by its text; offered three directions — patch it, post it as a real decision of a dedicated kind
+  that holds nothing and never waits, or cut the single-reading confirm.)*
+- **(owner):** "Yeah I think making it another decision that can be answered via log_question makes
+  more sense. Then it uses the same pathway. We would need to still do some text analysis to make
+  sure the question is well-formed, since the whole idea was allowing an in-session read to
+  immediately act in codemap without it requiring going outside the session."
+- *(session: three cases to mark — (1) `confirm_reading` posts the confirm itself so it is
+  well-formed by construction, the fold checking the posted text against its recomputation; (2)
+  whether an open confirm also holds D1's findings and lists under "waiting on you" — the session
+  read "lists, holds nothing extra"; (3) whether "Other" on a confirm is a typed answer on D1 (S0.2)
+  or a free answer on the confirm itself. Noted this reverses S0.2's "Derived, names words".)*
+- **(owner):**
+  "1. If confirm returns a question made by codemap, that makes this easy. I agree with that.
+  2. Yes I think the hold should apply there too
+  3. Other on a confirm should downgrade the confirm to a regular decision and it loses it's
+  special meaning."
+- *(session: proposed the confirm is posted into D1's own round as a new question, so a reader can
+  map "Other" words onto D1's options, the confirm's, or any question in the round; read "loses its
+  special meaning" as: a reader-bound Yes on the confirm is an ordinary answer and authorizes nothing
+  about the original words; words the reader maps onto D1 stand there as a new typed answer at their
+  own typed time. Asked whether the open confirm and D1 holding the same findings as two entries is
+  fine.)*
+- **(owner):** "Yes two entries is fine. And yes \"loses it's special meaning\" means it becomes a
+  decision that has to be read by a reader."
+- *(session: the owner did not separately answer "posted into D1's round"; it is carried as the
+  session's reading, to be confirmed in planning.)*
+- **(owner):** "I think we're ready for a plan." — the discussion ends in planning here.
+
+**Settled** (as the owner stated it): the confirm-this-reading question becomes a POSTED decision,
+answered through `log_question` like any other; `confirm_reading` posts it with codemap's own text,
+so well-formedness is by construction; while open it holds the findings too (two hold entries, D1's
+and the confirm's, are fine) and waits on the person; "Other" on it makes it a regular decision whose
+words must be read by a reader, and a Yes so read carries none of the confirm's special meaning.
+Supersedes S0.2's "Derived, names words (Rec.)" and its "the confirm holds no findings and never
+lists as unanswered".
+
+### Session f75a592d, 2026-09-23 — planning batch 1
+
+- **P1.1 (goal and critical).** "Goal (my wording, correct it if wrong): \"Make the confirm-this-reading question a posted decision codemap writes, settle the three unwritten rules (a rejected reader, words on a replaced question, the reader's prompt), and fix the rest — so decision-rounds-2 is stable enough for I9 and the skill fork.\" Keep last round's four gates as critical: a ruling overwritten, a finding closed unseen, a held finding offered as work, a decision silently vanishing?" Options: Keep both (Rec.) / Change the goal / Change the gates.
+  **A (picked):** "Keep both (Rec.)"
+- **P1.2 (a rejected reader — R2).** "A reader subagent reads your words on D1, but the fold rejects its reading (say it named a question replaced before you typed). Can that same reader then read your words on D2?" Options: Not used (Rec.) — the session's description: a rejected reading never counted; the reader may read another answer, and a new reader may read D1; only accepted readings count / Used.
+  **A (picked):** "Not used (Rec.)"
+- **P1.3 (words on a replaced question — R13).** "You type 'close it' on D1 at 10:00. At 10:02 D1 is replaced by D1b. The words are relayed at 10:05. They count on D1 (your A4 ruling), but no page shows them, no reader is asked for them, and no confirm can be posted for them. Where should they go?" Options: Read on D1 (Rec.) — the session's description: a reader is asked for them; bound, they rule D1 as of 10:00, and that ruling holds D1's findings until D1b is answered (B2.4), shown under D1 as replaced; they show under 'waiting on me' beside D1b / Shown only.
+  **A (picked):** "Read on D1 (Rec.)"
+- **P1.4 (the reader's prompt — R7).** "The reader must be blind to the agent's own reading, but codemap never sees what the reader was told. An agent that pastes 'I read this as D1 → Not a defect' into the reader's prompt, by honest mistake, gets agreement that binds. How should that be guarded?" Options: Codemap writes the brief (Rec.) — the session's description: a new op returns the reader's exact prompt (the words, the round's questions, the verdict format, nothing of the agent's reading); record_reading refuses a reader whose Agent call input is not that prompt; same strength as every transcript check (C14) / Accept and document.
+  **A (picked):** "Codemap writes the brief (Rec.)"
+
+### Session f75a592d, 2026-09-23 — planning batch 2
+
+- **P2.1 (bulk defaults).** "Defaults to approve, or pick some out by number: (1) The confirm is posted into D1's own round as a new question, so a reader can map 'Other' words onto any question there. (2) A confirm's action lines state everything a Yes does: for a bulk item, every item it approves; for an option with no effects, the findings it releases from the hold. (3) Empty mapping lists are refused everywhere a mapping is checked (your reading, a reader's verdict unless 'unclear', the fold); no new rule, just fix every site. (4) Two decisions sharing a ref in one round (only another writer could post that): a verdict or confirm line naming it is refused as ambiguous; the fold never drops a posted question. (5) An answer with no parseable time is dropped by the fold, as a typed message with no time already is. (6) Comments that narrate removed code are reworded to say what the code does now, keeping those that guard against re-adding something." Options: Approve all as written / Rule on some separately.
+  **A (picked):** "Approve all as written"
+- **P2.2 (suggestions).** "Design suggestions, in or out of this plan: (7) holds computed only when a caller reads a finding's mark, not on every write (unmeasured; the op now builds the whole view once per recorded answer); (8) the ops use the fold's own validators and helpers instead of copies, which is what keeps 'the op refuses exactly what the fold drops' true (one copy has already drifted); (9) the round page's held list keeps showing holds other rounds place on its findings, as the one hold function gives them, not filtered to this round's." Options: Approve all as written / Rule on some separately.
+  **A (picked):** "Approve all as written"
+
+### Decided instead of asked (the session's)
+
+- R8, R9, R10, R11 (the confirm's Other path, its prefix, minted ids, the once-key): dissolved by the
+  discussion's ruling — a posted confirm goes through `post_round`/`log_question` like any decision,
+  so none of them has a separate fix. The plan checks each is gone.
+- R1, R3, R4, R6 (the slot claimed before acceptance, the two-pick verdict, the copy's `nothing`,
+  verdict lines from anywhere): isolated defects both sorters agree on; the plan fixes them, R1
+  before or with R3 (the carried warning).
+
+### Session f75a592d, 2026-09-23 — planning batch 3 (the drafter's open choices, asked in the session's words)
+
+- **P3.1 (the confirm's round).** "The confirm goes into D1's own round, as ruled. Consequence: two agents on two clones each post a confirm for the same words at once. Both get the next free ref (say D14), and the round then has two D14s. A reader line or confirm naming D14 is then refused as ambiguous (your default 4), which assumed only a foreign writer could cause that. Keep the confirm in D1's round?" Options: Keep D1's round (Rec.) / Own round per confirm.
+  **A (picked):** "Keep D1's round (Rec.)"
+- **P3.2 (what Other downgrades).** "You pick Yes on the confirm at 10:10. At 10:12 you type something in Other on the same confirm. You ruled that Other downgrades it to a regular decision. Does that undo the 10:10 Yes?" Options: Latest pick decides (Rec.) — the session's description: your Yes stands as the confirm's special answer; the 10:12 words are read like any typed reply and, if bound, rank by when typed; a later picked No or Yes replaces the earlier pick / Other ends it for good.
+  **A (picked):** "Latest pick decides (Rec.)"
+- **P3.3 (moot words and confirms).** "Some pending things stop being able to change anything: words a later answer already outranks, words bound another way, and words on a replaced question whose replacement has since ruled. What happens to them, and to an open confirm about them?" Options: Stop surfacing (Rec.) — the session's description: they drop off 'waiting on me', the reader queue and the flag; an open confirm about them stops holding and waiting, and stays listed on its round as 'no longer needed', never dropped / Keep showing.
+  **A (picked):** "Stop surfacing (Rec.)"
+- **P3.4 (checking codemap's own text).** "The fold checks a posted confirm (and the reader's brief) is codemap's own text. It can recompute the exact text, or check only the structure: that it names the answer, the mapping lines match real options, and so on. Case: a later codemap build rewords the confirm template while one is open. Under exact recompute, your Yes to the old wording then binds nothing." Options: Structure only (Rec.) / Exact recompute.
+  **A (picked):** "Structure only (Rec.)"
+- **P3.5 (the confirm's hold and queued work).** "You assigned F1 as fix work yourself at 09:00. At 10:05 you type words that may overturn D1's 'Real, fix it', so F1 is only marked, still on the queue. At 10:20 an agent posts a confirm for those words, which holds F1 (your earlier ruling), and under 'a person's assignment keeps it only if made after the latest hold began' F1 now leaves the agents' queue. So whether F1 is offered as work depends on whether an agent has posted the confirm yet. Accept that?" Options: Accept it (Rec.) / Confirm holds no queued work.
+  **A (picked):** "Accept it (Rec.)"
+
+### What a fork and a message sent into a reader leave — measured 2026-09-23 (impl-2 Step 5)
+
+Measured on this machine's own transcripts, for P1.4's two channels the ruling did not name:
+
+- **A fork** (`subagent_type: "fork"`): its meta file carries `agentType: "fork"` and `isFork: true`,
+  and its own transcript opens on a `fork-context-ref` entry with no `isSidechain` — it inherits the
+  parent's conversation, and with it the agent's own reading. `record_reading` refuses it by the
+  meta file and by the launch call's `subagent_type`.
+- **A message sent into a running subagent** (`SendMessage`): it lands in the subagent's own
+  sidechain as a `user` entry with `origin: {kind: "coordinator"}` and text content ("The
+  coordinator sent a message while you were working: …"). A reader's own `user` turns after its
+  first entry are tool results only, so `record_reading` refuses a reader whose sidechain holds a
+  `user` entry with an `origin`, or with no tool result, after the first. What this cannot see:
+  text riding inside a tool result, and anything the harness does not record in the sidechain.

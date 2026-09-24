@@ -462,7 +462,7 @@ run("bulk: approve-all beside a checked item says two things, so it is read, not
   (b, out) => !ruled(b.d2!).length && awaitingReading(out).some((u) => u.decision === "d2"));
 run("bulk: a typed Other element makes the whole answer the reader's", () => call(d2, ["Path fix", "and talk to me about the tag"]),
   (b, out) => !ruled(b.d2!).length && awaitingReading(out).some((u) => u.decision === "d2"));
-run("bulk: unverified words wait for a reader, relayer known or not (the relayer guard is gone, B2)", () => [answer(d2, { kind: "unverified", words: "all fine" })],
+run("bulk: unverified words wait for a reader, whether or not the relayer is known (B2)", () => [answer(d2, { kind: "unverified", words: "all fine" })],
   (b, out) => !ruled(b.d2!).length && awaitingReading(out).length === 1);
 run("bulk: the page's checked list is a direct answer", () => [page(d2, { checked: ["Path fix"] })],
   (b) => rules(b.d2!, "F10", "settle") && !rules(b.d2!, "F11", "unblock") && standing(b.d2!)!.separately?.[0] === "Path fix");

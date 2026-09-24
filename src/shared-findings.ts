@@ -934,8 +934,8 @@ export function foldFindings(events: LogEvent[]): Map<string, SharedFinding> {
         if (!next || !["issued", "created", "invalid", "refuted", "resolved", "withdrawn"].includes(next)) break;
         // THE gate. An agent that tries to close a finding somebody stood behind is
         // ignored by every reader, not just by its own client. A `decision` stamp on the event
-        // opens nothing: the stamped-close path was removed (owner, 2026-09-23, S0.6) and the
-        // verifier (I9) adds its own under its own ruling.
+        // opens nothing (owner, 2026-09-23, S0.6): only `mayTransition` decides, and the
+        // verifier (I9) adds its own path under its own ruling.
         if (!mayTransition(f, e.actor, next)) break;
         f.state = next;
         // An ask is answered by the act it asked for — and SETTLED, not erased. Clearing

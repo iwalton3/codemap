@@ -1,12 +1,12 @@
 /**
  * A decision stamp on a finding close opens NOTHING, and a stamped sign-off signs nothing.
  *
- * The stamped-close path — an agent closing a finding a person stood behind, because the event
- * carried a person's answer to a decision — was removed with close-on-answer (owner,
- * 2026-09-23, S0.6: "Remove it now"). The findings fold never checked the stamp against the
- * decisions record, so any close carrying a well-formed one passed. The verifier (I9) adds its
- * own close path under its own ruling. These pin that the old bypass cannot come back
- * unannounced, and that events a build before this one wrote are read as ordinary closes.
+ * No close is opened by a decision stamp — an agent may not close a finding a person stood behind
+ * because the event carries a person's answer to a decision (owner, 2026-09-23, S0.6: "Remove it
+ * now"). The findings fold cannot check such a stamp against the decisions record, so any close
+ * carrying a well-formed one would pass. The verifier (I9) adds its own close path under its own
+ * ruling. These pin that such a bypass cannot come back unannounced, and that stamped events
+ * already in logs are read as ordinary closes.
  *
  * Rulings: docs/decision-rounds-worked-cases.md; `.git/triage/2026-09-23-decision-rounds-2-impl-review/owner.md`.
  */
