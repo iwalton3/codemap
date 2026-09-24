@@ -1150,15 +1150,20 @@ export function heldFindings(s: SharedDecisions, isOpen: (finding: string) => bo
     out.set(f, list);
   };
   for (const d of s.decisions) {
-    // An open confirm holds what its readings would rule on, beside the decision's own hold
-    // (the discussion: "two entries is fine"), from its own posting (S0.4, P3.5).
+    // An open confirm holds every finding of every decision its readings map — `(none)` too, as
+    // its text says (Q2.3 (2)) — beside the decision's own hold (the discussion: "two entries is
+    // fine"), from its own posting (S0.4, P3.5).
     if (d.confirms) {
       if (confirmState(byId, d) !== "open") continue;
-      for (const r of d.confirms.readings) for (const m of r) if (m.option !== null) for (const f of named(byId.get(m.decision)!)) add(d, f, "undecided");
+      for (const r of d.confirms.readings) for (const m of r) for (const f of named(byId.get(m.decision)!)) add(d, f, "undecided");
       continue;
     }
     if (d.replacedBy) {
       for (const r of stillHeld(byId, d)) if (r.on === "settle") add(d, r.finding, "ruled");
+      // Undecided when replaced, it holds what it names until something down its chain rules —
+      // the findings the replacement dropped included; nothing will ask about those again (Q1.4).
+      const a = standing(d);
+      if (!decides(a) && !chainRuled(byId, d, a?.verified ?? false)) for (const f of named(d)) add(d, f, "undecided");
       continue;
     }
     const a = standing(d);

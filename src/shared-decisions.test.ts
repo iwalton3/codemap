@@ -409,6 +409,13 @@ test("Q2.3 (4) (A4, F13): a confirm of words never recorded is not one codemap c
   const { b, out } = fold([...evs, C]);
   assert.ok(stateOf(out, "c1") === "unverifiable" && b.c1!.confirms!.never && waitingOnMe(out, "2026-09-23").filter((w) => w.decision === "c1").length === 1, dump(b, out));
 });
+test("Q2.3 (2) (C1): an open confirm offering 'D1 → (none)' holds D1's findings, from its own posting", () => {
+  n = 1;
+  const evs = clicked(), first = fold(evs), a = first.b.d1!.answers.at(-1)!.id;
+  const C = confirmOf(first.b, "d1", a, [[{ decision: "d1", option: null }]]);
+  const { b, out } = fold([...evs, C]);
+  assert.ok(stateOf(out, "c1") === "open" && ["F3", "F7"].every((f) => (heldFindings(out, () => true).get(f) ?? []).some((h) => h.decision === "c1" && h.why === "undecided" && h.since === b.c1!.postedAt)), dump(b, out));
+});
 test("a confirm is never replaced: a posting that names one as replaced is kept, and replaces nothing", () => {
   n = 1;
   const evs = clicked(), first = fold(evs), a = first.b.d1!.answers.at(-1)!.id;
@@ -869,6 +876,17 @@ run("R13: a ruling on D1 they may overturn is flagged", () => [page(d1, { option
   (b, out) => flagged(b.d1!) && supersededFindings(out).has("F3"));
 run("R13 + P3.3: once D1b rules, the words leave every list", () => [page(d1, { option: "Settle" }), ...onReplaced(() => [page(d1b, { option: "No" })]), ...others()],
   (b, out) => !awaitingReading(out).length && !waits(out, "d1") && !flagged(b.d1!) && !readingsInDispute(out).length);
+/** D1 replaced, undecided, by a D1c that asks about F3 only: F7 is the finding it drops. */
+const d1c = reask(d1, "d1c", "D7", "R1c", { supersedes: "d1", options: [{ label: "Settle", effects: [settle("F3")] }, { label: "No", effects: [unblock("F3")] }] });
+const heldBy = (out: SharedDecisions, f: string) => (heldFindings(out, () => true).get(f) ?? []).map((x) => x.decision);
+both("Q1.4 (C2): a finding the replacement drops stays held by the undecided replaced question until the replacement rules", () => {
+  n = 1;
+  const R = post("R1c", [d1c]), M = msg(d1, "hmm", "u1", new Date(Date.parse(R.at) - 500).toISOString());
+  const RM = reading(M, [{ decision: "d1", option: null }]);
+  return { first: [R, M, RM], second: [M, RM, R] };
+}, (b, out) => heldBy(out, "F7").includes("d1") && heldBy(out, "F3").includes("d1") && heldBy(out, "F3").includes("d1c"));
+run("Q1.4 (C2): ...and once it rules, the dropped finding is released with no ruling on it", () => [post("R1c", [d1c]), page(d1c, { option: "No" })],
+  (b, out) => !heldBy(out, "F7").length && !heldBy(out, "F3").length);
 run("Q3.3 (b): ...unless D1 still holds a ruling its replacement never took over — then they stay listed beside it", () => {
   const d1c = reask(d1, "d1c", "D7", "R1c", { supersedes: "d1", options: [{ label: "Settle", effects: [settle("F3")] }, { label: "No", effects: [unblock("F3")] }] });
   const P = page(d1, { option: "Settle" }), R = post("R1c", [d1c]), M = msg(d1, "close it", "u1", new Date(Date.parse(R.at) - 500).toISOString());
