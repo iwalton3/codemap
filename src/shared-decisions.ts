@@ -831,6 +831,11 @@ function moot(byId: Map<string, FoldedDecision>, d: FoldedDecision, a: FoldedAns
   return !!d.replacedBy && chainRuled(byId, d, a.verified);
 }
 
+/** Of `live`, the words still worth showing: on a replaced question, only until something down
+ *  its chain rules (owner, P1.3 "Read on D1", limited by P3.3). */
+const surfacing = (byId: Map<string, FoldedDecision>, d: FoldedDecision): FoldedAnswer[] =>
+  live(d).filter((p) => !d.replacedBy || !chainRuled(byId, d, p.verified));
+
 /** The words a confirm asks about, if they are still an answer here. */
 export function confirmedWords(byId: Map<string, FoldedDecision>, c: FoldedDecision): { d: FoldedDecision; a: FoldedAnswer } | undefined {
   if (!c.confirms) return undefined;
@@ -860,11 +865,14 @@ export interface Superseding { answer: string; words: string; state: "unread" | 
  * decision — and every finding it names — is marked possibly superseded until they are bound,
  * or a later verified answer rules.
  */
-export function possiblySuperseded(d: FoldedDecision): Superseding[] {
+export function possiblySuperseded(d: FoldedDecision, byId: Map<string, FoldedDecision>): Superseding[] {
   const a = standing(d);
   // A confirm's own words are read like any reply, and there is no confirm of a confirm.
-  if (!a || d.replacedBy || d.confirms) return [];
-  return live(d).filter((p) => p.verified).map((p) => ({
+  if (!a || d.confirms) return [];
+  // A replaced question's ruling still holds (B2.4), so words that may overturn it flag it —
+  // until the replacement rules.
+  const words = surfacing(byId, d);
+  return words.filter((p) => p.verified).map((p) => ({
     answer: p.id, words: p.words,
     state: !p.reading ? "unread" as const : p.reading.unclear ? "unclear" as const : "disputed" as const,
     ...(p.rejected ? { rejected: p.rejected } : {}),
@@ -931,6 +939,13 @@ export function waitingOnMe(s: SharedDecisions, today: string): WaitingItem[] {
       for (const r of a?.ruled ?? []) {
         const b = successorOf(byId, d, a!, r.finding).blocker;
         if (b && !listed.has(b.id)) { listed.add(b.id); out.push({ decision: b.id, round: b.round, ref: b.ref, why: `an unconfirmed answer arrived after your ruling on ${d.ref} (${d.round})` }); }
+      }
+      // Your words on it, given before it was replaced, still count on it (A4) — shown beside
+      // the replacement until that rules (owner, P1.3).
+      const by = byId.get(d.replacedBy)?.ref ?? d.replacedBy;
+      for (const p of surfacing(byId, d)) {
+        const state = !p.reading ? "not read yet" : p.reading.unclear ? `the reader could not tell which question they answer: ${p.reading.unclear}` : p.reading.agree ? "" : "read two different ways";
+        out.push({ decision: d.id, round: d.round, ref: d.ref, why: `your words on ${d.ref}, given before it was replaced by ${by}, are not bound yet ("${p.words}"${state ? `: ${state}` : ""})${p.rejected?.length ? " — you said a reading of them was not what you meant" : ""}` });
       }
       continue;
     }
@@ -1000,8 +1015,8 @@ export function awaitingReading(s: SharedDecisions): Unread[] {
   const out: Unread[] = [];
   const byId = new Map(s.decisions.map((x) => [x.id, x]));
   for (const d of s.decisions) {
-    if (d.replacedBy || d.kind === "words" || confirmState(byId, d) === "no longer needed") continue;
-    for (const x of live(d)) {
+    if (d.kind === "words" || confirmState(byId, d) === "no longer needed") continue;
+    for (const x of surfacing(byId, d)) {
       if (x.reading) continue;
       out.push({ decision: d.id, round: d.round, ref: d.ref, answer: x.id, words: x.words });
     }
@@ -1016,8 +1031,8 @@ export function readingsInDispute(s: SharedDecisions): Disputed[] {
   const out: Disputed[] = [];
   const byId = new Map(s.decisions.map((x) => [x.id, x]));
   for (const d of s.decisions) {
-    if (d.replacedBy || confirmState(byId, d) === "no longer needed") continue;
-    for (const p of live(d)) {
+    if (confirmState(byId, d) === "no longer needed") continue;
+    for (const p of surfacing(byId, d)) {
       if (p.reading && !p.reading.agree && !p.reading.unclear) {
         out.push({ decision: d.id, round: d.round, ref: d.ref, answer: p.id, words: p.words, reader: fmt(s, p.reading.reader.maps), session: p.reading.session.reading || fmt(s, p.reading.session.maps) });
       }
@@ -1135,8 +1150,9 @@ export function heldFindings(s: SharedDecisions, isOpen: (finding: string) => bo
  *  on the queues and catalogues that never withholds (owner, S0.8(a)). */
 export function supersededFindings(s: SharedDecisions): Map<string, { decision: string; words: string[] }[]> {
   const out = new Map<string, { decision: string; words: string[] }[]>();
+  const byId = new Map(s.decisions.map((x) => [x.id, x]));
   for (const d of s.decisions) {
-    const p = possiblySuperseded(d);
+    const p = possiblySuperseded(d, byId);
     if (!p.length) continue;
     for (const f of named(d)) out.set(f, [...(out.get(f) ?? []), { decision: d.id, words: p.map((x) => x.words) }]);
   }

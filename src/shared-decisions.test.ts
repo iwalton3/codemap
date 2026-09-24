@@ -55,8 +55,12 @@ const fold = (evs: any[]) => {
     }
   }
   const out = foldDecisions([round, ...evs]);
+  folded = new Map(out.decisions.map((d) => [d.id, d]));
   return { out, b: Object.fromEntries(out.decisions.map((d) => [d.id, d])) as B };
 };
+/** The decisions of the latest fold, which `possiblySuperseded` walks down replacement chains. */
+let folded = new Map<string, FoldedDecision>();
+const sup = (d: FoldedDecision) => possiblySuperseded(d, folded);
 const dump = (b: B, out: SharedDecisions) => JSON.stringify(Object.fromEntries(Object.entries(b).map(([k, d]) => [k, { answers: d.answers, replacedBy: d.replacedBy }])), null, 1).slice(0, 3000) + JSON.stringify(out.questions).slice(0, 600);
 const run = (name: string, extra: () => any[], check: (b: B, out: SharedDecisions) => boolean) => test(name, () => {
   n = 1;
@@ -112,7 +116,7 @@ const rules = (d: FoldedDecision, f: string, on: string) => ruled(d).some((r) =>
 const waits = (out: SharedDecisions, id: string, re?: RegExp, today = "2026-09-23") => waitingOnMe(out, today).some((w) => w.decision === id && (!re || re.test(w.why)));
 const held = (out: SharedDecisions, f: string, why?: string, isOpen = (_: string) => true) => (heldFindings(out, isOpen).get(f) ?? []).some((x) => !why || x.why === why);
 const since = (out: SharedDecisions, f: string) => (heldFindings(out, () => true).get(f) ?? []).map((x) => x.since);
-const flagged = (d: FoldedDecision) => possiblySuperseded(d).length > 0;
+const flagged = (d: FoldedDecision) => sup(d).length > 0;
 
 // --- what an answer rules
 
@@ -247,16 +251,16 @@ run("c2: a verified copy onto D2 is not displaced by an agent's later unverified
 // --- plan A3: words that may overturn a ruling flag it, and the ruling stands
 
 run("P4.1: a click, then unread words — the click stands, D1 and every finding it names are flagged", () => [page(d1, { option: "Settle" }), msg(d1, "D1 — hmm, not sure anymore")],
-  (b, out) => rules(b.d1!, "F3", "settle") && flagged(b.d1!) && possiblySuperseded(b.d1!)[0]!.state === "unread"
+  (b, out) => rules(b.d1!, "F3", "settle") && flagged(b.d1!) && sup(b.d1!)[0]!.state === "unread"
     && supersededFindings(out).has("F3") && supersededFindings(out).has("F7") && awaitingReading(out).length === 1);
 run("P4.1: ...read as unclear — the click still stands, flagged, and it waits on you", () => {
   const P = page(d1, { option: "Settle" }), M = msg(d1, "D1 — hmm");
   return [P, M, reading(M, [], [{ decision: "d1", option: "No" }], { unclear: "not an answer to anything" })];
-}, (b, out) => rules(b.d1!, "F3", "settle") && possiblySuperseded(b.d1!)[0]!.state === "unclear" && waits(out, "d1", /could not tell/));
+}, (b, out) => rules(b.d1!, "F3", "settle") && sup(b.d1!)[0]!.state === "unclear" && waits(out, "d1", /could not tell/));
 run("P4.1: ...read two ways — flagged, and in dispute", () => {
   const P = page(d1, { option: "Settle" }), M = msg(d1, "D1 — hmm");
   return [P, M, reading(M, [{ decision: "d1", option: "No" }], [{ decision: "d1", option: "Settle" }])];
-}, (b, out) => rules(b.d1!, "F3", "settle") && possiblySuperseded(b.d1!)[0]!.state === "disputed" && readingsInDispute(out).length === 1);
+}, (b, out) => rules(b.d1!, "F3", "settle") && sup(b.d1!)[0]!.state === "disputed" && readingsInDispute(out).length === 1);
 run("P4.1: ...bound to another option — it rules, and the flag clears", () => {
   const P = page(d1, { option: "Settle" }), M = msg(d1, "D1 — no");
   return [P, M, reading(M, [{ decision: "d1", option: "No" }])];
@@ -294,7 +298,7 @@ withConfirm("S0.1: Yes on the agent's own reading of unread words binds it — a
   (b, out) => standing(b.d1!)!.options[0] === "No" && standing(b.d1!)!.givenAt === at(3) && !!standing(b.d1!)!.confirmed && !flagged(b.d1!) && !held(out, "F3", "ruled")
     && !(heldFindings(out, () => true).get("F3") ?? []).some((h) => h.decision === "c1") && !waits(out, "c1"));
 withConfirm("S0.2: No — the rejected reading is recorded, the old ruling stands, flagged, and you are asked to answer again", clicked, "d1", leave, CONFIRM_NO,
-  (b, out) => rules(b.d1!, "F3", "settle") && flagged(b.d1!) && possiblySuperseded(b.d1!)[0]!.rejected?.length === 1 && waits(out, "d1", /not what you meant/));
+  (b, out) => rules(b.d1!, "F3", "settle") && flagged(b.d1!) && sup(b.d1!)[0]!.rejected?.length === 1 && waits(out, "d1", /not what you meant/));
 withConfirm("the discussion: Other on a confirm is words on the confirm, read by a reader like any reply — it binds nothing about the original words", clicked, "d1", leave, "I meant fix F7 only",
   (b, out) => rules(b.d1!, "F3", "settle") && flagged(b.d1!) && b.c1!.answers.some((a) => a.words === "I meant fix F7 only" && a.free)
     && awaitingReading(out).some((u) => u.decision === "c1" && u.words === "I meant fix F7 only") && !standing(b.d1!)!.confirmed);
@@ -804,6 +808,26 @@ run("...and the later answer takes it over", () => {
 run("H6.4: of two replacements from two clones the first in log order replaces; the second is live and flagged", () =>
   [post("R1b", [d1b]), post("R1x", [reask(d1b, "d1x", "D8", "R1x")])],
   (b, out) => b.d1!.replacedBy === "d1b" && b.d1x!.replaceLost === "d1b" && waits(out, "d1x", /conflicting replacement/) && waits(out, "d1x", /not answered/));
+
+// --- R13 (owner, P1.3 "Read on D1"): words typed on D1 before it was replaced
+
+/** Words typed on d1 half a second before d1b replaced it — and recorded after that. */
+const onReplaced = (...more: ((M: any) => any[])[]) => {
+  const R = post("R1b", [d1b]), M = msg(d1, "close it", "u1", new Date(Date.parse(R.at) - 500).toISOString());
+  return [R, M, ...more.flatMap((f) => f(M))];
+};
+run("R13: unread, they wait for a reader and show beside the replacement", () => onReplaced(),
+  (b, out) => b.d1!.replacedBy === "d1b" && awaitingReading(out).some((u) => u.decision === "d1") && waits(out, "d1", /given before it was replaced by D7/) && waits(out, "d1b", /not answered/));
+run("R13: read two ways, they are in dispute", () => onReplaced((M) => [reading(M, [{ decision: "d1", option: "Settle" }], [{ decision: "d1", option: "No" }])]),
+  (b, out) => readingsInDispute(out).some((x) => x.decision === "d1") && waits(out, "d1", /read two different ways/));
+run("R13: bound onto D1, they rule D1 as of when typed and hold F3 until D1b is answered (B2.4)", () => onReplaced((M) => [reading(M, [{ decision: "d1", option: "Settle" }])]),
+  (b, out) => rules(b.d1!, "F3", "settle") && held(out, "F3", "ruled") && ruledNotCarriedOut(out, () => true).some((u) => u.decision === "d1" && u.replacedBy === "d1b") && !awaitingReading(out).length);
+run("R13: a ruling on D1 they may overturn is flagged", () => [page(d1, { option: "Settle" }), ...onReplaced()],
+  (b, out) => flagged(b.d1!) && supersededFindings(out).has("F3"));
+run("R13 + P3.3: once D1b rules, the words leave every list", () => [page(d1, { option: "Settle" }), ...onReplaced(() => [page(d1b, { option: "No" })])],
+  (b, out) => !awaitingReading(out).length && !waits(out, "d1") && !flagged(b.d1!) && !readingsInDispute(out).length);
+run("R13: ...but an unverified answer on D1b does not end them", () => onReplaced(() => [unv(d1b, "no")]),
+  (b, out) => awaitingReading(out).some((u) => u.decision === "d1"));
 
 // --- S0.4: when a hold began
 

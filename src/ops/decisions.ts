@@ -116,7 +116,7 @@ export async function postPrevalidated(root: string, b: Bound, r: NewRound, prev
 
 /** Every decision whose ruling verified words may yet overturn (plan A3). */
 const superseding = (s: SharedDecisions) => s.decisions.flatMap((d) => {
-  const p = possiblySuperseded(d);
+  const p = possiblySuperseded(d, new Map(s.decisions.map((x) => [x.id, x])));
   return p.length ? [{ decision: d.id, round: d.round, ref: d.ref, words: p }] : [];
 });
 
@@ -153,7 +153,7 @@ export async function decisionRound(root: string, id: string) {
     ...v.status,
     round,
     decisions: s.decisions.filter(mine).map((d) => ({
-      ...d, standing: standing(d) ?? null, possiblySuperseded: possiblySuperseded(d),
+      ...d, standing: standing(d) ?? null, possiblySuperseded: possiblySuperseded(d, byId),
       ...(d.confirms ? { confirm: { state: confirmState(byId, d)!, of: confirmedWords(byId, d)?.d.ref ?? null } } : {}),
     })),
     held: findings.map((finding) => ({ finding, ...v.mark(finding) })).filter((h) => h.held || h.possiblySuperseded),

@@ -594,6 +594,28 @@ test("confirm_reading refuses what the fold would void, and a replacement of a c
   } finally { u.cleanup(); }
 });
 
+test("GATE (vanishing) / R13: words typed on D1 before it was replaced, relayed after, are read on D1 — and can be confirmed", async () => {
+  const u = await universe();
+  try {
+    const f = await withFinding(u);
+    await asAgent(async () => {
+      await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f)] });
+      const t = transcript(u.transcripts);
+      t.typed("m1", "close it", later(0.02));
+      await new Promise((r) => setTimeout(r, 60));
+      await postRound(u.root, { round: { id: "R2", source: "x" }, decisions: [{ ...decision("d1b", f, {}, "D7", "R2"), supersedes: "d1" }] });
+      const a = (await relayAnswer(u.root, { round: "R1", decision: "d1", session: SESSION, entryId: "m1" }, {}, u.transcripts) as any).answer;
+      const view = await decisionRounds(u.root) as any;
+      assert.ok(view.awaitingReading.some((x: any) => x.decision === "d1" && x.answer === a), JSON.stringify(view.awaitingReading));
+      assert.ok(view.waitingOnYou.some((w: any) => w.decision === "d1" && /given before it was replaced by D7/.test(w.why)));
+      assert.match(await briefOf(u.root, a), /^D1: /m, "the brief offers D1: posted before the words, replaced after");
+      const c = await confirmReading(u.root, { answer: a, maps: [{ decision: "d1", option: "Not a defect" }] }) as any;
+      assert.equal(c.ok, true, JSON.stringify(c));
+      assert.equal(c.round, "R1");
+    });
+  } finally { u.cleanup(); }
+});
+
 test("Q14 / H7.14: a decisions log that cannot be read is blocked, not 'nothing waits on you', and writes on it refuse", async () => {
   const u = await universe();
   try {
