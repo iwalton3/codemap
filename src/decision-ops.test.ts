@@ -20,10 +20,10 @@ import { db as openDb } from "./db.js";
 import type { State } from "./schema.js";
 import { shareFinding, closeFinding, bindDecisions, reassignFinding, sharedFindings } from "./ops-shared.js";
 import { reviewQueue } from "./ops/annotations.js";
-import { postRound, postPrevalidated, logQuestion, relayAnswer, answerDirect, decisionRounds, decisionRound, readerBrief, recordReading, confirmReading, parseVerdict } from "./ops/decisions.js";
+import { postRound, postPrevalidated, logQuestion, relayAnswer, answerDirect, decisionRounds, decisionRound, readerBrief, recordReading, confirmReading, parseVerdict, confirmId } from "./ops/decisions.js";
 import { discard } from "./test-tmp.js";
 import { decisionsView, holdBuilds } from "./ops/decision-holds.js";
-import { decisionScope, foldDecisions, logQuestionEvent, recordReadingEvent } from "./shared-decisions.js";
+import { decisionScope, foldDecisions, logQuestionEvent, postConfirmEvent, recordReadingEvent } from "./shared-decisions.js";
 
 const state: State = { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State;
 const SRC = "export function creditLine(cents) {\n  return cents * 2;\n}\n";
@@ -817,6 +817,39 @@ const otherEvents = (side: string): number => {
   walk(side);
   return n;
 };
+
+test("Q2.3 (1) (A1): another clone's differently worded confirm of the same reading is its own decision — a Yes on it binds", async () => {
+  const u = await universe();
+  try {
+    const f = await withFinding(u);
+    await asAgent(async () => { await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f)] }); });
+    await asPerson(async () => { await answerDirect(u.root, { decision: "d1", option: "Not a defect" }); });
+    await asAgent(async () => {
+      const t = transcript(u.transcripts);
+      t.typed("m1", "D1 wait, it is real", later(1));
+      const a = (await relayAnswer(u.root, { round: "R1", decision: "d1", session: SESSION, entryId: "m1" }, {}, u.transcripts) as any).answer;
+      const maps = [{ decision: "d1", option: "Real, fix it" }];
+      const c = await confirmReading(u.root, { answer: a, maps }) as any;
+      assert.equal(c.ok, true, JSON.stringify(c));
+      assert.equal(c.confirm, confirmId(a, { kind: "options", payload: c.ask, options: c.ask.options.map((o: any) => ({ label: o.label, effects: [] })) }), "the op derives the id from the text it posts");
+      // Another clone, on a build that words the confirm differently, posts the same reading.
+      const b = bindDecisions(u.root, {});
+      if ("error" in b) throw new Error(b.error);
+      const payload = { ...c.ask, question: c.ask.question.replace("is that what you meant?", "did you mean this?") };
+      const posted = { round: "R1", ref: c.ref, kind: "options" as const, payload, options: payload.options.map((o: any) => ({ label: o.label, effects: [] })), confirms: { answer: a, readings: [maps] } };
+      const other = { id: confirmId(a, posted), ...posted };
+      assert.notEqual(other.id, c.confirm);
+      await postConfirmEvent(b.cfg.path, b.cfg.universe, b.actor, other);
+      t.ask("toolu_o", [payload], { [payload.question]: "Yes" }, later(2));
+      await logQuestion(u.root, { toolUseId: "toolu_o", round: "R1" }, {}, u.transcripts);
+      const round = await decisionRound(u.root, "R1") as any;
+      const d = round.decisions.find((x: any) => x.id === "d1");
+      assert.equal(d.standing.id, a, JSON.stringify(round.decisions.map((x: any) => [x.id, x.answers.length, x.confirm])));
+      assert.ok(d.standing.ruled.some((x: any) => x.finding === f && x.on === "unblock"));
+      assert.equal(round.decisions.find((x: any) => x.id === other.id)?.confirm.state, "answered");
+    });
+  } finally { u.cleanup(); }
+});
 
 test("GATE (impl-2, overwritten): a confirm's Yes on words older than a later pick leaves the pick standing", async () => {
   const u = await universe();

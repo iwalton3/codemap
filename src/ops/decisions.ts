@@ -404,6 +404,11 @@ export async function recordReading(root: string, input: { answer: string; reade
   };
 }
 
+/** A confirm's id, from the words and its whole posted text: two clones' wordings of one reading
+ *  are two decisions, so an answer bound to one is never dropped for the other (Q2.3 (1)). */
+export const confirmId = (answer: string, d: Pick<Decision, "kind" | "payload" | "options">): string =>
+  `cf_${createHash("sha256").update(`${answer}\0${decisionHash(d)}`).digest("hex").slice(0, 16)}`;
+
 /**
  * Post the confirm-this-reading question for words a ruling may not yet reflect (the impl-2
  * discussion; P2.1 (1)): a decision in the words' own round, with codemap's text, which holds
@@ -449,9 +454,8 @@ export async function confirmReading(root: string, input: { answer: string; maps
   if (open) return { ok: true, confirm: open.id, ref: open.ref, round: open.round, ask: open.payload, existing: true, note: `already posted: ask it verbatim, then log_question the call with round ${d.round}` };
   const ref = `D${Math.max(0, ...s.decisions.filter((y) => y.round === d.round).map((y) => Number(y.ref.slice(1)))) + 1}`;
   const payload = confirmPayload(byId, d, a, readings, ref);
-  // Derived from what it asks, so two clones posting the same confirm post one decision.
-  const id = `cf_${createHash("sha256").update(`${a.id}\0${key}\0${ref}`).digest("hex").slice(0, 16)}`;
-  const decision = { id, round: d.round, ref, kind: "options" as const, payload, options: payload.options.map((o) => ({ label: o.label, effects: [] })), confirms: { answer: a.id, readings } };
+  const posted = { round: d.round, ref, kind: "options" as const, payload, options: payload.options.map((o) => ({ label: o.label, effects: [] })), confirms: { answer: a.id, readings } };
+  const id = confirmId(a.id, posted), decision = { id, ...posted };
   const bad = checkDecision(decision);
   if (bad) return { error: `the confirm could not be posted: ${bad}` };
   await postConfirmEvent(b.cfg.path, b.cfg.universe, b.actor, decision);

@@ -416,6 +416,12 @@ test("Q2.3 (2) (C1): an open confirm offering 'D1 → (none)' holds D1's finding
   const { b, out } = fold([...evs, C]);
   assert.ok(stateOf(out, "c1") === "open" && ["F3", "F7"].every((f) => (heldFindings(out, () => true).get(f) ?? []).some((h) => h.decision === "c1" && h.why === "undecided" && h.since === b.c1!.postedAt)), dump(b, out));
 });
+test("Q2.3 (1) (F6): one reading given in two orders is one confirm text", () => {
+  n = 1;
+  const evs = [msg(d1, "no on D1, A on D4")], { b } = fold(evs), a = b.d1!.answers[0]!;
+  const m: Mapping[] = [{ decision: "d1", option: "No" }, { decision: "d4", option: "A" }];
+  assert.equal(confirmPayload(folded, b.d1!, a, [m], "D9").question, confirmPayload(folded, b.d1!, a, [[...m].reverse()], "D9").question);
+});
 test("a confirm is never replaced: a posting that names one as replaced is kept, and replaces nothing", () => {
   n = 1;
   const evs = clicked(), first = fold(evs), a = first.b.d1!.answers.at(-1)!.id;

@@ -256,7 +256,8 @@ function actionLine(t: Pick<Decision, "ref" | "kind" | "options">, picks: (strin
  * the person's own words, read like any reply), or the two readings of a dispute as options.
  */
 export function confirmPayload(decisions: Map<string, FoldedDecision>, d: FoldedDecision, a: FoldedAnswer, readings: Mapping[][], ref: string): AskedQuestion {
-  const rendered = readings.map((r) => [...byDecision(r)].map(([id, picks]) => actionLine(decisions.get(id)!, picks)));
+  // Lines in one order whatever order the reading was given in, so one reading is one text.
+  const rendered = readings.map((r) => [...byDecision([...r].sort((x, y) => mapsKey([x]).localeCompare(mapsKey([y]))))].map(([id, picks]) => actionLine(decisions.get(id)!, picks)));
   // JSON-quoted, so words with a newline stay on one line and cannot pass for an action line.
   const words = `You typed at ${a.givenAt}:\n${JSON.stringify(a.words)}`;
   if (readings.length === 1) {
