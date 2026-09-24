@@ -370,6 +370,45 @@ test("P3.3: once the words are moot, an open confirm stops holding and waiting, 
   assert.equal(confirmState(byId, b.c1!), "no longer needed");
   assert.ok(!waits(out, "c1") && !(heldFindings(out, () => true).get("F3") ?? []).some((h) => h.decision === "c1") && !!b.c1, dump(b, out));
 });
+// --- Q1.3 (owner, "The request only"): a confirm's state describes the request
+
+const stateOf = (out: SharedDecisions, id: string) => confirmState(new Map(out.decisions.map((d) => [d.id, d])), out.decisions.find((d) => d.id === id)!);
+test("Q1.3 (F9): a late Yes on a confirm no longer needed answers it, binds, and changes no standing answer", () => {
+  n = 1;
+  const evs = [...clicked(), ...others()], first = fold(evs), a = first.b.d1!.answers.at(-1)!.id;
+  const C = confirmOf(first.b, "d1", a, leave), later = page(d1, { option: "Settle" }), yes = call(C.data.decision, CONFIRM_YES);
+  const { b, out } = fold([...evs, C, later, ...yes]);
+  assert.ok(stateOf(out, "c1") === "answered" && standing(b.d1!)!.options[0] === "Settle" && !!b.d1!.answers.find((x) => x.id === a)!.confirmed && !waits(out, "c1"), dump(b, out));
+});
+test("Q1.3 (A3, F10): words typed on a confirm after a No never reopen it — read as nothing on it, it stays answered and holds nothing", () => {
+  n = 1;
+  const evs = clicked(), first = fold(evs), a = first.b.d1!.answers.at(-1)!.id;
+  const C = confirmOf(first.b, "d1", a, leave), no = call(C.data.decision, CONFIRM_NO);
+  const other = page(C.data.decision, { words: "nothing" });
+  const mid = fold([...evs, C, ...no, other]), w = mid.b.c1!.answers.find((x) => x.free)!;
+  const R = reading(w, [{ decision: "c1", option: null }]);
+  for (const order of [[...evs, C, ...no, other, R], [...evs, C, other, R, ...no]]) {
+    const { b, out } = fold(order);
+    assert.ok(standing(b.c1!)!.nothing && stateOf(out, "c1") === "answered" && !(heldFindings(out, () => true).get("F3") ?? []).some((h) => h.decision === "c1")
+      && !waits(out, "c1") && waits(out, "d1", /not what you meant/), dump(b, out));
+  }
+});
+both("Q1.3 (A2, F5/F7): a confirm no longer needed still sends its own typed words to a reader while they could change something", () => {
+  n = 1;
+  const evs = clicked(), first = fold(evs), a = first.b.d1!.answers.at(-1)!.id;
+  // D4 answered between the original words and the reply: the original words become moot, the reply does not.
+  const C = confirmOf(first.b, "d1", a, leave), d4B = page(d4, { option: "B" }), other = call(C.data.decision, "Actually A on D4"), later = page(d1, { option: "Settle" });
+  const O = others().slice(0, 2);
+  return { first: [...evs, C, d4B, ...other, later, ...O], second: [...evs, C, later, ...O, d4B, ...other] };
+}, (b, out) => stateOf(out, "c1") === "no longer needed" && awaitingReading(out).some((u) => u.decision === "c1" && u.words === "Actually A on D4") && !waits(out, "c1", /confirm what/));
+test("Q2.3 (4) (A4, F13): a confirm of words never recorded is not one codemap can verify — it waits on you and binds nothing; a cut target is no longer needed", () => {
+  n = 1;
+  const evs = clicked(), first = fold(evs), a = first.b.d1!.answers.at(-1)!.id;
+  const C = confirmOf(first.b, "d1", a, leave);
+  C.data.decision.confirms.answer = "never-existed";
+  const { b, out } = fold([...evs, C]);
+  assert.ok(stateOf(out, "c1") === "unverifiable" && b.c1!.confirms!.never && waitingOnMe(out, "2026-09-23").filter((w) => w.decision === "c1").length === 1, dump(b, out));
+});
 test("a confirm is never replaced: a posting that names one as replaced is kept, and replaces nothing", () => {
   n = 1;
   const evs = clicked(), first = fold(evs), a = first.b.d1!.answers.at(-1)!.id;
