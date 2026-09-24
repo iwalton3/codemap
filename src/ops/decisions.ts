@@ -13,7 +13,7 @@ import { isAgentActor } from "../identity.js";
 import { bindDecisions, type Bound, type Via } from "../ops-shared.js";
 import { lookupFinding } from "../store.js";
 import {
-  CONFIRM_NO, CONFIRM_YES, checkDecision, confirmPayload, confirmTarget, decisionHash, logQuestionEvent, possiblySuperseded, postRoundEvent,
+  CONFIRM_NO, CONFIRM_YES, NONE, checkDecision, confirmPayload, confirmTarget, decisionHash, logQuestionEvent, mapsKey, named, possiblySuperseded, postRoundEvent, validMaps,
   readingsInDispute, recordAnswerEvent, recordReadingEvent, ruledNotCarriedOut, standing, waitingOnMe, awaitingReading, parked,
   type AnswerVia, type FoldedDecision, type Mapping, type SharedDecisions,
 } from "../shared-decisions.js";
@@ -143,7 +143,7 @@ export async function decisionRound(root: string, id: string) {
   const round = s.rounds.find((r) => r.id === id);
   if (!round) return { error: `no round ${id}`, ...v.status };
   const mine = (x: { round: string }) => x.round === id;
-  const findings = [...new Set(s.decisions.filter(mine).flatMap((d) => d.options.flatMap((o) => o.effects.flatMap((e) => e.findings))))];
+  const findings = [...new Set(s.decisions.filter(mine).flatMap(named))];
   return {
     ...v.status,
     round,
@@ -298,7 +298,6 @@ export async function relayAnswer(root: string, input: { round: string; decision
 
 const ARROW = /^\s*(D\d+)\s*(?:→|->)\s*(.+?)\s*$/;
 const UNCLEAR = /^\s*unclear:\s*(.+?)\s*$/i;
-const NONE = "(none)";
 
 /**
  * The reader's verdict, from its own report (owner, P2.1 + S0.8(c)): one line per pick,
@@ -346,8 +345,8 @@ export async function recordReading(root: string, input: { answer: string; reade
   if (!a.free) return { error: `answer ${a.id} is not words waiting for a reading` };
   // Never read (H6.8): after a verified ruling, unconfirmed words are shown to the person, not bound.
   if (!a.verified && standing(d)?.verified) return { error: `answer ${a.id} is unconfirmed and came after ${d.ref}'s verified ruling: it is shown to the person, never read` };
-  const sm = input.session?.maps;
-  if (!Array.isArray(sm) || !sm.every((m) => m && typeof m.decision === "string" && (m.option === null || typeof m.option === "string"))) return { error: "session.maps is your reading: [{ decision, option | null }]" };
+  const sm = validMaps(input.session?.maps);
+  if (!sm) return { error: "session.maps is your reading, at least one line: [{ decision, option | null }]" };
   const agent = readSubagent(typeof input.reader === "string" ? input.reader : "", dir);
   if (isUnverified(agent)) return { ok: false, unverified: agent.unverified, note: "nothing was written: the reader must be a subagent of this machine, launched to read, finished, and passing its own agent id" };
   if (!(Date.parse(agent.launchedAt) > Date.parse(a.givenAt))) return { ok: false, unverified: `subagent ${agent.agentId} was launched at ${agent.launchedAt}, before the words were typed at ${a.givenAt}: it cannot have read them`, note: "nothing was written" };
@@ -388,10 +387,9 @@ export async function confirmReading(root: string, input: { answer: string; maps
   let readings: Mapping[][];
   if (a.reading && !a.reading.agree) readings = [a.reading.reader.maps, a.reading.session.maps];
   else {
-    const maps = input.maps;
-    if (!Array.isArray(maps) || !maps.length) return { error: "give your own reading of their words as maps: [{ decision, option | null }]" };
-    const key = (ms: Mapping[]) => ms.map((m) => `${m.decision}\0${m.option ?? ""}`).sort().join("\n");
-    if ((a.rejected ?? []).some((r) => key(r) === key(maps))) return { error: "the person already said this reading is not what they meant: re-ask the original question" };
+    const maps = validMaps(input.maps);
+    if (!maps) return { error: "give your own reading of their words as maps: [{ decision, option | null }]" };
+    if ((a.rejected ?? []).some((r) => mapsKey(r) === mapsKey(maps))) return { error: "the person already said this reading is not what they meant: re-ask the original question" };
     readings = [maps];
   }
   for (const m of readings.flat()) {

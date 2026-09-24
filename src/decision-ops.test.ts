@@ -410,6 +410,24 @@ test("B1 + B2: the reader's verdict is read from its own hand-back — a mis-cop
   } finally { u.cleanup(); }
 });
 
+test("R5 (P2.1 (3)): an empty session reading is refused before anything is written", async () => {
+  const u = await universe();
+  try {
+    const f = await withFinding(u);
+    await asAgent(async () => {
+      await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f)] });
+      const t = transcript(u.transcripts);
+      t.typed("m1", "whatever", later(1));
+      const a = (await relayAnswer(u.root, { round: "R1", decision: "d1", session: SESSION, entryId: "m1" }, {}, u.transcripts) as any).answer;
+      const reader = nextReader(); t.reader(reader, "D1 → Real, fix it");
+      assert.match(String(err(await recordReading(u.root, { answer: a, reader, session: { maps: [] } }, {}, u.transcripts))), /at least one line/);
+      const d = (await decisionRound(u.root, "R1") as any).decisions[0];
+      assert.ok(d.answers[0].free && !d.answers[0].reading, "nothing was written: the words still wait");
+      assert.equal((await decisionRounds(u.root) as any).awaitingReading.length, 1);
+    });
+  } finally { u.cleanup(); }
+});
+
 test("S0.1 + S0.2: confirm_reading issues the exact question; Yes binds the agent's reading as of when the words were typed", async () => {
   const u = await universe();
   try {

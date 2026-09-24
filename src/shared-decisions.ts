@@ -195,7 +195,7 @@ export function checkDecision(d: Decision): string | null {
 const CONFIRM = "Confirm reading of answer ";
 export const CONFIRM_YES = "Yes";
 export const CONFIRM_NO = "No — ask me again";
-const NONE = "(none)";
+export const NONE = "(none)";
 
 /** What picking `o` on `d` does, as the person reads it in a confirm question. */
 function describe(d: Pick<Decision, "kind" | "options">, o: DecisionOption): string {
@@ -328,8 +328,17 @@ function rule(d: FoldedDecision, a: FoldedAnswer, r: Pick<Resolved, "picked" | "
   }
 }
 
-const validMaps = (m: unknown): Mapping[] | null => Array.isArray(m) && m.every((x) => x && typeof x === "object" && str(x.decision) && (x.option === null || str(x.option)))
+/** A reading of words onto questions: at least one `{ decision, option | null }` (P2.1 (3)).
+ *  Shared with the ops, so they refuse exactly what the fold drops. */
+export const validMaps = (m: unknown): Mapping[] | null => Array.isArray(m) && m.length > 0 && m.every((x) => x && typeof x === "object" && str(x.decision) && (x.option === null || str(x.option)))
   ? (m as Mapping[]) : null;
+
+/** A reader's verdict: a reading, or — only when it says unclear — nothing. */
+export const validVerdict = (m: unknown, unclear: unknown): Mapping[] | null =>
+  str(unclear) ? (Array.isArray(m) && !m.length ? [] : null) : validMaps(m);
+
+/** Two readings are the same reading when they map the same lines, in any order. */
+export const mapsKey = (ms: Mapping[]): string => ms.map((m) => `${m.decision}\0${m.option ?? ""}`).sort().join("\n");
 
 /** `d`'s replacement, if it has one, and when it was posted (undefined if that time is unknown). */
 const replacement = (d: FoldedDecision, decisions: Map<string, FoldedDecision>): { at: number | undefined } | undefined => {
@@ -461,7 +470,7 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
         const answer = str(data?.answer), agent = str(data?.reader?.agent);
         // A reading without codemap's own parse of the reader's verdict is dropped (S0.7, H7.12):
         // it carries the mapping the session passed in, which is how a mis-copy once bound.
-        if (!answer || !agent || !validMaps(data.reader.verdict) || !str(data.reader.launchedAt) || !str(data.reader?.verified?.session)
+        if (!answer || !agent || !validVerdict(data.reader.verdict, data.reader.unclear) || !str(data.reader.launchedAt) || !str(data.reader?.verified?.session)
           || !validMaps(data.session?.maps)) break;
         // One reading per answer, and one answer per reader (S0.8(c)): the first in the log.
         if (readings.has(answer) || (readerUsed.has(agent) && readerUsed.get(agent) !== answer)) break;
@@ -514,9 +523,8 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
       const launched = ms(rd.launchedAt);
       if (launched !== undefined && launched > Date.parse(a.givenAt)) {
         const unclear = str(rd.unclear);
-        const maps = validMaps(rd.verdict)!, sm = validMaps(ses.maps)!;
-        const key = (ms: Mapping[]) => ms.map((m) => `${m.decision}\0${m.option ?? ""}`).sort().join("\n");
-        const agree = !unclear && key(maps) === key(sm);
+        const maps = validVerdict(rd.verdict, rd.unclear)!, sm = validMaps(ses.maps)!;
+        const agree = !unclear && mapsKey(maps) === mapsKey(sm);
         if (unclear || !agree || canBind(decisions, d, a, maps)) {
           a.reading = {
             id: r.e.id, agree,
@@ -817,7 +825,8 @@ export function parked(s: SharedDecisions, today: string): Parked[] {
   return out;
 }
 
-const named = (d: FoldedDecision): string[] => [...new Set(d.options.flatMap((o) => o.effects.flatMap((e) => e.findings)))];
+/** Every finding a decision's options act on. */
+export const named = (d: Pick<Decision, "options">): string[] => [...new Set(d.options.flatMap((o) => o.effects.flatMap((e) => e.findings)))];
 
 export interface Unread { decision: string; round: string; ref: string; answer: string; words: string }
 

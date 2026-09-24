@@ -133,7 +133,7 @@ run("a message typed for another round binds to nothing", () => { const e = msg(
 run("the same message relayed twice to one decision records it once", () => [msg(d1, "D1 A", "u1"), msg(d1, "D1 A", "u1")], (b) => b.d1!.answers.length === 1);
 run("a reader that cannot tell which question the words answer binds nothing, and it waits for you", () => {
   const A = msg(d1, "yes that one");
-  return [A, reading(A, [], [], { unclear: "two questions were open and the session asked neither just before" })];
+  return [A, reading(A, [], [{ decision: "d1", option: "Settle" }], { unclear: "two questions were open and the session asked neither just before" })];
 }, (b, out) => !ruled(b.d1!).length && waits(out, "d1", /could not tell which question/) && !readingsInDispute(out).length && !awaitingReading(out).length);
 run("B1.4: an identical question in another round does not take the answer — R1's ruling stands", () => {
   const r2 = reask(d1, "d1x", "D1", "R2");
@@ -241,7 +241,7 @@ run("P4.1: a click, then unread words — the click stands, D1 and every finding
     && supersededFindings(out).has("F3") && supersededFindings(out).has("F7") && awaitingReading(out).length === 1);
 run("P4.1: ...read as unclear — the click still stands, flagged, and it waits on you", () => {
   const P = page(d1, { option: "Settle" }), M = msg(d1, "D1 — hmm");
-  return [P, M, reading(M, [], [], { unclear: "not an answer to anything" })];
+  return [P, M, reading(M, [], [{ decision: "d1", option: "No" }], { unclear: "not an answer to anything" })];
 }, (b, out) => rules(b.d1!, "F3", "settle") && possiblySuperseded(b.d1!)[0]!.state === "unclear" && waits(out, "d1", /could not tell/));
 run("P4.1: ...read two ways — flagged, and in dispute", () => {
   const P = page(d1, { option: "Settle" }), M = msg(d1, "D1 — hmm");
@@ -392,6 +392,14 @@ run("S0.8(c): one reader reads one answer — its second reading binds nothing",
   R2.data.reader.agent = R1.data.reader.agent;
   return [M1, M2, R1, R2];
 }, (b) => rules(b.d1!, "F3", "settle") && !standing(b.d4!));
+run("R5 (P2.1 (3)): an empty reading consumes nothing — the words still wait for a reader", () => {
+  const M = msg(d1, "whatever");
+  return [M, reading(M, [], [])];
+}, (b, out) => b.d1!.answers[0]!.free && !b.d1!.answers[0]!.elsewhere && !b.d1!.answers[0]!.reading && awaitingReading(out).length === 1);
+run("R5: ...and so does an unclear reading whose session side is empty", () => {
+  const M = msg(d1, "whatever");
+  return [M, reading(M, [], [], { unclear: "no idea" })];
+}, (b, out) => !b.d1!.answers[0]!.reading && awaitingReading(out).length === 1);
 run("S0.7: a reading in the old shape — the session's copy of the reader's maps — binds nothing", () => {
   const M = msg(d1, "D1 settle");
   return [M, ev("decision.reading.recorded", { answer: M.id, reader: { transcript: "aREADER00000000", reading: "r", maps: [{ decision: "d1", option: "Settle" }], verified: { session: "s", toolUseId: "t" } }, session: { reading: "r", maps: [{ decision: "d1", option: "Settle" }] } })];
