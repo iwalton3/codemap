@@ -5,7 +5,8 @@
  * whether anything reaches it, and whether what the person sees afterwards is true.
  *
  * The four gates of `.git/triage/2026-09-23-decision-rounds-2-impl-review/plan.md` each have a
- * test here through the paths that plan changed, marked GATE.
+ * test here through the paths that plan changed, marked GATE; so do those of the impl-2 plan
+ * beside it, marked GATE (impl-2).
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -790,3 +791,126 @@ test("P5 (bulk 8–10): posting refuses duplicate ids, a second or chained repla
     });
   } finally { u.cleanup(); }
 });
+
+// --- the four gates, end to end through the impl-2 plan's paths (its Step 10) ---------------
+
+/** Posted, answered on the page, then the person's typed words that may overturn it: the shape
+ *  every confirm starts from. */
+async function flaggedRuling(u: Awaited<ReturnType<typeof universe>>, f: string, text = "D1 hmm, maybe it is real") {
+  await asAgent(async () => { await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f)] }); });
+  await asPerson(async () => { await answerDirect(u.root, { decision: "d1", option: "Not a defect" }); });
+  let a = "";
+  await asAgent(async () => {
+    transcript(u.transcripts).typed("m1", text, later(1));
+    a = (await relayAnswer(u.root, { round: "R1", decision: "d1", session: SESSION, entryId: "m1" }, {}, u.transcripts) as any).answer;
+  });
+  return a;
+}
+/** Every event line in the sidecar outside the decisions log. */
+const otherEvents = (side: string): number => {
+  let n = 0;
+  const walk = (dir: string) => { for (const e of readdirSync(dir, { withFileTypes: true })) {
+    if (e.name === ".git" || e.name === "decisions") continue;
+    const p = join(dir, e.name);
+    if (e.isDirectory()) walk(p); else if (e.name.endsWith(".ndjson")) n += readFileSync(p, "utf8").split("\n").filter(Boolean).length;
+  } };
+  walk(side);
+  return n;
+};
+
+test("GATE (impl-2, overwritten): a confirm's Yes on words older than a later pick leaves the pick standing", async () => {
+  const u = await universe();
+  try {
+    const f = await withFinding(u);
+    const a = await flaggedRuling(u, f);
+    let c: any;
+    await asAgent(async () => { c = await confirmReading(u.root, { answer: a, maps: [{ decision: "d1", option: "Real, fix it" }] }); assert.equal(c.ok, true, JSON.stringify(c)); });
+    await new Promise((r) => setTimeout(r, 1100));   // the click comes after the words were typed
+    await asPerson(async () => { await answerDirect(u.root, { decision: "d1", option: "Not a defect" }); });
+    await asAgent(async () => {
+      transcript(u.transcripts).ask("toolu_c", [c.ask], { [c.ask.question]: "Yes" }, later(2));
+      await logQuestion(u.root, { toolUseId: "toolu_c", round: "R1" }, {}, u.transcripts);
+      const d = (await decisionRound(u.root, "R1") as any).decisions.find((x: any) => x.id === "d1");
+      assert.equal(d.standing.via, "direct", JSON.stringify(d.standing));
+      assert.ok(d.standing.ruled.some((x: any) => x.finding === f && x.on === "settle"), "the later pick stands");
+    });
+  } finally { u.cleanup(); }
+});
+
+test("GATE (impl-2, closed unseen): no confirm path writes a findings event", async () => {
+  const u = await universe();
+  try {
+    const f = await withFinding(u);
+    const a = await flaggedRuling(u, f);
+    const before = otherEvents(u.side);
+    await asAgent(async () => {
+      const c = await confirmReading(u.root, { answer: a, maps: [{ decision: "d1", option: "Not a defect" }] }) as any;
+      transcript(u.transcripts).ask("toolu_c", [c.ask], { [c.ask.question]: "Yes" }, later(2));
+      await logQuestion(u.root, { toolUseId: "toolu_c", round: "R1" }, {}, u.transcripts);
+      assert.ok((await decisionRound(u.root, "R1") as any).decisions.find((x: any) => x.id === "d1").standing.confirmed, "the Yes bound");
+    });
+    assert.equal(otherEvents(u.side), before, "nothing outside the decisions log was written");
+    assert.equal((await readFinding(u.root, f))?.state, "issued");
+  } finally { u.cleanup(); }
+});
+
+test("GATE (impl-2, held offered as work): an open confirm withholds its findings — against an assignment made before it (P3.5) — and a two-pick verdict leaves one held", async () => {
+  const u = await universe();
+  try {
+    const [f, g] = [await withFinding(u), await withFinding(u)];
+    await asAgent(async () => { await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f), decision("d2", g, {}, "D2")] }); });
+    await asPerson(async () => {
+      await answerDirect(u.root, { decision: "d1", option: "Real, fix it" });   // releases f as fix work
+      await reassignFinding(u.root, 7, f, { kind: "fix" });
+    });
+    let a = "";
+    await asAgent(async () => {
+      assert.ok((await reviewQueue(u.root) as any).queue.some((x: any) => x.id === f), "released and assigned by a person: offered");
+      const t = transcript(u.transcripts);
+      t.typed("m1", "D1 wait — not a defect after all", later(1));
+      a = (await relayAnswer(u.root, { round: "R1", decision: "d1", session: SESSION, entryId: "m1" }, {}, u.transcripts) as any).answer;
+      assert.ok((await reviewQueue(u.root) as any).queue.some((x: any) => x.id === f), "flagged only: a mark never withholds");
+      const c = await confirmReading(u.root, { answer: a, maps: [{ decision: "d1", option: "Not a defect" }] }) as any;
+      assert.equal(c.ok, true, JSON.stringify(c));
+      const q = await reviewQueue(u.root) as any;
+      assert.ok(!q.queue.some((x: any) => x.id === f), "the confirm's hold began after the assignment: withheld");
+
+      t.typed("m2", "D2 both, I guess", later(1));
+      const b2 = (await relayAnswer(u.root, { round: "R1", decision: "d2", session: SESSION, entryId: "m2" }, {}, u.transcripts) as any).answer;
+      const r = nextReader(); t.reader(r, "D2 → Not a defect\nD2 → Real, fix it", { prompt: await briefOf(u.root, b2) });
+      const read = await recordReading(u.root, { answer: b2, reader: r, session: { maps: [{ decision: "d2", option: "Not a defect" }] } }, {}, u.transcripts) as any;
+      assert.match(String(read.unverified), /takes one option, and the reading picks 2/, JSON.stringify(read));
+      const all = await reviewQueue(u.root, { assignedOnly: false }) as any;
+      assert.equal(all.queue.find((x: any) => x.id === g)?.held?.[0]?.why, "undecided");
+    });
+  } finally { u.cleanup(); }
+});
+
+test("GATE (impl-2, vanishing): a rejected first reading strands nothing, an empty one consumes nothing, and a confirm whose words were cut stays listed", async () => {
+  const u = await universe();
+  try {
+    const f = await withFinding(u);
+    await asAgent(async () => {
+      await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f)] });
+      const t = transcript(u.transcripts);
+      t.typed("m1", "not a defect", later(5));   // typed after a replacement another clone posts below
+      const a = (await relayAnswer(u.root, { round: "R1", decision: "d1", session: SESSION, entryId: "m1" }, {}, u.transcripts) as any).answer;
+      const prompt = await briefOf(u.root, a);
+      const b = bindDecisions(u.root) as any;
+      // A foreign writer's reading of the words, one that could never bind, and an empty one.
+      await recordReadingEvent(b.cfg.path, b.cfg.universe, b.actor, { answer: a, session: { maps: [{ decision: "d9", option: null }] }, reader: { agent: "aFOREIGN000000001", verdict: [{ decision: "d9", option: null }], launchedAt: later(6), brief: prompt, verified: { session: SESSION, toolUseId: "t" } } });
+      await recordReadingEvent(b.cfg.path, b.cfg.universe, b.actor, { answer: a, session: { maps: [] }, reader: { agent: "aFOREIGN000000002", verdict: [], launchedAt: later(6), brief: prompt, verified: { session: SESSION, toolUseId: "t" } } });
+      let view = await decisionRounds(u.root) as any;
+      assert.ok(view.awaitingReading.some((x: any) => x.answer === a), "the words still wait for a reader");
+      const c = await confirmReading(u.root, { answer: a, maps: [{ decision: "d1", option: "Not a defect" }] }) as any;
+      assert.equal(c.ok, true, JSON.stringify(c));
+      // Another clone's replacement of D1, posted before the words were typed, arrives: the words are cut.
+      await postRound(u.root, { round: { id: "R2", source: "x" }, decisions: [{ ...decision("d1b", f, {}, "D7", "R2"), supersedes: "d1" }] });
+      const round = await decisionRound(u.root, "R1") as any;
+      assert.equal(round.decisions.find((x: any) => x.id === c.confirm)?.confirm.state, "no longer needed", JSON.stringify(round.decisions.map((x: any) => x.confirm)));
+      view = await decisionRounds(u.root) as any;
+      assert.ok(!view.waitingOnYou.some((w: any) => w.decision === c.confirm), "it waits on nobody");
+    });
+  } finally { u.cleanup(); }
+});
+
