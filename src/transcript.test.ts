@@ -138,3 +138,37 @@ test("the session holding an id is found among top-level transcripts only", asyn
   assert.ok(isUnverified(sessionHolding("nowhere", dir)));
   assert.ok(isUnverified(sessionHolding("../x", dir)), "an id that is not an id");
 });
+
+
+test("old structured successful-held results remain eligible for unique legacy rows", async () => {
+  const { findVerdictCalls } = await import("./transcript.js");
+  const dir = transcript([
+    { type: "assistant", isSidechain: false, message: { content: [{ type: "tool_use", id: "v1", name: "mcp__codemap__submit_verdict", input: { answer: "a1", verdict: "D1 → A" } }] } },
+    { type: "user", isSidechain: false, toolUseResult: { ok: true, held: true }, message: { content: [{ type: "tool_result", tool_use_id: "v1", content: "{\"ok\":true,\"held\":true}" }] } },
+  ]);
+  assert.equal(findVerdictCalls("a1", "D1 → A", 0, dir)[0]?.result, "legacy-held");
+  const refused = transcript([
+    { type: "assistant", isSidechain: false, message: { content: [{ type: "tool_use", id: "v2", name: "mcp__codemap__submit_verdict", input: { answer: "a1", verdict: "D1 → A" } }] } },
+    { type: "user", isSidechain: false, toolUseResult: { ok: false, refused: "not held" }, message: { content: [{ type: "tool_result", tool_use_id: "v2", content: "held" }] } },
+  ]);
+  assert.equal(findVerdictCalls("a1", "D1 → A", 0, refused)[0]?.result, "failed", "structured refusal outranks a misleading text result");
+});
+
+test("submit_verdict calls pair with their own successful result and receipt", async () => {
+  const { findVerdictCalls } = await import("./transcript.js");
+  const { mkdirSync } = await import("node:fs");
+  const dir = transcript([]), sub = join(dir, S, "subagents");
+  mkdirSync(sub, { recursive: true });
+  const agent = "a12345678";
+  const base = { isSidechain: true, agentId: agent, sessionId: S };
+  const call = (id: string) => ({ ...base, type: "assistant", timestamp: "2026-09-24T00:00:00Z", message: { content: [{ type: "tool_use", id, name: "mcp__codemap__submit_verdict", input: { answer: "a1", verdict: "D1 → A" } }] } });
+  const result = (id: string, content: string) => ({ ...base, type: "user", message: { content: [{ type: "tool_result", tool_use_id: id, content }] } });
+  const file = join(sub, `agent-${agent}.jsonl`);
+  writeFileSync(file, [call("refused"), result("refused", JSON.stringify({ ok: false, refused: "bad" })),
+    call("held"), result("held", JSON.stringify({ ok: true, held: true, receipt: "opaque-1" })),
+    call("delayed"), result("wrong-call", JSON.stringify({ ok: true, held: true, receipt: "opaque-2" }))]
+    .map((x) => JSON.stringify(x)).join("\n") + "\n");
+  const found = findVerdictCalls("a1", "D1 → A", 0, dir);
+  assert.deepEqual(found.map((x) => [x.callId, x.result, x.receipt]),
+    [["refused", "failed", undefined], ["held", "held", "opaque-1"], ["delayed", "missing", undefined]]);
+});

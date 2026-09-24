@@ -4,7 +4,7 @@ import { readFileSync, mkdtempSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { team, who, edit, commit, branch, pushBranch, fetchCode, openPr, settle, cloneMachine, type Team } from "./oracle.js";
+import { team, who, edit, commit, branch, pushBranch, fetchCode, openPr, settle, whileApart, cloneMachine, type Team } from "./oracle.js";
 import { universeKey } from "./sidecar-config.js";
 import { document } from "./ops.js";
 import { publishLocalDocs, sharedDocs } from "./ops-shared.js";
@@ -178,5 +178,59 @@ test("the code repo moves: branches, commits, and a synthetic pull ref", async (
     assert.match(ls, /refs\/pull\/12\/head/);
     assert.match(ls, /refs\/heads\/feature\/pay/);
     assert.doesNotMatch(ls, /refs\/heads\/detached\/work/, "the fork's head is in no origin branch");
+  });
+});
+
+test("isolated human answers remain visible across sidecar sync until a shown choice settles them", async () => {
+  const { postRound, answerDirect, decisionRounds } = await import("./ops/decisions.js");
+  await withTeam(async (t) => {
+    const a = who(t, A), b = who(t, B);
+    const first: any = { id: "d-oracle", round: "r-oracle", ref: "D1", kind: "options",
+      payload: { question: "D1: which intent should govern?", header: "Intent", options: [{ label: "Keep" }, { label: "Change" }] },
+      options: [{ label: "Keep", effects: [] }, { label: "Change", effects: [] }] };
+    const posted = await postRound(a.repo, { round: { id: "r-oracle", source: "oracle" }, decisions: [first] }) as any;
+    assert.equal(posted.ok, true, JSON.stringify(posted));
+    await whileApart(t, A, async (m) => {
+      const result = await answerDirect(m.repo, { decision: first.id, option: "Keep" }) as any;
+      assert.equal(result.ok, true, JSON.stringify(result));
+    }, B, async (m) => {
+      const result = await answerDirect(m.repo, { decision: first.id, option: "Change" }) as any;
+      assert.equal(result.ok, true, JSON.stringify(result));
+    });
+    const left = await decisionRounds(a.repo), right = await decisionRounds(b.repo);
+    assert.equal(left.intentCandidates.length, 1);
+    assert.deepEqual(left.intentCandidates, right.intentCandidates);
+    const pair = left.intentCandidates[0]!.answers;
+    const sources = left.intentCandidates[0]!.sources;
+    const resolution: any = { id: "d-oracle-resolve", round: "r-oracle-resolve", ref: "D2", kind: "options",
+      payload: { question: `D2: ${pair[0]} said ${JSON.stringify(sources[0].words)}; ${pair[1]} said ${JSON.stringify(sources[1].words)}. Which human intent should be preserved?`, header: "Resolve", options: pair.map((id) => ({ label: `Preserve ${id}` })) },
+      options: pair.map((id) => ({ label: `Preserve ${id}`, effects: [] })), resolves: { answers: pair } };
+    const second = await postRound(a.repo, { round: { id: "r-oracle-resolve", source: "oracle" }, decisions: [resolution] }) as any;
+    assert.equal(second.ok, true, JSON.stringify(second));
+    await settle(t);
+    const chosen = await answerDirect(a.repo, { decision: resolution.id, option: `Preserve ${pair[0]}` }) as any;
+    assert.equal(chosen.ok, true, JSON.stringify(chosen));
+    await settle(t);
+    assert.equal((await decisionRounds(a.repo)).intentCandidates.length, 0);
+    assert.equal((await decisionRounds(b.repo)).intentCandidates.length, 0);
+
+    const elsewhere = ["D3", "D4"].map((ref, i) => ({ id: `semantic-${i}`, round: "r-semantic", ref, kind: "options" as const,
+      payload: { question: `${ref}: state your intent`, header: "Intent", options: [{ label: "Keep" }, { label: "Change" }] },
+      options: [{ label: "Keep", effects: [] }, { label: "Change", effects: [] }] }));
+    assert.equal((await postRound(a.repo, { round: { id: "r-semantic", source: "oracle" }, decisions: elsewhere }) as any).ok, true);
+    let firstId = "", secondId = "";
+    await whileApart(t, A, async (m) => {
+      firstId = (await answerDirect(m.repo, { decision: elsewhere[0]!.id, option: "Keep" }) as any).answer;
+    }, B, async (m) => {
+      secondId = (await answerDirect(m.repo, { decision: elsewhere[1]!.id, option: "Change" }) as any).answer;
+    });
+    assert.equal((await decisionRounds(a.repo)).intentCandidates.length, 0, "the mechanical finder cannot infer arbitrary cross-question meaning");
+    const semantic = { ...resolution, id: "semantic-resolution", round: "r-semantic-resolve", ref: "D5",
+      payload: { ...resolution.payload, question: `D5: ${firstId} said ${JSON.stringify("Keep")}; ${secondId} said ${JSON.stringify("Change")}. Which intent should be preserved?`,
+        options: [{ label: `Preserve ${firstId}` }, { label: `Preserve ${secondId}` }] },
+      options: [{ label: `Preserve ${firstId}`, effects: [] }, { label: `Preserve ${secondId}`, effects: [] }],
+      resolves: { answers: [firstId, secondId] } };
+    const accepted = await postRound(a.repo, { round: { id: "r-semantic-resolve", source: "oracle" }, decisions: [semantic] }) as any;
+    assert.equal(accepted.ok, true, JSON.stringify(accepted));
   });
 });

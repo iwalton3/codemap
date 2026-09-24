@@ -23,7 +23,7 @@
  * trusts the logger for it. Everything that travels is checked here.
  */
 import { createHash } from "node:crypto";
-import { emitEvent, type LogEvent } from "./eventlog.js";
+import { causality, emitEvent, type LogEvent } from "./eventlog.js";
 import { isAgentActor } from "./identity.js";
 import { canonical, normalizeQuestion, sameQuestion } from "./transcript.js";
 import { ISO_DATE, type Actor, type AskedQuestion, type Decision, type DecisionEffect, type DecisionOption, type DecisionRound, type LoggedQuestion } from "./schema.js";
@@ -59,6 +59,14 @@ export interface FoldedAnswer {
   givenAt: string;
   /** Log position of the event that made it: breaks a tie in `givenAt` (S0.5). */
   seq: number;
+  /** Replacement postings visible when this answer was admitted. */
+  knownReplacements: string[];
+  /** Original answer event for a reading copied onto another question. */
+  sourceAnswer?: string;
+  /** Original answer events this writer had not yet received. Human knowledge may differ. */
+  concurrentWith?: string[];
+  /** A verified choice keeps this source visible but removes it from actionable ranking. */
+  resolvedOutBy?: string;
   /** What it was given through, so one call or message answers a decision once (B1.4). */
   once?: string;
   /** The person's words as recorded — never an agent's summary of them. */
@@ -86,6 +94,7 @@ export interface FoldedAnswer {
   /** The reader's verdict, parsed by codemap from the reader's own `submit_verdict` call (plan B1, Q2.2). */
   reading?: {
     id: string; agree: boolean;
+    knownReplacements: string[];
     reader: { agent: string; maps: Mapping[]; launchedAt: string };
     session: { reading: string; maps: Mapping[] };
     asks?: string;
@@ -105,6 +114,7 @@ export interface FoldedDecision extends Decision {
   /** When THIS decision was posted — not its round: a round can grow after it is posted, so
    *  "posted before the words" is judged per decision. Empty when the event carried no time. */
   postedAt: string;
+  postingEvent: string;
   answers: FoldedAnswer[];
   /** A decision posted later that replaces this one. */
   replacedBy?: string;
@@ -114,10 +124,11 @@ export interface FoldedDecision extends Decision {
   /** Decisions posted since, citing an answer here as their origin (C1, bulk items). */
   followUps?: string[];
   /** A confirm-this-reading question. `invalid` says why it is not one codemap could have
-   *  written: then it is a plain question that binds nothing (P3.4), and `never` says the words
+   *  written: then it has no authority to act (owner, 2026-09-24 Q3), and `never` says the words
    *  it names were never recorded at all (Q2.3 (4)). `picked` is the latest verified pick on it
    *  that carries a confirm's meaning: the request is answered (Q1.3). */
   confirms?: Confirms & { invalid?: string; never?: true; picked?: string };
+  resolutionInvalid?: string;
 }
 
 export interface SharedDecisions {
@@ -180,6 +191,13 @@ export function checkDecision(d: Decision): string | null {
       if (typeof o.park !== "string" || !ISO_DATE.test(o.park) || !o.label.includes(o.park.slice(0, 10))) return `option "${o.label}" parks without its date in the label`;
     }
   }
+  if (d.resolves) {
+    const ids = d.resolves.answers;
+    if (!Array.isArray(ids) || ids.length !== 2 || !ids.every((id) => str(id)) || ids[0] === ids[1]
+      || d.kind !== "options" || multi || d.options.length !== 2
+      || d.options.some((o, i) => o.label !== `Preserve ${ids[i]}` || o.effects.length || o.park)
+      || ids.some((id) => !d.payload.question.includes(id))) return "a resolution must show two answer ids and offer one effect-free Preserve option per answer";
+  }
   if (d.options.filter((o) => o.recommended).length > 1) return "at most one option is recommended";
   // What the person is shown carries what it acts on, so words typed back can be bound to it
   // by what was said (owner, H2/H5: "the question should just say 'Close D13 (f_09deadcafef3)?'").
@@ -195,7 +213,7 @@ export function checkDecision(d: Decision): string | null {
 // A POSTED decision, in the words' own round: `confirm_reading` writes it with codemap's text,
 // the person is asked it verbatim and it is logged like any question. The fold checks its
 // STRUCTURE against the real answer and options (P3.4), never its wording, so a later build that
-// rewords it strands no open confirm. One that fails that check is kept as a plain question; one
+// rewords it strands no open confirm. One that fails that check stays visible but cannot act; one
 // that fails `checkDecision`, like any posted question, is dropped (owner, Q2.3 (3)).
 
 export const CONFIRM_YES = "Yes";
@@ -204,7 +222,7 @@ export const NONE = "(none)";
 const READING = /^Reading ([12])$/;
 
 /** What a confirm asks about: the words (an answer id) and the one or two readings offered. */
-export interface Confirms { answer: string; readings: Mapping[][] }
+export interface Confirms { answer: string; readings: Mapping[][]; knownReplacements?: string[] }
 
 const effectText = (o: DecisionOption): string => o.effects.map((e) => e.on === "settle" ? `settles ${e.findings.join(", ")} as ${e.as}` : `unblocks ${e.findings.join(", ")}`).join("; ");
 
@@ -297,7 +315,8 @@ function confirmRefusal(decisions: Map<string, FoldedDecision>, c: FoldedDecisio
   if (sections.length !== cf.readings.length) return "its question does not set out each reading";
   for (const [i, r] of cf.readings.entries()) {
     if (!validMaps(r)) return "a reading it offers is empty";
-    const why = bindRefusal(decisions, d, a, r);
+    const known = a.reading ? a.reading.knownReplacements : (cf.knownReplacements ?? a.knownReplacements);
+    const why = bindRefusal(decisions, d, a, r, known);
     if (why) return `a reading it offers cannot bind: ${why}`;
     const heads = sections[i]!.filter((l) => /^D\d+ → /.test(l));
     const want = [...byDecision(r)];
@@ -321,9 +340,12 @@ function confirmRefusal(decisions: Map<string, FoldedDecision>, c: FoldedDecisio
 
 const BRIEF_WORDS = "Their words, exactly as typed (JSON-quoted):";
 const BRIEF_Q = /^(D\d+): (".*")$/, BRIEF_OPTS = /^ {2}options: (\[.*\])$/;
+export interface BriefEntry { id: string; hash: string; ref: string }
+export const briefManifest = (decisions: Map<string, FoldedDecision>, d: FoldedDecision, a: FoldedAnswer): BriefEntry[] =>
+  readable(decisions, d, a).map((t) => ({ id: t.id, hash: t.hash, ref: t.ref }));
 
-/** Every question words `a` on `d` may be read onto: in its round, posted before the words and
- *  not replaced before them — exactly what a reading can bind. */
+/** Questions these words could bind in their admission context. Current supersession can
+ *  still refuse a NEW reading of an unread answer. */
 export const readable = (decisions: Map<string, FoldedDecision>, d: FoldedDecision, a: FoldedAnswer): FoldedDecision[] =>
   [...decisions.values()].filter((t) => t.round === d.round && !bindRefusal(decisions, d, a, [{ decision: t.id, option: null }]));
 
@@ -349,32 +371,45 @@ export function readerBrief(decisions: Map<string, FoldedDecision>, d: FoldedDec
 /** The questions a stored brief lists, or why it is not one codemap wrote for words `a` on `d`:
  *  it quotes the words exactly, and every question it lists is one the words may be read onto,
  *  with its exact labels. */
-export function briefListing(decisions: Map<string, FoldedDecision>, d: FoldedDecision, a: FoldedAnswer, brief: string): FoldedDecision[] | string {
+export function briefListing(decisions: Map<string, FoldedDecision>, d: FoldedDecision, a: FoldedAnswer, brief: string, manifest?: BriefEntry[]): FoldedDecision[] | string {
   const lines = brief.split("\n");
   const w = lines.indexOf(BRIEF_WORDS);
   let words: unknown;
   try { words = w < 0 ? undefined : JSON.parse(lines[w + 1] ?? ""); } catch { /* not JSON */ }
   if (words !== a.words) return "the reader's brief does not quote the words exactly";
-  const ok = readable(decisions, d, a);
-  const listed = new Set<string>();
+  const listed: FoldedDecision[] = [];
+  const candidates = [...decisions.values()].filter((t) => t.round === d.round && t.kind !== "words"
+    && !t.confirms?.invalid && ms(t.postedAt) !== undefined && ms(t.postedAt)! < ms(a.givenAt)!);
+  const entries = manifest === undefined ? undefined : Array.isArray(manifest) && manifest.every((m) => m && typeof m.id === "string" && typeof m.hash === "string" && typeof m.ref === "string") ? manifest : null;
+  if (entries === null) return "the reader's brief has a malformed manifest";
+  let at = 0;
   for (let i = 0; i < lines.length; i++) {
     const m = BRIEF_Q.exec(lines[i]!);
     if (!m) continue;
     let question: unknown, labels: unknown;
     try { question = JSON.parse(m[2]!); labels = JSON.parse(BRIEF_OPTS.exec(lines[i + 1] ?? "")?.[1] ?? ""); } catch { return `the reader's brief lists ${m[1]} unreadably`; }
-    const t = ok.find((x) => x.ref === m[1] && x.payload.question === question
+    const matches = candidates.filter((x) => x.ref === m[1] && x.payload.question === question
       && Array.isArray(labels) && labels.length === x.options.length && x.options.every((o, j) => o.label === labels[j]));
-    if (!t) return `the reader's brief lists ${m[1]} as a question these words cannot be read onto, or with other labels`;
-    listed.add(t.id);
+    if (!matches.length) return `the reader's brief lists ${m[1]} as a question these words cannot be read onto, or with other labels`;
+    if (entries) {
+      const e = entries[at++], t = matches.find((x) => x.id === e?.id);
+      if (!t || t.hash !== e!.hash || t.ref !== e!.ref) return `the reader's brief manifest does not identify ${m[1]} and its exact hash`;
+      listed.push(t);
+    } else listed.push(...matches);
   }
-  return [...listed].map((id) => decisions.get(id)!);
+  if (entries && at !== entries.length) return "the reader's brief manifest has a different number of questions";
+  const unique = [...new Map(listed.map((t) => [t.id, t])).values()];
+  const shared = [...new Set(unique.map((t) => t.ref).filter((r, i, all) => all.indexOf(r) !== i))];
+  for (const ref of shared) if (!lines.includes(`Two questions share the ref ${ref}: a line naming ${ref} is refused as ambiguous.`))
+    return `the reader's brief omits its ambiguity warning for ${ref}`;
+  return unique;
 }
 
 /** Why a stored brief is not one codemap wrote for words `a` on `d` with this verdict, or null:
  *  `briefListing`'s checks, every decision the verdict names is listed, and none is a ref two
  *  listed questions share. With no verdict, whether the brief itself still stands. */
-export function briefRefusal(decisions: Map<string, FoldedDecision>, d: FoldedDecision, a: FoldedAnswer, brief: string, verdict: Mapping[]): string | null {
-  const got = briefListing(decisions, d, a, brief);
+export function briefRefusal(decisions: Map<string, FoldedDecision>, d: FoldedDecision, a: FoldedAnswer, brief: string, verdict: Mapping[], manifest?: BriefEntry[]): string | null {
+  const got = briefListing(decisions, d, a, brief, manifest);
   if (typeof got === "string") return got;
   const listed = new Set(got.map((t) => t.id));
   const missing = verdict.find((m) => !listed.has(m.decision));
@@ -463,6 +498,8 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
   const rounds = new Map<string, DecisionRound>();
   const decisions = new Map<string, FoldedDecision>();
   const questions = new Map<string, LoggedQuestion>();
+  const causal = causality(events);
+  const answerEvents = new Map<string, LogEvent>();
   const answersById = new Map<string, { a: FoldedAnswer; d: FoldedDecision }>();
   // Position of each decision's posting, so an answer reaches only a decision posted before it.
   const postedPos = new Map<string, number>();
@@ -522,7 +559,8 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
             ...(str(raw.supersedes) ? { supersedes: raw.supersedes } : {}),
             ...(str(raw.origin?.answer) ? { origin: { answer: raw.origin!.answer } } : {}),
             ...(Array.isArray(raw.notes) ? { notes: raw.notes } : {}),
-            hash: decisionHash(raw), postedAt: typeof e.at === "string" ? e.at : "", answers: [],
+            ...(raw.resolves ? { resolves: raw.resolves } : {}),
+            hash: decisionHash(raw), postedAt: typeof e.at === "string" ? e.at : "", postingEvent: e.id, answers: [],
           };
           decisions.set(d.id, d);
           postedPos.set(d.id, pos);
@@ -544,8 +582,9 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
         const cf = raw.confirms as unknown as Record<string, unknown> | undefined;
         decisions.set(raw.id, {
           id: raw.id, round: raw.round, ref: raw.ref, kind: raw.kind, payload: normalizeQuestion(raw.payload), options: raw.options,
-          hash: decisionHash(raw), postedAt: typeof e.at === "string" ? e.at : "", answers: [],
-          confirms: { answer: str(cf?.answer) ?? "", readings: Array.isArray(cf?.readings) ? cf.readings as Mapping[][] : [] },
+          hash: decisionHash(raw), postedAt: typeof e.at === "string" ? e.at : "", postingEvent: e.id, answers: [],
+          confirms: { answer: str(cf?.answer) ?? "", readings: Array.isArray(cf?.readings) ? cf.readings as Mapping[][] : [],
+            ...(Array.isArray(cf?.knownReplacements) && cf.knownReplacements.every((x) => typeof x === "string") ? { knownReplacements: cf.knownReplacements as string[] } : {}) },
         });
         postedPos.set(raw.id, pos);
         break;
@@ -571,13 +610,14 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
         // One call or message answers a decision once; a duplicate records nothing (H6.1).
         if (r.once && d.answers.some((x) => x.once === r.once)) break;
         const a: FoldedAnswer = {
-          id: e.id, by: e.actor, at: e.at, via: (data.via as AnswerVia).kind, verified: r.verified, givenAt, seq: pos,
+          id: e.id, by: e.actor, at: e.at, via: (data.via as AnswerVia).kind, verified: r.verified, givenAt, seq: pos, knownReplacements: [],
           ...(r.once ? { once: r.once } : {}),
           words: r.words, options: [], ruled: [], unruled: [], free: r.free,
           ...(str(data.relayedBy) ? { relayedBy: data.relayedBy } : {}),
         };
         d.answers.push(a);
         answersById.set(e.id, { a, d });
+        answerEvents.set(e.id, e);
         // A words decision's answer is the words: recorded, never read onto options (C17).
         if (d.kind === "words") { a.free = false; break; }
         if (!r.free) rule(d, a, r, r.verified);
@@ -601,13 +641,22 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
 
   // --- what the log says, applied to the set -------------------------------------------
 
-  // Given at or after its question was replaced, an answer answers nothing (plan A4: judged by
-  // when GIVEN, so one given before the replacement and recorded after still counts, and B2.4
-  // then holds its findings until the replacement is answered).
+  // Admission is fixed at the act, not recomputed from a later merged wall clock.
+  // New writes carry the locally visible posting IDs; old writes use causal evidence.
+  for (const { a } of answersById.values()) {
+    const e = answerEvents.get(a.id)!;
+    const explicit = (e.data as any)?.knownReplacements;
+    a.knownReplacements = Array.isArray(explicit) && explicit.every((x) => typeof x === "string") ? explicit
+      : [...decisions.values()].filter((x) => x.supersedes && causal.saw(e.id, x.postingEvent)).map((x) => x.id);
+  }
   for (const d of decisions.values()) {
-    // A replacement posted at an unknown time cuts nothing: no answer can be shown to follow it.
-    const cut = replacement(d, decisions)?.at;
-    if (cut !== undefined) d.answers = d.answers.filter((a) => Date.parse(a.givenAt) < cut);
+    const successor = d.replacedBy ? decisions.get(d.replacedBy) : undefined;
+    if (!successor) continue;
+    d.answers = d.answers.filter((a) => {
+      const known = a.knownReplacements.includes(successor.id);
+      const cut = ms(successor.postedAt);
+      return !known || cut === undefined || ms(a.givenAt)! < cut;
+    });
   }
   const kept = (id: string) => { const x = answersById.get(id); return x && x.d.answers.includes(x.a) ? x : undefined; };
 
@@ -615,7 +664,14 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
   for (const c of decisions.values()) {
     if (!c.confirms) continue;
     const why = confirmRefusal(decisions, c, kept(c.confirms.answer));
-    if (why) { c.confirms.invalid = why; if (!answersById.has(c.confirms.answer)) c.confirms.never = true; continue; }
+    if (why) {
+      c.confirms.invalid = why;
+      if (!answersById.has(c.confirms.answer)) c.confirms.never = true;
+      // Keep the question and verified words intact, but a malformed confirmation
+      // cannot borrow authority from effect-bearing options (2026-09-24 round, Q3).
+      for (const a of c.answers) { a.ruled = []; a.unruled = []; a.park = undefined; a.parkWaits = undefined; a.separately = undefined; }
+      continue;
+    }
     // The request is answered by any pick that carries its meaning; typed words never answer it (Q1.3).
     let latest: FoldedAnswer | undefined;
     for (const { a: p, c: on } of picks) if (on === c && meaning(p.options[0], c.confirms.readings) !== undefined && (!latest || outranksByTime(p, latest))) latest = p;
@@ -624,13 +680,15 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
 
   // Which readings count: in log order, one per answer and one answer per reader (S0.8(c)),
   // and only an ACCEPTED reading claims either slot (owner, P1.2): a rejected one never counted.
-  const readings = new Map<string, { e: LogEvent; pos: number }>();
+  const readings = new Map<string, { e: LogEvent; pos: number; knownReplacements: string[] }>();
   const readerUsed = new Map<string, string>();
   for (const r of readingEvents) {
     const data = r.e.data as any, x = kept(data.answer), agent = data.reader.agent as string;
     if (!x || readings.has(data.answer) || readerUsed.has(agent)) continue;
-    if (readingRefusal(decisions, x.d, x.a, { verdict: data.reader.verdict, unclear: data.reader.unclear, session: data.session.maps, launchedAt: data.reader.launchedAt, brief: data.reader.brief })) continue;
-    readings.set(data.answer, r);
+    const knownReplacements: string[] = Array.isArray(data.knownReplacements) && data.knownReplacements.every((id: unknown) => typeof id === "string")
+      ? data.knownReplacements : [...decisions.values()].filter((d) => d.supersedes && causal.saw(r.e.id, d.postingEvent)).map((d) => d.id);
+    if (readingRefusal(decisions, x.d, x.a, { verdict: data.reader.verdict, unclear: data.reader.unclear, session: data.session.maps, launchedAt: data.reader.launchedAt, brief: data.reader.brief, manifest: data.reader.manifest, knownReplacements })) continue;
+    readings.set(data.answer, { ...r, knownReplacements });
     readerUsed.set(agent, data.answer);
   }
 
@@ -644,7 +702,7 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
       const unclear = str(rd.unclear);
       const maps = validVerdict(rd.verdict, rd.unclear)!, sm = validMaps(ses.maps)!;
       a.reading = {
-        id: r.e.id, agree: !unclear && mapsKey(maps) === mapsKey(sm),
+        id: r.e.id, agree: !unclear && mapsKey(maps) === mapsKey(sm), knownReplacements: r.knownReplacements,
         reader: { agent: rd.agent, maps, launchedAt: rd.launchedAt },
         session: { reading: str(ses.reading) ?? "", maps: sm },
         ...(str((r.e.data as any).asks) ? { asks: (r.e.data as any).asks } : {}),
@@ -671,6 +729,38 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
     }
   }
 
+  // Candidate concurrency is derived from original answer events, including bound human
+  // words copied to another question. A relayer's causal knowledge is not proof of what
+  // the human knew when speaking; callers see that uncertainty in the candidate view.
+  const human = [...decisions.values()].flatMap((d) => d.answers).filter((a) => a.verified);
+  for (const a of human) {
+    const source = a.sourceAnswer ?? a.id;
+    const ea = answerEvents.get(source);
+    if (!ea) continue;
+    a.concurrentWith = human.filter((b) => {
+      const other = b.sourceAnswer ?? b.id, eb = answerEvents.get(other);
+      return eb && source !== other && !causal.saw(ea.id, eb.id) && !causal.saw(eb.id, ea.id);
+    }).map((b) => b.sourceAnswer ?? b.id);
+  }
+  for (const d of decisions.values()) if (d.resolves) {
+    const targets = d.resolves.answers.map((id) => answersById.get(id)?.a);
+    if (targets.some((a) => !a?.verified) || targets[0]!.by.principal === targets[1]!.by.principal
+      || targets.some((a) => !d.payload.question.includes(JSON.stringify(a!.words))))
+      d.resolutionInvalid = "it does not show two different people's exact verified rulings";
+  }
+
+  for (const d of decisions.values()) if (d.resolves && !d.resolutionInvalid) {
+    const choice = standing(d);
+    if (!choice?.verified) continue;
+    const selected = d.resolves.answers.find((id) => choice.options[0] === `Preserve ${id}`);
+    // A person's Other words can be a new intent once a reader has verified that they rule
+    // neither shown alternative. A mere unread Other answer cannot settle the conflict.
+    const newIntent = choice.nothing && !!choice.reading?.agree && choice.words.length > 0;
+    if (!selected && !newIntent) continue;
+    for (const t of decisions.values()) for (const a of t.answers)
+      if (d.resolves.answers.includes(a.sourceAnswer ?? a.id) && (newIntent || (a.sourceAnswer ?? a.id) !== selected)) a.resolvedOutBy = choice.id;
+  }
+
   // Follow-ups last: a copy's id exists only once its binding is made (Q13).
   for (const d of decisions.values()) {
     const src = d.origin ? answersById.get(d.origin.answer) : undefined;
@@ -682,9 +772,9 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
 
 /** Why `maps` cannot bind words `a` on `d`, or null: every decision it names is in the same
  *  round, was posted before the words were given, takes options, and was not already replaced
- *  when they were (R23, judged by given time as A4 is) — an unknown time satisfies neither —
- *  and each is picked once, or `(none)` alone, unless it is multi-select (R3). */
-export function bindRefusal(decisions: Map<string, FoldedDecision>, d: FoldedDecision, a: FoldedAnswer, maps: Mapping[]): string | null {
+ *  in the admission context — an unknown time satisfies neither — and each is picked once,
+ *  or `(none)` alone, unless it is multi-select (R3). */
+export function bindRefusal(decisions: Map<string, FoldedDecision>, d: FoldedDecision, a: FoldedAnswer, maps: Mapping[], knownReplacements: string[] = a.knownReplacements): string | null {
   const given = ms(a.givenAt);
   if (given === undefined) return "the words have no time that parses";
   const picks = new Map<string, (string | null)[]>();
@@ -692,10 +782,11 @@ export function bindRefusal(decisions: Map<string, FoldedDecision>, d: FoldedDec
     const t = decisions.get(m.decision);
     if (!t || t.round !== d.round) return `${m.decision} is not a question in round ${d.round}`;
     if (t.kind === "words") return `${t.ref} takes words, not options`;
+    if (t.confirms?.invalid) return `${t.ref} is an invalid confirmation: ${t.confirms.invalid}`;
     if (m.option !== null && !t.options.some((o) => o.label === m.option)) return `"${m.option}" is not an option of ${t.ref} (${t.options.map((o) => o.label).join(" / ")})`;
     const posted = ms(t.postedAt);
     if (posted === undefined || !(posted < given)) return `${t.ref} was posted after the words were typed (${a.givenAt})`;
-    const r = replacement(t, decisions);
+    const r = t.replacedBy && knownReplacements.includes(t.replacedBy) ? replacement(t, decisions) : undefined;
     if (r && !(r.at !== undefined && given < r.at)) return `${t.ref} was replaced before the words were typed`;
     picks.set(t.id, [...(picks.get(t.id) ?? []), m.option]);
   }
@@ -719,8 +810,9 @@ const canBind = (decisions: Map<string, FoldedDecision>, d: FoldedDecision, a: F
  * event reaches it.
  */
 export function readingRefusal(decisions: Map<string, FoldedDecision>, d: FoldedDecision, a: FoldedAnswer,
-  r: { verdict: unknown; unclear?: unknown; session: unknown; launchedAt: unknown; brief: unknown }): string | null {
+  r: { verdict: unknown; unclear?: unknown; session: unknown; launchedAt: unknown; brief: unknown; manifest?: BriefEntry[]; knownReplacements?: string[] }): string | null {
   if (d.kind === "words") return `${d.ref} takes words: they are the answer, never read onto options`;
+  if (d.replacedBy && r.knownReplacements?.includes(d.replacedBy) && !a.reading) return `${d.ref} was superseded before these words were read: ask a fresh question`;
   if (!a.free || a.elsewhere) return `answer ${a.id} is not words waiting for a reading`;
   const launched = ms(typeof r.launchedAt === "string" ? r.launchedAt : undefined);
   // Launched after the words were typed, or it cannot have read them (plan B2).
@@ -730,11 +822,11 @@ export function readingRefusal(decisions: Map<string, FoldedDecision>, d: Folded
   if (!session) return "the session's reading is empty";
   const sides = str(r.unclear) ? [session] : [verdict];
   for (const side of sides) {
-    const why = bindRefusal(decisions, d, a, side);
+    const why = bindRefusal(decisions, d, a, side, r.knownReplacements ?? a.knownReplacements);
     if (why) return `${side === verdict ? "the reader's verdict" : "your reading"} cannot bind: ${why}`;
   }
   if (!str(r.brief)) return "the reading carries no brief";
-  return briefRefusal(decisions, d, a, r.brief as string, verdict);
+  return briefRefusal(decisions, d, a, r.brief as string, verdict, r.manifest);
 }
 
 /**
@@ -755,7 +847,7 @@ function bind(decisions: Map<string, FoldedDecision>, answersById: Map<string, {
     if (t !== d) {
       // The same message relayed to that question too answers it there already (B1.4).
       if (a.once && t.answers.some((x) => x.once === a.once)) continue;
-      target = { ...a, id: `${source}/${t.id}`, seq: pos, options: [], ruled: [], unruled: [], free: false };
+      target = { ...a, id: `${source}/${t.id}`, sourceAnswer: a.sourceAnswer ?? a.id, seq: pos, options: [], ruled: [], unruled: [], free: false };
       delete target.park; delete target.parkWaits; delete target.separately; delete target.flags; delete target.nothing;
       delete target.elsewhere; delete target.reading; delete target.confirmed; delete target.rejected;
       t.answers.push(target);
@@ -823,7 +915,7 @@ function resolve(d: FoldedDecision, via: AnswerVia, actor: Actor, questions: Map
 
 /** In the ranking: every answer something has bound — a pick, a park, a bulk answer, words
  *  read or confirmed, including words that rule nothing — and not one about other questions. */
-const ranks = (a: FoldedAnswer): boolean => !a.free && !a.elsewhere;
+const ranks = (a: FoldedAnswer): boolean => !a.free && !a.elsewhere && !a.resolvedOutBy;
 
 /** `x` outranks `y`: verified first, then the later given, then the later in the log. */
 const outranks = (x: FoldedAnswer, y: FoldedAnswer): boolean =>
@@ -863,6 +955,7 @@ function chainRuled(byId: Map<string, FoldedDecision>, d: FoldedDecision, verifi
  * nothing down the chain took over (Q3.3 (b)).
  */
 function couldChange(byId: Map<string, FoldedDecision>, d: FoldedDecision, a: FoldedAnswer): boolean {
+  if (d.replacedBy && !a.reading) return false;
   return readable(byId, d, a).some((t) => {
     if (t.confirms && t.options.every((o) => !o.effects.length)) return false;
     const top = standing(t);
@@ -872,7 +965,7 @@ function couldChange(byId: Map<string, FoldedDecision>, d: FoldedDecision, a: Fo
 }
 
 /** Words that can no longer change anything (owner, P3.3 "Stop surfacing", with Q1.2's test):
- *  bound some way, cut as given after their question was replaced, or no question they may be
+ *  bound some way, unable to gain a reading after supersession, or no question they may be
  *  read onto would change. */
 function moot(byId: Map<string, FoldedDecision>, d: FoldedDecision, a: FoldedAnswer): boolean {
   return !d.answers.includes(a) || !a.free || a.elsewhere === true || !couldChange(byId, d, a);
@@ -961,6 +1054,45 @@ const stillHeld = (byId: Map<string, FoldedDecision>, d: FoldedDecision): Ruled[
   return a ? a.ruled.filter((r) => !successorOf(byId, d, a, r.finding).taken) : [];
 };
 
+export interface IntentCandidate {
+  answers: [string, string]; decisions: [string, string]; findings: string[];
+  sources: [{ principal: string; via: string; words: string; options: string[] }, { principal: string; via: string; words: string; options: string[] }];
+  evidence: "concurrent-writers";
+  humanKnowledge: "not established";
+}
+
+/** Mechanical candidates only. Semantic conflict and original human knowledge still need review. */
+export function intentCandidates(s: SharedDecisions): IntentCandidate[] {
+  const all = s.decisions.flatMap((d) => d.answers.filter((a) => a.verified && !d.resolves && !d.confirms?.invalid).map((a) => ({ d, a })));
+  const out: IntentCandidate[] = [];
+  const seenPairs = new Set<string>();
+  for (let i = 0; i < all.length; i++) for (let j = i + 1; j < all.length; j++) {
+    const x = all[i]!, y = all[j]!;
+    const sx = x.a.sourceAnswer ?? x.a.id, sy = y.a.sourceAnswer ?? y.a.id;
+    const key = [sx, sy].sort().join("\0");
+    if (seenPairs.has(key) || sx === sy || x.a.by.principal === y.a.by.principal || !x.a.concurrentWith?.includes(sy)) continue;
+    const sameQuestion = x.d.id === y.d.id;
+    const xf = new Set(named(x.d)), yf = new Set(named(y.d));
+    const overlap = [...xf].filter((f) => yf.has(f));
+    if (!sameQuestion && !overlap.length) continue;
+    if (x.a.words === y.a.words && mapsKey(x.a.ruled.map((r) => ({ decision: r.finding, option: `${r.on}:${r.as ?? ""}` })))
+      === mapsKey(y.a.ruled.map((r) => ({ decision: r.finding, option: `${r.on}:${r.as ?? "" }` })))) continue;
+    const resolved = s.decisions.some((d) => {
+      if (!d.resolves || d.resolutionInvalid || !d.resolves.answers.includes(sx) || !d.resolves.answers.includes(sy)) return false;
+      const choice = standing(d);
+      return !!choice?.verified && (d.options.some((o) => o.label === choice.options[0])
+        || (!!choice.nothing && !!choice.reading?.agree && choice.words.length > 0));
+    });
+    if (resolved) continue;
+    const findings = sameQuestion ? [...xf] : overlap;
+    seenPairs.add(key);
+    out.push({ answers: [sx, sy], decisions: [x.d.id, y.d.id], findings,
+      sources: [{ principal: x.a.by.principal, via: x.a.via, words: x.a.words, options: x.a.options },
+        { principal: y.a.by.principal, via: y.a.via, words: y.a.words, options: y.a.options }], evidence: "concurrent-writers", humanKnowledge: "not established" });
+  }
+  return out;
+}
+
 export interface WaitingItem { decision: string; round: string; ref: string; why: string }
 
 /** Parked through the whole of its date, by UTC date (H6.6). */
@@ -980,6 +1112,10 @@ export function waitingOnMe(s: SharedDecisions, today: string): WaitingItem[] {
   const out: WaitingItem[] = [];
   const byId = new Map(s.decisions.map((x) => [x.id, x]));
   for (const d of s.decisions) {
+    if (d.confirms?.invalid) {
+      out.push({ decision: d.id, round: d.round, ref: d.ref, why: `not a confirm codemap can verify (${d.confirms.invalid}) — answering it binds nothing; ask for a new confirm` });
+      continue;
+    }
     if (d.replacedBy) {
       // A replacement's unverified answer, where your ruling on the replaced question still
       // holds (H6.2) — listed on the replacement, the question still open to you.
@@ -989,10 +1125,21 @@ export function waitingOnMe(s: SharedDecisions, today: string): WaitingItem[] {
         const b = successorOf(byId, d, a!, r.finding).blocker;
         if (b && !listed.has(b.id)) { listed.add(b.id); out.push({ decision: b.id, round: b.round, ref: b.ref, why: `an unconfirmed answer arrived after your ruling on ${d.ref} (${d.round})` }); }
       }
+      // Residual findings remain visible even after the successor rules; visibility does
+      // not revive an unread question or restore its former hold (2026-09-24, Q5/Q6).
+      const covered = new Set<string>();
+      const seen = new Set<string>([d.id]);
+      for (let next = d.replacedBy ? byId.get(d.replacedBy) : undefined; next && !seen.has(next.id); next = next.replacedBy ? byId.get(next.replacedBy) : undefined) {
+        seen.add(next.id);
+        for (const f of named(next)) covered.add(f);
+      }
+      const omitted = named(d).filter((f) => !covered.has(f));
+      if (omitted.length) out.push({ decision: d.id, round: d.round, ref: d.ref, why: `${d.ref} remains visible for ${omitted.join(", ")}, omitted by its replacement; an unread, unbound answer here needs a fresh question` });
       // Your words on it, given before it was replaced, still count on it (A4) — shown beside
       // the replacement until that rules (owner, P1.3).
       const by = byId.get(d.replacedBy)?.ref ?? d.replacedBy;
       for (const p of surfacing(byId, d)) {
+        if (!p.reading) continue;
         const state = !p.reading ? "not read yet" : p.reading.unclear ? `the reader could not tell which question they answer: ${p.reading.unclear}` : p.reading.agree ? "" : "read two different ways";
         out.push({ decision: d.id, round: d.round, ref: d.ref, why: `your words on ${d.ref}, given before it was replaced by ${by}, are not bound yet ("${p.words}"${state ? `: ${state}` : ""})${p.rejected?.length ? " — you said a reading of them was not what you meant" : ""}` });
       }
@@ -1014,27 +1161,32 @@ export function waitingOnMe(s: SharedDecisions, today: string): WaitingItem[] {
       if (p.rejected?.length) item(`you said a reading of your words was not what you meant ("${p.words}": ${fmt(s, p.rejected.at(-1)!)}): answer ${d.ref} again`);
     }
     // A confirm's own standing answer is words on it, never a ruling: only the request waits on
-    // you (Q1.3), and only while its words have not gone to a reader. An unverifiable one is a
-    // plain question that binds nothing.
-    if (d.confirms && cs !== "unverifiable") {
+    // you (Q1.3), and only while its words have not gone to a reader.
+    if (d.confirms) {
       if (cs === "open" && !surfacing(byId, d).length) item(`confirm what your words on ${confirmedWords(byId, d)!.d.ref} meant`);
       continue;
     }
     if (!a) {
       // Unread words wait on an agent (`awaitingReading`), not on the person.
-      if (!pending(d).length) item(cs === "unverifiable" ? `not a confirm codemap can verify (${d.confirms!.invalid}) — answering it binds nothing; ask for a new confirm` : "not answered");
+      if (!pending(d).length) item("not answered");
       continue;
     }
     if (parkedOn(a, today)) continue;   // under "parked", not here (H6.5)
     if (a.park !== undefined) item(`parked until ${a.park}, which has passed`);
     // Read, and ruled nothing: its findings are still undecided, so without this it would
     // wait on nobody (Q11, C20).
-    if (a.nothing) item("your words were read, and they rule nothing here");
+    if (d.resolves && a.nothing && a.reading?.agree)
+      item(`your new intent \"${a.words}\" resolves the shown alternatives; ask a fresh valid question for the action it requires`);
+    else if (a.nothing) item("your words were read, and they rule nothing here");
     if (a.parkWaits) item(`a park until ${a.parkWaits} that could not be verified as yours`);
     if (a.unruled.length) item(`settles that could not be verified as yours: ${a.unruled.join(", ")}`);
     for (const label of a.separately ?? []) {
       if (!(d.followUps ?? []).some((f) => byId.get(f)?.origin?.answer === a.id)) item(`you asked to rule on "${label}" separately, and it has not been asked yet`);
     }
+  }
+  for (const c of intentCandidates(s)) {
+    const d = byId.get(c.decisions[0])!;
+    out.push({ decision: d.id, round: d.round, ref: d.ref, why: `human rulings ${c.answers.join(" and ")} may conflict on intent; show both to the person and ask which to preserve before acting` });
   }
   return out;
 }
@@ -1057,7 +1209,8 @@ export function parked(s: SharedDecisions, today: string): Parked[] {
 }
 
 /** Every finding a decision's options act on. */
-export const named = (d: Pick<Decision, "options">): string[] => [...new Set(d.options.flatMap((o) => o.effects.flatMap((e) => e.findings)))];
+export const named = (d: Pick<Decision, "options"> & { confirms?: FoldedDecision["confirms"] }): string[] =>
+  d.confirms?.invalid ? [] : [...new Set(d.options.flatMap((o) => o.effects.flatMap((e) => e.findings)))];
 
 export interface Unread { decision: string; round: string; ref: string; answer: string; words: string }
 
@@ -1071,7 +1224,7 @@ export function awaitingReading(s: SharedDecisions): Unread[] {
     for (const x of surfacing(byId, d)) {
       // H6.8, as `record_reading` refuses it: words that may still change another question are
       // not thereby readable.
-      if (x.reading || (!x.verified && standing(d)?.verified)) continue;
+      if (x.reading || d.replacedBy || (!x.verified && standing(d)?.verified)) continue;
       out.push({ decision: d.id, round: d.round, ref: d.ref, answer: x.id, words: x.words });
     }
   }
@@ -1108,11 +1261,12 @@ export interface Uncarried extends Ruled {
 export function ruledNotCarriedOut(s: SharedDecisions, isOpen: (finding: string) => boolean): Uncarried[] {
   const out: Uncarried[] = [];
   const byId = new Map(s.decisions.map((x) => [x.id, x]));
+  const contested = new Set(intentCandidates(s).flatMap((c) => c.findings));
   for (const d of s.decisions) {
     const a = standing(d);
     // A replaced question is listed here, marked replaced, and nowhere else (B5.1).
     for (const r of d.replacedBy ? stillHeld(byId, d) : a?.ruled ?? []) {
-      if (isOpen(r.finding)) out.push({ ...r, decision: d.id, round: d.round, ref: d.ref, answer: a!.id, ruler: a!.by.principal, ...(d.replacedBy ? { replacedBy: d.replacedBy } : {}) });
+      if (isOpen(r.finding) && !contested.has(r.finding)) out.push({ ...r, decision: d.id, round: d.round, ref: d.ref, answer: a!.id, ruler: a!.by.principal, ...(d.replacedBy ? { replacedBy: d.replacedBy } : {}) });
     }
   }
   return out;
@@ -1172,6 +1326,10 @@ export function heldFindings(s: SharedDecisions, isOpen: (finding: string) => bo
     list.push({ decision: d.id, why, since: holdSince(s, byId, d, f) ?? d.postedAt });
     out.set(f, list);
   };
+  for (const c of intentCandidates(s)) for (const f of c.findings) {
+    const d = byId.get(c.decisions[0])!;
+    add(d, f, "undecided");
+  }
   for (const d of s.decisions) {
     // An open confirm holds every finding of every decision its readings map — `(none)` too, as
     // its text says (Q2.3 (2)) — beside the decision's own hold (the discussion: "two entries is
@@ -1230,15 +1388,16 @@ export const postConfirmEvent = (logRoot: string, universe: string, actor: Actor
 export const logQuestionEvent = (logRoot: string, universe: string, actor: Actor, q: Omit<LoggedQuestion, "id" | "loggedBy" | "at">) =>
   emitEvent(logRoot, decisionScope(universe), actor, "decision.question.logged", q.toolUseId, q as unknown as Record<string, unknown>);
 
-export const recordAnswerEvent = (logRoot: string, universe: string, actor: Actor, a: { decision: string; hash: string; via: AnswerVia; relayedBy?: string }) =>
+export const recordAnswerEvent = (logRoot: string, universe: string, actor: Actor, a: { decision: string; hash: string; via: AnswerVia; relayedBy?: string; knownReplacements?: string[] }) =>
   emitEvent(logRoot, decisionScope(universe), actor, "decision.answer.recorded", a.decision, a as unknown as Record<string, unknown>);
 
 export interface ReadingEvent {
   answer: string;
+  knownReplacements?: string[];
   /** Codemap's parse of the reader's own `submit_verdict` call, never the session's copy of it
    *  (plan B1, Q2.2). `brief`: the prompt it was launched with, which is codemap's own (P1.4);
    *  `verified.toolUseId` its launch, `verified.call` its submit. */
-  reader: { agent: string; verdict: Mapping[]; unclear?: string; launchedAt: string; brief: string; verified: { session: string; toolUseId: string; call?: string } };
+  reader: { agent: string; verdict: Mapping[]; unclear?: string; launchedAt: string; brief: string; manifest?: BriefEntry[]; verified: { session: string; toolUseId: string; call?: string } };
   /** What the asking session requested — the mapping the reader is compared against. */
   session: { reading?: string; maps: Mapping[] };
   asks?: string;

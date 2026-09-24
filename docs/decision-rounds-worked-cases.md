@@ -1335,3 +1335,35 @@ description is the session's, not the owner's.
 - *(session: the "subsequent contaminated message" case is caught by `readSubagent`'s no-message-after-launch check, at C14's strength, which the plan keeps up to the reader's `submit_verdict` call. "The readings you posted" = the plan's "Open for the owner to mark wrong" list: D1 stays flagged; a hold's start can move; `chainRuled`'s verification test; Step 6's shape beyond the ruling. Read as approved.)*
 - **Q4.1 (the brief's one-time token).** "Given your threat model (overreach, not a deliberately deceptive agent), should Step 6 drop the one-time token in the reader's brief? It only stops a parent that builds the brief itself and launches a reader before asking codemap for it: a deliberate act, not an overreach. Everything else in Step 6 guards honest mistakes and stays." Options: Drop the token (Rec.) — the session's description: Step 6 loses the token and its fold allowance; the brief stays fixed as issued, and the agent's reading is still taken first; the docs name the pre-launch path as a known gap, beside the stopped-reader one / Keep it.
   **A (picked):** "Drop the token (Rec.)"
+
+## 2026-09-24 Codex round: owner rulings
+
+These answers are copied verbatim from `.git/triage/2026-09-24-decision-rounds-2-codex-round-review/owner.md`. The notes below each quote identify the earlier rule it changes; they do not replace the owner's wording.
+
+> 1. **Keep both** (recommended).
+
+The accepted goal and four critical gates remain in force.
+
+> 2. Preserve the accepted answer. If two different team member's direct accepted answers conflict on intent and neither team member new about the other answer at the time of making the ruling, any agent using it should flag it and ask the user a question about which ruling should be preserved.
+
+This extends A4 and prior Q2.1: later discovery of an earlier replacement, as well as a same-numbered question, cannot retroactively erase an accepted answer, reading, or confirmation. Ordinary replacement takeover still applies. Relative writer causality is evidence about a clone, not proof of what a person knew.
+
+> I’m reading “direct” as an explicit human ruling—including an option pick relayed through an agent—not just a click in the web UI. -- Correct, direct means the answer was able to be proven as originating from a human, via the existing mechanisms.
+
+This includes transcript-verified picks and bound human words. Automatic conflict candidates are incomplete: different question IDs can still carry contradictory intent, and equal effects do not prove equal meaning. The agent must compare the source words and ask before relying on a conflict.
+
+> 3. No authority to act (recommended)
+
+This supersedes P2.3's treatment of a structurally retained but invalid confirmation as an ordinary effect-bearing question. It stays visible with its original payload and invalid reason, but its options, mappings and parks cannot act on findings.
+
+> 4. Approve all
+
+This approves submission receipts, the direct-answer settlement hook, and the shared-ref operations test described in this round's plan.
+
+> old words can disappear from the lists after a replacement is answered, yet still be interpreted later to affect a finding the replacement omitted -- If a question is superceded and still covers old findings that the superceding question did not cover, it should still be shown. If a question is not yet read and actionable and is superceded, it loses the ability to be read and actioned on.
+
+This changes prior Q3.3(b)'s reader-queue rule: omitted findings keep the old question visible even without a standing ruling, while unread and unbound words on it cannot gain a new reading. It does not change Q1.4: an undecided omitted finding stays held until the replacement rules, then is released.
+
+> Yes existing readings can still be confirmed. What can't be is a question that was superseded before being read and lacking any intent bindings on it, as that would allow old questions to conflict with new ones in action intent, which could cause conflicts.
+
+A completed reading awaiting confirmation survives supersession. A launched reader with no submitted verdict is unfinished. A fresh ruling on an unread and unbound superseded question requires a fresh valid question.

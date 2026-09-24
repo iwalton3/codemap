@@ -2293,6 +2293,8 @@ export interface Decision {
    *  (C1), or a bulk item checked to be ruled on separately. */
   origin?: { answer: string };
   notes?: string[];
+  /** A question showing two verified human rulings and asking which exact answer to keep. */
+  resolves?: { answers: [string, string] };
 }
 
 export interface DecisionRound {

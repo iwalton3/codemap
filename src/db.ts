@@ -887,7 +887,8 @@ function migrate(d: DatabaseSync): void {
     CREATE TABLE IF NOT EXISTS reader_requests (answer TEXT PRIMARY KEY, body TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS reader_verdicts (
       seq INTEGER PRIMARY KEY AUTOINCREMENT, answer TEXT NOT NULL, verdict TEXT NOT NULL,
-      held_at TEXT NOT NULL, state TEXT NOT NULL, why TEXT, call TEXT
+      held_at TEXT NOT NULL, state TEXT NOT NULL, why TEXT, call TEXT,
+      receipt TEXT UNIQUE, known_replacements TEXT
     );
     CREATE INDEX IF NOT EXISTS ix_reader_verdicts_answer ON reader_verdicts(answer);
 
@@ -1136,6 +1137,12 @@ function migrate(d: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS ix_problem_queue ON problems(disposition, raised_at);
     CREATE INDEX IF NOT EXISTS ix_problem_scope ON problems(source_scope);
   `);
+  // A receipt identifies the successful submit_verdict result that created a held row.
+  // NULL rows predate correlation and use the explicit legacy verification path.
+  for (const col of ["receipt TEXT", "known_replacements TEXT"]) {
+    try { d.exec(`ALTER TABLE reader_verdicts ADD COLUMN ${col}`); } catch { /* already present */ }
+  }
+  d.exec("CREATE UNIQUE INDEX IF NOT EXISTS ix_reader_verdicts_receipt ON reader_verdicts(receipt)");
   // anchors.derivation — NULL on rows indexed before provenance existed, which is
   // `legacy_live_derivation`: this machine cannot say how its own index was made.
   try { d.exec("ALTER TABLE anchors ADD COLUMN derivation INTEGER"); } catch { /* already present */ }

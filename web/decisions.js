@@ -63,16 +63,20 @@ class DecisionsPage extends Component {
   /** One decision: its question as asked, its standing answer, and — if it wants one — the controls. */
   decision(d, blocked) {
     // Blocked, answering is refused anyway (P3.1 (4)): no controls that cannot work.
-    const s = d.standing, busy = this.state.busy === d.id, replaced = !!d.replacedBy || blocked;
+    const s = d.standing, busy = this.state.busy === d.id;
+    const moved = !!d.replacedBy, inactive = blocked || !!d.confirms?.invalid || !!d.resolutionInvalid;
+    const replaced = moved || inactive;
     const checked = this.state.checked[d.id] || [];
     return html`<div class="op-card ${replaced ? 'moved' : ''}">
       <div class="ft"><b>${d.ref}</b> <span class="qbadge">${d.kind}</span>
         ${when(!!d.confirm, () => html`<span class="qbadge ${d.confirm.state === 'open' ? '' : 'drift'}">confirm of your words on ${d.confirm.of ?? '(gone)'}: ${d.confirm.state}</span>`)}
-        ${when(replaced, () => html`<span class="qbadge drift">replaced by ${d.replacedBy}</span>`)}
+        ${when(moved, () => html`<span class="qbadge drift">replaced by ${d.replacedBy}</span>`)}
         ${when(!!s, () => html`<span class="qbadge ${s.verified ? '' : 'drift'}">${s.verified ? 'answered' : 'answered, unverified'}</span>`)}
       </div>
       <div class="fs">${d.payload.question}</div>
-      ${each(d.options, (o) => html`<div class="fs dim">• <b>${o.label}</b>${o.effects.length ? ' — ' + o.effects.map((e) => `${e.on === 'settle' ? 'close as ' + e.as : 'fix'}: ${e.findings.join(', ')}`).join('; ') : ''}</div>`, (o) => o.label)}
+      ${each(d.options, (o) => html`<div class="fs dim">• <b>${o.label}</b>${d.confirms?.invalid ? ' — inactive' : o.effects.length ? ' — ' + o.effects.map((e) => `${e.on === 'settle' ? 'close as ' + e.as : 'fix'}: ${e.findings.join(', ')}`).join('; ') : ''}</div>`, (o) => o.label)}
+      ${when(!!d.resolutionInvalid, () => html`<div class="fs dim">This resolution is invalid: ${d.resolutionInvalid}. Ask a valid question showing both exact answers.</div>`)}
+      ${when(!!d.confirms?.invalid, () => html`<div class="fs dim">Invalid confirmation: ${d.confirms.invalid}. Its options cannot act on findings; ask a valid question.</div>`)}
       ${when(!!s, () => html`<div class="fs">you said: <b>${s.words}</b>${s.options.length ? ' → ' + s.options.join(', ') : ''}${s.park ? ' → parked until ' + s.park : ''}</div>`)}
       ${when(!!(s && s.flags), () => html`<div class="fs dim">${(s.flags || []).join('; ')}</div>`)}
       ${when(!!(d.possiblySuperseded && d.possiblySuperseded.length), () => html`<div class="fs"><span class="qbadge drift">possibly superseded</span>
@@ -104,6 +108,10 @@ class DecisionsPage extends Component {
       ${when(!v.waitingOnYou.length, () => html`<div class="empty">${blocked ? UNKNOWN : 'nothing — every question is answered'}</div>`)}
       ${each(v.waitingOnYou, (w) => html`<div class="fs"><a href="${href(decisionsUrl(u, w.round))}">${w.round} ${w.ref}</a> — ${w.why}</div>`, (w, i) => w.decision + i)}
 
+      <div class="sec">human intent to check (${'intentCandidates' in v ? v.intentCandidates.length : 0})</div>
+      <div class="empty">These are mechanically detected candidates. Compare the exact words and ask the person which intent to preserve before acting; a relayer's event history does not prove what the person knew.</div>
+      ${each('intentCandidates' in v ? v.intentCandidates : [], (c) => html`<div class="op-card"><div class="fs">Answers ${c.answers.join(' and ')} may conflict on ${c.findings.join(', ') || 'this question'}.</div>
+        ${each(c.sources, (source) => html`<div class="fs dim">${source.principal} (${source.via}): “${source.words}” → ${source.options.join(', ')}</div>`, (source, i) => c.answers[i])}</div>`, (c) => c.answers.join('/'))}
       <div class="sec">ruled, not carried out (${v.ruledNotCarriedOut.length})</div>
       <div class="empty">You ruled; the finding is still open. A close waits for the verifier; a fix is somebody's work.</div>
       ${when(!v.ruledNotCarriedOut.length && blocked, () => html`<div class="empty">${UNKNOWN}</div>`)}

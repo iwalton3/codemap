@@ -273,18 +273,26 @@ export function readReader(agentId: string, callId: string, dir: string = transc
   return { agentId, session, toolUseId, launchedAt, prompt: input.prompt, subagentType: typeof input.subagent_type === "string" ? input.subagent_type : "" };
 }
 
-/** A `submit_verdict` call found on disk: in a subagent's sidechain (`agentId`) or a session's
- *  own conversation. `at` is the calling entry's timestamp, which orders calls. */
-export interface VerdictCall { session: string; agentId?: string; callId: string; at: string }
+/** A submit_verdict call paired with its own result in the same transcript. */
+export interface VerdictCall {
+  session: string; agentId?: string; callId: string; at: string;
+  result: "missing" | "held" | "failed" | "legacy-held";
+  receipt?: string;
+}
 
 const SUBMIT = /(^|__)submit_verdict$/;
 
-/**
- * Every `submit_verdict` call in this machine's transcripts carrying exactly `answer` and
- * `verdict`, oldest first. A call is written to its transcript only after it returns (~12 ms,
- * measured 2026-09-24), so the caller's own call is never here yet. Files untouched since
- * `since` (ms) are skipped: the request was issued then, so no call to it can be older.
- */
+const resultObject = (v: unknown): any => {
+  if (v && typeof v === "object") {
+    if (Array.isArray(v)) return resultObject(v.find((x) => x?.type === "text")?.text);
+    if ((v as any).content && !(v as any).held) return resultObject((v as any).content);
+    return v;
+  }
+  if (typeof v === "string") { try { return resultObject(JSON.parse(v)); } catch { return undefined; } }
+  return undefined;
+};
+
+/** The file mtime only saves scans; it says nothing about an individual call's age. */
 export function findVerdictCalls(answer: string, verdict: string, since: number, dir: string = transcriptDir()): VerdictCall[] {
   const files: { file: string; session: string; agentId?: string }[] = [];
   let top: string[];
@@ -303,17 +311,31 @@ export function findVerdictCalls(answer: string, verdict: string, since: number,
   const out: VerdictCall[] = [];
   for (const f of files) {
     try { if (statSync(f.file).mtimeMs < since) continue; } catch { continue; }
-    let raw: string;
-    try { raw = readFileSync(f.file, "utf8"); } catch { continue; }
-    if (!raw.includes("submit_verdict") || !raw.includes(answer)) continue;
-    for (const e of jsonl(f.file) ?? []) {
+    const entries = jsonl(f.file);
+    if (!entries) continue;
+    for (const e of entries) {
       if (e.type !== "assistant" || !Array.isArray(e.message?.content)) continue;
-      // A subagent's calls are its own sidechain's; a session's, never a sidechain's.
       if (f.agentId ? e.isSidechain !== true || e.agentId !== f.agentId : e.isSidechain === true) continue;
       for (const x of e.message.content) {
         if (x?.type !== "tool_use" || typeof x.name !== "string" || !SUBMIT.test(x.name) || typeof x.id !== "string") continue;
         if (x.input?.answer !== answer || x.input?.verdict !== verdict) continue;
-        out.push({ session: f.session, ...(f.agentId ? { agentId: f.agentId } : {}), callId: x.id, at: typeof e.timestamp === "string" ? e.timestamp : "" });
+        const results = entries.filter((r) => r.type === "user" && r.isSidechain === e.isSidechain
+          && (!f.agentId || r.agentId === f.agentId) && Array.isArray(r.message?.content)
+          && r.message.content.some((b: any) => b?.type === "tool_result" && b.tool_use_id === x.id));
+        let result: VerdictCall["result"] = "missing", receipt: string | undefined;
+        if (results.length > 1) result = "failed";
+        else if (results.length === 1) {
+          const r = results[0]!;
+          const block = r.message.content.find((b: any) => b?.type === "tool_result" && b.tool_use_id === x.id);
+          const oneResult = r.message.content.filter((b: any) => b?.type === "tool_result").length === 1;
+          const payload = (oneResult ? resultObject(r.toolUseResult) : undefined) ?? resultObject(block?.content);
+          if (payload?.ok === true && payload?.held === true && typeof payload.receipt === "string" && payload.receipt) {
+            result = "held"; receipt = payload.receipt;
+          } else if ((payload?.ok === true && payload?.held === true && payload.receipt === undefined) || (payload === undefined && block?.content === "held")) result = "legacy-held";
+          else result = "failed";
+        }
+        out.push({ session: f.session, ...(f.agentId ? { agentId: f.agentId } : {}), callId: x.id,
+          at: typeof e.timestamp === "string" ? e.timestamp : "", result, ...(receipt ? { receipt } : {}) });
       }
     }
   }

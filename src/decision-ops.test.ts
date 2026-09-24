@@ -20,7 +20,7 @@ import { db as openDb } from "./db.js";
 import type { State } from "./schema.js";
 import { shareFinding, closeFinding, bindDecisions, reassignFinding, sharedFindings } from "./ops-shared.js";
 import { reviewQueue } from "./ops/annotations.js";
-import { postRound, postPrevalidated, logQuestion, relayAnswer, answerDirect, decisionRounds, decisionRound, readerBrief, recordReading, submitVerdict, confirmReading, parseVerdict, confirmId } from "./ops/decisions.js";
+import { postRound, postPrevalidated, logQuestion, relayAnswer, answerDirect, decisionRounds, decisionRound, readerBrief, recordReading, submitVerdict as submitVerdictOp, confirmReading, parseVerdict, confirmId } from "./ops/decisions.js";
 import { discard } from "./test-tmp.js";
 import { decisionsView, holdBuilds } from "./ops/decision-holds.js";
 import { decisionScope, foldDecisions, logQuestionEvent, postConfirmEvent, recordReadingEvent } from "./shared-decisions.js";
@@ -55,6 +55,39 @@ async function universe() {
 }
 
 const SESSION = "5e55a0a0-0000-0000-0000-000000000001";
+const fixtureReceipts = new Map<string, string[]>();
+const receiptKey = (dir: string, answer: string, verdict: string) => `${dir}\0${answer}\0${verdict}`;
+const attachFixtureReceipt = (dir: string, answer: string, verdict: string, receipt: string): boolean => {
+  for (const session of readdirSync(dir)) {
+    const sub = join(dir, session, "subagents");
+    let files: string[] = [];
+    try { files = readdirSync(sub).filter((x) => x.endsWith(".jsonl")).map((x) => join(sub, x)); } catch { /* no subagents */ }
+    if (session.endsWith(".jsonl")) files.push(join(dir, session));
+    for (const file of files) {
+      const lines: any[] = readFileSync(file, "utf8").trim().split("\n").map((x) => JSON.parse(x));
+      const call = lines.find((e) => e.type === "assistant" && Array.isArray(e.message?.content) && e.message.content.some((b: any) => b.type === "tool_use" && b.name.endsWith("submit_verdict") && b.input?.answer === answer && b.input?.verdict === verdict));
+      if (!call) continue;
+      const id = call.message.content.find((b: any) => b.name?.endsWith("submit_verdict")).id;
+      const result = lines.find((e) => e.type === "user" && Array.isArray(e.message?.content) && e.message.content.some((b: any) => b.tool_use_id === id && b.content === "held"));
+      if (!result) continue;
+      result.message.content.find((b: any) => b.tool_use_id === id).content = JSON.stringify({ ok: true, held: true, receipt });
+      writeFileSync(file, lines.map((x) => JSON.stringify(x)).join("\n") + "\n");
+      return true;
+    }
+  }
+  return false;
+};
+const submitVerdict: typeof submitVerdictOp = async (root, input, via, dir) => {
+  const result = await submitVerdictOp(root, input, via, dir);
+  if ((result as any).held && (result as any).receipt && dir) {
+    const receipt = (result as any).receipt as string;
+    if (!attachFixtureReceipt(dir, input.answer, input.verdict, receipt)) {
+      const key = receiptKey(dir, input.answer, input.verdict);
+      fixtureReceipts.set(key, [...(fixtureReceipts.get(key) ?? []), receipt]);
+    }
+  }
+  return result;
+};
 /** What the person is shown names its ref and the finding it acts on (H5). */
 const payloadFor = (f: string, ref = "D1") => ({ question: `${ref}: is ${f} a real defect?`, header: "F", options: [{ label: "Not a defect", description: "close as refuted" }, { label: "Real, fix it", description: "fix work" }] });
 const decision = (id: string, f: string, extra: Record<string, unknown> = {}, ref = "D1", round = "R1") => ({
@@ -73,7 +106,16 @@ function transcript(dir: string, session = SESSION) {
   const lines: object[] = [];
   const sentInto = (text: string, uuid: string) => ({ type: "user", uuid, isSidechain: true, agentId: "", sessionId: session, origin: { kind: "coordinator" }, message: { role: "user", content: `The coordinator sent a message while you were working:\n${text}` } });
   const file = join(dir, `${session}.jsonl`);
-  const write = () => writeFileSync(file, lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
+  const write = () => {
+    let prior: any[] = [];
+    try { prior = readFileSync(file, "utf8").trim().split("\n").map((x) => JSON.parse(x)); } catch { /* first write */ }
+    const receipts = new Map<string, string>();
+    for (const e of prior) for (const b of Array.isArray(e.message?.content) ? e.message.content : [])
+      if (b.type === "tool_result" && typeof b.content === "string" && b.content.includes('"receipt"')) receipts.set(b.tool_use_id, b.content);
+    for (const e of lines) for (const b of Array.isArray((e as any).message?.content) ? (e as any).message.content : [])
+      if (b.type === "tool_result" && receipts.has(b.tool_use_id)) b.content = receipts.get(b.tool_use_id);
+    writeFileSync(file, lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
+  };
   return {
     ask(toolUseId: string, questions: object[], answers: Record<string, string | string[]>, when = later()) {
       lines.push({ type: "assistant", uuid: `a-${toolUseId}`, isSidechain: false, timestamp: when, message: { content: [{ type: "tool_use", id: toolUseId, name: "AskUserQuestion", input: { questions } }] } });
@@ -82,7 +124,9 @@ function transcript(dir: string, session = SESSION) {
     },
     /** The session itself calling `submit_verdict` — not a reader. */
     submits(answer: string, verdict: string) {
-      lines.push({ type: "assistant", uuid: `sv-${lines.length}`, isSidechain: false, timestamp: nextStamp(), message: { content: [{ type: "tool_use", id: `toolu_main_${lines.length}`, name: "mcp__codemap__submit_verdict", input: { answer, verdict } }] } });
+      const id = `toolu_main_${lines.length}`;
+      lines.push({ type: "assistant", uuid: `sv-${lines.length}`, isSidechain: false, timestamp: nextStamp(), message: { content: [{ type: "tool_use", id, name: "mcp__codemap__submit_verdict", input: { answer, verdict } }] } });
+      lines.push({ type: "user", uuid: `svr-${lines.length}`, isSidechain: false, message: { content: [{ type: "tool_result", tool_use_id: id, content: "held" }] } });
       write();
     },
     typed(uuid: string, text: string, when = later()) {
@@ -98,6 +142,10 @@ function transcript(dir: string, session = SESSION) {
       mkdirSync(sub, { recursive: true });
       const call = `toolu_${agentId}`;
       writeFileSync(join(sub, `agent-${agentId}.meta.json`), JSON.stringify({ agentType: opts.fork ? "fork" : "general-purpose", ...(opts.fork ? { isFork: true } : {}), toolUseId: call }));
+      const key = opts.answer ? receiptKey(dir, opts.answer, report) : "";
+      const queued = fixtureReceipts.get(key) ?? [];
+      const receipt = queued.shift();
+      if (receipt) fixtureReceipts.set(key, queued);
       writeFileSync(join(sub, `agent-${agentId}.jsonl`), [
         { type: "user", uuid: "s1", isSidechain: true, agentId, sessionId: session, message: { role: "user", content: opts.prompt ?? "read this" } },
         // Measured 2026-09-24: the harness's own reminder, right after launch — not a message sent in.
@@ -105,7 +153,7 @@ function transcript(dir: string, session = SESSION) {
         ...(opts.sent ? [{ ...sentInto(opts.sent, "s1b"), agentId }] : []),
         ...(opts.answer ? [
           { type: "assistant", uuid: "sv", isSidechain: true, agentId, sessionId: session, timestamp: nextStamp(), message: { content: [{ type: "tool_use", id: `toolu_sv_${agentId}`, name: "mcp__codemap__submit_verdict", input: { answer: opts.answer, verdict: report } }] } },
-          { type: "user", uuid: "svr", isSidechain: true, agentId, sessionId: session, message: { content: [{ type: "tool_result", tool_use_id: `toolu_sv_${agentId}`, content: "held" }] } },
+          { type: "user", uuid: "svr", isSidechain: true, agentId, sessionId: session, message: { content: [{ type: "tool_result", tool_use_id: `toolu_sv_${agentId}`, content: receipt ? JSON.stringify({ ok: true, held: true, receipt }) : "held" }] } },
         ] : []),
         ...(opts.sentAfter ? [{ ...sentInto(opts.sentAfter, "s2b"), agentId }] : []),
         { type: "assistant", uuid: "s2", isSidechain: true, agentId, sessionId: session, message: { content: [{ type: "tool_use", id: "h1", name: "SubagentHandback", input: { message: report } }] } },
@@ -456,6 +504,28 @@ async function wordsWithBrief(u: Awaited<ReturnType<typeof universe>>) {
   return { f, t, a, mine, prompt: await briefOf(u.root, a, mine) };
 }
 
+test("a direct answer settles an already held reader verdict before recording the new answer", async () => {
+  const u = await universe();
+  try {
+    await asAgent(async () => {
+      const { t, a, prompt } = await wordsWithBrief(u);
+      t.reader(nextReader(), "D1 → Not a defect", { prompt, answer: a });
+      const held = await submitVerdict(u.root, { answer: a, verdict: "D1 → Not a defect" }, {}, u.transcripts) as any;
+      assert.equal(held.held, true);
+      const before = await decisionRound(u.root, "R1") as any;
+      assert.equal(before.decisions[0].answers.find((x: any) => x.id === a).reading, undefined);
+      await withEnv({ CODEMAP_TRANSCRIPT_DIR: u.transcripts, CODEMAP_AGENT_MODEL: undefined }, async () => {
+        const direct = await answerDirect(u.root, { decision: "d1", option: "Real, fix it" }) as any;
+        assert.equal(direct.ok, true, JSON.stringify(direct));
+      });
+      const after = await decisionRound(u.root, "R1") as any;
+      const d = after.decisions[0];
+      assert.equal(d.answers.find((x: any) => x.id === a).reading?.agree, true);
+      assert.equal(d.standing.id, a, "the verified earlier words keep their actual given time, later than the page pick");
+    });
+  } finally { u.cleanup(); }
+});
+
 test("Q2.2 (a, b): the first reader's verdict counts — a second reader is refused, and your reading cannot change after the brief", async () => {
   const u = await universe();
   try {
@@ -513,10 +583,34 @@ test("Q2.2 (c): the session's own submit_verdict is not a reader's — it is dis
       await submitVerdict(v.root, { answer: w.a, verdict: "D1 → Not a defect" }, {}, v.transcripts);
       await withEnv({ CODEMAP_VERDICT_GRACE_MS: "0" }, async () => {
         const rec = await recordReading(v.root, { answer: w.a }, {}, v.transcripts) as any;
-        assert.match(JSON.stringify(rec.invalid), /never found/, JSON.stringify(rec));
+        assert.match(JSON.stringify(rec.invalid), /not found/, JSON.stringify(rec));
       });
     });
   } finally { v.cleanup(); }
+});
+
+test("ambiguous legacy held calls stay unverified and block a later receipt row", async () => {
+  const u = await universe();
+  try {
+    await asAgent(async () => {
+      const { t, a, prompt } = await wordsWithBrief(u);
+      const verdict = "D1 → Not a defect";
+      t.reader(nextReader(), verdict, { prompt, answer: a });
+      t.reader(nextReader(), verdict, { prompt, answer: a });
+      openDb(u.root).prepare("INSERT INTO reader_verdicts(answer, verdict, held_at, state) VALUES(?, ?, ?, 'pending')")
+        .run(a, verdict, "2026-09-23T00:00:00Z");
+      await withEnv({ CODEMAP_VERDICT_GRACE_MS: "0" }, async () => {
+        const first = await recordReading(u.root, { answer: a }, {}, u.transcripts) as any;
+        assert.equal(first.legacyUnverified, true, JSON.stringify(first));
+        assert.match(first.note, /multiple successful-held calls.*re-ask/);
+        const newer = await submitVerdictOp(u.root, { answer: a, verdict }, {}, u.transcripts) as any;
+        assert.equal(newer.held, true);
+        const still = await recordReading(u.root, { answer: a }, {}, u.transcripts) as any;
+        assert.equal(still.legacyUnverified, true, JSON.stringify(still));
+        assert.ok((await decisionRounds(u.root) as any).awaitingReading.some((w: any) => w.answer === a && /multiple successful-held calls/.test(w.verdict)));
+      });
+    });
+  } finally { u.cleanup(); }
 });
 
 test("R5 (P2.1 (3)): an empty session reading is refused before anything is written", async () => {
@@ -697,7 +791,7 @@ test("confirm_reading refuses what the fold would void, and a replacement of a c
   } finally { u.cleanup(); }
 });
 
-test("GATE (vanishing) / R13: words typed on D1 before it was replaced, relayed after, are read on D1 — and can be confirmed", async () => {
+test("Q5/Q6: unread words on a superseded question cannot gain a new reading or confirmation", async () => {
   const u = await universe();
   try {
     const f = await withFinding(u);
@@ -709,12 +803,9 @@ test("GATE (vanishing) / R13: words typed on D1 before it was replaced, relayed 
       await postRound(u.root, { round: { id: "R2", source: "x" }, decisions: [{ ...decision("d1b", f, {}, "D7", "R2"), supersedes: "d1" }] });
       const a = (await relayAnswer(u.root, { round: "R1", decision: "d1", session: SESSION, entryId: "m1" }, {}, u.transcripts) as any).answer;
       const view = await decisionRounds(u.root) as any;
-      assert.ok(view.awaitingReading.some((x: any) => x.decision === "d1" && x.answer === a), JSON.stringify(view.awaitingReading));
-      assert.ok(view.waitingOnYou.some((w: any) => w.decision === "d1" && /given before it was replaced by D7/.test(w.why)));
-      assert.match(await briefOf(u.root, a, [{ decision: "d1", option: "Not a defect" }]), /^D1: /m, "the brief offers D1: posted before the words, replaced after");
-      const c = await confirmReading(u.root, { answer: a, maps: [{ decision: "d1", option: "Not a defect" }] }) as any;
-      assert.equal(c.ok, true, JSON.stringify(c));
-      assert.equal(c.round, "R1");
+      assert.ok(!view.awaitingReading.some((x: any) => x.answer === a));
+      assert.match(String(err(await readerBrief(u.root, { answer: a, maps: [{ decision: "d1", option: "Not a defect" }] }))), /superseded/);
+      assert.match(String(err(await confirmReading(u.root, { answer: a, maps: [{ decision: "d1", option: "Not a defect" }] }))), /superseded/);
     });
   } finally { u.cleanup(); }
 });
@@ -1043,7 +1134,7 @@ test("GATE (impl-2, vanishing): a rejected first reading strands nothing, an emp
       const round = await decisionRound(u.root, "R1") as any;
       assert.equal(round.decisions.find((x: any) => x.id === c.confirm)?.confirm.state, "no longer needed", JSON.stringify(round.decisions.map((x: any) => x.confirm)));
       view = await decisionRounds(u.root) as any;
-      assert.ok(!view.waitingOnYou.some((w: any) => w.decision === c.confirm), "it waits on nobody");
+      assert.ok(!view.waitingOnYou.some((w: any) => w.decision === c.confirm), "an unread superseded question cannot gain a new interpretation");
     });
   } finally { u.cleanup(); }
 });
@@ -1218,6 +1309,30 @@ test("F4 (run 2026-09-24-decision-rounds-2-codex-round-review): a multi-select r
       const a = (await relayAnswer(u.root, { round: "R1", decision: "d1", session: SESSION, entryId: "m1" }, {}, u.transcripts) as any).answer;
       const c = await confirmReading(u.root, { answer: a, maps: [{ decision: "d1", option: "Real, fix it" }, { decision: "d1", option: "Not a defect" }] }) as any;
       assert.equal(c.ok, true, JSON.stringify(c));
+    });
+  } finally { u.cleanup(); }
+});
+
+
+test("Q4: confirmReading refuses a ref shared by two posted questions", async () => {
+  const u = await universe();
+  try {
+    const f = await withFinding(u);
+    await asAgent(async () => {
+      await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f)] });
+      const t = transcript(u.transcripts);
+      t.typed("m-shared", "hmm", later(2));
+      const a = (await relayAnswer(u.root, { round: "R1", decision: "d1", session: SESSION, entryId: "m-shared" }, {}, u.transcripts) as any).answer;
+      const first = await confirmReading(u.root, { answer: a, maps: [{ decision: "d1", option: "Not a defect" }] }) as any;
+      assert.equal(first.ok, true);
+      const duplicate = { id: "duplicate-ref", round: "R1", ref: "D1", kind: "options" as const,
+        payload: { ...first.ask, question: first.ask.question.replace(/^D2:/, "D1:") },
+        options: first.ask.options.map((o: any) => ({ label: o.label, effects: [] })),
+        confirms: { answer: a, readings: [[{ decision: "d1", option: "Not a defect" }]] } };
+      const b = bindDecisions(u.root) as any;
+      await postConfirmEvent(b.cfg.path, b.cfg.universe, b.actor, duplicate);
+      const again = await confirmReading(u.root, { answer: a, maps: [{ decision: "d1", option: "Real, fix it" }] }) as any;
+      assert.match(String(again.error), /two questions.*ambiguous/);
     });
   } finally { u.cleanup(); }
 });

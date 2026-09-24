@@ -11,7 +11,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   foldDecisions, decisionHash, checkDecision, heldFindings, standing, waitingOnMe, readingsInDispute, ruledNotCarriedOut, awaitingReading, parked,
-  possiblySuperseded, confirmPayload, confirmState, supersededFindings, readerBrief, readingRefusal, CONFIRM_YES, CONFIRM_NO,
+  possiblySuperseded, confirmPayload, confirmState, supersededFindings, readerBrief, briefManifest, briefListing, readingRefusal, intentCandidates, CONFIRM_YES, CONFIRM_NO,
   type FoldedDecision, type SharedDecisions, type Mapping,
 } from "./shared-decisions.js";
 
@@ -642,6 +642,7 @@ test("R2: a reader whose reading was rejected may read another answer", () => {
     n = 1;
     const R4b = post("R4b", [reask(d4, "d4b", "D8", "R4b", { supersedes: "d4" })]);
     const M1 = msg(d1, "D4 A please", "u1"), M2 = msg(d3, "now", "u2");
+    M1.data.knownReplacements = ["d4b"];
     const bad = reading(M1, [{ decision: "d4", option: "A" }]), good = reading(M2, [{ decision: "d3", option: "Now" }]);
     good.data.reader.agent = bad.data.reader.agent;
     const { b, out } = fold([R4b, M1, M2, ...(rejectedFirst ? [bad, good] : [good, bad])]);
@@ -651,6 +652,7 @@ test("R2: a reader whose reading was rejected may read another answer", () => {
 run("R2 (F12): a reading of words cut as given after their question was replaced claims nothing — its reader may read another answer", () => {
   const R1b = post("R1b", [reask(d1, "d1b", "D7", "R1b", { supersedes: "d1" })]);
   const cut = msg(d1, "A on D4", "u1");
+  cut.data.knownReplacements = ["d1b"];
   const M2 = msg(d4, "B", "u2");
   const r1 = reading(cut, [{ decision: "d4", option: "A" }]), r2 = reading(M2, [{ decision: "d4", option: "B" }]);
   r2.data.reader.agent = r1.data.reader.agent;
@@ -762,7 +764,11 @@ run("DROP: a reading naming a decision in another round", () => {
   const [L, A] = call(d1, "hmm");
   return [post("R2", [other]), L, A, reading(A, [{ decision: "x4", option: "A" }])];
 }, (b) => !b.x4!.answers.length && !b.d1!.answers[0]!.reading);
-run("DROP: an answer given after its decision was replaced", () => [post("R1b", [reask(d1, "d1b", "D7", "R1b", { supersedes: "d1" })]), page(d1, { option: "Settle" })],
+run("DROP: an answer given after a replacement it already knew", () => {
+  const r = post("R1b", [reask(d1, "d1b", "D7", "R1b", { supersedes: "d1" })]);
+  const a = page(d1, { option: "Settle" }); a.data.knownReplacements = ["d1b"];
+  return [r, a];
+},
   (b, out) => b.d1!.replacedBy === "d1b" && !b.d1!.answers.length && !waits(out, "d1"));
 run("DROP: a second posting of a decision id cannot change it", () => [post("R1c", [{ ...d1, payload: q("D1: something else about F3 and F7?", ["Settle", "No"]), round: "R1c" }])],
   (b) => b.d1!.payload.question === "D1: approve the fix for F3 and F7?");
@@ -820,6 +826,7 @@ run("A4 (R23): words given before the replacement are still read, onto a questio
 run("A4 (R23): a reading onto a question replaced before the words were typed binds nothing", () => {
   const R2 = post("R4b", [reask(d4, "d4b", "D8", "R4b", { supersedes: "d4" })]);
   const [L, A] = call(d1, "settle, and A on D4");
+  A.data.knownReplacements = ["d4b"];
   return [R2, L, A, reading(A, [{ decision: "d1", option: "Settle" }, { decision: "d4", option: "A" }])];
 }, (b) => !b.d1!.answers[0]!.reading && !b.d4!.answers.length);
 
@@ -922,14 +929,14 @@ const onReplaced = (...more: ((M: any) => any[])[]) => {
   const R = post("R1b", [d1b]), M = msg(d1, "close it", "u1", new Date(Date.parse(R.at) - 500).toISOString());
   return [R, M, ...more.flatMap((f) => f(M))];
 };
-run("R13: unread, they wait for a reader and show beside the replacement", () => onReplaced(),
-  (b, out) => b.d1!.replacedBy === "d1b" && awaitingReading(out).some((u) => u.decision === "d1") && waits(out, "d1", /given before it was replaced by D7/) && waits(out, "d1b", /not answered/));
+run("Q5/Q6: unread superseded words leave the reader queue", () => onReplaced(),
+  (b, out) => b.d1!.replacedBy === "d1b" && !awaitingReading(out).some((u) => u.decision === "d1") && waits(out, "d1b", /not answered/));
 run("R13: read two ways, they are in dispute", () => onReplaced((M) => [reading(M, [{ decision: "d1", option: "Settle" }], [{ decision: "d1", option: "No" }])]),
   (b, out) => readingsInDispute(out).some((x) => x.decision === "d1") && waits(out, "d1", /read two different ways/));
 run("R13: bound onto D1, they rule D1 as of when typed and hold F3 until D1b is answered (B2.4)", () => onReplaced((M) => [reading(M, [{ decision: "d1", option: "Settle" }])]),
   (b, out) => rules(b.d1!, "F3", "settle") && held(out, "F3", "ruled") && ruledNotCarriedOut(out, () => true).some((u) => u.decision === "d1" && u.replacedBy === "d1b") && !awaitingReading(out).length);
-run("R13: a ruling on D1 they may overturn is flagged", () => [page(d1, { option: "Settle" }), ...onReplaced()],
-  (b, out) => flagged(b.d1!) && supersededFindings(out).has("F3"));
+run("Q5/Q6: unread words on a superseded question cannot flag an accepted ruling as actionable", () => [page(d1, { option: "Settle" }), ...onReplaced()],
+  (b, out) => !flagged(b.d1!) && !supersededFindings(out).has("F3"));
 run("R13 + P3.3: once D1b rules, the words leave every list", () => [page(d1, { option: "Settle" }), ...onReplaced(() => [page(d1b, { option: "No" })]), ...others()],
   (b, out) => !awaitingReading(out).length && !waits(out, "d1") && !flagged(b.d1!) && !readingsInDispute(out).length);
 /** D1 replaced, undecided, by a D1c that asks about F3 only: F7 is the finding it drops. */
@@ -947,9 +954,9 @@ run("Q3.3 (b): ...unless D1 still holds a ruling its replacement never took over
   const d1c = reask(d1, "d1c", "D7", "R1c", { supersedes: "d1", options: [{ label: "Settle", effects: [settle("F3")] }, { label: "No", effects: [unblock("F3")] }] });
   const P = page(d1, { option: "Settle" }), R = post("R1c", [d1c]), M = msg(d1, "close it", "u1", new Date(Date.parse(R.at) - 500).toISOString());
   return [P, R, M, page(d1c, { option: "No" }), ...others()];
-}, (b, out) => ruledNotCarriedOut(out, () => true).some((u) => u.decision === "d1" && u.finding === "F7") && awaitingReading(out).some((u) => u.decision === "d1"));
-run("R13: ...but an unverified answer on D1b does not end them", () => onReplaced(() => [unv(d1b, "no")]),
-  (b, out) => awaitingReading(out).some((u) => u.decision === "d1"));
+}, (b, out) => ruledNotCarriedOut(out, () => true).some((u) => u.decision === "d1" && u.finding === "F7") && waits(out, "d1", /remains visible for F7/));
+run("Q5/Q6: an unverified replacement answer does not re-enable old unread words", () => onReplaced(() => [unv(d1b, "no")]),
+  (b, out) => !awaitingReading(out).some((u) => u.decision === "d1"));
 
 // --- Q1.2 (owner, "While they could change something"): words are moot only when no question
 // they may be read onto would change
@@ -1003,7 +1010,7 @@ test("Q1.2 (pinned consequence): binding moot words older than a standing answer
     assert.ok(standing(b.d4!)!.options[0] === "A" && since(out, "F30")[0] === A.at, dump(b, out));
   }
 });
-test("Q1.2: a confirm with no effects is not a question words could change; an effect-bearing invalid one is", () => {
+test("Q3: neither a valid nor an effect-bearing invalid confirm lets unrelated words act", () => {
   n = 1;
   const W0 = msg(d1, "hmm"), first = fold([W0]);
   const C = confirmOf(first.b, "d1", first.b.d1!.answers[0]!.id, [[{ decision: "d1", option: "No" }]]);
@@ -1014,7 +1021,7 @@ test("Q1.2: a confirm with no effects is not a question words could change; an e
   const bad = structuredClone(C);
   bad.data.decision.options[0].effects = [settle("F3")];
   const r2 = fold([...O, W0, bad, W, P]);
-  assert.ok(!!r2.b.c1!.confirms!.invalid && awaitingReading(r2.out).some((u) => u.answer === W.id), dump(r2.b, r2.out));
+  assert.ok(!!r2.b.c1!.confirms!.invalid && !awaitingReading(r2.out).some((u) => u.answer === W.id), dump(r2.b, r2.out));
 });
 
 // --- S0.4: when a hold began
@@ -1060,3 +1067,102 @@ run("Q13: a follow-up to a reading's copy attaches to the decision the copy is o
   const nd = { ...D("d9", "D9", q("D9: Rename fix — settle F10?", ["Yes", "No"]), [{ label: "Yes", effects: [settle("F10")] }, { label: "No", effects: [] }]), round: "R2", origin: { answer: `${R.id}/d2` } };
   return [L, A, R, post("R2", [nd])];
 }, (b, out) => standing(b.d2!)!.separately?.[0] === "Rename fix" && (b.d2!.followUps ?? []).includes("d9") && !waits(out, "d2", /Rename fix/));
+
+// --- 2026-09-24 decision round: historical admission and human conflicts -------------------
+
+test("Q2: an unknown replacement cannot erase an accepted direct answer", () => {
+  n = 1;
+  const r = post("R2", [reask(d1, "d1x", "D7", "R2", { supersedes: "d1" })]);
+  const a = page(d1, { option: "Settle" });
+  a.data.knownReplacements = []; // the replacement was not on the accepting clone
+  const s = foldDecisions([round, r, a]);
+  const old = s.decisions.find((d) => d.id === "d1")!;
+  assert.equal(old.answers[0]?.id, a.id);
+  assert.equal(standing(old)?.options[0], "Settle");
+});
+
+test("F2/F7: identical shown refs keep two identities and reject an ambiguous verdict", () => {
+  n = 1;
+  const one = { ...d1, id: "same-a", round: "RS" }, two = { ...d1, id: "same-b", round: "RS" };
+  const source = { ...d4, id: "source", round: "RS", ref: "D4" };
+  const R = post("RS", [one, two, source]);
+  const W = msg(source, "D1 Settle", "u-same"); W.data.via.round = "RS";
+  const before = foldDecisions([round, R, W]);
+  const byId = new Map(before.decisions.map((d) => [d.id, d]));
+  const d = byId.get("source")!, a = d.answers[0]!;
+  const brief = readerBrief(byId, d, a), manifest = briefManifest(byId, d, a);
+  assert.deepEqual(manifest.filter((m) => m.ref === "D1").map((m) => m.id), ["same-a", "same-b"]);
+  const listed = briefListing(byId, d, a, brief, manifest);
+  assert.ok(Array.isArray(listed) && listed.filter((x) => x.ref === "D1").length === 2);
+  assert.match(String(briefListing(byId, d, a, brief, [{ ...manifest[0]!, hash: "wrong" }, ...manifest.slice(1)])), /manifest/);
+  const rd = reading(W, [{ decision: "same-a", option: "Settle" }]);
+  rd.data.reader.brief = brief;
+  rd.data.reader.manifest = manifest;
+  const after = foldDecisions([round, R, W, rd]);
+  assert.equal(after.decisions.find((x) => x.id === "source")!.answers[0]!.reading, undefined);
+});
+
+test("Q3: a malformed effect-bearing confirmation keeps the evidence but no authority", () => {
+  n = 1;
+  const W = msg(d1, "hmm", "u-invalid"), first = fold([W]);
+  const C = confirmOf(first.b, "d1", W.id, [[{ decision: "d1", option: "Settle" }]]);
+  C.data.decision.options[0].effects = [settle("F3")];
+  const [L, A] = call(C.data.decision, CONFIRM_YES);
+  const s = foldDecisions([round, W, C, L, A]);
+  const c = s.decisions.find((d) => d.id === C.data.decision.id)!;
+  assert.ok(c.confirms?.invalid);
+  assert.equal(c.answers[0]?.words, CONFIRM_YES);
+  assert.deepEqual(c.answers[0]?.ruled, []);
+  assert.ok(waits(s, c.id, /not a confirm.*ask for a new confirm/));
+  assert.ok(!heldFindings(s, () => true).get("F3")?.some((h) => h.decision === c.id));
+});
+
+test("Q2 human conflict: concurrent proven rulings hold work until a shown human choice resolves the pair", () => {
+  const base: any = { ...round, id: "r-base", writer: "w-base", writerPrev: "GENESIS", after: [] };
+  const a: any = { id: "a-one", kind: "decision.answer.recorded", subject: "d1", actor: { principal: "alice" },
+    at: at(20), writer: "w-alice", writerPrev: "GENESIS", after: [base.id],
+    data: { decision: "d1", hash: h(d1), via: { kind: "direct", option: "Settle" }, knownReplacements: [] } };
+  const b: any = { id: "a-two", kind: "decision.answer.recorded", subject: "d1", actor: { principal: "bob" },
+    at: at(21), writer: "w-bob", writerPrev: "GENESIS", after: [base.id],
+    data: { decision: "d1", hash: h(d1), via: { kind: "direct", option: "No" }, knownReplacements: [] } };
+  const before = foldDecisions([base, a, b]);
+  const candidates = intentCandidates(before);
+  assert.equal(candidates.length, 1);
+  assert.deepEqual(candidates[0]!.answers, ["a-one", "a-two"]);
+  assert.ok(heldFindings(before, () => true).get("F3")?.length);
+  assert.ok(!ruledNotCarriedOut(before, () => true).some((x) => x.finding === "F3"));
+  const payload = q(`D9: Alice said ${JSON.stringify("Settle")} in a-one; Bob said ${JSON.stringify("No")} in a-two. Which answer should be preserved for F3 and F7?`, ["Preserve a-one", "Preserve a-two"]);
+  const resolution = D("resolve-1", "D9", payload, [{ label: "Preserve a-one", effects: [] }, { label: "Preserve a-two", effects: [] }], { round: "R2", resolves: { answers: ["a-one", "a-two"] } });
+  const R: any = { id: "r-resolve", kind: "decision.round.posted", subject: "R2", actor: { principal: "agent", via: { kind: "agent", model: "m" } },
+    at: at(22), writer: "w-agent", writerPrev: "GENESIS", after: [a.id, b.id], data: { round: { id: "R2", source: "conflict", universe: "u" }, decisions: [resolution] } };
+  const choice: any = { id: "a-choice", kind: "decision.answer.recorded", subject: "resolve-1", actor: { principal: "alice" },
+    at: at(23), writer: "w-alice", writerPrev: a.id, after: [R.id],
+    data: { decision: "resolve-1", hash: h(resolution), via: { kind: "direct", option: "Preserve a-one" }, knownReplacements: [] } };
+  const after = foldDecisions([base, a, b, R, choice]);
+  assert.equal(intentCandidates(after).length, 0);
+  assert.ok(ruledNotCarriedOut(after, () => true).some((x) => x.finding === "F3"));
+  const third: any = { ...b, id: "a-three", actor: { principal: "carol" }, writer: "w-carol", at: at(24),
+    data: { ...b.data, via: { kind: "direct", option: "No" } } };
+  assert.ok(intentCandidates(foldDecisions([base, a, b, R, choice, third])).some((c) => c.answers.includes("a-three")),
+    "a choice about two shown answers cannot settle a third unseen person");
+  const agentChoice: any = { ...choice, id: "a-agent-choice", actor: agent };
+  assert.equal(intentCandidates(foldDecisions([base, a, b, R, agentChoice])).length, 1,
+    "an agent cannot resolve the pair by answering for the person");
+
+  const newWords: any = { ...choice, id: "a-new-words", data: { ...choice.data, via: { kind: "direct", words: "Keep the work open and ask for a narrower fix" } } };
+  const unread = foldDecisions([base, a, b, R, newWords]);
+  assert.equal(intentCandidates(unread).length, 1, "new words alone are not yet an actionable resolution");
+  const rd = unread.decisions.find((d) => d.id === "resolve-1")!;
+  const ra = rd.answers.find((x) => x.id === newWords.id)!;
+  const maps: Mapping[] = [{ decision: rd.id, option: null }];
+  const read: any = { id: "r-new-words", kind: "decision.reading.recorded", subject: rd.id, actor: agent,
+    at: at(25), writer: "w-reader", writerPrev: "GENESIS", after: [newWords.id],
+    data: { answer: newWords.id, knownReplacements: [], session: { reading: "new intent", maps },
+      reader: { agent: "aREADER12345678", verdict: maps, launchedAt: at(24), brief: readerBrief(new Map(unread.decisions.map((d) => [d.id, d])), rd, ra),
+        verified: { session: "sess-X", toolUseId: "t" } } } };
+  const changed = foldDecisions([base, a, b, R, newWords, read]);
+  assert.equal(intentCandidates(changed).length, 0, "verified new intent resolves the shown pair");
+  assert.ok(heldFindings(changed, () => true).get("F3")?.length, "affected work stays held until the new intent has an actionable question");
+  assert.ok(waits(changed, "resolve-1", /new intent.*fresh valid question/));
+  assert.equal(changed.decisions.find((d) => d.id === "resolve-1")!.answers[0]!.words, "Keep the work open and ask for a narrower fix");
+});

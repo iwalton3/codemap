@@ -227,7 +227,9 @@ import { readScopeChecked, sortEvents, SHARD_EXT, type LogEvent, type ScopeDiagn
 // recorded (`confirms.picked`, `never`), no longer voids itself on a ref shared in the round as
 // folded now, and a reading is refused on a ref its brief showed as shared and accepted when
 // only its session side cannot bind. The same shards, a different fold — 18 -> 19's reason.
-export const MATERIALIZER_VERSION = 31;
+// 31 -> 32: decision admission, brief identity, invalid confirmations and human conflict
+// resolution change projections of unchanged decision shards (2026-09-24 Codex round).
+export const MATERIALIZER_VERSION = 32;
 
 /**
  * What the events in a scope are, cheaply.
