@@ -1010,7 +1010,7 @@ const otherEvents = (side: string): number => {
   return n;
 };
 
-test("Q2.3 (1) (A1): another clone's differently worded confirm of the same reading is its own decision — a Yes on it binds", async () => {
+test("round five: a differently worded confirmation remains visible but cannot bind a Yes", async () => {
   const u = await universe();
   try {
     const f = await withFinding(u);
@@ -1036,9 +1036,9 @@ test("Q2.3 (1) (A1): another clone's differently worded confirm of the same read
       await logQuestion(u.root, { toolUseId: "toolu_o", round: "R1" }, {}, u.transcripts);
       const round = await decisionRound(u.root, "R1") as any;
       const d = round.decisions.find((x: any) => x.id === "d1");
-      assert.equal(d.standing.id, a, JSON.stringify(round.decisions.map((x: any) => [x.id, x.answers.length, x.confirm])));
-      assert.ok(d.standing.ruled.some((x: any) => x.finding === f && x.on === "unblock"));
-      assert.equal(round.decisions.find((x: any) => x.id === other.id)?.confirm.state, "answered");
+      assert.notEqual(d.standing.id, a, JSON.stringify(round.decisions.map((x: any) => [x.id, x.answers.length, x.confirm])));
+      assert.ok(d.standing.ruled.some((x: any) => x.finding === f && x.on === "settle"));
+      assert.equal(round.decisions.find((x: any) => x.id === other.id)?.confirm.state, "unverifiable");
     });
   } finally { u.cleanup(); }
 });

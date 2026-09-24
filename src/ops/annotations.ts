@@ -839,8 +839,10 @@ export async function reviewQueue(
       if (!Array.isArray(held)) return true;
       const began = Math.max(...held.map((h) => Date.parse(h.since)));
       const as = rowOf.get(a)?.assignment;
-      // A hold whose start is unknown began after every assignment: withheld.
-      const keep = !!as && !isAgentActor(as.by) && !Number.isNaN(began) && Date.parse(as.at) > began;
+      // Comparison is a restriction on dependent batch work. Assignment cannot resolve it.
+      // An ordinary hold whose start is unknown began after every assignment: withheld.
+      const keep = !held.some((h) => h.why === "comparison") && !!as && !isAgentActor(as.by)
+        && !Number.isNaN(began) && Date.parse(as.at) > began;
       if (!keep) withheld++;
       return keep;
     });

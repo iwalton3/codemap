@@ -309,6 +309,10 @@ function confirmRefusal(decisions: Map<string, FoldedDecision>, c: FoldedDecisio
   if (!Array.isArray(cf.readings) || !cf.readings.length || cf.readings.length > 2) return "it offers no reading, or more than two";
   const labels = cf.readings.length === 1 ? [CONFIRM_YES, CONFIRM_NO] : ["Reading 1", "Reading 2"];
   if (c.kind !== "options" || c.payload.multiSelect || c.options.length !== 2 || c.options.some((o, i) => o.label !== labels[i] || o.effects.length || o.park)) return "its options are not the confirm's";
+  // A matching ref and option label cannot authorize different action prose. The generated
+  // presentation is determined by the frozen question, answer and reading identities.
+  if (canonical(normalizeQuestion(c.payload)) !== canonical(confirmPayload(decisions, d, a, cf.readings, c.ref)))
+    return "its displayed action differs from the reading it confirms";
   const q = c.payload.question;
   if (!new RegExp(`\\b${d.ref}\\b`).test(q) || !q.includes(a.id)) return `its question does not name ${d.ref} and answer ${a.id}`;
   const sections = cf.readings.length === 1 ? [q.split("\n")] : q.split(/\nReading [12]:\n/).slice(1).map((s) => s.split("\n"));
@@ -339,7 +343,7 @@ function confirmRefusal(decisions: Map<string, FoldedDecision>, c: FoldedDecisio
 // reader ends by calling `submit_verdict` itself (owner, Q2.2): see `ops/decisions.ts`.
 
 const BRIEF_WORDS = "Their words, exactly as typed (JSON-quoted):";
-const BRIEF_Q = /^(D\d+): (".*")$/, BRIEF_OPTS = /^ {2}options: (\[.*\])$/;
+const BRIEF_Q = /^(D\d+): (".*")$/, BRIEF_OPTS = /^ {2}options: (\[.*\])$/, BRIEF_CONTEXT = /^ {2}context: (\{.*\})$/;
 export interface BriefEntry { id: string; hash: string; ref: string }
 export const briefManifest = (decisions: Map<string, FoldedDecision>, d: FoldedDecision, a: FoldedAnswer): BriefEntry[] =>
   readable(decisions, d, a).map((t) => ({ id: t.id, hash: t.hash, ref: t.ref }));
@@ -361,7 +365,7 @@ export function readerBrief(decisions: Map<string, FoldedDecision>, d: FoldedDec
     JSON.stringify(a.words),
     "",
     `The questions (round ${d.round}), each with its exact option labels:`,
-    ...qs.flatMap((t) => [`${t.ref}: ${JSON.stringify(t.payload.question)}`, `  options: ${JSON.stringify(t.options.map((o) => o.label))}`]),
+    ...qs.flatMap((t) => [`${t.ref}: ${JSON.stringify(t.payload.question)}`, `  options: ${JSON.stringify(t.options.map((o) => o.label))}`, `  context: ${canonical({ id: t.id, kind: t.kind, payload: t.payload, options: t.options })}`]),
     ...shared.map((r) => `Two questions share the ref ${r}: a line naming ${r} is refused as ambiguous.`),
     "",
     `When you have decided, call the codemap MCP tool \`submit_verdict\` yourself, once, with \`answer: "${a.id}"\` and \`verdict\`: one line per pick, \`D<n> → <exact option label>\`; \`D<n> → ${NONE}\` where the words answer that question with none of its options; or, if you cannot tell which question they answer, the single line \`unclear: <why>\`. That call is your answer; then stop.`,
@@ -386,10 +390,11 @@ export function briefListing(decisions: Map<string, FoldedDecision>, d: FoldedDe
   for (let i = 0; i < lines.length; i++) {
     const m = BRIEF_Q.exec(lines[i]!);
     if (!m) continue;
-    let question: unknown, labels: unknown;
-    try { question = JSON.parse(m[2]!); labels = JSON.parse(BRIEF_OPTS.exec(lines[i + 1] ?? "")?.[1] ?? ""); } catch { return `the reader's brief lists ${m[1]} unreadably`; }
+    let question: unknown, labels: unknown, context: unknown;
+    try { question = JSON.parse(m[2]!); labels = JSON.parse(BRIEF_OPTS.exec(lines[i + 1] ?? "")?.[1] ?? ""); context = JSON.parse(BRIEF_CONTEXT.exec(lines[i + 2] ?? "")?.[1] ?? ""); } catch { return `the reader's brief lists ${m[1]} unreadably`; }
     const matches = candidates.filter((x) => x.ref === m[1] && x.payload.question === question
-      && Array.isArray(labels) && labels.length === x.options.length && x.options.every((o, j) => o.label === labels[j]));
+      && Array.isArray(labels) && labels.length === x.options.length && x.options.every((o, j) => o.label === labels[j])
+      && canonical(context) === canonical({ id: x.id, kind: x.kind, payload: x.payload, options: x.options }));
     if (!matches.length) return `the reader's brief lists ${m[1]} as a question these words cannot be read onto, or with other labels`;
     if (entries) {
       const e = entries[at++], t = matches.find((x) => x.id === e?.id);
@@ -749,16 +754,32 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
       d.resolutionInvalid = "it does not show two different people's exact verified rulings";
   }
 
+  // A later correction of a resolution replaces that resolution's authority. Applying every
+  // historical choice in turn would mark both source answers as losers and leave no intent.
+  const resolutions = new Map<string, { answer: FoldedAnswer; selected?: string; newIntent: boolean }[]>();
   for (const d of decisions.values()) if (d.resolves && !d.resolutionInvalid) {
-    const choice = standing(d);
-    if (!choice?.verified) continue;
-    const selected = d.resolves.answers.find((id) => choice.options[0] === `Preserve ${id}`);
-    // A person's Other words can be a new intent once a reader has verified that they rule
-    // neither shown alternative. A mere unread Other answer cannot settle the conflict.
-    const newIntent = choice.nothing && !!choice.reading?.agree && choice.words.length > 0;
-    if (!selected && !newIntent) continue;
+    const byPrincipal = new Map<string, FoldedAnswer>();
+    for (const answer of d.answers) {
+      if (!answer.verified || answer.resolvedOutBy) continue;
+      const prev = byPrincipal.get(answer.by.principal);
+      if (!prev || outranksByTime(answer, prev)) byPrincipal.set(answer.by.principal, answer);
+    }
+    for (const choice of byPrincipal.values()) {
+      const selected = d.resolves.answers.find((id) => choice.options[0] === `Preserve ${id}`);
+      const newIntent = !!(choice.nothing && choice.reading?.agree && choice.words.length > 0);
+      if (!selected && !newIntent) continue;
+      const key = [...d.resolves.answers].sort().join("\0");
+      resolutions.set(key, [...(resolutions.get(key) ?? []), { answer: choice, selected, newIntent }]);
+    }
+  }
+  for (const [key, choices] of resolutions) {
+    // Different principals' independent resolutions need another human decision. Time alone
+    // cannot silently choose between them; their source answers remain candidates meanwhile.
+    if (new Set(choices.map((x) => x.answer.by.principal)).size > 1) continue;
+    const latest = choices.reduce((best, x) => outranksByTime(x.answer, best.answer) ? x : best);
+    const pair = key.split("\0");
     for (const t of decisions.values()) for (const a of t.answers)
-      if (d.resolves.answers.includes(a.sourceAnswer ?? a.id) && (newIntent || (a.sourceAnswer ?? a.id) !== selected)) a.resolvedOutBy = choice.id;
+      if (pair.includes(a.sourceAnswer ?? a.id) && (latest.newIntent || (a.sourceAnswer ?? a.id) !== latest.selected)) a.resolvedOutBy = latest.answer.id;
   }
 
   // Follow-ups last: a copy's id exists only once its binding is made (Q13).
@@ -1063,7 +1084,7 @@ export interface IntentCandidate {
 
 /** Mechanical candidates only. Semantic conflict and original human knowledge still need review. */
 export function intentCandidates(s: SharedDecisions): IntentCandidate[] {
-  const all = s.decisions.flatMap((d) => d.answers.filter((a) => a.verified && !d.resolves && !d.confirms?.invalid).map((a) => ({ d, a })));
+  const all = s.decisions.flatMap((d) => d.answers.filter((a) => a.verified && !a.resolvedOutBy && !d.resolves && !d.confirms?.invalid).map((a) => ({ d, a })));
   const out: IntentCandidate[] = [];
   const seenPairs = new Set<string>();
   for (let i = 0; i < all.length; i++) for (let j = i + 1; j < all.length; j++) {
@@ -1075,15 +1096,6 @@ export function intentCandidates(s: SharedDecisions): IntentCandidate[] {
     const xf = new Set(named(x.d)), yf = new Set(named(y.d));
     const overlap = [...xf].filter((f) => yf.has(f));
     if (!sameQuestion && !overlap.length) continue;
-    if (x.a.words === y.a.words && mapsKey(x.a.ruled.map((r) => ({ decision: r.finding, option: `${r.on}:${r.as ?? ""}` })))
-      === mapsKey(y.a.ruled.map((r) => ({ decision: r.finding, option: `${r.on}:${r.as ?? "" }` })))) continue;
-    const resolved = s.decisions.some((d) => {
-      if (!d.resolves || d.resolutionInvalid || !d.resolves.answers.includes(sx) || !d.resolves.answers.includes(sy)) return false;
-      const choice = standing(d);
-      return !!choice?.verified && (d.options.some((o) => o.label === choice.options[0])
-        || (!!choice.nothing && !!choice.reading?.agree && choice.words.length > 0));
-    });
-    if (resolved) continue;
     const findings = sameQuestion ? [...xf] : overlap;
     seenPairs.add(key);
     out.push({ answers: [sx, sy], decisions: [x.d.id, y.d.id], findings,
@@ -1273,7 +1285,8 @@ export function ruledNotCarriedOut(s: SharedDecisions, isOpen: (finding: string)
 }
 
 export interface Hold {
-  decision: string; why: "undecided" | "ruled";
+  decision: string; why: "undecided" | "ruled" | "comparison";
+  answers?: [string, string];
   /** When this hold on the finding last began (owner, S0.4): a person's assignment keeps a
    *  held finding on the work queue only if made after it. */
   since: string;
@@ -1322,13 +1335,19 @@ export function heldFindings(s: SharedDecisions, isOpen: (finding: string) => bo
     // A closed finding is held by nothing (bulk item 1): the hold was on offering it as work.
     if (!isOpen(f)) return;
     const list = out.get(f) ?? [];
-    if (list.some((x) => x.decision === d.id)) return;
+    if (list.some((x) => x.decision === d.id && x.why === why)) return;
     list.push({ decision: d.id, why, since: holdSince(s, byId, d, f) ?? d.postedAt });
     out.set(f, list);
   };
+  const byAnswer = new Map(s.decisions.flatMap((d) => d.answers.map((a) => [a.sourceAnswer ?? a.id, a] as const)));
   for (const c of intentCandidates(s)) for (const f of c.findings) {
+    if (!isOpen(f)) continue;
     const d = byId.get(c.decisions[0])!;
-    add(d, f, "undecided");
+    const times = c.answers.map((id) => byAnswer.get(id)?.givenAt ?? "");
+    const list = out.get(f) ?? [];
+    list.push({ decision: d.id, why: "comparison", answers: c.answers,
+      since: times.every((t) => ms(t) !== undefined) ? times.sort((a, b) => ms(a)! - ms(b)!)[1]! : "" });
+    out.set(f, list);
   }
   for (const d of s.decisions) {
     // An open confirm holds every finding of every decision its readings map — `(none)` too, as

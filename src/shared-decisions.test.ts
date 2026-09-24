@@ -314,14 +314,16 @@ withConfirm("S0.2: a dispute's confirm offers both readings; picking one binds i
 withConfirm("the discussion: while open, the confirm holds the findings its reading acts on — from its own posting — and waits on you", clicked, "d1", leave, undefined,
   (b, out) => (heldFindings(out, () => true).get("F3") ?? []).some((h) => h.decision === "c1" && h.why === "undecided" && h.since === b.c1!.postedAt)
     && b.c1!.postedAt !== round.at && waits(out, "c1", /confirm what your words on D1 meant/) && !waits(out, "c1", /not answered/));
-test("P3.4: a reworded confirm binds; one whose action lines are forged is kept, binds nothing and says so", () => {
+test("A confirmed action must match its complete frozen presentation", () => {
   n = 1;
   const evs = clicked(), first = fold(evs), a = first.b.d1!.answers.at(-1)!.id;
   const reworded = confirmOf(first.b, "d1", a, leave, "D9", "c1", (p) => ({ ...p, question: p.question.replace("is that what you meant?", "did you mean this?") }));
   let r = fold([...evs, reworded, ...call(reworded.data.decision, CONFIRM_YES)]);
-  assert.ok(standing(r.b.d1!)!.options[0] === "No" && !r.b.c1!.confirms!.invalid, dump(r.b, r.out));
+  assert.ok(rules(r.b.d1!, "F3", "settle") && !!r.b.c1!.confirms!.invalid, dump(r.b, r.out));
   for (const forge of [
     (p: any) => ({ ...p, question: p.question.replace("D1 → No", "D1 → Settle") }),
+    (p: any) => ({ ...p, question: p.question.replace("releases F3, F7", "settles F3, F7 as refuted") }),
+    (p: any) => ({ ...p, options: p.options.map((o: any, i: number) => i ? o : { ...o, description: "Bind a different action" }) }),
     (p: any) => ({ ...p, question: p.question.replace(/\nD1 → .*/, "") }),
     (p: any) => ({ ...p, question: p.question.replace(/F3/g, "Fx") }),
   ]) {
@@ -358,7 +360,7 @@ test("R12: a bulk line names every item it approves, with its effects; (none) sa
   const { b } = fold([...evs, C]);
   assert.ok(!b.c1!.confirms!.invalid, String(b.c1!.confirms!.invalid));
   const omit = confirmOf(first.b, "d1", a, [[{ decision: "d2", option: "Rename fix" }, { decision: "d1", option: null }]], "D9", "c1", (p) => ({ ...p, question: p.question.replace("(unblocks F11)", "") }));
-  assert.match(String(fold([...evs, omit]).b.c1!.confirms!.invalid), /does not name F11/);
+  assert.match(String(fold([...evs, omit]).b.c1!.confirms!.invalid), /displayed action differs/);
 });
 test("P3.3: once the words are moot, an open confirm stops holding and waiting, and is listed as no longer needed", () => {
   n = 1;
@@ -1095,6 +1097,8 @@ test("F2/F7: identical shown refs keep two identities and reject an ambiguous ve
   const listed = briefListing(byId, d, a, brief, manifest);
   assert.ok(Array.isArray(listed) && listed.filter((x) => x.ref === "D1").length === 2);
   assert.match(String(briefListing(byId, d, a, brief, [{ ...manifest[0]!, hash: "wrong" }, ...manifest.slice(1)])), /manifest/);
+  assert.match(brief, /context: .*"effects"/);
+  assert.match(String(briefListing(byId, d, a, brief.replace("\"F3\"", "\"F8\""), manifest)), /cannot be read onto|other labels/);
   const rd = reading(W, [{ decision: "same-a", option: "Settle" }]);
   rd.data.reader.brief = brief;
   rd.data.reader.manifest = manifest;
@@ -1130,6 +1134,8 @@ test("Q2 human conflict: concurrent proven rulings hold work until a shown human
   assert.equal(candidates.length, 1);
   assert.deepEqual(candidates[0]!.answers, ["a-one", "a-two"]);
   assert.ok(heldFindings(before, () => true).get("F3")?.length);
+  assert.ok(heldFindings(before, () => true).get("F3")?.some((h) => h.why === "comparison"
+    && h.answers?.includes("a-one") && h.answers?.includes("a-two") && h.since === at(21)));
   assert.ok(!ruledNotCarriedOut(before, () => true).some((x) => x.finding === "F3"));
   const payload = q(`D9: Alice said ${JSON.stringify("Settle")} in a-one; Bob said ${JSON.stringify("No")} in a-two. Which answer should be preserved for F3 and F7?`, ["Preserve a-one", "Preserve a-two"]);
   const resolution = D("resolve-1", "D9", payload, [{ label: "Preserve a-one", effects: [] }, { label: "Preserve a-two", effects: [] }], { round: "R2", resolves: { answers: ["a-one", "a-two"] } });
@@ -1141,10 +1147,33 @@ test("Q2 human conflict: concurrent proven rulings hold work until a shown human
   const after = foldDecisions([base, a, b, R, choice]);
   assert.equal(intentCandidates(after).length, 0);
   assert.ok(ruledNotCarriedOut(after, () => true).some((x) => x.finding === "F3"));
+  const resolution2 = { ...resolution, id: "resolve-2", round: "R3", ref: "D10",
+    payload: { ...resolution.payload, question: resolution.payload.question.replace("D9", "D10") } };
+  const R3: any = { ...R, id: "r-resolve-2", subject: "R3", at: at(24), writerPrev: R.id,
+    after: [choice.id], data: { round: { id: "R3", source: "conflict", universe: "u" }, decisions: [resolution2] } };
+  const correction: any = { ...choice, id: "a-correction", subject: "resolve-2", at: at(25), writerPrev: choice.id,
+    after: [R3.id], data: { ...choice.data, decision: "resolve-2", hash: h(resolution2), via: { kind: "direct", option: "Preserve a-two" } } };
+  const corrected = foldDecisions([base, a, b, R, choice, R3, correction]);
+  assert.equal(corrected.decisions.find((d) => d.id === "d1")!.answers.find((x) => x.id === "a-one")!.resolvedOutBy, correction.id);
+  assert.equal(corrected.decisions.find((d) => d.id === "d1")!.answers.find((x) => x.id === "a-two")!.resolvedOutBy, undefined);
+  assert.equal(intentCandidates(corrected).length, 0, "a correction preserves one current authority");
   const third: any = { ...b, id: "a-three", actor: { principal: "carol" }, writer: "w-carol", at: at(24),
     data: { ...b.data, via: { kind: "direct", option: "No" } } };
   assert.ok(intentCandidates(foldDecisions([base, a, b, R, choice, third])).some((c) => c.answers.includes("a-three")),
     "a choice about two shown answers cannot settle a third unseen person");
+  const agreeingThird: any = { ...a, id: "a-agree", actor: { principal: "carol" }, writer: "w-carol", at: at(24) };
+  const withAgreement = intentCandidates(foldDecisions([base, a, b, R, choice, agreeingThird]));
+  assert.ok(withAgreement.some((c) => c.answers.includes("a-one") && c.answers.includes("a-agree")),
+    "equal options still need comparison against their complete source context");
+  assert.ok(!withAgreement.some((c) => c.answers.includes("a-two")),
+    "a resolved-out answer is history, not a fresh competing instruction");
+  const independentChoice: any = { ...choice, id: "a-independent-choice", actor: { principal: "bob" },
+    writer: "w-bob", writerPrev: b.id, after: [R.id], at: at(24),
+    data: { ...choice.data, via: { kind: "direct", option: "Preserve a-two" } } };
+  const unresolvedChoices = foldDecisions([base, a, b, R, choice, independentChoice]);
+  assert.equal(intentCandidates(unresolvedChoices).length, 1,
+    "independent answers to a resolution question cannot select a winner by time");
+  assert.ok(unresolvedChoices.decisions.find((d) => d.id === "d1")!.answers.every((x) => !x.resolvedOutBy));
   const agentChoice: any = { ...choice, id: "a-agent-choice", actor: agent };
   assert.equal(intentCandidates(foldDecisions([base, a, b, R, agentChoice])).length, 1,
     "an agent cannot resolve the pair by answering for the person");

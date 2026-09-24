@@ -229,7 +229,9 @@ import { readScopeChecked, sortEvents, SHARD_EXT, type LogEvent, type ScopeDiagn
 // only its session side cannot bind. The same shards, a different fold — 18 -> 19's reason.
 // 31 -> 32: decision admission, brief identity, invalid confirmations and human conflict
 // resolution change projections of unchanged decision shards (2026-09-24 Codex round).
-export const MATERIALIZER_VERSION = 32;
+// 32 -> 33: round-five confirmation and conflict derivations change existing decision rows
+// without moving their shards. Refold so old cached authority and holds are not served.
+export const MATERIALIZER_VERSION = 33;
 
 /**
  * What the events in a scope are, cheaply.
