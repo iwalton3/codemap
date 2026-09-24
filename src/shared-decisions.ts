@@ -804,10 +804,6 @@ export const standing = (d: FoldedDecision): FoldedAnswer | undefined => best(d.
 /** Words still waiting for a binding on `d`: unread, read as unclear, or read two ways. */
 const pending = (d: FoldedDecision): FoldedAnswer[] => d.answers.filter((a) => a.free && !a.elsewhere);
 
-/** Of those, the ones that could still overturn what stands — bound, they would outrank it.
- *  Words a later answer already outranks are moot, and are not shown as waiting on anyone. */
-const live = (d: FoldedDecision): FoldedAnswer[] => { const a = standing(d); return pending(d).filter((p) => !a || outranks(p, a)); };
-
 /** Whether the answer ruled — picked something — rather than parked, awaited or ruled nothing. */
 const decides = (a: FoldedAnswer | undefined): boolean => !!a && !a.free && !a.nothing && a.park === undefined && a.parkWaits === undefined;
 
@@ -823,18 +819,34 @@ function chainRuled(byId: Map<string, FoldedDecision>, d: FoldedDecision, verifi
   return false;
 }
 
-/** Words that can no longer change anything (owner, P3.3 "Stop surfacing"): bound some way,
- *  outranked by a later answer, cut as given after their question was replaced, or on a
- *  replaced question whose replacement has since ruled. */
-function moot(byId: Map<string, FoldedDecision>, d: FoldedDecision, a: FoldedAnswer): boolean {
-  if (!d.answers.includes(a) || !a.free || a.elsewhere || !live(d).includes(a)) return true;
-  return !!d.replacedBy && chainRuled(byId, d, a.verified);
+/**
+ * Whether binding free words `a` on `d` could still change a standing answer (owner, Q1.2 "While
+ * they could change something"): some question they may be read onto (`readable`, so the two
+ * cannot drift) has nothing standing, or a standing answer a bound copy would outrank. A copy on
+ * another question ranks at the binding's log position (`bind`), i.e. after everything standing.
+ * A confirm with no effects is skipped — words bound onto it never answer the request (Q1.3) —
+ * and a replaced question counts only until its chain rules, or while it still holds a ruling
+ * nothing down the chain took over (Q3.3 (b)).
+ */
+function couldChange(byId: Map<string, FoldedDecision>, d: FoldedDecision, a: FoldedAnswer): boolean {
+  return readable(byId, d, a).some((t) => {
+    if (t.confirms && t.options.every((o) => !o.effects.length)) return false;
+    const top = standing(t);
+    if (top && !outranks(t === d ? a : { ...a, seq: Infinity }, top)) return false;
+    return !t.replacedBy || !chainRuled(byId, t, a.verified) || stillHeld(byId, t).length > 0;
+  });
 }
 
-/** Of `live`, the words still worth showing: on a replaced question, only until something down
- *  its chain rules (owner, P1.3 "Read on D1", limited by P3.3). */
+/** Words that can no longer change anything (owner, P3.3 "Stop surfacing", with Q1.2's test):
+ *  bound some way, cut as given after their question was replaced, or no question they may be
+ *  read onto would change. */
+function moot(byId: Map<string, FoldedDecision>, d: FoldedDecision, a: FoldedAnswer): boolean {
+  return !d.answers.includes(a) || !a.free || a.elsewhere === true || !couldChange(byId, d, a);
+}
+
+/** The words on `d` still worth showing: pending and not moot. */
 const surfacing = (byId: Map<string, FoldedDecision>, d: FoldedDecision): FoldedAnswer[] =>
-  live(d).filter((p) => !d.replacedBy || !chainRuled(byId, d, p.verified));
+  pending(d).filter((p) => couldChange(byId, d, p));
 
 /** The words a confirm asks about, if they are still an answer here. */
 export function confirmedWords(byId: Map<string, FoldedDecision>, c: FoldedDecision): { d: FoldedDecision; a: FoldedAnswer } | undefined {
@@ -960,7 +972,7 @@ export function waitingOnMe(s: SharedDecisions, today: string): WaitingItem[] {
     // An agent's unconfirmed words after your ruling: never applied over it, and never read,
     // so it cannot be told apart from agreement (owner, P3.1 (2); H6.8).
     if (a?.verified) for (const x of d.answers) if (!x.verified && x !== a && outranksByTime(x, a)) item(`an unconfirmed answer arrived after your ruling: "${x.words}"`);
-    for (const p of live(d)) {
+    for (const p of surfacing(byId, d)) {
       if (p.reading?.unclear) item(`the reader could not tell which question your words answer: ${p.reading.unclear}`);
       else if (p.reading && !p.reading.agree) item(`your words were read two different ways: "${p.words}"`);
       if (p.rejected?.length) item(`you said a reading of your words was not what you meant ("${p.words}": ${fmt(s, p.rejected.at(-1)!)}): answer ${d.ref} again`);
@@ -1017,7 +1029,9 @@ export function awaitingReading(s: SharedDecisions): Unread[] {
   for (const d of s.decisions) {
     if (d.kind === "words" || confirmState(byId, d) === "no longer needed") continue;
     for (const x of surfacing(byId, d)) {
-      if (x.reading) continue;
+      // H6.8, as `record_reading` refuses it: words that may still change another question are
+      // not thereby readable.
+      if (x.reading || (!x.verified && standing(d)?.verified)) continue;
       out.push({ decision: d.id, round: d.round, ref: d.ref, answer: x.id, words: x.words });
     }
   }

@@ -111,6 +111,10 @@ const reading = (a: any, maps: Mapping[], session: Mapping[] = maps, extra: any 
   return e;
 };
 
+/** Answers to the fixture round's other questions — made AFTER the words, so the words can then
+ *  change only d1 (owner, Q1.2: a question keeps words listed until something is given after them). */
+const others = () => [page(d2, { option: "None — approve all" }), page(d3, { option: "Now" }), page(d4, { option: "B" })];
+
 const ruled = (d: FoldedDecision) => standing(d)?.ruled ?? [];
 const rules = (d: FoldedDecision, f: string, on: string) => ruled(d).some((r) => r.finding === f && r.on === on);
 const waits = (out: SharedDecisions, id: string, re?: RegExp, today = "2026-09-23") => waitingOnMe(out, today).some((w) => w.decision === id && (!re || re.test(w.why)));
@@ -186,7 +190,7 @@ run("your typed correction after a click, once read, replaces it if given later"
 run("...and not if it was typed before the click — and then it is moot, not waiting on anyone", () => {
   const P = page(d1, { option: "Settle" });
   const A = msg(d1, "no, leave it", "u1", "2026-09-23T00:00:01.500Z");
-  return [P, A, reading(A, [{ decision: "d1", option: "No" }], [{ decision: "d1", option: "Settle" }])];
+  return [P, A, reading(A, [{ decision: "d1", option: "No" }], [{ decision: "d1", option: "Settle" }]), ...others()];
 }, (b, out) => standing(b.d1!)!.via === "direct" && !readingsInDispute(out).length && !flagged(b.d1!) && !waits(out, "d1"));
 
 both("c1 (Q1): your typed words and an agent's relay give ONE answer, whichever was recorded first", () => {
@@ -267,7 +271,7 @@ run("P4.1: ...bound to another option — it rules, and the flag clears", () => 
 }, (b, out) => standing(b.d1!)!.options[0] === "No" && !flagged(b.d1!) && !supersededFindings(out).size);
 run("A3: a later verified answer clears the flag; the moot words wait on nobody", () => {
   const P = page(d1, { option: "Settle" }), M = msg(d1, "D1 — hmm");
-  return [P, M, page(d1, { option: "No" })];
+  return [P, M, page(d1, { option: "No" }), ...others()];
 }, (b, out) => standing(b.d1!)!.options[0] === "No" && !flagged(b.d1!) && !awaitingReading(out).length && !waits(out, "d1"));
 run("S0.8(a): the flag reaches a finding the ruling released — marked, never held", () => [page(d4, { option: "B" }), msg(d4, "D4 hmm, maybe not")],
   (b, out) => !held(out, "F30") && supersededFindings(out).has("F30"));
@@ -358,7 +362,7 @@ test("R12: a bulk line names every item it approves, with its effects; (none) sa
 });
 test("P3.3: once the words are moot, an open confirm stops holding and waiting, and is listed as no longer needed", () => {
   n = 1;
-  const evs = clicked(), first = fold(evs), a = first.b.d1!.answers.at(-1)!.id;
+  const evs = [...clicked(), ...others()], first = fold(evs), a = first.b.d1!.answers.at(-1)!.id;
   const C = confirmOf(first.b, "d1", a, leave);
   const later = page(d1, { option: "Settle" });   // a later click outranks the words
   const { b, out } = fold([...evs, C, later]);
@@ -481,7 +485,7 @@ run("readings that disagree rule nothing, are in dispute, and wait on you", () =
 }, (b, out) => !ruled(b.d1!).length && readingsInDispute(out).some((x) => x.decision === "d1" && x.reader === "D1 → Settle") && waits(out, "d1", /two different ways/));
 run("a later answer clears a dispute", () => {
   const [L, A] = call(d1, "hmm");
-  return [L, A, reading(A, [{ decision: "d1", option: "Settle" }], [{ decision: "d1", option: "No" }]), page(d1, { option: "No" })];
+  return [L, A, reading(A, [{ decision: "d1", option: "Settle" }], [{ decision: "d1", option: "No" }]), page(d1, { option: "No" }), ...others()];
 }, (b, out) => !readingsInDispute(out).length && !waits(out, "d1"));
 run("C1: a reading's asks is kept on the answer", () => {
   const [L, A] = call(d1, "Settle, and document them");
@@ -824,10 +828,81 @@ run("R13: bound onto D1, they rule D1 as of when typed and hold F3 until D1b is 
   (b, out) => rules(b.d1!, "F3", "settle") && held(out, "F3", "ruled") && ruledNotCarriedOut(out, () => true).some((u) => u.decision === "d1" && u.replacedBy === "d1b") && !awaitingReading(out).length);
 run("R13: a ruling on D1 they may overturn is flagged", () => [page(d1, { option: "Settle" }), ...onReplaced()],
   (b, out) => flagged(b.d1!) && supersededFindings(out).has("F3"));
-run("R13 + P3.3: once D1b rules, the words leave every list", () => [page(d1, { option: "Settle" }), ...onReplaced(() => [page(d1b, { option: "No" })])],
+run("R13 + P3.3: once D1b rules, the words leave every list", () => [page(d1, { option: "Settle" }), ...onReplaced(() => [page(d1b, { option: "No" })]), ...others()],
   (b, out) => !awaitingReading(out).length && !waits(out, "d1") && !flagged(b.d1!) && !readingsInDispute(out).length);
+run("Q3.3 (b): ...unless D1 still holds a ruling its replacement never took over — then they stay listed beside it", () => {
+  const d1c = reask(d1, "d1c", "D7", "R1c", { supersedes: "d1", options: [{ label: "Settle", effects: [settle("F3")] }, { label: "No", effects: [unblock("F3")] }] });
+  const P = page(d1, { option: "Settle" }), R = post("R1c", [d1c]), M = msg(d1, "close it", "u1", new Date(Date.parse(R.at) - 500).toISOString());
+  return [P, R, M, page(d1c, { option: "No" }), ...others()];
+}, (b, out) => ruledNotCarriedOut(out, () => true).some((u) => u.decision === "d1" && u.finding === "F7") && awaitingReading(out).some((u) => u.decision === "d1"));
 run("R13: ...but an unverified answer on D1b does not end them", () => onReplaced(() => [unv(d1b, "no")]),
   (b, out) => awaitingReading(out).some((u) => u.decision === "d1"));
+
+// --- Q1.2 (owner, "While they could change something"): words are moot only when no question
+// they may be read onto would change
+
+/** Q1.2's case on the fixture: D4 answered B, then words on D1 about D4, then a pick on D1. */
+const aboutD4 = () => {
+  const old = page(d4, { option: "B" }), W = msg(d1, "actually A on D4"), later = page(d1, { option: "Settle" });
+  const O = [page(d2, { option: "None — approve all" }), page(d3, { option: "Now" })];
+  return { O, old, W, later };
+};
+both("Q1.2: words outranked on their own question stay listed while another question they may be read onto has nothing given after them — and a reading binds them there", () => {
+  n = 1;
+  const { O, old, W, later } = aboutD4();
+  const R = reading(W, [{ decision: "d4", option: "A" }]);
+  return { first: [...O, old, W, later, R], second: [...O, later, W, old, R] };
+}, (b) => standing(b.d4!)!.options[0] === "A" && standing(b.d1!)!.options[0] === "Settle");
+both("Q1.2: ...unread, they wait for a reader, and D1 stays flagged", () => {
+  n = 1;
+  const { O, old, W, later } = aboutD4();
+  return { first: [...O, old, W, later], second: [...O, later, W, old] };
+}, (b, out) => awaitingReading(out).some((u) => u.decision === "d1") && flagged(b.d1!));
+both("Q1.2: once D4 has a later answer too, the words leave all four lists, and a reading of them changes nothing standing", () => {
+  n = 1;
+  const { O, old, W, later } = aboutD4();
+  const again = page(d4, { option: "B" });
+  return { first: [...O, old, W, later, again], second: [...O, again, later, W, old] };
+}, (b, out) => !awaitingReading(out).length && !readingsInDispute(out).length && !waits(out, "d1") && !flagged(b.d1!) && standing(b.d4!)!.options[0] === "B");
+test("Q1.2: a reading of moot words binds, and changes no standing answer", () => {
+  n = 1;
+  const { O, old, W, later } = aboutD4();
+  const again = page(d4, { option: "B" }), R = reading(W, [{ decision: "d4", option: "A" }]);
+  for (const evs of [[...O, old, W, later, again, R], [...O, R, again, later, W, old]]) {
+    const { b, out } = fold(evs);
+    assert.ok(standing(b.d4!)!.options[0] === "B" && standing(b.d1!)!.options[0] === "Settle" && b.d4!.answers.some((a) => a.id === `${R.id}/d4`), dump(b, out));
+  }
+});
+run("Q1.2: at an equal given time a copy ranks at the binding's log position, so words recorded before D4's answer still count on D4", () => {
+  const old = page(d4, { option: "B" }), W = msg(d1, "actually A on D4", "u1", old.at), later = page(d1, { option: "Settle" });
+  return [W, old, later, ...others().slice(0, 2)];
+}, (b, out) => awaitingReading(out).some((u) => u.decision === "d1"));
+test("Q1.2 (pinned consequence): binding moot words older than a standing answer can move when that question's hold began", () => {
+  n = 1;
+  const W = msg(d1, "B on D4"), P = page(d1, { option: "Settle" }), A = page(d4, { option: "A" });
+  const O = [page(d2, { option: "None — approve all" }), page(d3, { option: "Now" })];
+  const R = reading(W, [{ decision: "d4", option: "B" }]);
+  const before = fold([...O, W, P, A]);
+  assert.ok(since(before.out, "F30")[0] === round.at && !awaitingReading(before.out).length, dump(before.b, before.out));
+  for (const evs of [[...O, W, P, A, R], [...O, A, P, W, R]]) {
+    const { b, out } = fold(evs);
+    // Unblocked by the words at their typed time, then held again by A: the hold began at A (S0.4).
+    assert.ok(standing(b.d4!)!.options[0] === "A" && since(out, "F30")[0] === A.at, dump(b, out));
+  }
+});
+test("Q1.2: a confirm with no effects is not a question words could change; an effect-bearing invalid one is", () => {
+  n = 1;
+  const W0 = msg(d1, "hmm"), first = fold([W0]);
+  const C = confirmOf(first.b, "d1", first.b.d1!.answers[0]!.id, [[{ decision: "d1", option: "No" }]]);
+  const W = msg(d1, "later words", "u2"), P = page(d1, { option: "Settle" }), O = others();
+  const r = fold([...O, W0, C, W, P]);
+  assert.ok(!awaitingReading(r.out).some((u) => u.answer === W.id), dump(r.b, r.out));
+  // The same posting, but an option carries an effect: kept as a plain question (P3.4), so words can change it.
+  const bad = structuredClone(C);
+  bad.data.decision.options[0].effects = [settle("F3")];
+  const r2 = fold([...O, W0, bad, W, P]);
+  assert.ok(!!r2.b.c1!.confirms!.invalid && awaitingReading(r2.out).some((u) => u.answer === W.id), dump(r2.b, r2.out));
+});
 
 // --- S0.4: when a hold began
 
