@@ -11,7 +11,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   foldDecisions, decisionHash, checkDecision, heldFindings, standing, waitingOnMe, readingsInDispute, ruledNotCarriedOut, awaitingReading, parked,
-  possiblySuperseded, confirmPayload, supersededFindings, readerBrief, CONFIRM_YES, CONFIRM_NO,
+  possiblySuperseded, confirmPayload, confirmState, supersededFindings, readerBrief, readingRefusal, CONFIRM_YES, CONFIRM_NO,
   type FoldedDecision, type SharedDecisions, type Mapping,
 } from "./shared-decisions.js";
 
@@ -78,7 +78,7 @@ const logQ = (qs: any[], answers: any, extra: any = {}) => {
   const rounds = extra.rounds ?? [extra.round ?? "R1"];
   const e = ev("decision.question.logged", {
     session: "sess-A", toolUseId: `tu${n + 1}`, questions: qs, answers, transcript: "sess-A", rounds,
-    bound: extra.bound ?? Object.fromEntries(qs.filter((x: any) => !x.question.startsWith("Confirm reading")).map((x: any) => [x.question, rounds[0]])),
+    bound: extra.bound ?? Object.fromEntries(qs.map((x: any) => [x.question, rounds[0]])),
     ...(extra.answeredAt ? { answeredAt: extra.answeredAt } : {}), ...(extra.toolUseId ? { toolUseId: extra.toolUseId } : {}),
   });
   e.data.answeredAt ??= e.at;
@@ -268,66 +268,170 @@ run("A3: a later verified answer clears the flag; the moot words wait on nobody"
 run("S0.8(a): the flag reaches a finding the ruling released — marked, never held", () => [page(d4, { option: "B" }), msg(d4, "D4 hmm, maybe not")],
   (b, out) => !held(out, "F30") && supersededFindings(out).has("F30"));
 
-// --- confirm-this-reading (S0.1, S0.2)
+// --- confirm-this-reading: a posted decision (the impl-2 discussion; P2.1 (1), (2); P3.1–P3.5)
 
-const confirmCall = (b: B, d: string, a: string, maps: Mapping[][], value: string, extra: any = {}) => {
-  const out = foldDecisions([]);
-  void out;
-  const all = Object.values(b);
-  const p = confirmPayload(all, b[d]!, b[d]!.answers.find((x) => x.id === a)!, maps)!;
-  return logQ([p], { [p.question]: value }, extra);
+/** A confirm of answer `a` on `d`, posted as `confirm_reading` posts it. */
+const confirmOf = (b: B, d: string, a: string, readings: Mapping[][], ref = "D9", id = "c1", edit = (p: any) => p) => {
+  const byId = new Map(Object.values(b).map((x) => [x.id, x]));
+  const payload = edit(confirmPayload(byId, b[d]!, b[d]!.answers.find((x) => x.id === a)!, readings, ref));
+  return ev("decision.confirm.posted", { round: b[d]!.round, decision: { id, round: b[d]!.round, ref, kind: "options", payload, options: payload.options.map((o: any) => ({ label: o.label, effects: [] })), confirms: { answer: a, readings } } });
 };
-/** Two passes: fold to learn the answer ids, then append the logged confirm call. */
-const withConfirm = (name: string, base: () => any[], d: string, maps: Mapping[][] | null, value: string, check: (b: B, out: SharedDecisions) => boolean, pick = (b: B) => b[d]!.answers.at(-1)!.id) => test(name, () => {
+/** Two passes: fold to learn the answer ids, then post the confirm and, unless `value` is
+ *  undefined, answer it through a logged call. */
+const withConfirm = (name: string, base: () => any[], d: string, maps: Mapping[][] | null, value: string | undefined, check: (b: B, out: SharedDecisions) => boolean, pick = (b: B) => b[d]!.answers.at(-1)!.id) => test(name, () => {
   n = 1;
   const evs = base();
   const first = fold(evs);
-  const a = pick(first.b);
-  const ms = maps ?? [first.b[d]!.answers.find((x) => x.id === a)!.reading!.reader.maps, first.b[d]!.answers.find((x) => x.id === a)!.reading!.session.maps];
-  const C = confirmCall(first.b, d, a, ms, value);
-  const { out, b } = fold([...evs, C]);
+  const a = pick(first.b), x = first.b[d]!.answers.find((y) => y.id === a)!;
+  const C = confirmOf(first.b, d, a, maps ?? [x.reading!.reader.maps, x.reading!.session.maps]);
+  const { out, b } = fold([...evs, C, ...(value === undefined ? [] : call(C.data.decision, value))]);
   assert.ok(check(b, out), dump(b, out));
 });
-withConfirm("S0.1: Yes on the agent's own reading of unread words binds it — at the time TYPED", () => [page(d1, { option: "Settle" }), msg(d1, "D1 actually leave it")],
-  "d1", [[{ decision: "d1", option: "No" }]], CONFIRM_YES,
-  (b, out) => standing(b.d1!)!.options[0] === "No" && standing(b.d1!)!.givenAt === at(3) && !!standing(b.d1!)!.confirmed && !flagged(b.d1!) && !held(out, "F3", "ruled"));
-withConfirm("S0.2: No — the rejected reading is recorded, the old ruling stands, flagged, and you are asked to answer again", () => [page(d1, { option: "Settle" }), msg(d1, "D1 actually leave it")],
-  "d1", [[{ decision: "d1", option: "No" }]], CONFIRM_NO,
+const clicked = () => [page(d1, { option: "Settle" }), msg(d1, "D1 actually leave it")];
+const leave: Mapping[][] = [[{ decision: "d1", option: "No" }]];
+
+withConfirm("S0.1: Yes on the agent's own reading of unread words binds it — at the time TYPED — and the confirm releases its hold", clicked, "d1", leave, CONFIRM_YES,
+  (b, out) => standing(b.d1!)!.options[0] === "No" && standing(b.d1!)!.givenAt === at(3) && !!standing(b.d1!)!.confirmed && !flagged(b.d1!) && !held(out, "F3", "ruled")
+    && !(heldFindings(out, () => true).get("F3") ?? []).some((h) => h.decision === "c1") && !waits(out, "c1"));
+withConfirm("S0.2: No — the rejected reading is recorded, the old ruling stands, flagged, and you are asked to answer again", clicked, "d1", leave, CONFIRM_NO,
   (b, out) => rules(b.d1!, "F3", "settle") && flagged(b.d1!) && possiblySuperseded(b.d1!)[0]!.rejected?.length === 1 && waits(out, "d1", /not what you meant/));
-withConfirm("S0.2: Other — your own words, a new answer on the original question at the call's time, for a reader", () => [page(d1, { option: "Settle" }), msg(d1, "D1 actually leave it")],
-  "d1", [[{ decision: "d1", option: "No" }]], "I meant fix F7 only",
-  (b, out) => rules(b.d1!, "F3", "settle") && b.d1!.answers.some((a) => a.words === "I meant fix F7 only" && a.free && a.verified) && awaitingReading(out).some((u) => u.words === "I meant fix F7 only"));
+withConfirm("the discussion: Other on a confirm is words on the confirm, read by a reader like any reply — it binds nothing about the original words", clicked, "d1", leave, "I meant fix F7 only",
+  (b, out) => rules(b.d1!, "F3", "settle") && flagged(b.d1!) && b.c1!.answers.some((a) => a.words === "I meant fix F7 only" && a.free)
+    && awaitingReading(out).some((u) => u.decision === "c1" && u.words === "I meant fix F7 only") && !standing(b.d1!)!.confirmed);
 withConfirm("S0.2: a dispute's confirm offers both readings; picking one binds it", () => {
   const P = page(d1, { option: "Settle" }), M = msg(d1, "D1 — hmm");
   return [P, M, reading(M, [{ decision: "d1", option: "No" }], [{ decision: "d1", option: "Settle" }])];
 }, "d1", null, "Reading 1",
   (b, out) => standing(b.d1!)!.options[0] === "No" && !readingsInDispute(out).length, (b) => b.d1!.answers.find((a) => a.via === "message")!.id);
-test("S0.2: a confirm whose text is not exactly the one codemap issues binds nothing", () => {
+withConfirm("the discussion: while open, the confirm holds the findings its reading acts on — from its own posting — and waits on you", clicked, "d1", leave, undefined,
+  (b, out) => (heldFindings(out, () => true).get("F3") ?? []).some((h) => h.decision === "c1" && h.why === "undecided" && h.since === b.c1!.postedAt)
+    && b.c1!.postedAt !== round.at && waits(out, "c1", /confirm what your words on D1 meant/) && !waits(out, "c1", /not answered/));
+test("P3.4: a reworded confirm binds; one whose action lines are forged is kept, binds nothing and says so", () => {
   n = 1;
-  const evs = [page(d1, { option: "Settle" }), msg(d1, "D1 actually leave it")];
-  const first = fold(evs);
-  const a = first.b.d1!.answers.at(-1)!;
-  const p = confirmPayload(Object.values(first.b), first.b.d1!, a, [[{ decision: "d1", option: "No" }]])!;
-  // Each parses — the mapping line is untouched — and differs only where parsing does not look.
-  for (const forged of [
-    { ...p, options: [{ ...p.options[0]!, description: "Bind whatever you think best" }, p.options[1]!] },
-    { ...p, question: p.question.replace("Is that what you meant?", "OK?") },
+  const evs = clicked(), first = fold(evs), a = first.b.d1!.answers.at(-1)!.id;
+  const reworded = confirmOf(first.b, "d1", a, leave, "D9", "c1", (p) => ({ ...p, question: p.question.replace("is that what you meant?", "did you mean this?") }));
+  let r = fold([...evs, reworded, ...call(reworded.data.decision, CONFIRM_YES)]);
+  assert.ok(standing(r.b.d1!)!.options[0] === "No" && !r.b.c1!.confirms!.invalid, dump(r.b, r.out));
+  for (const forge of [
+    (p: any) => ({ ...p, question: p.question.replace("D1 → No", "D1 → Settle") }),
+    (p: any) => ({ ...p, question: p.question.replace(/\nD1 → .*/, "") }),
+    (p: any) => ({ ...p, question: p.question.replace(/F3/g, "Fx") }),
   ]) {
-    const { b } = fold([...evs, logQ([forged], { [forged.question]: CONFIRM_YES })]);
-    assert.ok(rules(b.d1!, "F3", "settle") && flagged(b.d1!), dump(b, first.out));
+    const C = confirmOf(first.b, "d1", a, leave, "D9", "c1", forge);
+    r = fold([...evs, C, ...call(C.data.decision, CONFIRM_YES)]);
+    assert.ok(rules(r.b.d1!, "F3", "settle") && !!r.b.c1 && !!r.b.c1.confirms!.invalid, dump(r.b, r.out));
+    const open = fold([...evs, C]);
+    assert.ok(waits(open.out, "c1", /not a confirm codemap can verify/) && !(heldFindings(open.out, () => true).get("F3") ?? []).some((h) => h.decision === "c1"), dump(open.b, open.out));
   }
 });
-test("S0.2: of two confirmations of the same words, the later wins", () => {
+test("P3.2: the latest-given pick across every confirm of the words decides — in either recording order", () => {
   n = 1;
-  const evs = [page(d1, { option: "Settle" }), msg(d1, "D1 hmm")];
-  const first = fold(evs);
-  const a = first.b.d1!.answers.at(-1)!;
-  const yes = confirmCall(first.b, "d1", a.id, [[{ decision: "d1", option: "No" }]], CONFIRM_YES, { answeredAt: "2026-09-23T00:01:00Z" });
-  const no = confirmCall(first.b, "d1", a.id, [[{ decision: "d1", option: "No" }]], CONFIRM_NO, { answeredAt: "2026-09-23T00:02:00Z", toolUseId: "tu-later" });
-  for (const order of [[yes, no], [no, yes]]) {
-    const { b } = fold([...evs, ...order]);
-    assert.ok(rules(b.d1!, "F3", "settle") && flagged(b.d1!), dump(b, first.out));
+  const evs = clicked(), first = fold(evs), a = first.b.d1!.answers.at(-1)!.id;
+  const C1 = confirmOf(first.b, "d1", a, leave, "D9", "c1"), C2 = confirmOf(first.b, "d1", a, leave, "D10", "c2");
+  const yes = call(C1.data.decision, CONFIRM_YES, { answeredAt: "2026-09-23T00:01:00Z" });
+  const no = call(C2.data.decision, CONFIRM_NO, { answeredAt: "2026-09-23T00:02:00Z", toolUseId: "tu-later" });
+  for (const order of [[...yes, ...no], [...no, ...yes]]) {
+    const { b, out } = fold([...evs, C1, C2, ...order]);
+    assert.ok(rules(b.d1!, "F3", "settle") && flagged(b.d1!) && !standing(b.d1!)!.confirmed, dump(b, out));
   }
+  const again = call(C1.data.decision, CONFIRM_YES, { answeredAt: "2026-09-23T00:03:00Z", toolUseId: "tu-last" });
+  const { b } = fold([...evs, C1, C2, ...no, ...again]);
+  assert.ok(standing(b.d1!)!.options[0] === "No", "a later Yes replaces the No");
+});
+withConfirm("R12 (P2.1 (2)): an option with no effect says which findings it releases", () => [page(d1, { option: "Settle" }), msg(d1, "skip it")], "d1", leave, undefined,
+  (b) => /^D1 → No \(releases F3, F7\)$/m.test(b.c1!.payload.question));
+test("R12: a bulk line names every item it approves, with its effects; (none) says what stays held", () => {
+  n = 1;
+  const evs = [msg(d1, "rename separately, the rest fine, nothing on D1")], first = fold(evs), a = first.b.d1!.answers[0]!.id;
+  const C = confirmOf(first.b, "d1", a, [[{ decision: "d2", option: "Rename fix" }, { decision: "d1", option: null }]]);
+  const q = C.data.decision.payload.question as string;
+  assert.match(q, /^D2 → Rename fix \(checked, ruled on separately: Rename fix; F10 stay held; approves Path fix \(unblocks F11\)\)$/m, q);
+  assert.match(q, /^D1 → \(none\) \(rules nothing on D1; F3, F7 stay held\)$/m, q);
+  const { b } = fold([...evs, C]);
+  assert.ok(!b.c1!.confirms!.invalid, String(b.c1!.confirms!.invalid));
+  const omit = confirmOf(first.b, "d1", a, [[{ decision: "d2", option: "Rename fix" }, { decision: "d1", option: null }]], "D9", "c1", (p) => ({ ...p, question: p.question.replace("(unblocks F11)", "") }));
+  assert.match(String(fold([...evs, omit]).b.c1!.confirms!.invalid), /does not name F11/);
+});
+test("P3.3: once the words are moot, an open confirm stops holding and waiting, and is listed as no longer needed", () => {
+  n = 1;
+  const evs = clicked(), first = fold(evs), a = first.b.d1!.answers.at(-1)!.id;
+  const C = confirmOf(first.b, "d1", a, leave);
+  const later = page(d1, { option: "Settle" });   // a later click outranks the words
+  const { b, out } = fold([...evs, C, later]);
+  const byId = new Map(out.decisions.map((d) => [d.id, d]));
+  assert.equal(confirmState(byId, b.c1!), "no longer needed");
+  assert.ok(!waits(out, "c1") && !(heldFindings(out, () => true).get("F3") ?? []).some((h) => h.decision === "c1") && !!b.c1, dump(b, out));
+});
+test("a confirm is never replaced: a posting that names one as replaced is kept, and replaces nothing", () => {
+  n = 1;
+  const evs = clicked(), first = fold(evs), a = first.b.d1!.answers.at(-1)!.id;
+  const C = confirmOf(first.b, "d1", a, leave);
+  const R = post("RX", [{ ...D("dx", "D1", q("D1: close F3?", ["A", "B"]), [{ label: "A", effects: [settle("F3")] }, { label: "B", effects: [] }]), round: "RX", supersedes: "c1" }]);
+  const { b } = fold([...evs, C, R]);
+  assert.ok(!b.c1!.replacedBy && !!b.dx && !b.dx.supersedes && waits(fold([...evs, C, R]).out, "c1", /confirm what/));
+});
+test("R8: an agent's ad hoc question that merely starts like the old confirm binds nothing", () => {
+  n = 1;
+  const M = msg(d1, "hmm"), first = fold([M]);
+  const qq = q(`Confirm reading of answer ${M.id} whatever`, ["Settle", "Skip"]);
+  const { b } = fold([M, logQ([qq], { [qq.question]: "Settle" })]);
+  assert.deepEqual(b.d1!.answers.map((x) => x.id), [first.b.d1!.answers[0]!.id]);
+});
+run("R9: a posted question that starts with the old confirm's prefix is answered like any other", () => {
+  const dp = D("dp", "D8", q("Confirm reading of answer zzz D8: close F40?", ["A", "B"]), [{ label: "A", effects: [settle("F40")] }, { label: "B", effects: [] }], { round: "RP" });
+  return [post("RP", [dp]), ...call(dp, "A", { round: "RP" })];
+}, (b) => b.dp!.answers.length === 1 && rules(b.dp!, "F40", "settle"));
+test("R10 + R11: two confirms answered in one call — two Yes give two answers with their own ids; two Others give one free answer on each", () => {
+  n = 1;
+  const evs = [msg(d1, "D4 A", "u1"), msg(d3, "D4 A too", "u2")];
+  const first = fold(evs), [a1, a3] = [first.b.d1!.answers[0]!.id, first.b.d3!.answers[0]!.id];
+  const onD4: Mapping[][] = [[{ decision: "d4", option: "A" }]];
+  const C1 = confirmOf(first.b, "d1", a1, onD4, "D9", "c1"), C2 = confirmOf(first.b, "d3", a3, onD4, "D10", "c2");
+  const [p1, p2] = [C1.data.decision.payload, C2.data.decision.payload];
+  const both = (v1: string, v2: string) => {
+    const L = logQ([p1, p2], { [p1.question]: v1, [p2.question]: v2 });
+    return [L, answer(C1.data.decision, { kind: "question", question: L.id }), answer(C2.data.decision, { kind: "question", question: L.id })];
+  };
+  let r = fold([...evs, C1, C2, ...both(CONFIRM_YES, CONFIRM_YES)]);
+  const ids = r.b.d4!.answers.map((x) => x.id);
+  assert.ok(ids.length === 2 && new Set(ids).size === 2 && ids.every((id) => /^e\d+\/d4$/.test(id)), dump(r.b, r.out));
+  r = fold([...evs, C1, C2, ...both("mine", "also mine")]);
+  assert.ok(r.b.c1!.answers.some((x) => x.free && x.words === "mine") && r.b.c2!.answers.some((x) => x.free && x.words === "also mine"), dump(r.b, r.out));
+});
+test("(a) Step 2: a reading onto a confirm posted after the words were typed cannot bind — the confirm is not even offered", () => {
+  n = 1;
+  const evs = clicked(), first = fold(evs), a = first.b.d1!.answers.at(-1)!.id;
+  const M2 = msg(d4, "and yes to that", "u9", at(2));   // typed before the confirm was posted
+  const C = confirmOf(first.b, "d1", a, leave);
+  const { out } = fold([...evs, C, M2]);
+  const byId = new Map(out.decisions.map((d) => [d.id, d])), d = byId.get("d4")!, w = d.answers[0]!;
+  const why = readingRefusal(byId, d, w, { verdict: [{ decision: "c1", option: CONFIRM_YES }], session: [{ decision: "c1", option: CONFIRM_YES }], launchedAt: at(59), brief: readerBrief(byId, d, w) });
+  assert.match(String(why), /D9 was posted after the words were typed/);
+  assert.ok(!readerBrief(byId, d, w).includes("D9:"), "the brief does not list it");
+});
+both("(c) a pick and a reading of the same words, recorded in either order, give one result: the pick decides", () => {
+  n = 1;
+  const base = clicked();
+  const first = fold(base), a = first.b.d1!.answers.at(-1)!;
+  const C = confirmOf(first.b, "d1", a.id, leave);
+  const M = base[1];
+  const R = reading(M, [{ decision: "d1", option: "Settle" }], [{ decision: "d1", option: "No" }]);
+  const Y = call(C.data.decision, CONFIRM_YES);
+  return { first: [...base, C, ...Y, R], second: [...base, R, C, ...Y] };
+}, (b) => standing(b.d1!)!.options[0] === "No" && !!standing(b.d1!)!.confirmed);
+test("P2.1 (4): an action line naming a ref two confirms share voids the confirm that uses it", () => {
+  n = 1;
+  const evs = clicked(), first = fold(evs), a = first.b.d1!.answers.at(-1)!.id;
+  // Two clones each confirm the same words at once, and both take D9.
+  const C1 = confirmOf(first.b, "d1", a, leave, "D9", "c1"), C2 = confirmOf(first.b, "d1", a, [[{ decision: "d1", option: "Settle" }]], "D9", "c2");
+  const M = msg(d4, "yes to D9", "u7");
+  const second = fold([...evs, C1, C2, M]);
+  const C3 = confirmOf(second.b, "d4", second.b.d4!.answers[0]!.id, [[{ decision: "c1", option: CONFIRM_YES }]], "D11", "c3");
+  const { b } = fold([...evs, C1, C2, M, C3]);
+  assert.match(String(b.c3!.confirms!.invalid), /D9 names two questions in round R1/);
+  const alone = fold([...evs, C1, M]);
+  const C4 = confirmOf(alone.b, "d4", alone.b.d4!.answers[0]!.id, [[{ decision: "c1", option: CONFIRM_YES }]], "D11", "c3");
+  assert.equal(fold([...evs, C1, M, C4]).b.c3!.confirms!.invalid, undefined, "the same confirm with D9 unshared is valid");
 });
 
 // --- carrying out is the finding record's to answer

@@ -67,6 +67,7 @@ class DecisionsPage extends Component {
     const checked = this.state.checked[d.id] || [];
     return html`<div class="op-card ${replaced ? 'moved' : ''}">
       <div class="ft"><b>${d.ref}</b> <span class="qbadge">${d.kind}</span>
+        ${when(!!d.confirm, () => html`<span class="qbadge ${d.confirm.state === 'open' ? '' : 'drift'}">confirm of your words on ${d.confirm.of ?? '(gone)'}: ${d.confirm.state}</span>`)}
         ${when(replaced, () => html`<span class="qbadge drift">replaced by ${d.replacedBy}</span>`)}
         ${when(!!s, () => html`<span class="qbadge ${s.verified ? '' : 'drift'}">${s.verified ? 'answered' : 'answered, unverified'}</span>`)}
       </div>

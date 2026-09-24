@@ -1,7 +1,7 @@
 /**
  * Decision rounds, folded from `decisions/<universe>`.
  *
- * Four events: `decision.round.posted`, `decision.question.logged`,
+ * Five events: `decision.round.posted`, `decision.confirm.posted`, `decision.question.logged`,
  * `decision.answer.recorded` and `decision.reading.recorded`. The rules are the owner's, word
  * for word in docs/decision-rounds-worked-cases.md and the review rounds' `owner.md` files;
  * the C/H/S-numbers below are theirs.
@@ -92,8 +92,8 @@ export interface FoldedAnswer {
     /** The reader could not tell which question the words answer, and why: nothing binds (H5). */
     unclear?: string;
   };
-  /** The person's answer to a confirm-this-reading question on these words (S0.1, S0.2). */
-  confirmed?: { call: string; at: string; maps: Mapping[] };
+  /** Bound by the person's pick on a confirm of these words: `answer` is that pick. */
+  confirmed?: { answer: string; at: string; maps: Mapping[] };
   /** Readings the person said were not what they meant — never offered again. */
   rejected?: Mapping[][];
   /** Accepted, but looks errant — shown, never silently applied as if ordinary (R19). */
@@ -113,6 +113,9 @@ export interface FoldedDecision extends Decision {
   replaceLost?: string;
   /** Decisions posted since, citing an answer here as their origin (C1, bulk items). */
   followUps?: string[];
+  /** A confirm-this-reading question. `invalid` says why it is not one codemap could have
+   *  written: then it is a plain question that binds nothing (P3.4). */
+  confirms?: Confirms & { invalid?: string };
 }
 
 export interface SharedDecisions {
@@ -185,95 +188,117 @@ export function checkDecision(d: Decision): string | null {
   return null;
 }
 
-// --- confirm-this-reading (owner, S0.1 + S0.2) ----------------------------------------------
+// --- confirm-this-reading (owner, the impl-2 discussion; P2.1 (1), (2); P3.1–P3.5) ---------------
 //
-// A DERIVED question, posted nowhere: codemap writes its exact text, the agent asks it
-// verbatim, and `log_question` logs the call. The fold recognises the text — it recomputes the
-// payload from what it parsed and requires an exact match — so the logged call is the only
-// record, it holds no finding and it never waits as unanswered.
+// A POSTED decision, in the words' own round: `confirm_reading` writes it with codemap's text,
+// the person is asked it verbatim and it is logged like any question. The fold checks its
+// STRUCTURE against the real answer and options (P3.4), never its wording, so a later build that
+// rewords it strands no open confirm. One that fails the check is kept as a plain question.
 
-const CONFIRM = "Confirm reading of answer ";
 export const CONFIRM_YES = "Yes";
 export const CONFIRM_NO = "No — ask me again";
 export const NONE = "(none)";
+const READING = /^Reading ([12])$/;
 
-/** What picking `o` on `d` does, as the person reads it in a confirm question. */
-function describe(d: Pick<Decision, "kind" | "options">, o: DecisionOption): string {
-  if (d.kind === "bulk") return o.approveAll ? "approves every item not checked" : "checked: ruled on separately";
-  if (o.park) return `parks until ${o.park.slice(0, 10)}`;
-  const parts = o.effects.map((e) => `${e.on === "settle" ? `settles ${e.findings.join(", ")} as ${e.as}` : `unblocks ${e.findings.join(", ")}`}`);
-  return parts.length ? parts.join("; ") : "no effect";
-}
+/** What a confirm asks about: the words (an answer id) and the one or two readings offered. */
+export interface Confirms { answer: string; readings: Mapping[][] }
 
-/** One mapping as a line: `D13 → Not a defect (settles f_… as refuted)`. */
-export function actionLine(d: Pick<Decision, "ref" | "kind" | "options">, option: string | null): string | null {
-  if (option === null) return `${d.ref} → ${NONE}`;
-  const o = d.options.find((x) => x.label === option);
-  return o ? `${d.ref} → ${o.label} (${describe(d, o)})` : null;
-}
+const effectText = (o: DecisionOption): string => o.effects.map((e) => e.on === "settle" ? `settles ${e.findings.join(", ")} as ${e.as}` : `unblocks ${e.findings.join(", ")}`).join("; ");
 
-const lines = (byId: Map<string, Pick<Decision, "ref" | "kind" | "options">>, maps: Mapping[]): string[] | null => {
-  const out: string[] = [];
-  for (const m of maps) {
-    const t = byId.get(m.decision);
-    const l = t ? actionLine(t, m.option) : null;
-    if (!l) return null;
-    out.push(l);
-  }
+/** Groups a reading's lines by decision, in the order the reading names them. */
+const byDecision = (maps: Mapping[]): Map<string, (string | null)[]> => {
+  const out = new Map<string, (string | null)[]>();
+  for (const m of maps) out.set(m.decision, [...(out.get(m.decision) ?? []), m.option]);
   return out;
 };
 
+/** A confirm line's `D<n> → <labels>` — the part the fold checks exactly. */
+const lineHead = (t: Pick<Decision, "ref">, picks: (string | null)[]): string => `${t.ref} → ${picks.map((p) => p ?? NONE).join(", ")}`;
+
 /**
- * The confirm question for answer `a` on decision `d`: one reading (Yes / No — ask me again;
- * "Other" is the person's own words), or the two readings of a dispute as options. Null when a
- * mapping names something that does not exist.
+ * Everything picking `picks` on `t` does, as the person reads it (owner, P2.1 (2)): what it
+ * settles and unblocks, and every finding of `t` it releases or leaves held — a bulk decision's
+ * approved items with their effects too. As of when the words were typed: whether that ruling
+ * still stands is ranked, and this text cannot follow a later answer.
  */
-export function confirmPayload(decisions: FoldedDecision[], d: FoldedDecision, a: FoldedAnswer, readings: Mapping[][]): AskedQuestion | null {
-  const byId = new Map(decisions.map((x) => [x.id, x]));
-  const rendered = readings.map((r) => lines(byId, r));
-  if (!readings.length || readings.length > 2 || rendered.some((r) => !r || !r.length)) return null;
-  // JSON-quoted, so words with a newline stay on one line and the lines below stay parseable.
-  const head = `${CONFIRM}${a.id} (${d.ref}, round ${d.round}). Your words at ${a.givenAt}:\n${JSON.stringify(a.words)}`;
+function actionLine(t: Pick<Decision, "ref" | "kind" | "options">, picks: (string | null)[]): string {
+  const fs = named(t);
+  const held = (xs: string[]) => (xs.length ? `${xs.join(", ")} stay held` : "");
+  const join = (...parts: string[]) => `${lineHead(t, picks)} (${parts.filter(Boolean).join("; ")})`;
+  if (picks.every((p) => p === null)) return join(`rules nothing on ${t.ref}`, held(fs));
+  const chosen = picks.filter((p): p is string => p !== null).map((p) => t.options.find((o) => o.label === p)!);
+  if (t.kind === "bulk") {
+    const checked = chosen.some((o) => o.approveAll) ? [] : chosen;
+    const approved = t.options.filter((o) => !o.approveAll && !checked.includes(o));
+    return join(
+      checked.length ? `checked, ruled on separately: ${checked.map((o) => o.label).join(", ")}` : "",
+      held([...new Set(checked.flatMap((o) => o.effects.flatMap((e) => e.findings)))]),
+      approved.length ? `approves ${approved.map((o) => `${o.label}${o.effects.length ? ` (${effectText(o)})` : ""}`).join("; ")}` : "",
+    );
+  }
+  const park = chosen.length === 1 ? chosen[0]!.park : undefined;
+  if (park) return join(`parks until ${park.slice(0, 10)}`, held(fs));
+  const touched = new Set(chosen.flatMap((o) => o.effects.flatMap((e) => e.findings)));
+  return join(...chosen.map(effectText), fs.some((f) => !touched.has(f)) ? `releases ${fs.filter((f) => !touched.has(f)).join(", ")}` : "");
+}
+
+/**
+ * The confirm question `ref` for words `a` on `d`: one reading (Yes / No — ask me again; Other is
+ * the person's own words, read like any reply), or the two readings of a dispute as options.
+ */
+export function confirmPayload(decisions: Map<string, FoldedDecision>, d: FoldedDecision, a: FoldedAnswer, readings: Mapping[][], ref: string): AskedQuestion {
+  const rendered = readings.map((r) => [...byDecision(r)].map(([id, picks]) => actionLine(decisions.get(id)!, picks)));
+  // JSON-quoted, so words with a newline stay on one line and cannot pass for an action line.
+  const words = `You typed at ${a.givenAt}:\n${JSON.stringify(a.words)}`;
   if (readings.length === 1) {
     return normalizeQuestion({
-      question: `${head}\n${rendered[0]!.join("\n")}\nIs that what you meant?`, header: "Confirm",
+      question: `${ref}: confirm how your words on ${d.ref} (answer ${a.id}, round ${d.round}) are read. ${words}\n${rendered[0]!.join("\n")}\nAs of when you typed it, is that what you meant?`, header: "Confirm",
       options: [{ label: CONFIRM_YES, description: "Bind exactly the action above, as of when you typed it" }, { label: CONFIRM_NO, description: "Not what I meant: ask the question again" }],
     });
   }
   return normalizeQuestion({
-    question: `${head}\n${rendered.map((r, i) => `Reading ${i + 1}:\n${r!.join("\n")}`).join("\n")}\nWhich did you mean?`, header: "Confirm",
-    options: rendered.map((r, i) => ({ label: `Reading ${i + 1}`, description: r!.join("; ") })),
+    question: `${ref}: your words on ${d.ref} (answer ${a.id}, round ${d.round}) were read two ways. ${words}\n${rendered.map((r, i) => `Reading ${i + 1}:\n${r.join("\n")}`).join("\n")}\nWhich did you mean, as of when you typed it?`, header: "Confirm",
+    options: rendered.map((r, i) => ({ label: `Reading ${i + 1}`, description: r.join("; ") })),
   });
 }
 
-/** The answer id a question claims to confirm, if it is shaped as a confirm at all. */
-export const confirmTarget = (q: AskedQuestion): string | undefined => {
-  if (!q.question.startsWith(CONFIRM)) return undefined;
-  return q.question.slice(CONFIRM.length).split(" ")[0] || undefined;
-};
-
-/** The readings a confirm question offers, recovered by recomputing it — never by trusting
- *  the text. Null unless the recomputed payload is exactly the question asked. */
-function confirmReadings(decisions: FoldedDecision[], d: FoldedDecision, a: FoldedAnswer, q: AskedQuestion): Mapping[][] | null {
-  // A dispute's two readings are the stored ones; one reading is the agent's own (S0.1),
-  // parsed off the question and then checked by recomputing it.
-  if (a.reading && !a.reading.agree && !a.reading.unclear) {
-    const two = [a.reading.reader.maps, a.reading.session.maps];
-    const p = confirmPayload(decisions, d, a, two);
-    return p && sameQuestion(p, q) ? two : null;
+/**
+ * Why posted confirm `c` is not one codemap could have written for the log as folded, or null
+ * (P3.4). It is kept either way — the fold never drops a posted question (P2.1 (4)) — but only
+ * a confirm that passes carries a confirm's meaning.
+ */
+function confirmRefusal(decisions: Map<string, FoldedDecision>, c: FoldedDecision, target: { a: FoldedAnswer; d: FoldedDecision } | undefined): string | null {
+  const cf = c.confirms!;
+  if (ms(c.postedAt) === undefined) return "it has no posting time";
+  if (!target) return `the words it confirms (${cf.answer}) are not an answer here`;
+  const { d, a } = target;
+  if (d.round !== c.round) return "it is not in the round of the words it confirms";
+  if (d.confirms) return "it confirms words on another confirm";
+  if (!Array.isArray(cf.readings) || !cf.readings.length || cf.readings.length > 2) return "it offers no reading, or more than two";
+  const labels = cf.readings.length === 1 ? [CONFIRM_YES, CONFIRM_NO] : ["Reading 1", "Reading 2"];
+  if (c.kind !== "options" || c.payload.multiSelect || c.options.length !== 2 || c.options.some((o, i) => o.label !== labels[i] || o.effects.length || o.park)) return "its options are not the confirm's";
+  const q = c.payload.question;
+  if (!new RegExp(`\\b${d.ref}\\b`).test(q) || !q.includes(a.id)) return `its question does not name ${d.ref} and answer ${a.id}`;
+  const sections = cf.readings.length === 1 ? [q.split("\n")] : q.split(/\nReading [12]:\n/).slice(1).map((s) => s.split("\n"));
+  if (sections.length !== cf.readings.length) return "its question does not set out each reading";
+  for (const [i, r] of cf.readings.entries()) {
+    if (!validMaps(r)) return "a reading it offers is empty";
+    const why = bindRefusal(decisions, d, a, r);
+    if (why) return `a reading it offers cannot bind: ${why}`;
+    const heads = sections[i]!.filter((l) => /^D\d+ → /.test(l));
+    const want = [...byDecision(r)];
+    if (heads.length !== want.length) return "its action lines are not one per decision the reading maps";
+    for (const [id, picks] of want) {
+      const t = decisions.get(id)!, head = lineHead(t, picks);
+      if (!heads.some((l) => l === head || l.startsWith(`${head} (`))) return `it has no action line ${head}`;
+      // A ref two decisions share means two questions (P2.1 (4)) — judged against the round as
+      // folded now, so another clone's same-numbered confirm, pulled later, voids this one.
+      if ([...decisions.values()].filter((x) => x.round === c.round && x.ref === t.ref).length > 1) return `${t.ref} names two questions in round ${c.round}`;
+      const missing = named(t).find((f) => !q.includes(f));
+      if (missing) return `its question does not name ${missing}, which ${t.ref} acts on`;
+    }
   }
-  const byRef = new Map(decisions.filter((x) => x.round === d.round).map((x) => [x.ref, x]));
-  const maps: Mapping[] = [];
-  for (const l of q.question.split("\n").slice(2, -1)) {
-    const ref = /^(D\d+) → /.exec(l)?.[1];
-    const t = ref ? byRef.get(ref) : undefined;
-    if (!t) return null;
-    const option = [null, ...t.options.map((o) => o.label)].find((o) => actionLine(t, o) === l);
-    if (option === undefined) return null;
-    maps.push({ decision: t.id, option });
-  }
-  const p = confirmPayload(decisions, d, a, [maps]);
-  return p && sameQuestion(p, q) ? [maps] : null;
+  return null;
 }
 
 // --- the reader's brief (owner, P1.4 + P3.4) -------------------------------------------------
@@ -414,7 +439,8 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
   /** Every well-formed reading, in log order. Which are accepted is decided after the log is
    *  read, so a reading that is not accepted claims nothing (owner, P1.2 "Not used"). */
   const readingEvents: { e: LogEvent; pos: number }[] = [];
-  const confirms: { pos: number; call: LoggedQuestion; answer: string; q: AskedQuestion; value: string | string[] }[] = [];
+  /** Verified picks on confirms — the only answers that carry a confirm's meaning (P3.2). */
+  const picks: { a: FoldedAnswer; c: FoldedDecision }[] = [];
 
   // Questions first: a logged call is a fact about the transcript, and an answer event may
   // arrive from another writer before it in fold order.
@@ -430,7 +456,7 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
     // A call logged before per-question binding named one round for all of it (S0.7).
     const bound: Record<string, string> = q.bound && typeof q.bound === "object" && !Array.isArray(q.bound)
       ? Object.fromEntries(Object.entries(q.bound).filter(([, r]) => typeof r === "string" && asked.includes(r as string))) as Record<string, string>
-      : Object.fromEntries((q.questions as AskedQuestion[]).filter((x) => !confirmTarget(x)).map((x) => [x.question, asked[0]!]));
+      : Object.fromEntries((q.questions as AskedQuestion[]).map((x) => [x.question, asked[0]!]));
     questions.set(e.id, {
       id: e.id, session: q.session, toolUseId: q.toolUseId,
       questions: q.questions.map(normalizeQuestion), answers: q.answers, rounds: asked, bound, answeredAt: q.answeredAt,
@@ -470,23 +496,28 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
           };
           decisions.set(d.id, d);
           postedPos.set(d.id, pos);
+          // A confirm is never replaced: a pick on it already says what a replacement could.
           const old = d.supersedes ? decisions.get(d.supersedes) : undefined;
-          if (old && !old.replacedBy) old.replacedBy = d.id;
+          if (old?.confirms) delete d.supersedes;
+          else if (old && !old.replacedBy) old.replacedBy = d.id;
           else if (old) d.replaceLost = old.replacedBy;
         }
         break;
       }
 
-      case "decision.question.logged": {
-        // Confirms are applied here, in log position, because the answer they confirm must
-        // already exist; ordinary questions bind through the answer events that cite them.
-        const call = questions.get(e.id);
-        if (!call) break;
-        for (const q of call.questions) {
-          const target = confirmTarget(q);
-          const value = call.answers[q.question];
-          if (target && value !== undefined) confirms.push({ pos, call, answer: target, q, value });
-        }
+      case "decision.confirm.posted": {
+        // Its own kind, because a round is immutable once posted (above). Kept whatever its
+        // `confirms` says — whether it is a confirm codemap could have written is judged below.
+        const raw = data?.decision as (Decision & { confirms?: Confirms }) | undefined;
+        const r = rounds.get(str(data?.round) ?? "");
+        if (!r || !raw || typeof raw !== "object" || decisions.has(raw.id) || raw.round !== r.id || checkDecision(raw)) break;
+        const cf = raw.confirms as unknown as Record<string, unknown> | undefined;
+        decisions.set(raw.id, {
+          id: raw.id, round: raw.round, ref: raw.ref, kind: raw.kind, payload: normalizeQuestion(raw.payload), options: raw.options,
+          hash: decisionHash(raw), postedAt: typeof e.at === "string" ? e.at : "", answers: [],
+          confirms: { answer: str(cf?.answer) ?? "", readings: Array.isArray(cf?.readings) ? cf.readings as Mapping[][] : [] },
+        });
+        postedPos.set(raw.id, pos);
         break;
       }
 
@@ -520,6 +551,7 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
         // A words decision's answer is the words: recorded, never read onto options (C17).
         if (d.kind === "words") { a.free = false; break; }
         if (!r.free) rule(d, a, r, r.verified);
+        if (d.confirms && !r.free && r.verified) picks.push({ a, c: d });
         break;
       }
 
@@ -549,22 +581,11 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
   }
   const kept = (id: string) => { const x = answersById.get(id); return x && x.d.answers.includes(x.a) ? x : undefined; };
 
-  // "Other" typed into a confirm question is the person's words on the ORIGINAL decision, at
-  // the call's time, read like any typed reply (S0.2). Made before any binding, so a reading
-  // of it is found.
-  for (const c of confirms) {
-    const src = kept(c.answer);
-    if (!src || typeof c.value !== "string" || [CONFIRM_YES, CONFIRM_NO, "Reading 1", "Reading 2"].includes(c.value)) continue;
-    const once = `q:${c.call.session}\0${c.call.toolUseId}`;
-    if (!(Date.parse(c.call.answeredAt) > Date.parse(src.a.givenAt)) || src.d.answers.some((x) => x.once === once)) continue;
-    const cut = replacement(src.d, decisions)?.at;
-    if (cut !== undefined && !(Date.parse(c.call.answeredAt) < cut)) continue;
-    const a: FoldedAnswer = {
-      id: `${c.call.id}/${src.d.id}`, by: c.call.loggedBy, at: c.call.at, via: "question", verified: true, givenAt: c.call.answeredAt, seq: c.pos,
-      once, words: c.value, options: [], ruled: [], unruled: [], free: true,
-    };
-    src.d.answers.push(a);
-    answersById.set(a.id, { a, d: src.d });
+  // Which confirms carry a confirm's meaning: judged once the cut is known, against the set.
+  for (const c of decisions.values()) {
+    if (!c.confirms) continue;
+    const why = confirmRefusal(decisions, c, kept(c.confirms.answer));
+    if (why) c.confirms.invalid = why;
   }
 
   // Which readings count: in log order, one per answer and one answer per reader (S0.8(c)),
@@ -579,9 +600,8 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
     readerUsed.set(agent, data.answer);
   }
 
-  // Readings, then the person's confirms, onto every answer still free — in log order of the
-  // answers, and each binding decided from the answer and its own events alone.
-  const all = [...decisions.values()];
+  // Readings, then the person's picks on confirms, onto every answer still free — in log order
+  // of the answers, and each binding decided from the answer and its own events alone.
   const byLog = [...answersById.values()].filter((x) => x.d.answers.includes(x.a) && x.a.free && x.d.kind !== "words").sort((x, y) => x.a.seq - y.a.seq);
   for (const { a, d } of byLog) {
     const r = readings.get(a.id);
@@ -597,24 +617,23 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
         ...(unclear ? { unclear } : {}),
       };
     }
-    // The person's own word on a reading of these words: the later confirmation wins (S0.2).
-    let decided: { maps: Mapping[] | null; call: LoggedQuestion; pos: number } | undefined;
-    for (const c of confirms) {
-      if (c.answer !== a.id || typeof c.value !== "string") continue;
-      const offered = confirmReadings(all, d, a, c.q);
-      if (!offered) continue;
-      const pick = c.value === CONFIRM_YES && offered.length === 1 ? offered[0]!
-        : /^Reading [12]$/.test(c.value) && offered.length === 2 ? offered[Number(c.value.slice(-1)) - 1]!
-          : c.value === CONFIRM_NO && offered.length === 1 ? null : undefined;
-      if (pick === undefined) continue;
-      if (pick === null) (a.rejected ??= []).push(offered[0]!);
-      const later = !decided || Date.parse(c.call.answeredAt) > Date.parse(decided.call.answeredAt)
-        || (c.call.answeredAt === decided.call.answeredAt && c.pos > decided.pos);
-      if (later) decided = { maps: pick, call: c.call, pos: c.pos };
+    // The person's own word on these words: the latest-given verified pick across every confirm
+    // of them decides (owner, P3.2 "Latest pick decides"; S0.2's "the later confirmation wins").
+    // Typed words on a confirm are read like any reply and never carry this meaning.
+    let decided: { pick: FoldedAnswer; maps: Mapping[] | null } | undefined;
+    for (const { a: p, c } of picks) {
+      if (c.confirms!.answer !== a.id || c.confirms!.invalid) continue;
+      const label = p.options[0], rs = c.confirms!.readings;
+      const n = READING.exec(label ?? "")?.[1];
+      const maps = label === CONFIRM_YES && rs.length === 1 ? rs[0]! : n && rs.length === 2 ? rs[Number(n) - 1]! : label === CONFIRM_NO && rs.length === 1 ? null : undefined;
+      if (maps === undefined) continue;
+      if (maps === null) (a.rejected ??= []).push(rs[0]!);
+      if (!decided || outranksByTime(p, decided.pick)) decided = { pick: p, maps };
     }
-    if (decided?.maps && canBind(decisions, d, a, decided.maps)) {
-      a.confirmed = { call: decided.call.id, at: decided.call.answeredAt, maps: decided.maps };
-      bind(decisions, answersById, d, a, decided.maps, decided.call.id, decided.pos);
+    if (decided?.maps) {
+      // As of when the words were typed, from the pick that decided (S0.1): its id names the copies.
+      a.confirmed = { answer: decided.pick.id, at: decided.pick.givenAt, maps: decided.maps };
+      bind(decisions, answersById, d, a, decided.maps, decided.pick.id, decided.pick.seq);
     } else if (!decided && a.reading?.agree) {
       bind(decisions, answersById, d, a, a.reading.reader.maps, a.reading.id, readings.get(a.id)!.pos);
     }
@@ -633,7 +652,7 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
  *  round, was posted before the words were given, takes options, and was not already replaced
  *  when they were (R23, judged by given time as A4 is) — an unknown time satisfies neither —
  *  and each is picked once, or `(none)` alone, unless it is multi-select (R3). */
-function bindRefusal(decisions: Map<string, FoldedDecision>, d: FoldedDecision, a: FoldedAnswer, maps: Mapping[]): string | null {
+export function bindRefusal(decisions: Map<string, FoldedDecision>, d: FoldedDecision, a: FoldedAnswer, maps: Mapping[]): string | null {
   const given = ms(a.givenAt);
   if (given === undefined) return "the words have no time that parses";
   const picks = new Map<string, (string | null)[]>();
@@ -792,6 +811,47 @@ const live = (d: FoldedDecision): FoldedAnswer[] => { const a = standing(d); ret
 /** Whether the answer ruled — picked something — rather than parked, awaited or ruled nothing. */
 const decides = (a: FoldedAnswer | undefined): boolean => !!a && !a.free && !a.nothing && a.park === undefined && a.parkWaits === undefined;
 
+/** Words `a` on `d` down whose replacement chain something has since ruled (B2.4, P3.3): a
+ *  verified ruling for verified words, as `successorOf` takes a ruling over. */
+function chainRuled(byId: Map<string, FoldedDecision>, d: FoldedDecision, verified: boolean): boolean {
+  const seen = new Set<string>([d.id]);
+  for (let c = d.replacedBy ? byId.get(d.replacedBy) : undefined; c && !seen.has(c.id); c = c.replacedBy ? byId.get(c.replacedBy) : undefined) {
+    seen.add(c.id);
+    const b = standing(c);
+    if (decides(b) && (b!.verified || !verified)) return true;
+  }
+  return false;
+}
+
+/** Words that can no longer change anything (owner, P3.3 "Stop surfacing"): bound some way,
+ *  outranked by a later answer, cut as given after their question was replaced, or on a
+ *  replaced question whose replacement has since ruled. */
+function moot(byId: Map<string, FoldedDecision>, d: FoldedDecision, a: FoldedAnswer): boolean {
+  if (!d.answers.includes(a) || !a.free || a.elsewhere || !live(d).includes(a)) return true;
+  return !!d.replacedBy && chainRuled(byId, d, a.verified);
+}
+
+/** The words a confirm asks about, if they are still an answer here. */
+export function confirmedWords(byId: Map<string, FoldedDecision>, c: FoldedDecision): { d: FoldedDecision; a: FoldedAnswer } | undefined {
+  if (!c.confirms) return undefined;
+  for (const d of byId.values()) { const a = d.answers.find((x) => x.id === c.confirms!.answer); if (a) return { d, a }; }
+  return undefined;
+}
+
+/**
+ * Where a confirm stands: `open` (it holds and waits on you), `answered`, `no longer needed`
+ * (its words are moot: it stops holding and waiting, and stays listed — P3.3), or
+ * `unverifiable` (not one codemap could have written: it binds nothing and holds nothing).
+ */
+export type ConfirmState = "open" | "answered" | "no longer needed" | "unverifiable";
+export function confirmState(byId: Map<string, FoldedDecision>, c: FoldedDecision): ConfirmState | undefined {
+  if (!c.confirms) return undefined;
+  if (decides(standing(c))) return "answered";
+  const t = confirmedWords(byId, c);
+  if (!t || moot(byId, t.d, t.a)) return "no longer needed";
+  return c.confirms.invalid ? "unverifiable" : "open";
+}
+
 export interface Superseding { answer: string; words: string; state: "unread" | "unclear" | "disputed"; rejected?: Mapping[][] }
 
 /**
@@ -802,7 +862,8 @@ export interface Superseding { answer: string; words: string; state: "unread" | 
  */
 export function possiblySuperseded(d: FoldedDecision): Superseding[] {
   const a = standing(d);
-  if (!a || d.replacedBy) return [];
+  // A confirm's own words are read like any reply, and there is no confirm of a confirm.
+  if (!a || d.replacedBy || d.confirms) return [];
   return live(d).filter((p) => p.verified).map((p) => ({
     answer: p.id, words: p.words,
     state: !p.reading ? "unread" as const : p.reading.unclear ? "unclear" as const : "disputed" as const,
@@ -875,6 +936,8 @@ export function waitingOnMe(s: SharedDecisions, today: string): WaitingItem[] {
     }
     const a = standing(d);
     const item = (why: string) => out.push({ decision: d.id, round: d.round, ref: d.ref, why });
+    const cs = confirmState(byId, d);
+    if (cs === "no longer needed") continue;
     if (d.replaceLost) {
       const was = s.decisions.find((x) => x.id === d.supersedes);
       item(`posted to replace ${was?.ref ?? d.supersedes}, which ${d.replaceLost} had already replaced: a conflicting replacement`);
@@ -889,7 +952,10 @@ export function waitingOnMe(s: SharedDecisions, today: string): WaitingItem[] {
     }
     if (!a) {
       // Unread words wait on an agent (`awaitingReading`), not on the person.
-      if (!pending(d).length) item("not answered");
+      if (!pending(d).length) {
+        item(cs === "open" ? `confirm what your words on ${confirmedWords(byId, d)!.d.ref} meant`
+          : cs === "unverifiable" ? `not a confirm codemap can verify (${d.confirms!.invalid}) — answering it binds nothing; ask for a new confirm` : "not answered");
+      }
       continue;
     }
     if (parkedOn(a, today)) continue;   // under "parked", not here (H6.5)
@@ -932,8 +998,9 @@ export interface Unread { decision: string; round: string; ref: string; answer: 
  *  unconfirmed words after a verified ruling are never sent to the reader (H6.8). */
 export function awaitingReading(s: SharedDecisions): Unread[] {
   const out: Unread[] = [];
+  const byId = new Map(s.decisions.map((x) => [x.id, x]));
   for (const d of s.decisions) {
-    if (d.replacedBy || d.kind === "words") continue;
+    if (d.replacedBy || d.kind === "words" || confirmState(byId, d) === "no longer needed") continue;
     for (const x of live(d)) {
       if (x.reading) continue;
       out.push({ decision: d.id, round: d.round, ref: d.ref, answer: x.id, words: x.words });
@@ -947,8 +1014,9 @@ export interface Disputed { decision: string; round: string; ref: string; answer
 /** The person's words, read two different ways by the reader and the session. */
 export function readingsInDispute(s: SharedDecisions): Disputed[] {
   const out: Disputed[] = [];
+  const byId = new Map(s.decisions.map((x) => [x.id, x]));
   for (const d of s.decisions) {
-    if (d.replacedBy) continue;
+    if (d.replacedBy || confirmState(byId, d) === "no longer needed") continue;
     for (const p of live(d)) {
       if (p.reading && !p.reading.agree && !p.reading.unclear) {
         out.push({ decision: d.id, round: d.round, ref: d.ref, answer: p.id, words: p.words, reader: fmt(s, p.reading.reader.maps), session: p.reading.session.reading || fmt(s, p.reading.session.maps) });
@@ -1035,6 +1103,13 @@ export function heldFindings(s: SharedDecisions, isOpen: (finding: string) => bo
     out.set(f, list);
   };
   for (const d of s.decisions) {
+    // An open confirm holds what its readings would rule on, beside the decision's own hold
+    // (the discussion: "two entries is fine"), from its own posting (S0.4, P3.5).
+    if (d.confirms) {
+      if (confirmState(byId, d) !== "open") continue;
+      for (const r of d.confirms.readings) for (const m of r) if (m.option !== null) for (const f of named(byId.get(m.decision)!)) add(d, f, "undecided");
+      continue;
+    }
     if (d.replacedBy) {
       for (const r of stillHeld(byId, d)) if (r.on === "settle") add(d, r.finding, "ruled");
       continue;
@@ -1072,6 +1147,9 @@ export function supersededFindings(s: SharedDecisions): Map<string, { decision: 
 
 export const postRoundEvent = (logRoot: string, universe: string, actor: Actor, round: Omit<DecisionRound, "postedBy" | "at">, decisions: Decision[]) =>
   emitEvent(logRoot, decisionScope(universe), actor, "decision.round.posted", round.id, { round, decisions });
+
+export const postConfirmEvent = (logRoot: string, universe: string, actor: Actor, decision: Decision & { confirms: Confirms }) =>
+  emitEvent(logRoot, decisionScope(universe), actor, "decision.confirm.posted", decision.id, { round: decision.round, decision });
 
 export const logQuestionEvent = (logRoot: string, universe: string, actor: Actor, q: Omit<LoggedQuestion, "id" | "loggedBy" | "at">) =>
   emitEvent(logRoot, decisionScope(universe), actor, "decision.question.logged", q.toolUseId, q as unknown as Record<string, unknown>);

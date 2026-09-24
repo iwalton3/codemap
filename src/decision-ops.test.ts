@@ -501,7 +501,7 @@ test("R6 + R15: only the report's final block is the verdict; a ref two question
   assert.match(String((parseVerdict("D1 → A", two, "R1") as any).error), /two questions in round R1 share: it is ambiguous/);
 });
 
-test("S0.1 + S0.2: confirm_reading issues the exact question; Yes binds the agent's reading as of when the words were typed", async () => {
+test("the discussion + S0.1: confirm_reading POSTS the confirm into the words' round; answered Yes through log_question, it binds the reading as of when the words were typed", async () => {
   const u = await universe();
   try {
     const f = await withFinding(u);
@@ -515,15 +515,23 @@ test("S0.1 + S0.2: confirm_reading issues the exact question; Yes binds the agen
       assert.match(String(err(await confirmReading(u.root, { answer: a }))), /give your own reading/);
       const c = await confirmReading(u.root, { answer: a, maps: [{ decision: "d1", option: "Real, fix it" }] }) as any;
       assert.equal(c.ok, true, JSON.stringify(c));
-      assert.match(c.ask.question, /D1 → Real, fix it \(unblocks f_/);
+      assert.equal(c.ref, "D2", "the next free ref in D1's round");
+      assert.match(c.ask.question, /^D1 → Real, fix it \(unblocks f_/m);
+      const again = await confirmReading(u.root, { answer: a, maps: [{ decision: "d1", option: "Real, fix it" }] }) as any;
+      assert.ok(again.existing && again.confirm === c.confirm, "asking again returns the open confirm");
+      let round = await decisionRound(u.root, "R1") as any;
+      assert.equal(round.decisions.find((d: any) => d.id === c.confirm)?.confirm.state, "open");
+      assert.ok((await decisionRounds(u.root) as any).waitingOnYou.some((w: any) => w.decision === c.confirm && /confirm what your words on D1 meant/.test(w.why)));
       t.ask("toolu_c", [c.ask], { [c.ask.question]: "Yes" }, later(2));
       const r = await logQuestion(u.root, { toolUseId: "toolu_c", round: "R1" }, {}, u.transcripts) as any;
-      assert.equal(r.confirmed?.[0]?.result, "bound", JSON.stringify(r));
-      const d = (await decisionRound(u.root, "R1") as any).decisions[0];
+      assert.match(String(r.answered.find((x: any) => x.decision === c.confirm)?.confirm), /^bound/, JSON.stringify(r));
+      round = await decisionRound(u.root, "R1") as any;
+      const d = round.decisions.find((x: any) => x.id === "d1");
       assert.equal(d.standing.id, a);
       assert.equal(d.standing.givenAt, typed, "bound at the time the words were typed");
       assert.ok(d.standing.ruled.some((x: any) => x.finding === f && x.on === "unblock"));
       assert.deepEqual(d.possiblySuperseded, []);
+      assert.equal(round.decisions.find((x: any) => x.id === c.confirm)?.confirm.state, "answered");
     });
   } finally { u.cleanup(); }
 });
@@ -542,12 +550,46 @@ test("S0.2: 'No — ask me again' keeps the old ruling, flagged, and the rejecte
       const c = await confirmReading(u.root, { answer: a, maps }) as any;
       t.ask("toolu_c", [c.ask], { [c.ask.question]: "No — ask me again" }, later(2));
       const r = await logQuestion(u.root, { toolUseId: "toolu_c", round: "R1" }, {}, u.transcripts) as any;
-      assert.match(r.confirmed?.[0]?.result, /rejected/, JSON.stringify(r));
+      assert.match(String(r.answered.find((x: any) => x.decision === c.confirm)?.confirm), /rejected/, JSON.stringify(r));
       const view = await decisionRounds(u.root) as any;
       assert.ok(view.ruledNotCarriedOut.some((x: any) => x.finding === f && x.on === "settle"), "the old ruling stands");
       assert.equal(view.possiblySuperseded[0]?.decision, "d1", "flagged, until a replacement answer rules");
       assert.ok(view.waitingOnYou.some((w: any) => /not what you meant/.test(w.why)));
       assert.match(String(err(await confirmReading(u.root, { answer: a, maps }))), /already said this reading is not what they meant/);
+    });
+  } finally { u.cleanup(); }
+});
+
+test("R9 / F20: a posted question that starts like the old confirm is answered through log_question like any other", async () => {
+  const u = await universe();
+  try {
+    const f = await withFinding(u);
+    await asAgent(async () => {
+      const d = decision("d2", f, {}, "D2");
+      d.payload.question = `Confirm reading of answer zzz ${d.payload.question}`;
+      await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [d] });
+      transcript(u.transcripts).ask("toolu_1", [d.payload], { [d.payload.question]: "Real, fix it" });
+      const r = await logQuestion(u.root, { toolUseId: "toolu_1", round: "R1" }, {}, u.transcripts) as any;
+      assert.equal(r.answered.length, 1, JSON.stringify(r));
+      assert.equal((await decisionRound(u.root, "R1") as any).decisions[0].answers.length, 1);
+    });
+  } finally { u.cleanup(); }
+});
+
+test("confirm_reading refuses what the fold would void, and a replacement of a confirm is refused", async () => {
+  const u = await universe();
+  try {
+    const f = await withFinding(u);
+    await asAgent(async () => {
+      await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f)] });
+      const t = transcript(u.transcripts);
+      t.typed("m1", "hmm", later(1));
+      const a = (await relayAnswer(u.root, { round: "R1", decision: "d1", session: SESSION, entryId: "m1" }, {}, u.transcripts) as any).answer;
+      assert.match(String(err(await confirmReading(u.root, { answer: a, maps: [{ decision: "d1", option: "Not a defect" }, { decision: "d1", option: "Real, fix it" }] }))), /takes one option/);
+      assert.match(String(err(await confirmReading(u.root, { answer: a, maps: [{ decision: "d9", option: null }] }))), /not a question in round R1/);
+      const c = await confirmReading(u.root, { answer: a, maps: [{ decision: "d1", option: "Real, fix it" }] }) as any;
+      assert.equal(c.ok, true, JSON.stringify(c));
+      assert.match(String(err(await postRound(u.root, { round: { id: "R2", source: "x" }, decisions: [{ ...decision("dz", f, {}, "D1", "R2"), supersedes: c.confirm }] }))), /is a confirm/);
     });
   } finally { u.cleanup(); }
 });

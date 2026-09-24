@@ -9,11 +9,13 @@
  * Verification happens HERE, on the machine that asked — the transcript never travels
  * (owner: "verification needs to happen before it ends up in the fold").
  */
+import { createHash } from "node:crypto";
 import { isAgentActor } from "../identity.js";
 import { bindDecisions, type Bound, type Via } from "../ops-shared.js";
 import { lookupFinding } from "../store.js";
 import {
-  CONFIRM_NO, CONFIRM_YES, NONE, readingRefusal, readerBrief as briefFor, checkDecision, confirmPayload, confirmTarget, decisionHash, logQuestionEvent, mapsKey, named, possiblySuperseded, postRoundEvent, validMaps,
+  CONFIRM_NO, CONFIRM_YES, NONE, readingRefusal, readerBrief as briefFor, bindRefusal, checkDecision, confirmPayload, confirmState, confirmedWords, decisionHash, logQuestionEvent,
+  mapsKey, named, possiblySuperseded, postConfirmEvent, postRoundEvent, validMaps,
   readingsInDispute, recordAnswerEvent, recordReadingEvent, ruledNotCarriedOut, standing, waitingOnMe, awaitingReading, parked,
   type AnswerVia, type FoldedDecision, type Mapping, type SharedDecisions,
 } from "../shared-decisions.js";
@@ -73,6 +75,8 @@ export async function checkRound(root: string, r: NewRound): Promise<string | nu
     if (d.supersedes) {
       const old = existing.decisions.find((x) => x.id === d.supersedes);
       if (!old) return `decision ${d.ref} replaces ${d.supersedes}, which is not posted`;
+      // The fold ignores it too: a pick on a confirm already says what a replacement could.
+      if (old.confirms) return `decision ${d.ref} replaces ${old.ref}, which is a confirm: ask for a new confirm instead`;
       // One replacement per question, so "the replacement decides" names one (bulk 9, ruled):
       // re-asking a replaced question replaces its replacement, which keeps the chain linear.
       if (old.replacedBy) return `decision ${d.ref} replaces ${d.supersedes}, which ${old.replacedBy} already replaced — replace ${old.replacedBy} instead`;
@@ -142,12 +146,16 @@ export async function decisionRound(root: string, id: string) {
   const { s } = v, now = today();
   const round = s.rounds.find((r) => r.id === id);
   if (!round) return { error: `no round ${id}`, ...v.status };
+  const byId = new Map(s.decisions.map((x) => [x.id, x]));
   const mine = (x: { round: string }) => x.round === id;
   const findings = [...new Set(s.decisions.filter(mine).flatMap(named))];
   return {
     ...v.status,
     round,
-    decisions: s.decisions.filter(mine).map((d) => ({ ...d, standing: standing(d) ?? null, possiblySuperseded: possiblySuperseded(d) })),
+    decisions: s.decisions.filter(mine).map((d) => ({
+      ...d, standing: standing(d) ?? null, possiblySuperseded: possiblySuperseded(d),
+      ...(d.confirms ? { confirm: { state: confirmState(byId, d)!, of: confirmedWords(byId, d)?.d.ref ?? null } } : {}),
+    })),
     held: findings.map((finding) => ({ finding, ...v.mark(finding) })).filter((h) => h.held || h.possiblySuperseded),
     waitingOnYou: waitingOnMe(s, now).filter(mine),
     ruledNotCarriedOut: ruledNotCarriedOut(s, v.isOpen).filter(mine),
@@ -179,6 +187,7 @@ async function outcome(root: string, d: Pick<FoldedDecision, "id" | "ref">, id: 
   const top = standing(now);
   return {
     decision: d.id, ref: d.ref, recorded: true as const, answer: id, verified: a.verified, standing: top?.id === a.id,
+    ...(now.confirms ? { confirm: confirmOutcome(s, now, a) } : {}),
     ...(!a.verified && top?.verified ? { note: "unconfirmed, after a verified ruling: it is shown to the person and never applied over their ruling" } : {}),
     ...(a.free ? { awaitsReading: true } : {}),
     ruled: a.ruled, ...(a.unruled.length ? { waitingOnYou: a.unruled } : {}),
@@ -187,12 +196,22 @@ async function outcome(root: string, d: Pick<FoldedDecision, "id" | "ref">, id: 
   };
 }
 
+/** What an answer on a confirm did to the words it asks about. */
+function confirmOutcome(s: SharedDecisions, c: FoldedDecision, a: FoldedDecision["answers"][number]): string {
+  if (c.confirms!.invalid) return `not a confirm codemap can verify (${c.confirms!.invalid}): this answer binds nothing — ask for a new confirm`;
+  const t = confirmedWords(new Map(s.decisions.map((x) => [x.id, x])), c);
+  if (a.free) return "their own words on the confirm: have a reader read them (reader_brief, then record_reading), like any typed reply";
+  if (!t) return "the words it asks about are no longer an answer here";
+  if (t.a.confirmed?.answer === a.id) return "bound: the reading is ruled, as of when they typed the words";
+  if (a.options[0] === CONFIRM_NO) return `rejected: the ruling on ${t.d.ref} stands, flagged — re-ask ${t.d.ref} (the person must give a replacement answer)`;
+  return "not the latest pick on those words, or they were bound another way: this binds nothing";
+}
+
 /**
  * Log an `AskUserQuestion` call from this session's transcript, and record it as the answer to
  * every decision whose exact payload it carries, in the rounds it was asked for. The default
  * path for relaying the person's answers (owner, R13). An unverifiable call writes nothing and
- * says why. A confirm-this-reading question in the call is recognised by the fold from the
- * logged call alone (S0.2); this reports what it did.
+ * says why. A confirm is a posted decision like any other, so it is answered here too.
  */
 export async function logQuestion(root: string, input: { session?: string; toolUseId: string; round: string | string[] }, via: Via = {}, dir: string = transcriptDir()) {
   const b = bindDecisions(root, via);
@@ -222,15 +241,12 @@ export async function logQuestion(root: string, input: { session?: string; toolU
   const prior = before.questions.find((q) => q.toolUseId === input.toolUseId && q.session === session);
   if (prior && named.some((r) => !prior.rounds.includes(r))) return { error: `call ${input.toolUseId} is already logged for ${prior.rounds.join(", ")}` };
   const bound: Record<string, string> = {};
-  const confirms: { question: string; answer: string }[] = [];
   for (const q of call.questions) {
-    const target = confirmTarget(q);
-    if (target) { confirms.push({ question: q.question, answer: target }); continue; }
     const hits = rounds.filter((r) => before.decisions.some((d) => d.round === r.id && sameQuestion(q, d.payload)));
     if (hits.length > 1) refused.push({ question: q.question, why: `it is the posted question of more than one round you named (${hits.map((r) => r.id).join(", ")}), so which one it answers cannot be told` });
     else if (hits.length) bound[q.question] = hits[0]!.id;
   }
-  if (!rounds.length && !confirms.length) return { error: refused.map((x) => x.why).join("; ") + " (nothing was written)" };
+  if (!rounds.length) return { error: refused.map((x) => x.why).join("; ") + " (nothing was written)" };
   const logged = prior?.id ?? (await logQuestionEvent(b.cfg.path, b.cfg.universe, b.actor, {
     session: call.session, toolUseId: call.toolUseId, questions: call.questions, answers: call.answers, transcript: session,
     rounds: named, bound, answeredAt: call.at,
@@ -249,22 +265,10 @@ export async function logQuestion(root: string, input: { session?: string; toolU
     if (had) answered.push({ decision: d.id, ref: d.ref, recorded: false as const, already: had.id });
     else answered.push(await record(root, b, d, { kind: "question", question: logged }));
   }
-  const after = confirms.length ? (await decisionsView(root)).s : before;
-  const confirmed = confirms.map(({ question, answer }) => {
-    const x = found(after, answer);
-    const value = call.answers[question];
-    if (!x) return { answer, result: "no such answer: not a confirm codemap issued" };
-    if (x.a.confirmed?.call === logged) return { answer, result: "bound", maps: x.a.confirmed.maps };
-    if (value === CONFIRM_NO && x.a.rejected?.length) return { answer, result: `rejected: the old ruling stands, flagged — re-ask ${x.d.ref} (the person must give a replacement)` };
-    const other = after.decisions.flatMap((d) => d.answers).find((y) => y.id === `${logged}/${x.d.id}`);
-    if (other) return { answer, result: `their own words, recorded as ${other.id}: have a reader read them; to act on them directly, ask a second, formatted confirm` };
-    return { answer, result: "not recognised: the question was not the exact text confirm_reading issued, or the words have since been bound" };
-  });
   return {
     ok: true, logged, ...(prior ? { retried: true } : {}), answered,
-    ...(confirmed.length ? { confirmed } : {}),
     ...(refused.length ? { refused } : {}),
-    ...(answered.length || confirmed.length ? {} : { note: `logged; no decision in ${named.join(", ")} carries these questions, so nothing was answered` }),
+    ...(answered.length ? {} : { note: `logged; no decision in ${named.join(", ")} carries these questions, so nothing was answered` }),
   };
 }
 
@@ -401,36 +405,59 @@ export async function recordReading(root: string, input: { answer: string; reade
 }
 
 /**
- * The exact confirm-this-reading question for words a ruling may not yet reflect (owner, S0.1 +
- * S0.2). Ask it verbatim with `AskUserQuestion`, then `log_question` the call: Yes binds the
- * reading as of when they typed it; "No — ask me again" records the rejection and you re-ask
- * the original question; their own words under Other are a new typed answer for a reader.
- * Writes nothing.
+ * Post the confirm-this-reading question for words a ruling may not yet reflect (the impl-2
+ * discussion; P2.1 (1)): a decision in the words' own round, with codemap's text, which holds
+ * what its readings would rule on and waits on the person until it is answered. Ask it
+ * verbatim, then `log_question` the call with that round. Yes (or Reading n) binds the reading
+ * as of when they typed the words; "No — ask me again" records the rejection; their own words
+ * under Other are read by a reader like any reply and carry none of this meaning.
  */
-export async function confirmReading(root: string, input: { answer: string; maps?: Mapping[] }) {
-  const { s } = await decisionsView(root);
-  const x = found(s, input.answer);
-  if (!x) return { error: `no answer ${input.answer}` };
+export async function confirmReading(root: string, input: { answer: string; maps?: Mapping[] }, via: Via = {}) {
+  const b = bindDecisions(root, via);
+  if ("error" in b) return b;
+  const w = await writable(root);
+  if ("error" in w) return w;
+  const s = w.s, byId = new Map(s.decisions.map((y) => [y.id, y]));
+  const x = found(s, input?.answer);
+  if (!x) return { error: `no answer ${String(input?.answer)}` };
   const { d, a } = x;
+  if (d.confirms) return { error: `${d.ref} is itself a confirm: words on it are read like any other reply (reader_brief, then record_reading)` };
+  if (d.kind === "words") return { error: `${d.ref} takes words: they are the answer, never read onto options` };
   if (!a.free || a.elsewhere) return { error: `answer ${a.id} is not words waiting for a binding` };
-  if (d.replacedBy) return { error: `${d.ref} was replaced by ${d.replacedBy}: ask that instead` };
   // An unclear reading has no mapping to confirm: re-ask the question (owner, "Agreed").
   if (a.reading?.unclear) return { error: `the reader could not tell which question these words answer (${a.reading.unclear}): re-ask ${d.ref} itself` };
   let readings: Mapping[][];
   if (a.reading && !a.reading.agree) readings = [a.reading.reader.maps, a.reading.session.maps];
   else {
-    const maps = validMaps(input.maps);
+    const maps = validMaps(input?.maps);
     if (!maps) return { error: "give your own reading of their words as maps: [{ decision, option | null }]" };
     if ((a.rejected ?? []).some((r) => mapsKey(r) === mapsKey(maps))) return { error: "the person already said this reading is not what they meant: re-ask the original question" };
     readings = [maps];
   }
-  for (const m of readings.flat()) {
-    const t = s.decisions.find((y) => y.id === m.decision);
-    if (!t || t.round !== d.round) return { error: `${m.decision} is not a question in round ${d.round}` };
-    if (m.option !== null && !t.options.some((o) => o.label === m.option)) return { error: `"${m.option}" is not an option of ${t.ref}` };
+  for (const r of readings) {
+    // The fold's own test, so a confirm it would void is never posted.
+    const why = bindRefusal(byId, d, a, r);
+    if (why) return { error: `that reading cannot bind: ${why}` };
+    for (const id of new Set(r.map((m) => m.decision))) {
+      const t = byId.get(id)!;
+      if (s.decisions.filter((y) => y.round === d.round && y.ref === t.ref).length > 1) return { error: `${t.ref} names two questions in round ${d.round}, so a line naming it is ambiguous (P2.1 (4))` };
+    }
   }
-  const ask = confirmPayload(s.decisions, d, a, readings) as AskedQuestion;
-  return { ok: true, ask, note: `ask this verbatim, then log_question the call with round ${d.round}` };
+  const key = readings.map(mapsKey).join("\n--\n");
+  // Asked again: the open confirm, never a second question and a second hold.
+  const open = s.decisions.find((c) => c.confirms?.answer === a.id && c.confirms.readings.map(mapsKey).join("\n--\n") === key && confirmState(byId, c) === "open");
+  if (open) return { ok: true, confirm: open.id, ref: open.ref, round: open.round, ask: open.payload, existing: true, note: `already posted: ask it verbatim, then log_question the call with round ${d.round}` };
+  const ref = `D${Math.max(0, ...s.decisions.filter((y) => y.round === d.round).map((y) => Number(y.ref.slice(1)))) + 1}`;
+  const payload = confirmPayload(byId, d, a, readings, ref);
+  // Derived from what it asks, so two clones posting the same confirm post one decision.
+  const id = `cf_${createHash("sha256").update(`${a.id}\0${key}\0${ref}`).digest("hex").slice(0, 16)}`;
+  const decision = { id, round: d.round, ref, kind: "options" as const, payload, options: payload.options.map((o) => ({ label: o.label, effects: [] })), confirms: { answer: a.id, readings } };
+  const bad = checkDecision(decision);
+  if (bad) return { error: `the confirm could not be posted: ${bad}` };
+  await postConfirmEvent(b.cfg.path, b.cfg.universe, b.actor, decision);
+  const after = (await decisionsView(root)).s.decisions.find((y) => y.id === id);
+  if (!after || after.confirms?.invalid) return { ok: false, posted: id, why: `the fold does not accept it as a confirm${after?.confirms?.invalid ? `: ${after.confirms.invalid}` : ""} — it waits as a plain question that binds nothing` };
+  return { ok: true, confirm: id, ref, round: d.round, ask: after.payload, note: `ask this verbatim with AskUserQuestion, then log_question the call with round ${d.round}` };
 }
 
 /** The person answering on the page. Never an agent (R18). */

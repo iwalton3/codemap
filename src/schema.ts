@@ -2326,8 +2326,7 @@ export interface LoggedQuestion {
    *  round a call belonged to, and an identical question in another round must not bind. */
   rounds: string[];
   /** Question text → the one named round whose posted payload it carries, decided when it
-   *  was logged, so a round pulled later cannot unbind it (owner, S0.8(d)). A confirm-this-
-   *  reading question binds to no round and is absent. */
+   *  was logged, so a round pulled later cannot unbind it (owner, S0.8(d)). */
   bound: Record<string, string>;
   /** The result entry's timestamp: the call binds only to decisions posted before it. */
   answeredAt: string;

@@ -214,7 +214,14 @@ import { readScopeChecked, sortEvents, SHARD_EXT, type LogEvent, type ScopeDiagn
 // "own" class are gone; a reading binds only from codemap's parse of the reader's hand-back
 // (older readings are dropped, S0.7); confirm-this-reading calls bind. Findings: a
 // decision-stamped close no longer opens the gate, and `settledBy` is gone (S0.6).
-export const MATERIALIZER_VERSION = 29;
+//
+// 29 -> 30: the decisions fold (review round 2026-09-23-decision-rounds-2-impl-2-review). A new
+// event, `decision.confirm.posted` — the confirm is a posted decision, no longer a logged call's
+// text — and changed derivations under the existing ones: a decision's own posting time, only
+// an accepted reading claims a slot, a reading carries its brief, an answer with no time is
+// dropped. The reason 18 -> 19 gives: an old fold drops the new kind, and after an upgrade the
+// shards have not moved.
+export const MATERIALIZER_VERSION = 30;
 
 /**
  * What the events in a scope are, cheaply.
