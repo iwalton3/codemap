@@ -353,10 +353,9 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
   const answersById = new Map<string, { a: FoldedAnswer; d: FoldedDecision }>();
   // Position of each decision's posting, so an answer reaches only a decision posted before it.
   const postedPos = new Map<string, number>();
-  /** The first well-formed reading of each answer, and the confirms of it, in log order —
-   *  applied after the log is read, so no binding depends on what else was recorded first. */
-  const readings = new Map<string, { e: LogEvent; pos: number }>();
-  const readerUsed = new Map<string, string>();
+  /** Every well-formed reading, in log order. Which are accepted is decided after the log is
+   *  read, so a reading that is not accepted claims nothing (owner, P1.2 "Not used"). */
+  const readingEvents: { e: LogEvent; pos: number }[] = [];
   const confirms: { pos: number; call: LoggedQuestion; answer: string; q: AskedQuestion; value: string | string[] }[] = [];
 
   // Questions first: a logged call is a fact about the transcript, and an answer event may
@@ -472,10 +471,7 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
         // it carries the mapping the session passed in, which is how a mis-copy once bound.
         if (!answer || !agent || !validVerdict(data.reader.verdict, data.reader.unclear) || !str(data.reader.launchedAt) || !str(data.reader?.verified?.session)
           || !validMaps(data.session?.maps)) break;
-        // One reading per answer, and one answer per reader (S0.8(c)): the first in the log.
-        if (readings.has(answer) || (readerUsed.has(agent) && readerUsed.get(agent) !== answer)) break;
-        readings.set(answer, { e, pos });
-        readerUsed.set(agent, answer);
+        readingEvents.push({ e, pos });
         break;
       }
     }
@@ -511,6 +507,18 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
     answersById.set(a.id, { a, d: src.d });
   }
 
+  // Which readings count: in log order, one per answer and one answer per reader (S0.8(c)),
+  // and only an ACCEPTED reading claims either slot (owner, P1.2): a rejected one never counted.
+  const readings = new Map<string, { e: LogEvent; pos: number }>();
+  const readerUsed = new Map<string, string>();
+  for (const r of readingEvents) {
+    const data = r.e.data as any, x = kept(data.answer), agent = data.reader.agent as string;
+    if (!x || readings.has(data.answer) || readerUsed.has(agent)) continue;
+    if (readingRefusal(decisions, x.d, x.a, { verdict: data.reader.verdict, unclear: data.reader.unclear, session: data.session.maps, launchedAt: data.reader.launchedAt })) continue;
+    readings.set(data.answer, r);
+    readerUsed.set(agent, data.answer);
+  }
+
   // Readings, then the person's confirms, onto every answer still free — in log order of the
   // answers, and each binding decided from the answer and its own events alone.
   const all = [...decisions.values()];
@@ -519,22 +527,15 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
     const r = readings.get(a.id);
     if (r) {
       const rd = (r.e.data as any).reader, ses = (r.e.data as any).session;
-      // Launched after the words were typed, or it cannot have read them (plan B2).
-      const launched = ms(rd.launchedAt);
-      if (launched !== undefined && launched > Date.parse(a.givenAt)) {
-        const unclear = str(rd.unclear);
-        const maps = validVerdict(rd.verdict, rd.unclear)!, sm = validMaps(ses.maps)!;
-        const agree = !unclear && mapsKey(maps) === mapsKey(sm);
-        if (unclear || !agree || canBind(decisions, d, a, maps)) {
-          a.reading = {
-            id: r.e.id, agree,
-            reader: { agent: rd.agent, maps, launchedAt: rd.launchedAt },
-            session: { reading: str(ses.reading) ?? "", maps: sm },
-            ...(str((r.e.data as any).asks) ? { asks: (r.e.data as any).asks } : {}),
-            ...(unclear ? { unclear } : {}),
-          };
-        }
-      }
+      const unclear = str(rd.unclear);
+      const maps = validVerdict(rd.verdict, rd.unclear)!, sm = validMaps(ses.maps)!;
+      a.reading = {
+        id: r.e.id, agree: !unclear && mapsKey(maps) === mapsKey(sm),
+        reader: { agent: rd.agent, maps, launchedAt: rd.launchedAt },
+        session: { reading: str(ses.reading) ?? "", maps: sm },
+        ...(str((r.e.data as any).asks) ? { asks: (r.e.data as any).asks } : {}),
+        ...(unclear ? { unclear } : {}),
+      };
     }
     // The person's own word on a reading of these words: the later confirmation wins (S0.2).
     let decided: { maps: Mapping[] | null; call: LoggedQuestion; pos: number } | undefined;
@@ -568,20 +569,58 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
   return { rounds: [...rounds.values()], decisions: [...decisions.values()], questions: [...questions.values()] };
 }
 
-/** Whether `maps` can bind words `a` on `d`: every decision it names is in the same round,
- *  was posted before the words were given, takes options, and was not already replaced when
- *  they were (R23, judged by given time as A4 is). An unknown time satisfies neither. */
-function canBind(decisions: Map<string, FoldedDecision>, d: FoldedDecision, a: FoldedAnswer, maps: Mapping[]): boolean {
+/** Why `maps` cannot bind words `a` on `d`, or null: every decision it names is in the same
+ *  round, was posted before the words were given, takes options, and was not already replaced
+ *  when they were (R23, judged by given time as A4 is) — an unknown time satisfies neither —
+ *  and each is picked once, or `(none)` alone, unless it is multi-select (R3). */
+function bindRefusal(decisions: Map<string, FoldedDecision>, d: FoldedDecision, a: FoldedAnswer, maps: Mapping[]): string | null {
   const given = ms(a.givenAt);
-  return given !== undefined && maps.every((m) => {
+  if (given === undefined) return "the words have no time that parses";
+  const picks = new Map<string, (string | null)[]>();
+  for (const m of maps) {
     const t = decisions.get(m.decision);
-    if (!t || t.round !== d.round || t.kind === "words") return false;
-    if (m.option !== null && !t.options.some((o) => o.label === m.option)) return false;
+    if (!t || t.round !== d.round) return `${m.decision} is not a question in round ${d.round}`;
+    if (t.kind === "words") return `${t.ref} takes words, not options`;
+    if (m.option !== null && !t.options.some((o) => o.label === m.option)) return `"${m.option}" is not an option of ${t.ref} (${t.options.map((o) => o.label).join(" / ")})`;
     const posted = ms(t.postedAt);
-    if (posted === undefined || !(posted < given)) return false;
+    if (posted === undefined || !(posted < given)) return `${t.ref} was posted after the words were typed (${a.givenAt})`;
     const r = replacement(t, decisions);
-    return !r || (r.at !== undefined && given < r.at);
-  });
+    if (r && !(r.at !== undefined && given < r.at)) return `${t.ref} was replaced before the words were typed`;
+    picks.set(t.id, [...(picks.get(t.id) ?? []), m.option]);
+  }
+  for (const [id, p] of picks) {
+    const t = decisions.get(id)!;
+    if (p.includes(null) && p.length > 1) return `${t.ref} is read as ${NONE} and as a pick at once`;
+    if (p.length > 1 && t.kind === "options" && t.payload.multiSelect !== true) return `${t.ref} takes one option, and the reading picks ${p.length}`;
+  }
+  return null;
+}
+
+const canBind = (decisions: Map<string, FoldedDecision>, d: FoldedDecision, a: FoldedAnswer, maps: Mapping[]): boolean => bindRefusal(decisions, d, a, maps) === null;
+
+/**
+ * Why a reading of words `a` on `d` would not be accepted, or null — one predicate for the op,
+ * which asks it before writing, and the fold (plan P-b). Each end checks the slots (one reading
+ * per answer, one answer per reader) against its own record. Every side the reading carries
+ * must be able to bind: a disagreement's both sides, an unclear reading's session side — so a
+ * dispute's confirm can always bind whichever the person picks.
+ */
+export function readingRefusal(decisions: Map<string, FoldedDecision>, d: FoldedDecision, a: FoldedAnswer,
+  r: { verdict: unknown; unclear?: unknown; session: unknown; launchedAt: unknown }): string | null {
+  if (d.kind === "words") return `${d.ref} takes words: they are the answer, never read onto options`;
+  if (!a.free || a.elsewhere) return `answer ${a.id} is not words waiting for a reading`;
+  const launched = ms(typeof r.launchedAt === "string" ? r.launchedAt : undefined);
+  // Launched after the words were typed, or it cannot have read them (plan B2).
+  if (launched === undefined || !(launched > Date.parse(a.givenAt))) return `the reader was launched at ${String(r.launchedAt)}, before the words were typed at ${a.givenAt}: it cannot have read them`;
+  const verdict = validVerdict(r.verdict, r.unclear), session = validMaps(r.session);
+  if (!verdict) return "the reader's verdict is empty, and it does not say unclear";
+  if (!session) return "the session's reading is empty";
+  const sides = str(r.unclear) ? [session] : mapsKey(verdict) === mapsKey(session) ? [verdict] : [verdict, session];
+  for (const side of sides) {
+    const why = bindRefusal(decisions, d, a, side);
+    if (why) return `${side === verdict ? "the reader's verdict" : "your reading"} cannot bind: ${why}`;
+  }
+  return null;
 }
 
 /**
@@ -598,14 +637,12 @@ function bind(decisions: Map<string, FoldedDecision>, answersById: Map<string, {
   for (const [id, picks] of byDecision) {
     const t = decisions.get(id)!;
     const options = picks.filter((p): p is string => p !== null).map((p) => t.options.find((o) => o.label === p)!);
-    // A reading maps one pick onto a single-select decision; more is not a reading of it.
-    if (t.kind === "options" && options.length > 1 && t.payload.multiSelect !== true) continue;
     let target = a;
     if (t !== d) {
       // The same message relayed to that question too answers it there already (B1.4).
       if (a.once && t.answers.some((x) => x.once === a.once)) continue;
       target = { ...a, id: `${source}/${t.id}`, seq: pos, options: [], ruled: [], unruled: [], free: false };
-      delete target.park; delete target.parkWaits; delete target.separately; delete target.flags;
+      delete target.park; delete target.parkWaits; delete target.separately; delete target.flags; delete target.nothing;
       delete target.elsewhere; delete target.reading; delete target.confirmed; delete target.rejected;
       t.answers.push(target);
       answersById.set(target.id, { a: target, d: t });

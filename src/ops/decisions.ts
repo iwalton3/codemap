@@ -13,7 +13,7 @@ import { isAgentActor } from "../identity.js";
 import { bindDecisions, type Bound, type Via } from "../ops-shared.js";
 import { lookupFinding } from "../store.js";
 import {
-  CONFIRM_NO, CONFIRM_YES, NONE, checkDecision, confirmPayload, confirmTarget, decisionHash, logQuestionEvent, mapsKey, named, possiblySuperseded, postRoundEvent, validMaps,
+  CONFIRM_NO, CONFIRM_YES, NONE, readingRefusal, checkDecision, confirmPayload, confirmTarget, decisionHash, logQuestionEvent, mapsKey, named, possiblySuperseded, postRoundEvent, validMaps,
   readingsInDispute, recordAnswerEvent, recordReadingEvent, ruledNotCarriedOut, standing, waitingOnMe, awaitingReading, parked,
   type AnswerVia, type FoldedDecision, type Mapping, type SharedDecisions,
 } from "../shared-decisions.js";
@@ -349,11 +349,14 @@ export async function recordReading(root: string, input: { answer: string; reade
   if (!sm) return { error: "session.maps is your reading, at least one line: [{ decision, option | null }]" };
   const agent = readSubagent(typeof input.reader === "string" ? input.reader : "", dir);
   if (isUnverified(agent)) return { ok: false, unverified: agent.unverified, note: "nothing was written: the reader must be a subagent of this machine, launched to read, finished, and passing its own agent id" };
-  if (!(Date.parse(agent.launchedAt) > Date.parse(a.givenAt))) return { ok: false, unverified: `subagent ${agent.agentId} was launched at ${agent.launchedAt}, before the words were typed at ${a.givenAt}: it cannot have read them`, note: "nothing was written" };
+  // Only an accepted reading counts, so this is the one a reader can have used (owner, P1.2).
   const other = w.s.decisions.flatMap((y) => y.answers).find((y) => y.reading?.reader.agent === agent.agentId);
   if (other) return { ok: false, unverified: `subagent ${agent.agentId} already read answer ${other.id}: one reader reads one answer`, note: "nothing was written" };
   const v = parseVerdict(agent.report, w.s, d.round);
   if ("error" in v) return { ok: false, unverified: v.error, note: "nothing was written" };
+  // Exactly what the fold would not accept, with its reason — never an event it will drop.
+  const why = readingRefusal(new Map(w.s.decisions.map((y) => [y.id, y])), d, a, { verdict: v.maps, unclear: v.unclear, session: sm, launchedAt: agent.launchedAt });
+  if (why) return { ok: false, unverified: why, note: "nothing was written; this reader was not used, so it may read another answer" };
   await recordReadingEvent(b.cfg.path, b.cfg.universe, b.actor, {
     answer: a.id, session: { ...(input.session.reading ? { reading: input.session.reading } : {}), maps: sm },
     reader: { agent: agent.agentId, verdict: v.maps, ...(v.unclear ? { unclear: v.unclear } : {}), launchedAt: agent.launchedAt, verified: { session: agent.session, toolUseId: agent.toolUseId } },
@@ -361,7 +364,7 @@ export async function recordReading(root: string, input: { answer: string; reade
   });
   const after = found((await decisionsView(root)).s, a.id);
   const r = after?.a.reading;
-  if (!r) return { ok: false, recorded: false, why: "the fold did not accept this reading (a question it names is in another round, takes no options, or was replaced before the words were typed)" };
+  if (!r) return { ok: false, recorded: false, why: "the fold did not accept this reading: the decisions log changed while it was being recorded — read the round again" };
   return {
     ok: true, agree: r.agree, reader: r.reader.maps,
     ...(r.agree ? {} : { note: r.unclear ? "unclear, so nothing binds and it waits for the person — re-ask the original question" : "the reader and your reading disagree, so nothing binds and it waits for the person — confirm_reading offers them both readings" }),

@@ -21,7 +21,7 @@ import { shareFinding, closeFinding, bindDecisions, reassignFinding, sharedFindi
 import { reviewQueue } from "./ops/annotations.js";
 import { postRound, postPrevalidated, logQuestion, relayAnswer, answerDirect, decisionRounds, decisionRound, recordReading, confirmReading, parseVerdict } from "./ops/decisions.js";
 import { discard } from "./test-tmp.js";
-import { decisionScope, logQuestionEvent } from "./shared-decisions.js";
+import { decisionScope, logQuestionEvent, recordReadingEvent } from "./shared-decisions.js";
 
 const state: State = { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State;
 const SRC = "export function creditLine(cents) {\n  return cents * 2;\n}\n";
@@ -424,6 +424,34 @@ test("R5 (P2.1 (3)): an empty session reading is refused before anything is writ
       const d = (await decisionRound(u.root, "R1") as any).decisions[0];
       assert.ok(d.answers[0].free && !d.answers[0].reading, "nothing was written: the words still wait");
       assert.equal((await decisionRounds(u.root) as any).awaitingReading.length, 1);
+    });
+  } finally { u.cleanup(); }
+});
+
+test("R2 (P1.2): a reader whose reading the fold rejected was never used — it may read another answer; a refusal says why", async () => {
+  const u = await universe();
+  try {
+    const [f, g] = [await withFinding(u), await withFinding(u)];
+    await asAgent(async () => {
+      await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f), decision("d2", g, {}, "D2")] });
+      await new Promise((r) => setTimeout(r, 30));
+      await postRound(u.root, { round: { id: "R2", source: "x" }, decisions: [{ ...decision("d2b", g, {}, "D9", "R2"), supersedes: "d2" }] });
+      const t = transcript(u.transcripts);
+      t.typed("m1", "D2 is real", later(1));
+      t.typed("m2", "D1 is not a defect", later(1));
+      const a1 = (await relayAnswer(u.root, { round: "R1", decision: "d1", session: SESSION, entryId: "m1" }, {}, u.transcripts) as any).answer;
+      const a2 = (await relayAnswer(u.root, { round: "R1", decision: "d1", session: SESSION, entryId: "m2" }, {}, u.transcripts) as any).answer;
+      const x = nextReader(); t.reader(x, "D1 → Not a defect");
+      // A foreign writer's reading of a1 by x, naming D2 — replaced before the words were typed.
+      const b = bindDecisions(u.root) as any;
+      await recordReadingEvent(b.cfg.path, b.cfg.universe, b.actor, { answer: a1, session: { maps: [{ decision: "d2", option: "Real, fix it" }] }, reader: { agent: x, verdict: [{ decision: "d2", option: "Real, fix it" }], launchedAt: later(3), verified: { session: SESSION, toolUseId: "t" } } });
+      const r = await recordReading(u.root, { answer: a2, reader: x, session: { maps: [{ decision: "d1", option: "Not a defect" }] } }, {}, u.transcripts) as any;
+      assert.equal(r.agree, true, JSON.stringify(r));
+
+      const y = nextReader(); t.reader(y, "D2 → Real, fix it");
+      const refused = await recordReading(u.root, { answer: a1, reader: y, session: { maps: [{ decision: "d2", option: "Real, fix it" }] } }, {}, u.transcripts) as any;
+      assert.match(String(refused.unverified), /D2 was replaced before the words were typed/, JSON.stringify(refused));
+      assert.match(String(refused.note), /nothing was written/);
     });
   } finally { u.cleanup(); }
 });

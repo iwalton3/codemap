@@ -400,6 +400,59 @@ run("R5: ...and so does an unclear reading whose session side is empty", () => {
   const M = msg(d1, "whatever");
   return [M, reading(M, [], [], { unclear: "no idea" })];
 }, (b, out) => !b.d1!.answers[0]!.reading && awaitingReading(out).length === 1);
+// --- which readings count (owner, P1.2 "Not used"): only an accepted reading claims a slot
+
+both("R1: a reading the fold rejects does not block the answer's next reader", () => {
+  n = 1;
+  const R4b = post("R4b", [reask(d4, "d4b", "D8", "R4b", { supersedes: "d4" })]);
+  const M = msg(d1, "D1 settle and D4 A");
+  // D4 was replaced before the words were typed, so this reading cannot bind.
+  const bad = reading(M, [{ decision: "d1", option: "Settle" }, { decision: "d4", option: "A" }]);
+  const good = reading(M, [{ decision: "d1", option: "Settle" }]);
+  return { first: [R4b, M, bad, good], second: [R4b, M, good, bad] };
+}, (b, out) => rules(b.d1!, "F3", "settle") && !!b.d1!.answers[0]!.reading && !awaitingReading(out).length);
+both("R1: ...nor does one naming a words decision", () => {
+  n = 1;
+  const M = msg(d1, "Settle it");
+  const bad = reading(M, [{ decision: "d5", option: null }]), good = reading(M, [{ decision: "d1", option: "Settle" }]);
+  return { first: [M, bad, good], second: [M, good, bad] };
+}, (b) => standing(b.d1!)?.options[0] === "Settle");
+test("R2: a reader whose reading was rejected may read another answer", () => {
+  for (const rejectedFirst of [true, false]) {
+    n = 1;
+    const R4b = post("R4b", [reask(d4, "d4b", "D8", "R4b", { supersedes: "d4" })]);
+    const M1 = msg(d1, "D4 A please", "u1"), M2 = msg(d3, "now", "u2");
+    const bad = reading(M1, [{ decision: "d4", option: "A" }]), good = reading(M2, [{ decision: "d3", option: "Now" }]);
+    good.data.reader.agent = bad.data.reader.agent;
+    const { b, out } = fold([R4b, M1, M2, ...(rejectedFirst ? [bad, good] : [good, bad])]);
+    assert.ok(!!b.d3!.answers[0]!.reading && rules(b.d3!, "F20", "unblock") && !b.d1!.answers[0]!.reading, dump(b, out));
+  }
+});
+run("R2 (F12): a reading of words cut as given after their question was replaced claims nothing — its reader may read another answer", () => {
+  const R1b = post("R1b", [reask(d1, "d1b", "D7", "R1b", { supersedes: "d1" })]);
+  const cut = msg(d1, "A on D4", "u1");
+  const M2 = msg(d4, "B", "u2");
+  const r1 = reading(cut, [{ decision: "d4", option: "A" }]), r2 = reading(M2, [{ decision: "d4", option: "B" }]);
+  r2.data.reader.agent = r1.data.reader.agent;
+  return [R1b, cut, M2, r1, r2];
+}, (b) => !b.d1!.answers.length && !!b.d4!.answers.find((a) => a.via === "message" && a.words === "B")?.reading && rules(b.d4!, "F30", "unblock"));
+run("R1: a disagreement with a side that could never bind is rejected — the words wait for another reader", () => {
+  const M = msg(d1, "hmm");
+  return [M, reading(M, [{ decision: "d1", option: "Settle" }], [{ decision: "d5", option: null }])];
+}, (b, out) => !b.d1!.answers[0]!.reading && awaitingReading(out).length === 1 && !readingsInDispute(out).length);
+run("R3: two picks on a single-select question are no reading — the finding stays held, the words wait for a reader", () => {
+  const M = msg(d1, "both?");
+  return [M, reading(M, [{ decision: "d1", option: "Settle" }, { decision: "d1", option: "No" }])];
+}, (b, out) => !standing(b.d1!) && held(out, "F3", "undecided") && awaitingReading(out).some((u) => u.decision === "d1"));
+run("R3: ...nor is (none) beside a pick", () => {
+  const M = msg(d1, "not that, or maybe settle");
+  return [M, reading(M, [{ decision: "d1", option: null }, { decision: "d1", option: "Settle" }])];
+}, (b, out) => !standing(b.d1!) && awaitingReading(out).length === 1);
+run("R4: a copy onto another question does not inherit '(none)' from the answered one", () => {
+  const M = msg(d1, "nothing here, and A on D4");
+  return [M, reading(M, [{ decision: "d1", option: null }, { decision: "d4", option: "A" }])];
+}, (b, out) => standing(b.d4!)!.nothing === undefined && rules(b.d4!, "F30", "settle") && !waits(out, "d4") && standing(b.d1!)!.nothing === true);
+
 run("S0.7: a reading in the old shape — the session's copy of the reader's maps — binds nothing", () => {
   const M = msg(d1, "D1 settle");
   return [M, ev("decision.reading.recorded", { answer: M.id, reader: { transcript: "aREADER00000000", reading: "r", maps: [{ decision: "d1", option: "Settle" }], verified: { session: "s", toolUseId: "t" } }, session: { reading: "r", maps: [{ decision: "d1", option: "Settle" }] } })];
