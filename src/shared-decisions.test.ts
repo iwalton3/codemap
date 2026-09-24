@@ -422,6 +422,13 @@ test("Q2.3 (1) (F6): one reading given in two orders is one confirm text", () =>
   const m: Mapping[] = [{ decision: "d1", option: "No" }, { decision: "d4", option: "A" }];
   assert.equal(confirmPayload(folded, b.d1!, a, [m], "D9").question, confirmPayload(folded, b.d1!, a, [[...m].reverse()], "D9").question);
 });
+test("Q2.3 (3) (A5): a posted confirm that fails the check every posted question passes is dropped, like a malformed question in a round", () => {
+  n = 1;
+  const evs = clicked(), first = fold(evs), a = first.b.d1!.answers.at(-1)!.id;
+  const C = confirmOf(first.b, "d1", a, leave, "D9", "c1", (p) => ({ ...p, question: p.question.replace(/^D9:/, "Confirm:") }));
+  const { b, out } = fold([...evs, C]);
+  assert.ok(!b.c1 && !waitingOnMe(out, "2026-09-23").some((w) => w.decision === "c1"), dump(b, out));
+});
 test("a confirm is never replaced: a posting that names one as replaced is kept, and replaces nothing", () => {
   n = 1;
   const evs = clicked(), first = fold(evs), a = first.b.d1!.answers.at(-1)!.id;
