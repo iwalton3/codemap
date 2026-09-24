@@ -242,6 +242,8 @@ export async function logQuestion(root: string, input: { session?: string; toolU
     // A replaced question is answered too: the fold keeps an answer given before the
     // replacement was posted, whenever it is recorded (plan A4, K1).
     if (binding[d.payload.question] !== d.round || !call.questions.some((q) => sameQuestion(q, d.payload)) || call.answers[d.payload.question] === undefined) continue;
+    // Judged per decision: a round can grow after it is posted.
+    if (!(Date.parse(call.at) > Date.parse(d.postedAt))) { refused.push({ question: d.payload.question, why: `the call was answered at ${call.at}, and ${d.ref} was posted at ${d.postedAt || "an unknown time"}: an answer binds only to a question posted before it` }); continue; }
     const had = d.answers.find((a) => a.once === once);
     // Answered once: the retry records nothing new (B1.4).
     if (had) answered.push({ decision: d.id, ref: d.ref, recorded: false as const, already: had.id });
@@ -286,9 +288,8 @@ export async function relayAnswer(root: string, input: { round: string; decision
     if (!input.words?.trim()) return { ok: false, unverified: m.unverified, note: "nothing was written; pass the words to record them as an unverified answer, which only unblocks" };
     return { ok: true, ...(await record(root, b, d, { kind: "unverified", words: input.words }, input.relayedBy)), unverifiedBecause: m.unverified };
   }
-  const round = w.s.rounds.find((r) => r.id === d.round)!;
-  if (!(Date.parse(m.at) > Date.parse(round.at))) {
-    return { error: `the message was typed at ${m.at}, and round ${round.id} was posted at ${round.at}: words bind only to a question posted before them (nothing was written)` };
+  if (!(Date.parse(m.at) > Date.parse(d.postedAt))) {
+    return { error: `the message was typed at ${m.at}, and ${d.ref} was posted at ${d.postedAt || "an unknown time"}: words bind only to a question posted before them (nothing was written)` };
   }
   const had = d.answers.find((a) => a.once === `m:${m.session}\0${m.entryId}`);
   if (had) return { ok: true, decision: d.id, ref: d.ref, recorded: false as const, already: had.id, note: "this message already answers this decision" };

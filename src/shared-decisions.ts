@@ -102,6 +102,9 @@ export interface FoldedAnswer {
 
 export interface FoldedDecision extends Decision {
   hash: string;
+  /** When THIS decision was posted — not its round: a round can grow after it is posted, so
+   *  "posted before the words" is judged per decision. Empty when the event carried no time. */
+  postedAt: string;
   answers: FoldedAnswer[];
   /** A decision posted later that replaces this one. */
   replacedBy?: string;
@@ -119,6 +122,10 @@ export interface SharedDecisions {
 }
 
 const str = (v: unknown): string | undefined => (typeof v === "string" && v.trim() ? v : undefined);
+
+/** A time as milliseconds, or undefined when it does not parse. An unknown time never satisfies
+ *  an ordering claim in either direction: nothing is "before" it and nothing is "after" it. */
+const ms = (s: string | undefined): number | undefined => { const t = Date.parse(s ?? ""); return Number.isNaN(t) ? undefined : t; };
 
 /** What an answer binds to: the question as shown and every option's effects. */
 export function decisionHash(d: Pick<Decision, "kind" | "payload" | "options">): string {
@@ -324,10 +331,10 @@ function rule(d: FoldedDecision, a: FoldedAnswer, r: Pick<Resolved, "picked" | "
 const validMaps = (m: unknown): Mapping[] | null => Array.isArray(m) && m.every((x) => x && typeof x === "object" && str(x.decision) && (x.option === null || str(x.option)))
   ? (m as Mapping[]) : null;
 
-/** When decision `d`'s replacement was posted, if it has one. */
-const replacedAt = (d: FoldedDecision, decisions: Map<string, FoldedDecision>, rounds: Map<string, DecisionRound>): number | undefined => {
+/** `d`'s replacement, if it has one, and when it was posted (undefined if that time is unknown). */
+const replacement = (d: FoldedDecision, decisions: Map<string, FoldedDecision>): { at: number | undefined } | undefined => {
   const r = d.replacedBy ? decisions.get(d.replacedBy) : undefined;
-  return r ? Date.parse(rounds.get(r.round)!.at) : undefined;
+  return r ? { at: ms(r.postedAt) } : undefined;
 };
 
 export function foldDecisions(events: LogEvent[]): SharedDecisions {
@@ -336,7 +343,7 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
   const questions = new Map<string, LoggedQuestion>();
   const answersById = new Map<string, { a: FoldedAnswer; d: FoldedDecision }>();
   // Position of each decision's posting, so an answer reaches only a decision posted before it.
-  const postedAt = new Map<string, number>();
+  const postedPos = new Map<string, number>();
   /** The first well-formed reading of each answer, and the confirms of it, in log order —
    *  applied after the log is read, so no binding depends on what else was recorded first. */
   const readings = new Map<string, { e: LogEvent; pos: number }>();
@@ -393,10 +400,10 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
             ...(str(raw.supersedes) ? { supersedes: raw.supersedes } : {}),
             ...(str(raw.origin?.answer) ? { origin: { answer: raw.origin!.answer } } : {}),
             ...(Array.isArray(raw.notes) ? { notes: raw.notes } : {}),
-            hash: decisionHash(raw), answers: [],
+            hash: decisionHash(raw), postedAt: typeof e.at === "string" ? e.at : "", answers: [],
           };
           decisions.set(d.id, d);
-          postedAt.set(d.id, pos);
+          postedPos.set(d.id, pos);
           const old = d.supersedes ? decisions.get(d.supersedes) : undefined;
           if (old && !old.replacedBy) old.replacedBy = d.id;
           else if (old) d.replaceLost = old.replacedBy;
@@ -419,16 +426,21 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
 
       case "decision.answer.recorded": {
         const d = decisions.get(str(data?.decision) ?? "");
-        if (!d || (postedAt.get(d.id) ?? Infinity) > pos) break;
+        if (!d || (postedPos.get(d.id) ?? Infinity) > pos) break;
         if (data.hash !== d.hash) break;
         const r = resolve(d, data.via as AnswerVia, e.actor, questions);
         if (!r) break;
         // Principal-only and dated: a park that is not a date is no answer at all.
         if (r.park !== undefined && !ISO_DATE.test(r.park)) break;
-        // Bound only to a question posted before it was given, by the person's clock and the
-        // poster's, with no allowance for skew (B1.4, H7.10).
+        // An answer whose time does not parse is dropped (owner, P2.1 (5)): it would rank above
+        // nothing and below nothing, so whichever was recorded first would stand.
         const givenAt = r.givenAt ?? e.at;
-        if (r.givenAt !== undefined && !(Date.parse(r.givenAt) > Date.parse(rounds.get(d.round)!.at))) break;
+        const given = ms(givenAt);
+        if (given === undefined) break;
+        // Bound only to a question posted before it was given, by the person's clock and the
+        // poster's, with no allowance for skew (B1.4, H7.10). A page answer is ordered by its log
+        // position instead, above.
+        if (r.givenAt !== undefined) { const posted = ms(d.postedAt); if (posted === undefined || !(given > posted)) break; }
         // One call or message answers a decision once; a duplicate records nothing (H6.1).
         if (r.once && d.answers.some((x) => x.once === r.once)) break;
         const a: FoldedAnswer = {
@@ -466,7 +478,8 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
   // when GIVEN, so one given before the replacement and recorded after still counts, and B2.4
   // then holds its findings until the replacement is answered).
   for (const d of decisions.values()) {
-    const cut = replacedAt(d, decisions, rounds);
+    // A replacement posted at an unknown time cuts nothing: no answer can be shown to follow it.
+    const cut = replacement(d, decisions)?.at;
     if (cut !== undefined) d.answers = d.answers.filter((a) => Date.parse(a.givenAt) < cut);
   }
   const kept = (id: string) => { const x = answersById.get(id); return x && x.d.answers.includes(x.a) ? x : undefined; };
@@ -479,7 +492,7 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
     if (!src || typeof c.value !== "string" || [CONFIRM_YES, CONFIRM_NO, "Reading 1", "Reading 2"].includes(c.value)) continue;
     const once = `q:${c.call.session}\0${c.call.toolUseId}`;
     if (!(Date.parse(c.call.answeredAt) > Date.parse(src.a.givenAt)) || src.d.answers.some((x) => x.once === once)) continue;
-    const cut = replacedAt(src.d, decisions, rounds);
+    const cut = replacement(src.d, decisions)?.at;
     if (cut !== undefined && !(Date.parse(c.call.answeredAt) < cut)) continue;
     const a: FoldedAnswer = {
       id: `${c.call.id}/${src.d.id}`, by: c.call.loggedBy, at: c.call.at, via: "question", verified: true, givenAt: c.call.answeredAt, seq: c.pos,
@@ -498,12 +511,13 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
     if (r) {
       const rd = (r.e.data as any).reader, ses = (r.e.data as any).session;
       // Launched after the words were typed, or it cannot have read them (plan B2).
-      if (Date.parse(rd.launchedAt) > Date.parse(a.givenAt)) {
+      const launched = ms(rd.launchedAt);
+      if (launched !== undefined && launched > Date.parse(a.givenAt)) {
         const unclear = str(rd.unclear);
         const maps = validMaps(rd.verdict)!, sm = validMaps(ses.maps)!;
         const key = (ms: Mapping[]) => ms.map((m) => `${m.decision}\0${m.option ?? ""}`).sort().join("\n");
         const agree = !unclear && key(maps) === key(sm);
-        if (unclear || !agree || canBind(decisions, rounds, d, a, maps)) {
+        if (unclear || !agree || canBind(decisions, d, a, maps)) {
           a.reading = {
             id: r.e.id, agree,
             reader: { agent: rd.agent, maps, launchedAt: rd.launchedAt },
@@ -529,7 +543,7 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
         || (c.call.answeredAt === decided.call.answeredAt && c.pos > decided.pos);
       if (later) decided = { maps: pick, call: c.call, pos: c.pos };
     }
-    if (decided?.maps && canBind(decisions, rounds, d, a, decided.maps)) {
+    if (decided?.maps && canBind(decisions, d, a, decided.maps)) {
       a.confirmed = { call: decided.call.id, at: decided.call.answeredAt, maps: decided.maps };
       bind(decisions, answersById, d, a, decided.maps, decided.call.id, decided.pos);
     } else if (!decided && a.reading?.agree) {
@@ -546,16 +560,19 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
   return { rounds: [...rounds.values()], decisions: [...decisions.values()], questions: [...questions.values()] };
 }
 
-/** Whether `maps` can bind words `a` on `d`: every decision it names is in the same round
- *  (posted with the answered one, so before the words), takes options, and was not already
- *  replaced when the words were given (R23, judged by given time as A4 is). */
-function canBind(decisions: Map<string, FoldedDecision>, rounds: Map<string, DecisionRound>, d: FoldedDecision, a: FoldedAnswer, maps: Mapping[]): boolean {
-  return maps.every((m) => {
+/** Whether `maps` can bind words `a` on `d`: every decision it names is in the same round,
+ *  was posted before the words were given, takes options, and was not already replaced when
+ *  they were (R23, judged by given time as A4 is). An unknown time satisfies neither. */
+function canBind(decisions: Map<string, FoldedDecision>, d: FoldedDecision, a: FoldedAnswer, maps: Mapping[]): boolean {
+  const given = ms(a.givenAt);
+  return given !== undefined && maps.every((m) => {
     const t = decisions.get(m.decision);
     if (!t || t.round !== d.round || t.kind === "words") return false;
     if (m.option !== null && !t.options.some((o) => o.label === m.option)) return false;
-    const cut = replacedAt(t, decisions, rounds);
-    return cut === undefined || Date.parse(a.givenAt) < cut;
+    const posted = ms(t.postedAt);
+    if (posted === undefined || !(posted < given)) return false;
+    const r = replacement(t, decisions);
+    return !r || (r.at !== undefined && given < r.at);
   });
 }
 
@@ -606,6 +623,9 @@ function resolve(d: FoldedDecision, via: AnswerVia, actor: Actor, questions: Map
       const list = Array.isArray(v) ? v : [v];
       const picked = list.map((l) => d.options.find((o) => o.label === l));
       const words = list.join(", ");
+      // The call is kept whatever its time says — it is a fact about the transcript — but an
+      // answer through it needs a time to rank by (P2.1 (5)).
+      if (ms(q.answeredAt) === undefined) return null;
       const call = { verified: true, givenAt: q.answeredAt, once: `q:${q.session}\0${q.toolUseId}`, words };
       if (d.kind !== "words" && picked.every(Boolean) && (list.length === 1 || d.payload.multiSelect)) {
         return { ...call, picked: picked as DecisionOption[], free: false };
@@ -689,8 +709,6 @@ export function possiblySuperseded(d: FoldedDecision): Superseding[] {
 // The three things the person asked to be able to see (owner, 2026-09-23). Each is a function
 // of the folded record — plus, for the second, the finding record, which alone says whether a
 // ruling has been carried out.
-
-const roundAt = (s: SharedDecisions, d: FoldedDecision): string => s.rounds.find((r) => r.id === d.round)?.at ?? "";
 
 /**
  * Where a replaced decision's ruling on `finding` went (owner, B2.4 + H4 + H6.2/6.3): to the
@@ -883,7 +901,7 @@ function holdSince(s: SharedDecisions, byId: Map<string, FoldedDecision>, d: Fol
   const prev = d.supersedes ? byId.get(d.supersedes) : undefined;
   const inherited = prev && prev.replacedBy === d.id && holdsWith(prev, prev.answers.filter(ranks), finding) ? holdSince(s, byId, prev, finding) : undefined;
   const given = d.answers.filter(ranks).sort((x, y) => (outranksByTime(x, y) ? 1 : -1));
-  let since = holdsWith(d, [], finding) ? inherited ?? roundAt(s, d) : undefined;
+  let since = holdsWith(d, [], finding) ? inherited ?? d.postedAt : undefined;
   for (let i = 0; i < given.length; i++) {
     const now = holdsWith(d, given.slice(0, i + 1), finding);
     if (now && since === undefined) since = given[i]!.givenAt;
@@ -906,7 +924,7 @@ export function heldFindings(s: SharedDecisions, isOpen: (finding: string) => bo
     if (!isOpen(f)) return;
     const list = out.get(f) ?? [];
     if (list.some((x) => x.decision === d.id)) return;
-    list.push({ decision: d.id, why, since: holdSince(s, byId, d, f) ?? roundAt(s, d) });
+    list.push({ decision: d.id, why, since: holdSince(s, byId, d, f) ?? d.postedAt });
     out.set(f, list);
   };
   for (const d of s.decisions) {

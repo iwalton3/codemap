@@ -462,6 +462,33 @@ run("S0.7: an old posting's closesOnAnswer is ignored — the question is kept, 
   return [post("RC", [c]), page(c, { option: "A" })];
 }, (b, out) => !!b.dc && !b.dc.options.some((o: any) => "closesOnAnswer" in o) && rules(b.dc!, "F1", "settle") && held(out, "F1", "ruled"));
 
+// --- times that do not parse (P2.1 (5), R16): each guard stated, none resting on a negated comparison
+
+both("R16: an answer with no time is dropped — the dated one stands in either order", () => {
+  n = 1;
+  const undated = page(d1, { option: "Settle" }); delete undated.at;
+  const dated = page(d1, { option: "No" });
+  return { first: [undated, dated], second: [dated, undated] };
+}, (b) => b.d1!.answers.length === 1 && standing(b.d1!)!.options[0] === "No");
+run("R16: a logged call with a garbage time is kept, and binds nothing", () => call(d1, "Settle", { answeredAt: "garbage" }),
+  (b, out) => out.questions.length === 1 && !b.d1!.answers.length);
+run("R16: a reading launched at a garbage time is not accepted", () => {
+  const M = msg(d1, "D1 settle");
+  return [M, reading(M, [{ decision: "d1", option: "Settle" }], undefined, { launchedAt: "garbage" })];
+}, (b, out) => !b.d1!.answers[0]!.reading && awaitingReading(out).length === 1);
+test("R16: a round with no time keeps its questions; nothing typed binds to them, a page answer does, and its hold's start is unknown", () => {
+  n = 1;
+  const R = post("RT", [reask(d4, "dt", "D4", "RT")]); delete R.at;
+  const dt = reask(d4, "dt", "D4", "RT");
+  const M = msg(dt, "D4 A");
+  const { b, out } = fold([R, M, reading(M, [{ decision: "dt", option: "A" }])]);
+  assert.ok(b.dt && !b.dt.answers.length, dump(b, out));
+  const mine = (heldFindings(out, () => true).get("F30") ?? []).filter((x) => x.decision === "dt");
+  assert.ok(mine.length === 1 && Number.isNaN(Date.parse(mine[0]!.since)), "held, from a start no assignment can be after");
+  const P = fold([R, page(dt, { option: "A" })]);
+  assert.ok(rules(P.b.dt!, "F30", "settle"), dump(P.b, P.out));
+});
+
 // --- plan A4: given before a replacement, recorded after
 
 both("c3 (A4): answered at :02, replaced at :03, logged at :04 — the answer counts on D1, whatever the fold order, and holds F3 until the replacement rules", () => {
@@ -552,8 +579,8 @@ run("H4: a replacement takes over only the findings it names", () =>
   [post("RS", [{ ...dS, round: "RS" }]), page({ ...dS, round: "RS" }, { option: "Not defects" }), post("R2", [dSb]), page(dSb, { option: "Real, fix F1" })],
   (b, out) => !held(out, "F1", "ruled") && held(out, "F2", "ruled") && ruledNotCarriedOut(out, () => true).some((u) => u.decision === "dS" && u.finding === "F2" && u.replacedBy === "dSb"));
 run("H6.2: an unverified answer on the replacement leaves your verified ruling standing, and waits for you", () => {
-  const A = unv(d1b, "no, fix it");
-  return [page(d1, { option: "Settle" }), post("R1b", [d1b]), A, reading(A, [{ decision: "d1b", option: "No" }])];
+  const P = page(d1, { option: "Settle" }), R = post("R1b", [d1b]), A = unv(d1b, "no, fix it");
+  return [P, R, A, reading(A, [{ decision: "d1b", option: "No" }])];
 }, (b, out) => rules(b.d1b!, "F3", "unblock") && held(out, "F3", "ruled") && replaced(out, "F3") && waits(out, "d1b", /arrived after your ruling on D1/));
 run("c5 (Q2): a verified COPY's ruling on a replaced question is not taken over by an unverified answer on the replacement", () => {
   const L = logQ([d4.payload], { [d4.payload.question]: "A, and settle D1" });
