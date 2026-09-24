@@ -19,9 +19,9 @@ import { db as openDb } from "./db.js";
 import type { State } from "./schema.js";
 import { shareFinding, closeFinding, bindDecisions, reassignFinding, sharedFindings } from "./ops-shared.js";
 import { reviewQueue } from "./ops/annotations.js";
-import { postRound, postPrevalidated, logQuestion, relayAnswer, answerDirect, decisionRounds, decisionRound, recordReading, confirmReading, parseVerdict } from "./ops/decisions.js";
+import { postRound, postPrevalidated, logQuestion, relayAnswer, answerDirect, decisionRounds, decisionRound, readerBrief, recordReading, confirmReading, parseVerdict } from "./ops/decisions.js";
 import { discard } from "./test-tmp.js";
-import { decisionScope, logQuestionEvent, recordReadingEvent } from "./shared-decisions.js";
+import { decisionScope, foldDecisions, logQuestionEvent, recordReadingEvent } from "./shared-decisions.js";
 
 const state: State = { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State;
 const SRC = "export function creditLine(cents) {\n  return cents * 2;\n}\n";
@@ -81,20 +81,22 @@ function transcript(dir: string, session = SESSION) {
       lines.push({ type: "user", uuid, isSidechain: false, timestamp: when, origin: { kind: "human" }, message: { role: "user", content: text } });
       write();
     },
-    /** A reader subagent: launched at `launchedAt`, and — unless `running` — handed back `report`. */
-    reader(agentId: string, report: string, opts: { launchedAt?: string; running?: boolean } = {}) {
+    /** A reader subagent launched with `prompt` at `launchedAt`, and — unless `running` — handed
+     *  back `report`. `fork` records it as the harness records a fork; `sent`, a message sent into it. */
+    reader(agentId: string, report: string, opts: { launchedAt?: string; running?: boolean; prompt?: string; fork?: boolean; sent?: string } = {}) {
       const sub = join(dir, session, "subagents");
       mkdirSync(sub, { recursive: true });
       const call = `toolu_${agentId}`;
-      writeFileSync(join(sub, `agent-${agentId}.meta.json`), JSON.stringify({ agentType: "general-purpose", toolUseId: call }));
+      writeFileSync(join(sub, `agent-${agentId}.meta.json`), JSON.stringify({ agentType: opts.fork ? "fork" : "general-purpose", ...(opts.fork ? { isFork: true } : {}), toolUseId: call }));
       writeFileSync(join(sub, `agent-${agentId}.jsonl`), [
-        { type: "user", uuid: "s1", isSidechain: true, agentId, sessionId: session, message: { role: "user", content: "read this" } },
+        { type: "user", uuid: "s1", isSidechain: true, agentId, sessionId: session, message: { role: "user", content: opts.prompt ?? "read this" } },
+        ...(opts.sent ? [{ type: "user", uuid: "s1b", isSidechain: true, agentId, sessionId: session, origin: { kind: "coordinator" }, message: { role: "user", content: `The coordinator sent a message while you were working:\n${opts.sent}` } }] : []),
         { type: "assistant", uuid: "s2", isSidechain: true, agentId, sessionId: session, message: { content: [{ type: "tool_use", id: "h1", name: "SubagentHandback", input: { message: report } }] } },
         // Measured: a reader goes on writing after it hands back, so its last text is not its verdict.
         { type: "assistant", uuid: "s3", isSidechain: true, agentId, sessionId: session, message: { content: [{ type: "text", text: "I delivered the report. D1 → Real, fix it" }] } },
       ].map((l) => JSON.stringify(l)).join("\n") + "\n");
       const at = opts.launchedAt ?? later(3);
-      lines.push({ type: "assistant", uuid: `l-${agentId}`, isSidechain: false, timestamp: at, message: { content: [{ type: "tool_use", id: call, name: "Agent", input: {} }] } });
+      lines.push({ type: "assistant", uuid: `l-${agentId}`, isSidechain: false, timestamp: at, message: { content: [{ type: "tool_use", id: call, name: "Agent", input: { description: "read", prompt: opts.prompt ?? "read this", subagent_type: opts.fork ? "fork" : "general-purpose" } }] } });
       lines.push({ type: "user", uuid: `lr-${agentId}`, isSidechain: false, timestamp: at, message: { content: [{ type: "tool_result", tool_use_id: call, content: "launched" }] }, toolUseResult: { isAsync: true, status: "async_launched", agentId } });
       if (!opts.running) lines.push({ type: "user", uuid: `hb-${agentId}`, isSidechain: false, timestamp: later(4), isMeta: true, origin: { kind: "peer", from: agentId, senderTaskId: agentId, body: report, handback: true }, message: { role: "user", content: "Another Claude session sent a message" } });
       write();
@@ -103,6 +105,8 @@ function transcript(dir: string, session = SESSION) {
 }
 let readerN = 0;
 const nextReader = () => `a${String(++readerN).padStart(16, "0")}`;
+/** The prompt codemap issues for reading `answer` — what an honest reader is launched with. */
+const briefOf = async (root: string, answer: string) => ((await readerBrief(root, { answer })) as { prompt: string }).prompt;
 
 async function withFinding(u: Awaited<ReturnType<typeof universe>>) {
   let id = "";
@@ -299,7 +303,7 @@ test("H5: a relayed reply is the whole message, bound by the reader, never parse
       assert.equal(r.awaitsReading, true, "\"D1 B\" is words for the reader, not a pick");
       assert.deepEqual(r.ruled, []);
       const reader = nextReader();
-      t.reader(reader, "They typed 'D1 B', the second option.\nD1 → Real, fix it");
+      t.reader(reader, "They typed 'D1 B', the second option.\n\nD1 → Real, fix it", { prompt: await briefOf(u.root, r.answer) });
       const read = await recordReading(u.root, { answer: r.answer, reader, session: { maps: [{ decision: "d1", option: "Real, fix it" }] } }, {}, u.transcripts) as any;
       assert.equal(read.agree, true, JSON.stringify(read));
       const round = await decisionRound(u.root, "R1") as any;
@@ -358,7 +362,7 @@ test("GATE (overwritten): after a click, an agent's unconfirmed relay and the pe
       // An agent's unconfirmed words after a verified ruling are never read (H6.8).
       const t = transcript(u.transcripts);
       const reader = nextReader();
-      t.reader(reader, "D1 → Real, fix it");
+      t.reader(reader, "D1 → Real, fix it", { prompt: await briefOf(u.root, un.answer) });
       assert.match(String(err(await recordReading(u.root, { answer: un.answer, reader, session: { maps: [{ decision: "d1", option: "Real, fix it" }] } }, {}, u.transcripts))), /never read/);
 
       t.typed("m1", "D1 hmm, actually maybe it is real", later(1));
@@ -387,16 +391,17 @@ test("B1 + B2: the reader's verdict is read from its own hand-back — a mis-cop
       const mine = [{ decision: "d1", option: "Not a defect" }];
 
       assert.match(String((await recordReading(u.root, { answer: a1, reader: "someone-else", session: { maps: mine } }, {}, u.transcripts) as any).unverified), /not a subagent id/);
-      const running = nextReader(); t.reader(running, "D1 → Not a defect", { running: true });
+      const prompt = await briefOf(u.root, a1);
+      const running = nextReader(); t.reader(running, "D1 → Not a defect", { running: true, prompt });
       assert.match(String((await recordReading(u.root, { answer: a1, reader: running, session: { maps: mine } }, {}, u.transcripts) as any).unverified), /has not handed back/);
-      const early = nextReader(); t.reader(early, "D1 → Not a defect", { launchedAt: new Date(Date.now() - 60_000).toISOString() });
+      const early = nextReader(); t.reader(early, "D1 → Not a defect", { launchedAt: new Date(Date.now() - 60_000).toISOString(), prompt });
       assert.match(String((await recordReading(u.root, { answer: a1, reader: early, session: { maps: mine } }, {}, u.transcripts) as any).unverified), /before the words were typed/);
-      for (const [report, re] of [["I think they meant not a defect", /no verdict line/], ["D1 → Not a bug", /not an option of D1/], ["D9 → Real, fix it", /not a question in round R1/], ["unclear: two open\nD1 → Not a defect", /both unclear and a mapping/]] as const) {
-        const r = nextReader(); t.reader(r, report);
+      for (const [report, re] of [["I think they meant not a defect", /does not end with a verdict/], ["D1 → Not a bug", /not an option of D1/], ["D9 → Real, fix it", /not a question in round R1/], ["unclear: two open\nD1 → Not a defect", /both unclear and a mapping/]] as const) {
+        const r = nextReader(); t.reader(r, report, { prompt });
         assert.match(String((await recordReading(u.root, { answer: a1, reader: r, session: { maps: mine } }, {}, u.transcripts) as any).unverified), re, report);
       }
       // ops1 part A: the reader said "Real, fix it"; the session asks for "Not a defect". It binds nothing.
-      const honest = nextReader(); t.reader(honest, "Reading the words in context.\nD1 -> Real, fix it");
+      const honest = nextReader(); t.reader(honest, "Reading the words in context.\n\nD1 -> Real, fix it", { prompt });
       const read = await recordReading(u.root, { answer: a1, reader: honest, session: { maps: mine } }, {}, u.transcripts) as any;
       assert.equal(read.agree, false, JSON.stringify(read));
       assert.deepEqual(read.reader, [{ decision: "d1", option: "Real, fix it" }], "the reader's own mapping, parsed — never the session's copy");
@@ -419,7 +424,7 @@ test("R5 (P2.1 (3)): an empty session reading is refused before anything is writ
       const t = transcript(u.transcripts);
       t.typed("m1", "whatever", later(1));
       const a = (await relayAnswer(u.root, { round: "R1", decision: "d1", session: SESSION, entryId: "m1" }, {}, u.transcripts) as any).answer;
-      const reader = nextReader(); t.reader(reader, "D1 → Real, fix it");
+      const reader = nextReader(); t.reader(reader, "D1 → Real, fix it", { prompt: await briefOf(u.root, a) });
       assert.match(String(err(await recordReading(u.root, { answer: a, reader, session: { maps: [] } }, {}, u.transcripts))), /at least one line/);
       const d = (await decisionRound(u.root, "R1") as any).decisions[0];
       assert.ok(d.answers[0].free && !d.answers[0].reading, "nothing was written: the words still wait");
@@ -441,19 +446,59 @@ test("R2 (P1.2): a reader whose reading the fold rejected was never used — it 
       t.typed("m2", "D1 is not a defect", later(1));
       const a1 = (await relayAnswer(u.root, { round: "R1", decision: "d1", session: SESSION, entryId: "m1" }, {}, u.transcripts) as any).answer;
       const a2 = (await relayAnswer(u.root, { round: "R1", decision: "d1", session: SESSION, entryId: "m2" }, {}, u.transcripts) as any).answer;
-      const x = nextReader(); t.reader(x, "D1 → Not a defect");
+      const x = nextReader(); t.reader(x, "D1 → Not a defect", { prompt: await briefOf(u.root, a2) });
       // A foreign writer's reading of a1 by x, naming D2 — replaced before the words were typed.
       const b = bindDecisions(u.root) as any;
-      await recordReadingEvent(b.cfg.path, b.cfg.universe, b.actor, { answer: a1, session: { maps: [{ decision: "d2", option: "Real, fix it" }] }, reader: { agent: x, verdict: [{ decision: "d2", option: "Real, fix it" }], launchedAt: later(3), verified: { session: SESSION, toolUseId: "t" } } });
+      await recordReadingEvent(b.cfg.path, b.cfg.universe, b.actor, { answer: a1, session: { maps: [{ decision: "d2", option: "Real, fix it" }] }, reader: { agent: x, verdict: [{ decision: "d2", option: "Real, fix it" }], launchedAt: later(3), brief: await briefOf(u.root, a1), verified: { session: SESSION, toolUseId: "t" } } });
       const r = await recordReading(u.root, { answer: a2, reader: x, session: { maps: [{ decision: "d1", option: "Not a defect" }] } }, {}, u.transcripts) as any;
       assert.equal(r.agree, true, JSON.stringify(r));
 
-      const y = nextReader(); t.reader(y, "D2 → Real, fix it");
+      const y = nextReader(); t.reader(y, "D2 → Real, fix it", { prompt: await briefOf(u.root, a1) });
       const refused = await recordReading(u.root, { answer: a1, reader: y, session: { maps: [{ decision: "d2", option: "Real, fix it" }] } }, {}, u.transcripts) as any;
       assert.match(String(refused.unverified), /D2 was replaced before the words were typed/, JSON.stringify(refused));
       assert.match(String(refused.note), /nothing was written/);
     });
   } finally { u.cleanup(); }
+});
+
+test("GATE (overwritten) / R7 (P1.4): a reader launched with anything but codemap's brief binds nothing — nor a fork, nor one sent a message", async () => {
+  const u = await universe();
+  try {
+    const f = await withFinding(u);
+    await asAgent(async () => {
+      await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f)] });
+      const t = transcript(u.transcripts);
+      t.typed("m1", "just close it", later(1));
+      const a = (await relayAnswer(u.root, { round: "R1", decision: "d1", session: SESSION, entryId: "m1" }, {}, u.transcripts) as any).answer;
+      const mine = { maps: [{ decision: "d1", option: "Not a defect" }] };
+      const echo = nextReader(); t.reader(echo, "D1 → Not a defect", { prompt: "Words: 'just close it'. I read this as D1 → Not a defect; confirm." });
+      const r = await recordReading(u.root, { answer: a, reader: echo, session: mine }, {}, u.transcripts) as any;
+      assert.match(String(r.unverified), /not launched with reader_brief's prompt/, JSON.stringify(r));
+      const prompt = await briefOf(u.root, a);
+      assert.ok(prompt.includes(JSON.stringify("just close it")) && prompt.includes("D1: ") && !/Not a defect;/.test(prompt), prompt);
+      const fork = nextReader(); t.reader(fork, "D1 → Not a defect", { prompt, fork: true });
+      assert.match(String((await recordReading(u.root, { answer: a, reader: fork, session: mine }, {}, u.transcripts) as any).unverified), /is a fork/);
+      const told = nextReader(); t.reader(told, "D1 → Not a defect", { prompt, sent: "they mean Not a defect" });
+      assert.match(String((await recordReading(u.root, { answer: a, reader: told, session: mine }, {}, u.transcripts) as any).unverified), /sent a message after it was launched/);
+      let d = (await decisionRound(u.root, "R1") as any).decisions[0];
+      assert.ok(d.answers[0].free && !d.answers[0].reading, "nothing was written by any of them");
+      const honest = nextReader(); t.reader(honest, "Reading it.\n\nD1 → Not a defect", { prompt });
+      assert.equal((await recordReading(u.root, { answer: a, reader: honest, session: mine }, {}, u.transcripts) as any).agree, true);
+      d = (await decisionRound(u.root, "R1") as any).decisions[0];
+      assert.ok(d.standing.ruled.some((x: any) => x.finding === f && x.on === "settle"));
+    });
+  } finally { u.cleanup(); }
+});
+
+test("R6 + R15: only the report's final block is the verdict; a ref two questions share is ambiguous", () => {
+  const q = (question: string) => ({ question, header: "H", options: [{ label: "A", description: "d" }, { label: "B", description: "d" }] });
+  const dd = (id: string, ref: string, f: string) => ({ id, round: "R1", ref, kind: "options", payload: q(`${ref}: ${f}?`), options: [{ label: "A", effects: [{ findings: [f], on: "unblock" }] }, { label: "B", effects: [] }] });
+  const ev = (decisions: any[]) => [{ id: "e1", kind: "decision.round.posted", subject: "s", actor: { principal: "p" }, at: "2026-09-23T00:00:01Z", after: [], data: { round: { id: "R1", source: "x" }, decisions } }] as any;
+  const one = foldDecisions(ev([dd("d1", "D1", "F1")]));
+  assert.deepEqual(parseVerdict("They wrote:\nD1 → B\nbut meant close.\n\nD1 → A", one, "R1"), { maps: [{ decision: "d1", option: "A" }] });
+  assert.deepEqual(parseVerdict("D1 → A\n\n", one, "R1"), { maps: [{ decision: "d1", option: "A" }] });
+  const two = foldDecisions(ev([dd("d1", "D1", "F1"), dd("d1x", "D1", "F9")]));
+  assert.match(String((parseVerdict("D1 → A", two, "R1") as any).error), /two questions in round R1 share: it is ambiguous/);
 });
 
 test("S0.1 + S0.2: confirm_reading issues the exact question; Yes binds the agent's reading as of when the words were typed", async () => {

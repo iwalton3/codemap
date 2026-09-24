@@ -11,7 +11,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   foldDecisions, decisionHash, checkDecision, heldFindings, standing, waitingOnMe, readingsInDispute, ruledNotCarriedOut, awaitingReading, parked,
-  possiblySuperseded, confirmPayload, supersededFindings, CONFIRM_YES, CONFIRM_NO,
+  possiblySuperseded, confirmPayload, supersededFindings, readerBrief, CONFIRM_YES, CONFIRM_NO,
   type FoldedDecision, type SharedDecisions, type Mapping,
 } from "./shared-decisions.js";
 
@@ -43,7 +43,17 @@ const reask = (d: any, id: string, ref: string, rnd: string, extra: any = {}) =>
 const post = (id: string, decisions: any[], extra: any = {}) => ev("decision.round.posted", { round: { id, source: "x", ...extra }, decisions });
 
 type B = Record<string, FoldedDecision>;
+/** Folds `evs`. A reading built without a brief is given the one codemap writes for its answer,
+ *  as `record_reading` would, from a first fold that learns the answer; `brief: null` keeps none. */
 const fold = (evs: any[]) => {
+  const pending = evs.filter((e) => e.kind === "decision.reading.recorded" && e.data?.reader && e.data.reader.brief === undefined);
+  if (pending.length) {
+    const first = foldDecisions([round, ...evs]), byId = new Map(first.decisions.map((d) => [d.id, d]));
+    for (const e of pending) {
+      const x = first.decisions.flatMap((d) => d.answers.map((a) => ({ d, a }))).find(({ a }) => a.id === e.data.answer);
+      if (x) e.data.reader.brief = readerBrief(byId, x.d, x.a);
+    }
+  }
   const out = foldDecisions([round, ...evs]);
   return { out, b: Object.fromEntries(out.decisions.map((d) => [d.id, d])) as B };
 };
@@ -452,6 +462,35 @@ run("R4: a copy onto another question does not inherit '(none)' from the answere
   const M = msg(d1, "nothing here, and A on D4");
   return [M, reading(M, [{ decision: "d1", option: null }, { decision: "d4", option: "A" }])];
 }, (b, out) => standing(b.d4!)!.nothing === undefined && rules(b.d4!, "F30", "settle") && !waits(out, "d4") && standing(b.d1!)!.nothing === true);
+
+// --- the brief the reader was launched with (P1.4, P3.4): its structure is checked, never its wording
+
+const briefed = (M: any, maps: Mapping[], edit: (b: string) => string) => {
+  const R = reading(M, maps);
+  const first = fold([M]), byId = new Map(first.out.decisions.map((d) => [d.id, d]));
+  const x = first.out.decisions.flatMap((d) => d.answers.map((a) => ({ d, a }))).find(({ a }) => a.id === M.id)!;
+  R.data.reader.brief = edit(readerBrief(byId, x.d, x.a));
+  return R;
+};
+run("P3.4: a reading with no brief — written before codemap wrote one — is dropped, and the words go back to unread", () => {
+  const M = msg(d1, "D1 settle"); const R = reading(M, [{ decision: "d1", option: "Settle" }]); R.data.reader.brief = null;
+  return [M, R];
+}, (b, out) => !b.d1!.answers[0]!.reading && awaitingReading(out).length === 1);
+run("P3.4: a reworded brief still counts — only its structure is checked", () => {
+  const M = msg(d1, "D1 settle");
+  return [M, briefed(M, [{ decision: "d1", option: "Settle" }], (b) => b.replace("A person was asked", "Someone was asked"))];
+}, (b) => rules(b.d1!, "F3", "settle"));
+for (const [name, edit] of [
+  ["that misquotes the words", (b: string) => b.replace(JSON.stringify("D1 settle"), JSON.stringify("D1 settle it"))],
+  ["that relabels an option", (b: string) => b.replace('["Settle","No"]', '["Settle it","No"]')],
+  ["that lists a question the words cannot be read onto", (b: string) => b + '\nD5: "D5: the goal, in your words?"\n  options: ["x","y"]'],
+  ["that omits the question the verdict names", (b: string) => b.split("\n").filter((l) => !l.startsWith("D1: ")).join("\n")],
+] as const) {
+  run(`P3.4: a brief ${name} is not codemap's — the reading binds nothing`, () => {
+    const M = msg(d1, "D1 settle");
+    return [M, briefed(M, [{ decision: "d1", option: "Settle" }], edit)];
+  }, (b, out) => !b.d1!.answers[0]!.reading && awaitingReading(out).length === 1);
+}
 
 run("S0.7: a reading in the old shape — the session's copy of the reader's maps — binds nothing", () => {
   const M = msg(d1, "D1 settle");

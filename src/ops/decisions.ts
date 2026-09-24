@@ -13,7 +13,7 @@ import { isAgentActor } from "../identity.js";
 import { bindDecisions, type Bound, type Via } from "../ops-shared.js";
 import { lookupFinding } from "../store.js";
 import {
-  CONFIRM_NO, CONFIRM_YES, NONE, readingRefusal, checkDecision, confirmPayload, confirmTarget, decisionHash, logQuestionEvent, mapsKey, named, possiblySuperseded, postRoundEvent, validMaps,
+  CONFIRM_NO, CONFIRM_YES, NONE, readingRefusal, readerBrief as briefFor, checkDecision, confirmPayload, confirmTarget, decisionHash, logQuestionEvent, mapsKey, named, possiblySuperseded, postRoundEvent, validMaps,
   readingsInDispute, recordAnswerEvent, recordReadingEvent, ruledNotCarriedOut, standing, waitingOnMe, awaitingReading, parked,
   type AnswerVia, type FoldedDecision, type Mapping, type SharedDecisions,
 } from "../shared-decisions.js";
@@ -308,12 +308,19 @@ const UNCLEAR = /^\s*unclear:\s*(.+?)\s*$/i;
 export function parseVerdict(report: string, s: SharedDecisions, round: string): { maps: Mapping[]; unclear?: string } | { error: string } {
   const maps: Mapping[] = [];
   const unclear: string[] = [];
-  for (const line of report.split("\n")) {
+  // Only the report's final block is the verdict (R6): a line quoted in the reader's prose is not.
+  const lines = report.split("\n");
+  while (lines.length && !lines.at(-1)!.trim()) lines.pop();
+  let start = lines.length;
+  while (start > 0 && (UNCLEAR.test(lines[start - 1]!) || ARROW.test(lines[start - 1]!))) start--;
+  for (const line of lines.slice(start)) {
     const u = UNCLEAR.exec(line);
     if (u) { unclear.push(u[1]!); continue; }
-    const m = ARROW.exec(line);
-    if (!m) continue;
-    const t = s.decisions.find((d) => d.round === round && d.ref === m[1]);
+    const m = ARROW.exec(line)!;
+    const ts = s.decisions.filter((d) => d.round === round && d.ref === m[1]);
+    // Two questions posted with one ref: which it names cannot be told (owner, P2.1 (4)).
+    if (ts.length > 1) return { error: `the reader's line "${line.trim()}" names ${m[1]}, which two questions in round ${round} share: it is ambiguous` };
+    const t = ts[0];
     if (!t) return { error: `the reader's line "${line.trim()}" names ${m[1]}, which is not a question in round ${round}` };
     const label = m[2]!;
     if (label !== NONE && !t.options.some((o) => o.label === label)) return { error: `the reader's line "${line.trim()}" names "${label}", which is not an option of ${t.ref} (${t.options.map((o) => o.label).join(" / ")})` };
@@ -322,8 +329,26 @@ export function parseVerdict(report: string, s: SharedDecisions, round: string):
   if (unclear.length && maps.length) return { error: "the reader's report says both unclear and a mapping: which is it?" };
   if (unclear.length > 1) return { error: "the reader's report says unclear more than once" };
   if (unclear.length) return { maps: [], unclear: unclear[0]! };
-  if (!maps.length) return { error: "the reader's report has no verdict line (`D<n> → <option>`, `D<n> → (none)`, or `unclear: <why>`)" };
+  if (!maps.length) return { error: "the reader's report does not end with a verdict (`D<n> → <option>`, `D<n> → (none)`, or `unclear: <why>`)" };
   return { maps };
+}
+
+/**
+ * The exact prompt to launch a reader with, for answer `answer` (owner, P1.4): the person's
+ * words, the questions they may be read onto, and the verdict format — nothing of your reading.
+ * `record_reading` refuses a reader launched with anything else.
+ */
+export async function readerBrief(root: string, input: { answer: string }) {
+  const { s } = await decisionsView(root);
+  const x = found(s, input?.answer);
+  if (!x) return { error: `no answer ${String(input?.answer)}` };
+  const { d, a } = x;
+  if (d.kind === "words") return { error: `${d.ref} takes words: they are the answer, never read` };
+  if (!a.free || a.elsewhere) return { error: `answer ${a.id} is not words waiting for a reading` };
+  return {
+    ok: true, answer: a.id, prompt: briefFor(new Map(s.decisions.map((y) => [y.id, y])), d, a),
+    note: "launch a NEW general-purpose subagent (not a fork) with exactly this as its prompt, send it nothing else, then record_reading with its agent id",
+  };
 }
 
 /**
@@ -352,14 +377,18 @@ export async function recordReading(root: string, input: { answer: string; reade
   // Only an accepted reading counts, so this is the one a reader can have used (owner, P1.2).
   const other = w.s.decisions.flatMap((y) => y.answers).find((y) => y.reading?.reader.agent === agent.agentId);
   if (other) return { ok: false, unverified: `subagent ${agent.agentId} already read answer ${other.id}: one reader reads one answer`, note: "nothing was written" };
+  const byId = new Map(w.s.decisions.map((y) => [y.id, y]));
+  const brief = briefFor(byId, d, a);
+  // Exact, at C14's strength: the one check that the reader never saw your reading (P1.4).
+  if (agent.prompt !== brief) return { ok: false, unverified: `subagent ${agent.agentId} was not launched with reader_brief's prompt for ${a.id} — or the round changed since the brief was issued`, note: "nothing was written; launch a new reader with reader_brief's prompt" };
   const v = parseVerdict(agent.report, w.s, d.round);
   if ("error" in v) return { ok: false, unverified: v.error, note: "nothing was written" };
   // Exactly what the fold would not accept, with its reason — never an event it will drop.
-  const why = readingRefusal(new Map(w.s.decisions.map((y) => [y.id, y])), d, a, { verdict: v.maps, unclear: v.unclear, session: sm, launchedAt: agent.launchedAt });
+  const why = readingRefusal(byId, d, a, { verdict: v.maps, unclear: v.unclear, session: sm, launchedAt: agent.launchedAt, brief });
   if (why) return { ok: false, unverified: why, note: "nothing was written; this reader was not used, so it may read another answer" };
   await recordReadingEvent(b.cfg.path, b.cfg.universe, b.actor, {
     answer: a.id, session: { ...(input.session.reading ? { reading: input.session.reading } : {}), maps: sm },
-    reader: { agent: agent.agentId, verdict: v.maps, ...(v.unclear ? { unclear: v.unclear } : {}), launchedAt: agent.launchedAt, verified: { session: agent.session, toolUseId: agent.toolUseId } },
+    reader: { agent: agent.agentId, verdict: v.maps, ...(v.unclear ? { unclear: v.unclear } : {}), launchedAt: agent.launchedAt, brief, verified: { session: agent.session, toolUseId: agent.toolUseId } },
     ...(input.asks ? { asks: input.asks } : {}),
   });
   const after = found((await decisionsView(root)).s, a.id);

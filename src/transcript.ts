@@ -197,6 +197,9 @@ export interface ReaderAgent {
   launchedAt: string;
   /** Its final report, as the harness delivered it to the parent. */
   report: string;
+  /** What it was launched with: the parent's `Agent` call input. */
+  prompt: string;
+  subagentType: string;
 }
 
 const AGENT = /^a[A-Za-z0-9]{6,63}$/;
@@ -231,8 +234,17 @@ export function readSubagent(agentId: string, dir: string = transcriptDir()): Re
       try { const v = JSON.parse(line); if (v && typeof v === "object" && !Array.isArray(v)) own.push(v); } catch { /* a torn last line */ }
     }
   } catch { return { unverified: `subagent ${agentId}'s transcript is unreadable` }; }
+  // A fork inherits the conversation, and with it the agent's own reading (measured 2026-09-23:
+  // its meta says `isFork`, and its transcript opens on a `fork-context-ref`, not its sidechain).
+  if (meta?.isFork === true || meta?.agentType === "fork") return { unverified: `subagent ${agentId} is a fork: it inherits the conversation, so it is not blind to your reading` };
   if (!own.length || own.some((e) => e.isSidechain !== true || e.agentId !== agentId || e.sessionId !== session)) {
     return { unverified: `subagent ${agentId}'s transcript is not all its own sidechain` };
+  }
+  // A second channel: a message sent into it after launch (`SendMessage`) — measured 2026-09-23 as
+  // a `user` entry with an `origin` and text, where a reader's own turns are tool results only.
+  // It sees what the harness records in the sidechain, not text riding inside a tool result.
+  if (own.slice(1).some((e) => e.type === "user" && (e.origin !== undefined || !Array.isArray(e.message?.content) || !e.message.content.some((x: any) => x?.type === "tool_result")))) {
+    return { unverified: `subagent ${agentId} was sent a message after it was launched: it may have been told how to read the words` };
   }
   const parent = entries(session, dir);
   if (isUnverified(parent)) return parent;
@@ -241,12 +253,15 @@ export function readSubagent(agentId: string, dir: string = transcriptDir()): Re
   const launched = parent.some((e) => e.type === "user" && e.isSidechain !== true && e.toolUseResult?.agentId === agentId
     && Array.isArray(e.message?.content) && e.message.content.some((x: any) => x?.type === "tool_result" && x.tool_use_id === toolUseId));
   if (!call || !launched) return { unverified: `session ${session} does not record launching subagent ${agentId}` };
+  const input = call.message.content.find((x: any) => x?.type === "tool_use" && x.id === toolUseId)?.input;
+  if (!input || typeof input.prompt !== "string") return { unverified: `session ${session}'s launch of subagent ${agentId} records no prompt` };
+  if (input.subagent_type === "fork") return { unverified: `subagent ${agentId} is a fork: it inherits the conversation, so it is not blind to your reading` };
   const launchedAt = stampOf(call);
   if (isUnverified(launchedAt)) return launchedAt;
   const handback = (o: any) => o && o.kind === "peer" && o.from === agentId && o.handback === true && typeof o.body === "string" ? o.body as string : undefined;
   const reports = parent.filter((e) => e.isSidechain !== true).map((e) => handback(e.origin) ?? handback(e.attachment?.origin)).filter((b): b is string => b !== undefined);
   if (!reports.length) return { unverified: `subagent ${agentId} has not handed back a report: it may still be running` };
-  return { agentId, session, toolUseId, launchedAt, report: reports.at(-1)! };
+  return { agentId, session, toolUseId, launchedAt, report: reports.at(-1)!, prompt: input.prompt, subagentType: typeof input.subagent_type === "string" ? input.subagent_type : "" };
 }
 
 // --- the person's typed words ----------------------------------------------------------------

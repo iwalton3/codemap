@@ -276,6 +276,64 @@ function confirmReadings(decisions: FoldedDecision[], d: FoldedDecision, a: Fold
   return p && sameQuestion(p, q) ? [maps] : null;
 }
 
+// --- the reader's brief (owner, P1.4 + P3.4) -------------------------------------------------
+//
+// Codemap writes what the reader is told, so it cannot carry the agent's own reading. The op
+// compares the reader's launch prompt with it exactly; the fold, which cannot read transcripts,
+// checks the stored text's STRUCTURE — so a later build that rewords it strands nothing.
+
+const BRIEF_WORDS = "Their words, exactly as typed (JSON-quoted):";
+const BRIEF_Q = /^(D\d+): (".*")$/, BRIEF_OPTS = /^ {2}options: (\[.*\])$/;
+
+/** Every question words `a` on `d` may be read onto: in its round, posted before the words and
+ *  not replaced before them — exactly what a reading can bind. */
+export const readable = (decisions: Map<string, FoldedDecision>, d: FoldedDecision, a: FoldedAnswer): FoldedDecision[] =>
+  [...decisions.values()].filter((t) => t.round === d.round && !bindRefusal(decisions, d, a, [{ decision: t.id, option: null }]));
+
+/** The reader's exact prompt for words `a` on `d`: the words, the questions and the verdict
+ *  format — nothing of anyone's reading of them. */
+export function readerBrief(decisions: Map<string, FoldedDecision>, d: FoldedDecision, a: FoldedAnswer): string {
+  const qs = readable(decisions, d, a);
+  const shared = [...new Set(qs.map((t) => t.ref).filter((r, i, all) => all.indexOf(r) !== i))];
+  return [
+    "A person was asked the questions below and typed a reply. Say which of the questions their words answer, and with which option. Read only the words: nobody has told you how anyone else reads them.",
+    "",
+    BRIEF_WORDS,
+    JSON.stringify(a.words),
+    "",
+    `The questions (round ${d.round}), each with its exact option labels:`,
+    ...qs.flatMap((t) => [`${t.ref}: ${JSON.stringify(t.payload.question)}`, `  options: ${JSON.stringify(t.options.map((o) => o.label))}`]),
+    ...shared.map((r) => `Two questions share the ref ${r}: a line naming ${r} is refused as ambiguous.`),
+    "",
+    `End your report with a blank line and then the verdict, and write nothing after it: one line per pick, \`D<n> → <exact option label>\`; \`D<n> → ${NONE}\` where the words answer that question with none of its options; or, if you cannot tell which question they answer, the single line \`unclear: <why>\`.`,
+  ].join("\n");
+}
+
+/** Why a stored brief is not one codemap wrote for words `a` on `d` with this verdict, or null:
+ *  it quotes the words exactly, every question it lists is one the words may be read onto with
+ *  its exact labels, and every decision the verdict names is listed. */
+function briefRefusal(decisions: Map<string, FoldedDecision>, d: FoldedDecision, a: FoldedAnswer, brief: string, verdict: Mapping[]): string | null {
+  const lines = brief.split("\n");
+  const w = lines.indexOf(BRIEF_WORDS);
+  let words: unknown;
+  try { words = w < 0 ? undefined : JSON.parse(lines[w + 1] ?? ""); } catch { /* not JSON */ }
+  if (words !== a.words) return "the reader's brief does not quote the words exactly";
+  const ok = readable(decisions, d, a);
+  const listed = new Set<string>();
+  for (let i = 0; i < lines.length; i++) {
+    const m = BRIEF_Q.exec(lines[i]!);
+    if (!m) continue;
+    let question: unknown, labels: unknown;
+    try { question = JSON.parse(m[2]!); labels = JSON.parse(BRIEF_OPTS.exec(lines[i + 1] ?? "")?.[1] ?? ""); } catch { return `the reader's brief lists ${m[1]} unreadably`; }
+    const t = ok.find((x) => x.ref === m[1] && x.payload.question === question
+      && Array.isArray(labels) && labels.length === x.options.length && x.options.every((o, j) => o.label === labels[j]));
+    if (!t) return `the reader's brief lists ${m[1]} as a question these words cannot be read onto, or with other labels`;
+    listed.add(t.id);
+  }
+  const missing = verdict.find((m) => !listed.has(m.decision));
+  return missing ? `the verdict names ${decisions.get(missing.decision)?.ref ?? missing.decision}, which the reader's brief did not list` : null;
+}
+
 // --- the fold -------------------------------------------------------------------------
 
 /** What an answer says, before it is applied. */
@@ -469,7 +527,9 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
         const answer = str(data?.answer), agent = str(data?.reader?.agent);
         // A reading without codemap's own parse of the reader's verdict is dropped (S0.7, H7.12):
         // it carries the mapping the session passed in, which is how a mis-copy once bound.
-        if (!answer || !agent || !validVerdict(data.reader.verdict, data.reader.unclear) || !str(data.reader.launchedAt) || !str(data.reader?.verified?.session)
+        // Nor one without the brief the reader was launched with (P3.4), which a build before
+        // codemap wrote the brief could not record: those words go back to unread.
+        if (!answer || !agent || !validVerdict(data.reader.verdict, data.reader.unclear) || !str(data.reader.launchedAt) || !str(data.reader?.verified?.session) || !str(data.reader.brief)
           || !validMaps(data.session?.maps)) break;
         readingEvents.push({ e, pos });
         break;
@@ -514,7 +574,7 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
   for (const r of readingEvents) {
     const data = r.e.data as any, x = kept(data.answer), agent = data.reader.agent as string;
     if (!x || readings.has(data.answer) || readerUsed.has(agent)) continue;
-    if (readingRefusal(decisions, x.d, x.a, { verdict: data.reader.verdict, unclear: data.reader.unclear, session: data.session.maps, launchedAt: data.reader.launchedAt })) continue;
+    if (readingRefusal(decisions, x.d, x.a, { verdict: data.reader.verdict, unclear: data.reader.unclear, session: data.session.maps, launchedAt: data.reader.launchedAt, brief: data.reader.brief })) continue;
     readings.set(data.answer, r);
     readerUsed.set(agent, data.answer);
   }
@@ -606,7 +666,7 @@ const canBind = (decisions: Map<string, FoldedDecision>, d: FoldedDecision, a: F
  * dispute's confirm can always bind whichever the person picks.
  */
 export function readingRefusal(decisions: Map<string, FoldedDecision>, d: FoldedDecision, a: FoldedAnswer,
-  r: { verdict: unknown; unclear?: unknown; session: unknown; launchedAt: unknown }): string | null {
+  r: { verdict: unknown; unclear?: unknown; session: unknown; launchedAt: unknown; brief: unknown }): string | null {
   if (d.kind === "words") return `${d.ref} takes words: they are the answer, never read onto options`;
   if (!a.free || a.elsewhere) return `answer ${a.id} is not words waiting for a reading`;
   const launched = ms(typeof r.launchedAt === "string" ? r.launchedAt : undefined);
@@ -620,7 +680,8 @@ export function readingRefusal(decisions: Map<string, FoldedDecision>, d: Folded
     const why = bindRefusal(decisions, d, a, side);
     if (why) return `${side === verdict ? "the reader's verdict" : "your reading"} cannot bind: ${why}`;
   }
-  return null;
+  if (!str(r.brief)) return "the reading carries no brief";
+  return briefRefusal(decisions, d, a, r.brief as string, verdict);
 }
 
 /**
@@ -1021,7 +1082,8 @@ export const recordAnswerEvent = (logRoot: string, universe: string, actor: Acto
 export interface ReadingEvent {
   answer: string;
   /** Codemap's parse of the reader's own handback, never the session's copy of it (plan B1). */
-  reader: { agent: string; verdict: Mapping[]; unclear?: string; launchedAt: string; verified: { session: string; toolUseId: string } };
+  /** `brief`: the prompt the reader was launched with, which is codemap's own (P1.4). */
+  reader: { agent: string; verdict: Mapping[]; unclear?: string; launchedAt: string; brief: string; verified: { session: string; toolUseId: string } };
   /** What the asking session requested — the mapping the reader is compared against. */
   session: { reading?: string; maps: Mapping[] };
   asks?: string;

@@ -1000,8 +1000,15 @@ const tools: Tool[] = [
     handler: (a, c) => ops.relayAnswer(c.universe.path, a as never),
   },
   {
+    name: "reader_brief",
+    description: "The exact prompt to launch a reader subagent with, for one answer in the person's own words: their words, the questions they may be read onto with exact labels, and the verdict format — nothing of your own reading. Launch a NEW general-purpose subagent (not a fork) with exactly this prompt, after the words were typed, and send it nothing else; then `record_reading`.",
+    inputSchema: obj({ answer: { type: "string", description: "The answer id (from `awaitingReading` on `decision_rounds`)." } }, ["answer"]),
+    mutates: false,
+    handler: (a, c) => ops.readerBrief(c.universe.path, a as never),
+  },
+  {
     name: "record_reading",
-    description: "Bind a person's free-text answer by a READER's verdict. Launch a reader SUBAGENT after the words were typed, give it the person's words and the round's questions — NOT your own reading — and have it end its report with one line per pick: `D<n> → <option label>` (exact label; `->` also works), `D<n> → (none)` where the words fit no option of that question, or a single `unclear: <why>` if it cannot tell which question they answer. Once it has handed back, call this with its agent id and YOUR reading as `session.maps`. Codemap reads the reader's report from this machine's transcripts itself — you never pass it — and refuses a reader that is not a subagent launched here after the words, has not finished, has already read another answer, or whose report has no parseable verdict. Agree and the words bind; disagree and they wait for the person (`confirm_reading` offers them both readings); unclear and they wait (re-ask the question). `asks`: words asking for work no option held — post a decision for it.",
+    description: "Bind a person's free-text answer by a READER's verdict. Launch a reader SUBAGENT after the words were typed, with EXACTLY `reader_brief`'s prompt for the answer — never your own words, and never a fork — and send it nothing after launching it. Its report ends with the verdict block the brief asks for; only that final block is read. Once it has handed back, call this with its agent id and YOUR reading as `session.maps`. Codemap reads the reader's launch prompt and report from this machine's transcripts itself — you never pass them — and refuses a reader that is not a subagent launched here after the words with the brief's exact prompt, is a fork, was sent a message after launch, has not finished, has already read another answer, or whose verdict does not parse or could not bind; a refused reader was never used, so it may read another answer. Agree and the words bind; disagree and they wait for the person (`confirm_reading` offers them both readings); unclear and they wait (re-ask the question). `asks`: words asking for work no option held — post a decision for it.",
     inputSchema: obj({
       answer: { type: "string", description: "The answer id from `decision_round`." },
       reader: { type: "string", description: "The reader subagent's agent id." },
