@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { team, settle } from "./oracle.js";
 import { Ledger, checkAlways, checkSettled } from "./oracle-properties.js";
 import { shareFinding } from "./ops-shared.js";
-import { postRound, answerDirect, confirmReading, decisionRound, decisionStatus, nominateComparison, CONFIRM_YES } from "./ops/decisions.js";
+import { postRound, answerDirect, confirmReading, decisionRound, decisionStatus, nominateComparison, withdrawDecision, CONFIRM_YES } from "./ops/decisions.js";
 
 test("a changed response and a stale clone's confirmation converge without reviving its old reading", async () => {
   const previous = process.env.CODEMAP_AGENT_MODEL;
@@ -99,6 +99,51 @@ test("two clones retain a nominated comparison and its local retrieval cursor", 
       assert.ok(status.intentCandidates.some((x: any) => x.nomination?.id === nominated.nomination));
       assert.ok(status.held.some((x: any) => x.finding === f.id && x.held?.some((h: any) => h.why === "comparison")));
     }
+  } finally {
+    t?.dispose();
+    if (previous === undefined) delete process.env.CODEMAP_AGENT_MODEL;
+    else process.env.CODEMAP_AGENT_MODEL = previous;
+  }
+});
+
+
+test("a concurrent withdrawal and answer remain visible and hold work after sync", async () => {
+  const previous = process.env.CODEMAP_AGENT_MODEL;
+  delete process.env.CODEMAP_AGENT_MODEL;
+  let t: Awaited<ReturnType<typeof team>> | undefined;
+  const ledger = new Ledger();
+  try {
+    t = await team(["alice@acme.test", "bob@acme.test"]);
+    const [alice, bob] = t.all;
+    const f = await shareFinding(alice!.repo, 7, { targetKind: "anchor", targetId: "src/pay.ts#transfer", text: "transfer currency" }) as any;
+    assert.ok(f.id);
+    const posted = await postRound(alice!.repo, { round: { id: "R1", source: "oracle" }, decisions: [{
+      id: "d1", round: "R1", ref: "D1", kind: "options",
+      payload: { question: `D1: is ${f.id} a defect?`, options: [{ label: "No" }, { label: "Yes" }] },
+      options: [{ label: "No", effects: [{ findings: [f.id], on: "settle", as: "refuted" }] },
+        { label: "Yes", effects: [{ findings: [f.id], on: "unblock" }] }],
+    }] }) as any;
+    assert.equal(posted.ok, true, JSON.stringify(posted));
+    await settle(t);
+    await checkSettled(t, ledger);
+
+    const withdrawn = await withdrawDecision(alice!.repo, { decision: "d1", reason: "question needs reframing" }) as any;
+    assert.equal(withdrawn.ok, true, JSON.stringify(withdrawn));
+    const answered = await answerDirect(bob!.repo, { decision: "d1", option: "No" }) as any;
+    assert.equal(answered.recorded, true, JSON.stringify(answered));
+    await checkAlways(t, ledger);
+    await settle(t);
+    await checkSettled(t, ledger);
+
+    const views = await Promise.all(t.all.map((m) => decisionRound(m.repo, "R1"))) as any[];
+    for (const view of views) {
+      const d = view.decisions.find((x: any) => x.id === "d1");
+      assert.ok(d.answers.some((a: any) => a.id === answered.answer));
+      assert.ok(d.withdrawals.some((w: any) => w.id === withdrawn.withdrawal && w.state === "conflict"
+        && w.conflictingAnswers.includes(answered.answer)));
+      assert.ok(view.held.some((x: any) => x.finding === f.id && x.held.some((h: any) => h.why === "withdrawal")));
+    }
+    assert.deepEqual(views[0].decisions, views[1].decisions);
   } finally {
     t?.dispose();
     if (previous === undefined) delete process.env.CODEMAP_AGENT_MODEL;
