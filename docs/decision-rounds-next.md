@@ -1,12 +1,11 @@
 # Picking up the decision-rounds work
 
-> **Kind: handoff.** Written 2026-09-23 at the end of a session that built the first slice of
-> plan `2026-09-22-decision-rounds`, took it through two review rounds, and stopped in a
-> diagnosis. Nothing here is ratified, except where the owner's words are quoted.
->
-> **Superseded as the next step (2026-09-23):** the cases were put to the owner and the work
-> continues under plan `2026-09-23-decision-rounds-recovery` on branch `decision-rounds-2`. The
-> rulings it rests on are in `docs/decision-rounds-worked-cases.md`.
+> **Kind: archive — historical handoff, 2026-09-23.** The case work, recovery
+> and core implementation described here have been completed or superseded through
+> `c752740`. Its branch freeze and next-job instructions below are historical.
+> Read [SESSION-STATE.md](SESSION-STATE.md) for the current handoff and
+> [rulings-workflow.md](rulings-workflow.md) for current behavior. The original
+> words below remain as the record of what the recovery had to resolve.
 
 ## Read this first if you read nothing else
 

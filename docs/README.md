@@ -24,7 +24,7 @@ How codemap works today. If one of these is wrong, that is a bug — fix the doc
 | [`docs/pr-walkthrough-design.md`](pr-walkthrough-design.md) | 289 | BUILT: `src/walkthrough.ts`, `src/shared-walkthrough.ts`, 3 MCP tools. |
 | [`docs/doc-versioning.md`](doc-versioning.md) | 149 | hash-versioned docs, BUILT. The schema section is aspirational — see the note there. |
 | [`docs/state-map.md`](state-map.md) | 119 | implemented in the Marten analyzer. |
-| [`docs/SESSION-STATE.md`](SESSION-STATE.md) | 106 | the live handoff. Replace it, do not append to it. |
+| [`docs/SESSION-STATE.md`](SESSION-STATE.md) | 64 | Current ruling/questionnaire closeout and remaining skills/verifier work. Replace it, do not append to it. |
 | [`docs/close-audit-next.md`](close-audit-next.md) | 146 | handoff for the close-audit arc: five concrete shapes to try, what not to repeat, and the traps. Read with `PROPOSAL-close-evidence.md` §8.6–§8.8. |
 
 ## Current Design — NORMATIVE
@@ -89,6 +89,7 @@ Superseded or finished. **Do not plan from these.** They are kept, rather than d
 
 | doc | lines | |
 |---|---:|---|
+| [`docs/decision-rounds-next.md`](decision-rounds-next.md) | 188 | Historical pre-recovery handoff; next-job and branch-freeze instructions are superseded. Current handoff is `SESSION-STATE.md`. |
 | [`docs/plan-decision-log.md`](plan-decision-log.md) | 188 | **SUPERSEDED by `docs/PROPOSAL-decision-rounds.md`** the same day it was written. Kept for the ruling-vs-requirement test and its falsifiers. |
 | [`PROPOSAL-sidecar-materialization.md`](../PROPOSAL-sidecar-materialization.md) | 1084 | **SUPERSEDED by `docs/sidecar-architecture.md`.** Nine source files cite sections of it for the reasoning behind a decision; read those sections, not the plan. |
 | [`docs/session-log-2026-08.md`](session-log-2026-08.md) | 782 | three stacked session logs. `CLAUDE.md`, `src/oracle.ts` and `src/oracle-properties.ts` cite SECTIONS of it, so extract those before retiring it. |
