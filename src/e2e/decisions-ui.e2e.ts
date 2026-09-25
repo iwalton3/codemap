@@ -147,4 +147,27 @@ describe("the decisions UI", { skip: pw ? false : "playwright not resolvable (se
     await page.close();
   });
 
+  test("an independent answer's comparison shows the complete question context", async () => {
+    const previous = process.env.CODEMAP_PRINCIPAL;
+    process.env.CODEMAP_PRINCIPAL = "bob@x.com";
+    try {
+      const answer = await ops.answerDirect(root, { decision: "d1", option: "Real, fix it" }) as any;
+      assert.equal(answer.recorded, true, JSON.stringify(answer));
+    } finally {
+      if (previous === undefined) delete process.env.CODEMAP_PRINCIPAL;
+      else process.env.CODEMAP_PRINCIPAL = previous;
+    }
+    const view = await ops.decisionRounds(root) as any;
+    assert.ok(view.intentCandidates.length >= 1, JSON.stringify(view.intentCandidates));
+    const { page, errors } = await open(`/u/${universe}/decisions/`);
+    await page.waitForSelector(`text=human intent to check (${view.intentCandidates.length})`, { timeout: 10_000 });
+    const content = (await page.textContent("main"))!;
+    assert.match(content, /Question shown: D1: is the currency finding/);
+    assert.match(content, /Not a defect: close as refuted/);
+    assert.match(content, /Real, fix it: fix work/);
+    assert.match(content, /acts on:/);
+    assert.deepEqual(errors, []);
+    await page.close();
+  });
+
 });

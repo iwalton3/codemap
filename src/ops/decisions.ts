@@ -17,7 +17,7 @@ import { resolveSidecar } from "../sidecar-config.js";
 import {
   CONFIRM_NO, CONFIRM_YES, NONE, canonicalMaps, briefManifest, briefListing, briefRefusal, readingRefusal, readerBrief as briefFor, bindRefusal, checkDecision, confirmPayload, confirmState, confirmedWords, decisionHash, logQuestionEvent,
   mapsKey, named, possiblySuperseded, postConfirmEvent, postRoundEvent, validMaps,
-  readingsInDispute, intentCandidates, recordAnswerEvent, recordReadingEvent, ruledNotCarriedOut, standing, waitingOnMe, awaitingReading, parked,
+  readingsInDispute, intentCandidates, nominateComparisonEvent, recordAnswerEvent, recordReadingEvent, ruledNotCarriedOut, standing, waitingOnMe, awaitingReading, parked,
   type AnswerVia, type BriefEntry, type FoldedDecision, type Mapping, type SharedDecisions,
 } from "../shared-decisions.js";
 import { decisionsView } from "./decision-holds.js";
@@ -218,6 +218,50 @@ export async function waitDecisionStatus(root: string, id: string, cursor: strin
     if (remaining <= 0) return { ...status, timedOut: true as const };
     await new Promise((resolve) => setTimeout(resolve, Math.min(500, remaining)));
   }
+}
+
+/** Nominate a pair whose semantic overlap the declared question/finding links miss.
+ * This adds a comparison hold; it never resolves one or authorizes an application. */
+export async function nominateComparison(root: string,
+  input: { answers: [string, string]; findings: string[]; reason: string }, via: Via = {}) {
+  const b = bindDecisions(root, via);
+  if ("error" in b) return b;
+  const w = await writable(root);
+  if ("error" in w) return w;
+  const ids = input?.answers;
+  if (!Array.isArray(ids) || ids.length !== 2 || ids[0] === ids[1]
+    || !ids.every((id) => typeof id === "string" && id.trim())) return { error: "name two distinct exact answer ids" };
+  if (!input.reason?.trim()) return { error: "explain the semantic overlap being nominated" };
+  if (!Array.isArray(input.findings) || !input.findings.length || !input.findings.every((id) => typeof id === "string" && id.trim())
+    || new Set(input.findings).size !== input.findings.length) return { error: "name distinct exact finding ids in the affected scope" };
+  const pair = ids.map((id) => found(w.s, id));
+  if (pair.some((x) => !x?.a.verified || x.a.sourceAnswer)) return { error: "both answers must be verified original response ids" };
+  const [left, right] = pair as [{ d: FoldedDecision; a: FoldedDecision["answers"][number] }, { d: FoldedDecision; a: FoldedDecision["answers"][number] }];
+  if (left.a.by.principal === right.a.by.principal) return { error: "comparison is between independent principals; a same-principal correction is not a conflict" };
+  const current = ({ d, a }: typeof left) => !a.cancelled && !a.resolvedOutBy && !a.elsewhere && !d.answers.some((other) =>
+    other !== a && other.verified && other.by.principal === a.by.principal
+      && (Date.parse(other.givenAt) > Date.parse(a.givenAt)
+        || (other.givenAt === a.givenAt && other.seq > a.seq)));
+  if (!pair.every((x) => current(x!))) return { error: "a named answer is no longer current; nominate the current response instead" };
+  const scope = new Set([...named(left.d), ...named(right.d)]);
+  for (const id of input.findings) {
+    if (!scope.has(id)) return { error: `${id} is outside both questions' stated issue scope` };
+    const target = lookupFinding(root, id);
+    if (!target || "ambiguous" in target) return { error: `${id} is not an unambiguous finding in this store` };
+  }
+  const automatic = intentCandidates(w.s).find((candidate) => ids.every((id) => candidate.answers.includes(id))
+    && input.findings.every((id) => candidate.findings.includes(id)));
+  if (automatic) return { ok: true as const, alreadyCandidate: true as const, candidate: automatic };
+  const existing = [...(left.d.nominations ?? []), ...(right.d.nominations ?? [])].find((n) =>
+    n.answers.length === 2 && ids.every((id) => n.answers.includes(id))
+      && input.findings.every((id) => n.findings.includes(id)));
+  if (existing) return { ok: true as const, nomination: existing.id, existing: true as const };
+  const e = await nominateComparisonEvent(b.cfg.path, b.cfg.universe, b.actor,
+    { answers: ids, findings: input.findings, reason: input.reason.trim() });
+  const after = await decisionsView(root);
+  const candidate = intentCandidates(after.s).find((x) => x.nomination?.id === e.id);
+  if (!candidate) return { error: "the fold did not accept the nomination; it remains in the log for inspection", nomination: e.id };
+  return { ok: true as const, nomination: e.id, candidate };
 }
 
 // --- answering -------------------------------------------------------------------------

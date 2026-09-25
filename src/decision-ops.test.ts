@@ -20,7 +20,7 @@ import { db as openDb } from "./db.js";
 import type { State } from "./schema.js";
 import { shareFinding, closeFinding, bindDecisions, reassignFinding, sharedFindings, sharedSync } from "./ops-shared.js";
 import { reviewQueue } from "./ops/annotations.js";
-import { postRound, postPrevalidated, logQuestion, relayAnswer, answerDirect, decisionRounds, decisionRound, decisionStatus, waitDecisionStatus, readerBrief, recordReading, submitVerdict as submitVerdictOp, confirmReading, parseVerdict, confirmId } from "./ops/decisions.js";
+import { postRound, postPrevalidated, logQuestion, relayAnswer, answerDirect, decisionRounds, decisionRound, decisionStatus, waitDecisionStatus, nominateComparison, readerBrief, recordReading, submitVerdict as submitVerdictOp, confirmReading, parseVerdict, confirmId } from "./ops/decisions.js";
 import { discard } from "./test-tmp.js";
 import { decisionsView, holdBuilds } from "./ops/decision-holds.js";
 import { decisionScope, foldDecisions, logQuestionEvent, postConfirmEvent, recordReadingEvent } from "./shared-decisions.js";
@@ -1412,5 +1412,34 @@ test("round five: status cursor returns late answers, timeout is local, CLI resu
     assert.equal(resumed.changed, true);
     assert.equal(resumed.decisions[0].answers[0].id, changed.decisions[0].answers[0].id);
     assert.match(String(err(await waitDecisionStatus(u.root, "R1", initial.cursor, 60_001))), /60000/);
+  } finally { u.cleanup(); }
+});
+
+
+test("round five: nominate an exact independent pair outside inferred overlap", async () => {
+  const u = await universe();
+  try {
+    const f = await withFinding(u), g = await withFinding(u);
+    await asAgent(async () => {
+      const d2 = decision("d2", g, {}, "D2");
+      await postRound(u.root, { round: { id: "R1", source: "round-five" }, decisions: [decision("d1", f), d2] });
+    });
+    let alice: any;
+    await asPerson(async () => { alice = await answerDirect(u.root, { decision: "d1", option: "Not a defect" }); });
+    let bob: any;
+    await withEnv({ CODEMAP_AGENT_MODEL: undefined, CODEMAP_PRINCIPAL: "bob@x.com" }, async () => {
+      bob = await answerDirect(u.root, { decision: "d2", option: "Real, fix it" });
+    });
+    assert.equal((await decisionRounds(u.root) as any).intentCandidates.length, 0);
+    await asAgent(async () => {
+      assert.match(String(err(await nominateComparison(u.root, { answers: [alice.answer, bob.answer], findings: ["f_elsewhere"], reason: "wrong" }))), /outside both questions/);
+      const result = await nominateComparison(u.root, { answers: [alice.answer, bob.answer], findings: [f], reason: "the second answer qualifies the first" }) as any;
+      assert.equal(result.ok, true, JSON.stringify(result));
+      assert.equal(result.candidate.evidence, "nominated");
+      assert.equal((await nominateComparison(u.root, { answers: [alice.answer, bob.answer], findings: [f], reason: "duplicate" }) as any).alreadyCandidate, true);
+    });
+    const view = await decisionRounds(u.root) as any;
+    assert.ok(view.intentCandidates.some((x: any) => x.evidence === "nominated" && x.findings.includes(f)));
+    assert.ok((await decisionsView(u.root)).mark(f).held);
   } finally { u.cleanup(); }
 });

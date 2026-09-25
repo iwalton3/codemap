@@ -113,7 +113,12 @@ class DecisionsPage extends Component {
       <div class="sec">human intent to check (${'intentCandidates' in v ? v.intentCandidates.length : 0})</div>
       <div class="empty">These are mechanically detected candidates. Compare the exact words and ask the person which intent to preserve before acting; a relayer's event history does not prove what the person knew.</div>
       ${each('intentCandidates' in v ? v.intentCandidates : [], (c) => html`<div class="op-card"><div class="fs">Answers ${c.answers.join(' and ')} may conflict on ${c.findings.join(', ') || 'this question'}.</div>
-        ${each(c.sources, (source) => html`<div class="fs dim">${source.principal} (${source.via}): “${source.words}” → ${source.options.join(', ')}</div>`, (source, i) => c.answers[i])}</div>`, (c) => c.answers.join('/'))}
+        ${when(c.nomination, () => html`<div class="fs dim">Nominated: ${c.nomination?.reason}</div>`)}
+        ${each(c.sources, (source) => html`<div class="fs"><strong>${source.principal}</strong> (${source.via}): “${source.words}” → ${source.options.join(', ')}
+          <div class="dim">Question shown: ${source.question.question}</div>
+          ${each(source.question.options, (option) => html`<div class="dim">${option.label}: ${option.description ?? ''}</div>`, (option) => option.label)}
+          ${each(source.effects, (option) => html`<div class="dim">${option.label} acts on: ${JSON.stringify(option.effects)}</div>`, (option) => option.label)}
+        </div>`, (source, i) => c.answers[i])}</div>`, (c) => c.answers.join('/'))}
       <div class="sec">ruled, not carried out (${v.ruledNotCarriedOut.length})</div>
       <div class="empty">You ruled; the finding is still open. A close waits for the verifier; a fix is somebody's work.</div>
       ${when(!v.ruledNotCarriedOut.length && blocked, () => html`<div class="empty">${UNKNOWN}</div>`)}

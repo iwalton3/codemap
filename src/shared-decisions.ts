@@ -113,6 +113,10 @@ export interface FoldedAnswer {
   flags?: string[];
 }
 
+export interface ComparisonNomination {
+  id: string; by: Actor; at: string; answers: [string, string]; findings: string[]; reason: string;
+}
+
 export interface FoldedDecision extends Decision {
   hash: string;
   /** When THIS decision was posted — not its round: a round can grow after it is posted, so
@@ -134,6 +138,7 @@ export interface FoldedDecision extends Decision {
   confirms?: Confirms & { invalid?: string; never?: true; picked?: string };
   resolutionInvalid?: string;
   cancellation?: { by: string; reason: string };
+  nominations?: ComparisonNomination[];
 }
 
 export interface SharedDecisions {
@@ -518,6 +523,7 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
   const readingEvents: { e: LogEvent; pos: number }[] = [];
   /** Verified picks on confirms — the only answers that carry a confirm's meaning (P3.2). */
   const picks: { a: FoldedAnswer; c: FoldedDecision }[] = [];
+  const nominationEvents: LogEvent[] = [];
 
   // Questions first: a logged call is a fact about the transcript, and an answer event may
   // arrive from another writer before it in fold order.
@@ -633,6 +639,11 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
         if (d.kind === "words") { a.free = false; break; }
         if (!r.free) rule(d, a, r, r.verified);
         if (d.confirms && !r.free && r.verified) picks.push({ a, c: d });
+        break;
+      }
+
+      case "decision.comparison.nominated": {
+        nominationEvents.push(e);
         break;
       }
 
@@ -815,6 +826,23 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
     const pair = key.split("\0");
     for (const t of decisions.values()) for (const a of t.answers)
       if (pair.includes(a.sourceAnswer ?? a.id) && (latest.newIntent || (a.sourceAnswer ?? a.id) !== latest.selected)) a.resolvedOutBy = latest.answer.id;
+  }
+
+  // A nomination may have arrived before its source answers on another writer. Judge it
+  // against the complete set and keep only exact verified source identities and named scope.
+  for (const e of nominationEvents) {
+    const data = e.data as any, ids = data?.answers;
+    if (!Array.isArray(ids) || ids.length !== 2 || !ids.every((id: unknown) => str(id)) || ids[0] === ids[1]
+      || !str(data?.reason) || !Array.isArray(data?.findings) || !data.findings.length
+      || !data.findings.every((f: unknown) => str(f)) || new Set(data.findings).size !== data.findings.length) continue;
+    if (e.subject !== [...ids].sort().join("/")) continue;
+    const first = answersById.get(ids[0]), second = answersById.get(ids[1]);
+    if (!first?.a.verified || !second?.a.verified || first.a.sourceAnswer || second.a.sourceAnswer
+      || first.a.by.principal === second.a.by.principal) continue;
+    const scope = new Set([...named(first.d), ...named(second.d)]);
+    if (!data.findings.every((f: string) => scope.has(f))) continue;
+    (first.d.nominations ??= []).push({ id: e.id, by: e.actor, at: e.at,
+      answers: [ids[0], ids[1]], findings: data.findings, reason: data.reason });
   }
 
   // Follow-ups last: a copy's id exists only once its binding is made (Q13).
@@ -1115,8 +1143,10 @@ const stillHeld = (byId: Map<string, FoldedDecision>, d: FoldedDecision): Ruled[
 
 export interface IntentCandidate {
   answers: [string, string]; decisions: [string, string]; findings: string[];
-  sources: [{ principal: string; via: string; words: string; options: string[] }, { principal: string; via: string; words: string; options: string[] }];
-  evidence: "concurrent-writers" | "independent-principals";
+  sources: [{ principal: string; via: string; words: string; options: string[]; question: AskedQuestion; effects: DecisionOption[] },
+    { principal: string; via: string; words: string; options: string[]; question: AskedQuestion; effects: DecisionOption[] }];
+  evidence: "concurrent-writers" | "independent-principals" | "nominated";
+  nomination?: { id: string; reason: string };
   humanKnowledge: "not established";
 }
 
@@ -1127,7 +1157,7 @@ export function intentCandidates(s: SharedDecisions): IntentCandidate[] {
   for (const d of s.decisions) {
     if (d.resolves || d.confirms?.invalid) continue;
     for (const a of d.answers) {
-      if (!a.verified || a.resolvedOutBy || a.cancelled) continue;
+      if (!a.verified || a.resolvedOutBy || a.cancelled || a.elsewhere) continue;
       const key = `${d.id}\0${a.by.principal}`;
       const prev = current.get(key);
       if (!prev || outranksByTime(a, prev.a)) current.set(key, { d, a });
@@ -1135,6 +1165,8 @@ export function intentCandidates(s: SharedDecisions): IntentCandidate[] {
   }
   const all = [...current.values()];
   const out: IntentCandidate[] = [];
+  const source = ({ d, a }: { d: FoldedDecision; a: FoldedAnswer }) => ({ principal: a.by.principal,
+    via: a.via, words: a.words, options: a.options, question: d.payload, effects: d.options });
   const seenPairs = new Set<string>();
   for (let i = 0; i < all.length; i++) for (let j = i + 1; j < all.length; j++) {
     const x = all[i]!, y = all[j]!;
@@ -1148,9 +1180,19 @@ export function intentCandidates(s: SharedDecisions): IntentCandidate[] {
     const findings = sameQuestion ? [...xf] : overlap;
     seenPairs.add(key);
     out.push({ answers: [sx, sy], decisions: [x.d.id, y.d.id], findings,
-      sources: [{ principal: x.a.by.principal, via: x.a.via, words: x.a.words, options: x.a.options },
-        { principal: y.a.by.principal, via: y.a.via, words: y.a.words, options: y.a.options }],
+      sources: [source(x), source(y)],
       evidence: x.a.concurrentWith?.includes(sy) ? "concurrent-writers" : "independent-principals",
+      humanKnowledge: "not established" });
+  }
+  const bySource = new Map(all.filter((x) => !x.a.sourceAnswer).map((x) => [x.a.id, x] as const));
+  for (const d of s.decisions) for (const n of d.nominations ?? []) {
+    const pair = [...n.answers].sort().join("\0");
+    if (seenPairs.has(pair)) continue;
+    const x = bySource.get(n.answers[0]), y = bySource.get(n.answers[1]);
+    if (!x || !y || x.a.by.principal === y.a.by.principal) continue;
+    seenPairs.add(pair);
+    out.push({ answers: n.answers, decisions: [x.d.id, y.d.id], findings: n.findings,
+      sources: [source(x), source(y)], evidence: "nominated", nomination: { id: n.id, reason: n.reason },
       humanKnowledge: "not established" });
   }
   return out;
@@ -1476,3 +1518,8 @@ export interface ReadingEvent {
 
 export const recordReadingEvent = (logRoot: string, universe: string, actor: Actor, a: ReadingEvent) =>
   emitEvent(logRoot, decisionScope(universe), actor, "decision.reading.recorded", a.answer, a as unknown as Record<string, unknown>);
+
+export const nominateComparisonEvent = (logRoot: string, universe: string, actor: Actor,
+  input: { answers: [string, string]; findings: string[]; reason: string }) =>
+  emitEvent(logRoot, decisionScope(universe), actor, "decision.comparison.nominated",
+    [...input.answers].sort().join("/"), input);

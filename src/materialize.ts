@@ -232,7 +232,8 @@ import { readScopeChecked, sortEvents, SHARD_EXT, type LogEvent, type ScopeDiagn
 // 32 -> 33: round-five confirmation and conflict derivations change existing decision rows
 // without moving their shards. Refold so old cached authority and holds are not served.
 // 33 -> 34: changed responses cancel pending readings and confirmations on existing shards.
-export const MATERIALIZER_VERSION = 34;
+// 34 -> 35: explicit comparison nominations add holds from a new decision event.
+export const MATERIALIZER_VERSION = 35;
 
 /**
  * What the events in a scope are, cheaply.

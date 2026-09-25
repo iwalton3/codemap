@@ -2,7 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { team, settle } from "./oracle.js";
 import { Ledger, checkAlways, checkSettled } from "./oracle-properties.js";
-import { postRound, answerDirect, confirmReading, decisionRound, CONFIRM_YES } from "./ops/decisions.js";
+import { shareFinding } from "./ops-shared.js";
+import { postRound, answerDirect, confirmReading, decisionRound, decisionStatus, nominateComparison, CONFIRM_YES } from "./ops/decisions.js";
 
 test("a changed response and a stale clone's confirmation converge without reviving its old reading", async () => {
   const previous = process.env.CODEMAP_AGENT_MODEL;
@@ -49,6 +50,55 @@ test("a changed response and a stale clone's confirmation converge without reviv
       assert.ok(!view.waitingOnYou.some((x: any) => x.decision === c.id));
     }
     assert.deepEqual(views[0].decisions, views[1].decisions);
+  } finally {
+    t?.dispose();
+    if (previous === undefined) delete process.env.CODEMAP_AGENT_MODEL;
+    else process.env.CODEMAP_AGENT_MODEL = previous;
+  }
+});
+
+
+test("two clones retain a nominated comparison and its local retrieval cursor", async () => {
+  const previous = process.env.CODEMAP_AGENT_MODEL;
+  delete process.env.CODEMAP_AGENT_MODEL;
+  let t: Awaited<ReturnType<typeof team>> | undefined;
+  const ledger = new Ledger();
+  try {
+    t = await team(["alice@acme.test", "bob@acme.test"]);
+    const [alice, bob] = t.all;
+    const f = await shareFinding(alice!.repo, 7, { targetKind: "anchor", targetId: "src/pay.ts#transfer", text: "transfer currency" }) as any;
+    const g = await shareFinding(alice!.repo, 7, { targetKind: "anchor", targetId: "src/pay.ts#transfer", text: "transfer rounding" }) as any;
+    assert.ok(f.id && g.id);
+    await settle(t);
+    await checkSettled(t, ledger);
+    const d = (id: string, ref: string, issue: string) => ({ id, ref, round: "R1", kind: "options" as const,
+      payload: { question: `${ref}: is ${issue} a defect?`, options: [{ label: "No", description: "premise is false" }, { label: "Yes", description: "repair the code" }] },
+      options: [{ label: "No", effects: [{ findings: [issue], on: "settle" as const, as: "refuted" as const }] },
+        { label: "Yes", effects: [{ findings: [issue], on: "unblock" as const }] }] });
+    const posted = await postRound(alice!.repo, { round: { id: "R1", source: "oracle" }, decisions: [d("d1", "D1", f.id), d("d2", "D2", g.id)] }) as any;
+    assert.equal(posted.ok, true, JSON.stringify(posted));
+    await settle(t);
+    await checkSettled(t, ledger);
+    const a = await answerDirect(alice!.repo, { decision: "d1", option: "No" }) as any;
+    const b = await answerDirect(bob!.repo, { decision: "d2", option: "Yes" }) as any;
+    assert.ok(a.recorded && b.recorded);
+    await checkAlways(t, ledger);
+    await settle(t);
+    await checkSettled(t, ledger);
+    const before = await decisionStatus(bob!.repo, "R1") as any;
+    assert.equal(before.intentCandidates.length, 0);
+    const nominated = await nominateComparison(alice!.repo, { answers: [a.answer, b.answer], findings: [f.id],
+      reason: "the rounding answer may qualify the currency policy" }) as any;
+    assert.equal(nominated.ok, true, JSON.stringify(nominated));
+    await checkAlways(t, ledger);
+    await settle(t);
+    await checkSettled(t, ledger);
+    for (const member of t.all) {
+      const status = await decisionStatus(member.repo, "R1", before.cursor) as any;
+      assert.equal(status.changed, true);
+      assert.ok(status.intentCandidates.some((x: any) => x.nomination?.id === nominated.nomination));
+      assert.ok(status.held.some((x: any) => x.finding === f.id && x.held?.some((h: any) => h.why === "comparison")));
+    }
   } finally {
     t?.dispose();
     if (previous === undefined) delete process.env.CODEMAP_AGENT_MODEL;

@@ -1053,6 +1053,17 @@ const tools: Tool[] = [
     handler: (a, c) => ops.decisionRound(c.universe.path, String(a.id)),
   },
   {
+    name: "nominate_comparison",
+    description: "Nominate two exact verified answer ids from different principals for semantic comparison when their questions' declared issue links do not reveal the overlap. Name affected finding ids from either question and explain the relationship. This only creates a pending comparison hold; it neither decides which answer wins nor closes anything. Historical/cancelled answers and scope outside both questions are refused.",
+    inputSchema: obj({
+      answers: { type: "array", items: { type: "string" }, description: "Two exact original answer ids." },
+      findings: { type: "array", items: { type: "string" }, description: "Affected exact finding ids named by either question." },
+      reason: { type: "string", description: "Why the answers may govern the same decision." },
+    }, ["answers", "findings", "reason"]),
+    mutates: true,
+    handler: (a, c) => ops.nominateComparison(c.universe.path, a as never),
+  },
+  {
     name: "decision_status",
     description: "Read one posted round by stable id, including its exact questions, answer history, pending readings/conflicts, local log status, last successful local sync, and an opaque content cursor. Run `codemap sync` explicitly to receive remote answers. A matching cursor returns `changed: false`; the full record is still included, so a later session can resume from id without transcription.",
     inputSchema: obj({ id: { type: "string" }, cursor: { type: "string", description: "Optional cursor from the prior status response." } }, ["id"]),

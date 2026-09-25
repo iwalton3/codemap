@@ -1272,3 +1272,28 @@ test("Round five: selection semantics are part of a changed response, identical 
   assert.equal(b.d1!.answers.find((a) => a.id === W.id)?.cancelled?.by, selected.id);
   assert.equal(standing(b.d1!)?.id, selected.id);
 });
+
+test("round five: nominated cross-question scope holds work without choosing an answer", () => {
+  n = 1;
+  const alice = answer(d1, { kind: "direct", option: "Settle" }, { principal: "alice" });
+  const bob = answer(d4, { kind: "direct", option: "B" }, { principal: "bob" });
+  const before = foldDecisions([round, alice, bob]);
+  assert.equal(intentCandidates(before).length, 0, "the questions share no declared finding");
+  const nomination = ev("decision.comparison.nominated", { answers: [alice.id, bob.id], findings: ["F3"],
+    reason: "the second answer changes how the first question's policy is understood" });
+  nomination.subject = [alice.id, bob.id].sort().join("/");
+  const out = foldDecisions([round, alice, bob, nomination]);
+  const candidates = intentCandidates(out);
+  assert.equal(candidates.length, 1);
+  assert.equal(candidates[0]!.evidence, "nominated");
+  assert.equal(candidates[0]!.nomination?.id, nomination.id);
+  assert.equal(candidates[0]!.sources[0].question.question, d1.payload.question);
+  assert.deepEqual(candidates[0]!.sources[0].effects, d1.options);
+  assert.ok(heldFindings(out, () => true).get("F3")?.some((x) => x.why === "comparison"));
+  const outside = ev("decision.comparison.nominated", { answers: [alice.id, bob.id], findings: ["unrelated"], reason: "wrong scope" });
+  outside.subject = nomination.subject;
+  assert.equal(intentCandidates(foldDecisions([round, alice, bob, outside])).length, 0);
+  const correction = answer(d1, { kind: "direct", option: "No" }, { principal: "alice" });
+  assert.ok(!intentCandidates(foldDecisions([round, alice, bob, nomination, correction])).some((x) => x.nomination?.id === nomination.id),
+    "a nomination of historical words cannot keep holding after a current correction");
+});
