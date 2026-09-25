@@ -60,7 +60,7 @@ test("two clones preserve an issued brief through a delayed verdict and related 
   const ledger = new Ledger();
   try {
     const [a, b] = t.all;
-    let first = "", second = "", answerId = "";
+    let first = "", second = "", answerId = "", q1Id = "", q2Id = "", q2RoundId = "";
     await actor(alice, true, async () => {
       const f = await shareFinding(a!.repo, 7, {
         targetKind: "anchor", targetId: "src/pay.ts#transfer", text: "transfer duplicates a charge",
@@ -84,6 +84,7 @@ test("two clones preserve an issued brief through a delayed verdict and related 
         ],
       }] }) as any;
       assert.equal(posted.ok, true, JSON.stringify(posted));
+      q1Id = posted.ask[0].decision;
     });
     await settle(t); await checkSettled(t, ledger);
     await actor(alice, false, async () => {
@@ -114,14 +115,16 @@ test("two clones preserve an issued brief through a delayed verdict and related 
           { label: "No", effects: [{ findings: [first], on: "settle", as: "refuted" }] }],
       }] }) as any;
       assert.equal(related.ok, true, JSON.stringify(related));
+      q2Id = related.ask[0].decision;
+      q2RoundId = related.round;
     });
     await settle(t); await checkSettled(t, ledger);
     for (const member of t.all) {
       const one = await decisionRound(member.repo, "R1") as any;
       const two = await decisionRound(member.repo, "R2") as any;
-      assert.ok(one.decisions.some((d: any) => d.id === "q1"));
-      assert.ok(two.decisions.some((d: any) => d.id === "q2"));
-      assert.equal(one.decisions.find((d: any) => d.id === "q1").answers[0].cancelled, undefined,
+      assert.ok(one.decisions.some((d: any) => d.id === q1Id));
+      assert.ok(two.decisions.some((d: any) => d.id === q2Id));
+      assert.equal(one.decisions.find((d: any) => d.id === q1Id).answers[0].cancelled, undefined,
         "an unrelated related question cannot cancel the earlier response");
     }
     readerTranscript(tx, prompt, answerId, verdict, receipt, launchedAt);
@@ -133,18 +136,18 @@ test("two clones preserve an issued brief through a delayed verdict and related 
     await settle(t); await checkSettled(t, ledger);
     for (const member of t.all) {
       const one = await decisionRound(member.repo, "R1") as any;
-      const d = one.decisions.find((entry: any) => entry.id === "q1");
+      const d = one.decisions.find((entry: any) => entry.id === q1Id);
       const answer = d.answers.find((entry: any) => entry.id === answerId);
       assert.equal(answer.reading.agree, false);
-      assert.deepEqual(answer.reading.reader.maps, [{ decision: "q1", option: "Fix" }]);
+      assert.deepEqual(answer.reading.reader.maps, [{ decision: q1Id, option: "Fix" }]);
       const reading = (await readScope(member.sidecar, decisionScope(universeKey(member.repo))))
         .find((event) => event.kind === "decision.reading.recorded" && (event.data as any)?.answer === answerId);
       assert.ok(reading, "accepted reading remains an append-only event");
       assert.equal((reading!.data as any).reader.brief, prompt);
-      assert.ok((reading!.data as any).reader.manifest.every((entry: any) => entry.id !== "q2"),
+      assert.ok((reading!.data as any).reader.manifest.every((entry: any) => entry.id !== q2Id),
         "the issued manifest cannot gain the later D1 question");
       assert.ok(one.readingsInDispute.some((entry: any) => entry.answer === answerId));
-      assert.ok((await decisionRound(member.repo, "R2") as any).decisions.some((entry: any) => entry.id === "q2"));
+      assert.ok((await decisionRound(member.repo, "R2") as any).decisions.some((entry: any) => entry.id === q2Id));
       const view = await decisionsView(member.repo);
       assert.equal(view.work(second).allowed, false, "Q1 still covers B while Q2 concerns only A");
     }
@@ -155,12 +158,12 @@ test("two clones preserve an issued brief through a delayed verdict and related 
     await settle(t); await checkSettled(t, ledger);
     for (const member of t.all) {
       const one = await decisionRound(member.repo, "R1") as any;
-      const prior = one.decisions.find((d: any) => d.id === "q1").answers.find((entry: any) => entry.id === answerId);
+      const prior = one.decisions.find((d: any) => d.id === q1Id).answers.find((entry: any) => entry.id === answerId);
       assert.ok(prior.cancelled?.by);
       assert.equal(prior.reading.agree, false, "historical evidence stays visible");
       assert.ok(!one.readingsInDispute.some((entry: any) => entry.answer === answerId),
         "cancelled reading is no longer an actionable dispute");
-      assert.ok((await decisionRounds(member.repo) as any).rounds.some((round: any) => round.id === "R2"));
+      assert.ok((await decisionRounds(member.repo) as any).rounds.some((round: any) => round.id === q2RoundId));
     }
   } finally { t.dispose(); discard(tx); }
 });

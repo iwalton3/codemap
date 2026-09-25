@@ -97,13 +97,15 @@ test("old cached decision and ruling projections re-fold unchanged shards withou
     ok(await as(false, () => backlogFinding(root, 7, other.id, { until: "2099-01-01", reason: "next release" })));
     ok(await as(false, () => backlogBugOp(root, bug.id, { until: "2099-01-01", reason: "next release" })));
     const bugRef = { kind: "bug" as const, universe: cfg.universe, scope: bugScope(cfg.universe), id: targetBug.id };
-    ok(await as(true, () => postRound(root, { round: { id: "R1", source: "upgrade probe" },
+    const posted = await as(true, () => postRound(root, { round: { id: "R1", source: "upgrade probe" },
       decisions: [decision("target", target.id), decision("other", other.id), {
         id: "bugTarget", round: "R1", ref: "D3", kind: "options" as const,
         payload: { question: `D3: Is ${targetBug.id} a real defect?`, options: [{ label: "No", description: "The premise is false" }, { label: "Yes", description: "Repair it" }] },
         options: [{ label: "No", effects: [{ findings: [], issues: [bugRef], on: "settle" as const, as: "refuted" as const }] },
           { label: "Yes", effects: [{ findings: [], issues: [bugRef], on: "unblock" as const }] }],
-      }] })));
+      }] })) as any;
+    ok(posted);
+    const otherDecision = posted.ask.find((x: any) => x.label === "other").decision;
     const a = await as(false, () => answerDirect(root, { decision: "target", option: "No" })) as any;
     const b = await as(false, () => answerDirect(root, { decision: "other", option: "Yes" })) as any;
     const bugAnswer = await as(false, () => answerDirect(root, { decision: "bugTarget", option: "No" })) as any;
@@ -136,13 +138,13 @@ test("old cached decision and ruling projections re-fold unchanged shards withou
     const ds = decisionScope(cfg.universe), fs = findingScope(`${cfg.universe}/pr-7`), bs = bugScope(cfg.universe);
     const before = new Map(await Promise.all([ds, fs, bs].map(async (scope) => [scope, await scopeFingerprint(cfg.path, scope, sidecarIdentity(cfg))] as const)));
     const bytes = new Map([ds, fs, bs].map((scope) => [scope, shardBytes(cfg.path, scope)]));
-    assert.ok(row(root, "decision_records", "other")?.body.includes(revised.revision));
+    assert.ok(row(root, "decision_records", otherDecision)?.body.includes(revised.revision));
     assert.equal((await readFinding(root, target.id))?.closed?.eventId, applied.application);
     assert.equal((await readBug(root, targetBug.id))?.closed?.eventId, bugApplied.application);
 
     // Model an older build that ignored these event kinds but cached the same shards.
     const d = db(root);
-    d.prepare("UPDATE decision_records SET body = json_remove(body, '$.answers[#-1]') WHERE id = 'other'").run();
+    d.prepare("UPDATE decision_records SET body = json_remove(body, '$.answers[#-1]') WHERE id = ?").run(otherDecision);
     d.prepare("UPDATE findings SET state = 'issued', body = json_remove(json_remove(body, '$.applications'), '$.closed') WHERE id = ?").run(target.id);
     d.prepare("DELETE FROM ruling_applications WHERE issue_id = ?").run(target.id);
     d.prepare("UPDATE bugs SET state = 'issued', body = json_remove(json_remove(body, '$.applications'), '$.closed') WHERE id = ?").run(targetBug.id);
@@ -160,7 +162,7 @@ test("old cached decision and ruling projections re-fold unchanged shards withou
       assert.equal(await scopeFingerprint(cfg.path, scope, sidecarIdentity(cfg)), before.get(scope));
       assert.equal(shardBytes(cfg.path, scope), bytes.get(scope), "upgrade changed no shard bytes");
     }
-    assert.ok(row(root, "decision_records", "other")?.body.includes(revised.revision));
+    assert.ok(row(root, "decision_records", otherDecision)?.body.includes(revised.revision));
     assert.equal((await readFinding(root, target.id))?.closed?.eventId, applied.application);
     assert.equal((await readBug(root, targetBug.id))?.closed?.eventId, bugApplied.application);
     assert.equal((d.prepare("SELECT COUNT(*) AS n FROM ruling_applications WHERE issue_id = ?").get(target.id) as any).n, 1);
@@ -168,7 +170,7 @@ test("old cached decision and ruling projections re-fold unchanged shards withou
     assert.equal((await sharedFindings(root, 7) as any).findings.find((f: any) => f.id === other.id)?.backlogged?.until, "2099-01-01");
     assert.equal((await listBugs(root, { backlog: true }) as any).bugs.find((x: any) => x.id === bug.id)?.backlogged?.until, "2099-01-01");
     assert.equal((await sharedDocs(root) as any).docs.find((x: any) => x.nodeId === "n_upgrade")?.nodeId, "n_upgrade");
-    assert.ok((await decisionRound(root, "R1") as any).decisions.some((x: any) => x.id === "other"));
+    assert.ok((await decisionRound(root, "R1") as any).decisions.some((x: any) => x.id === otherDecision));
   } finally { t.dispose(); discard(tx); }
 });
 

@@ -40,7 +40,7 @@ test("a changed response and a stale clone's confirmation converge without reviv
     const views = await Promise.all(t.all.map((m) => decisionRound(m.repo, "R1"))) as any[];
     for (const view of views) {
       assert.equal(view.status, "complete");
-      const d = view.decisions.find((x: any) => x.id === "d1");
+      const d = view.decisions.find((x: any) => x.id === (posted as any).ask[0].decision);
       assert.deepEqual(d.answers.map((x: any) => x.words).sort(), ["retry after checking", "stop and investigate"]);
       assert.equal(d.answers.find((x: any) => x.id === original.answer).cancelled.by, correction.answer);
       assert.equal(d.standing, null);
@@ -148,7 +148,7 @@ test("a concurrent withdrawal and answer remain visible and hold work after sync
 
     const views = await Promise.all(t.all.map((m) => decisionRound(m.repo, "R1"))) as any[];
     for (const view of views) {
-      const d = view.decisions.find((x: any) => x.id === "d1");
+      const d = view.decisions.find((x: any) => x.id === (posted as any).ask[0].decision);
       assert.ok(d.answers.some((a: any) => a.id === answered.answer));
       assert.ok(d.withdrawals.some((w: any) => w.id === withdrawn.withdrawal && w.state === "conflict"
         && w.conflictingAnswers.includes(answered.answer)));

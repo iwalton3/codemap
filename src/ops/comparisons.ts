@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { bindDecisions, type Via } from "../ops-shared.js";
 import { decisionsView } from "./decision-holds.js";
 import { canonicalIssueKey, resolveDecisionIssue, type CanonicalIssueReference } from "../decision-issues.js";
-import { decisionScope, foldDecisions, intentCandidates, comparisonRequestFor, comparisonBriefText, comparisonCurrentVersions, comparisonSourcesCurrent,
+import { decisionScope, foldDecisions, intentCandidates, comparisonRequestFor, comparisonBriefText, comparisonCurrentVersions, comparisonSourcesCurrent, resolutionShownHash,
   type FoldedComparison } from "../shared-decisions.js";
 import { emitEventChecked } from "../eventlog.js";
 import { isAgentActor } from "../identity.js";
@@ -199,7 +199,7 @@ export async function comparisonResolutionBrief(root: string, id: string) {
   const question: AskedQuestion = { question: JSON.stringify(shown),
     options: [detail.comparison.request.left, detail.comparison.request.right].map((source) =>
       ({ label: `Preserve ${source.answerId}`, description: `Preserve the full ruling from ${source.principal}: ${source.words}` })) };
-  return { ok: true as const, id, shown, shownHash: detail.comparison.request.contextHash,
+  return { ok: true as const, id, shown, shownHash: resolutionShownHash(shown),
     executionsHash: hash(shown.executions), question };
 }
 
@@ -215,7 +215,7 @@ export async function resolveComparison(root: string,
   if ("error" in detail) return detail;
   const comparison = detail.comparison;
   if (![comparison.request.left.answerId, comparison.request.right.answerId].includes(input.preserve)
-    || !input.rationale?.trim() || input.shownHash !== comparison.request.contextHash)
+    || !input.rationale?.trim() || input.shownHash !== resolutionShownHash(resolutionShown(root, comparison)))
     return { error: "resolution needs one exact shown alternative, its context hash and a rationale" };
   const brief = await comparisonResolutionBrief(root, input.request);
   if (!("question" in brief)) return brief;
@@ -248,6 +248,8 @@ export async function resolveComparison(root: string,
     const current = foldDecisions(events).comparisons.find((x) => x.request.id === input.request);
     if (!current || current.request.contextHash !== comparison.request.contextHash)
       return { error: "comparison changed before resolution append" };
+    if (resolutionShownHash(resolutionShown(root, current)) !== input.shownHash)
+      return { error: "comparison judgments, resolutions or executed closures changed; review a fresh brief" };
     if (hash(resolutionExecutions(root, current)) !== input.executionsHash)
       return { error: "executed closure receipts changed before resolution append" };
     const folded = foldDecisions(events);

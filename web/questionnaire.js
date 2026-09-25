@@ -171,7 +171,7 @@ export function mountQuestionnaire(host, options) {
         for (const area of card?.querySelectorAll('textarea') ?? []) {
           if (area instanceof HTMLTextAreaElement) { area.value = ''; area.disabled = !!area.placeholder.startsWith('Correction for'); }
         }
-        if (card) append(card, node('p', 'dim', `Submitted. Receipt: ${result.receipt}. Enter a new answer to submit again.`));
+        if (card) append(card, node('p', 'dim', `Submitted. Receipt: ${result.receipt}. Use the explicit revision or withdrawal controls below to change this ruling. A new submission is a separate answer.`));
       }
     } catch (e) { message.className = 'q-message q-error'; message.textContent = e instanceof Error ? e.message : String(e); }
     finally { busy = false; }

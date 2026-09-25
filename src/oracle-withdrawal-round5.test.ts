@@ -34,7 +34,7 @@ async function fixture(principals: [string, string] = [alice, bob]) {
   const t = await team(principals);
   const ledger = new Ledger();
   const [a] = t.all;
-  let first = "", second = "";
+  let first = "", second = "", q1 = "", q2 = "";
   await actor(alice, true, async () => {
     const f = await shareFinding(a!.repo, 7, {
       targetKind: "anchor", targetId: "src/pay.ts#transfer", text: "transfer duplicates a charge",
@@ -58,9 +58,11 @@ async function fixture(principals: [string, string] = [alice, bob]) {
     const posted = await postRound(a!.repo, { round: { id: "R1", source: "withdrawal oracle" },
       decisions: [d("q1", "D1", first), d("q2", "D2", second)] }) as any;
     assert.equal(posted.ok, true, JSON.stringify(posted));
+    q1 = posted.ask.find((x: any) => x.label === "q1").decision;
+    q2 = posted.ask.find((x: any) => x.label === "q2").decision;
   });
   await settle(t); await checkSettled(t, ledger);
-  return { t, ledger, first, second, cleanup: () => t.dispose() };
+  return { t, ledger, first, second, q1, q2, cleanup: () => t.dispose() };
 }
 
 test("unanswered withdrawal releases only its hold locally; independent delayed answer and conflict survive sync", async () => {
@@ -72,9 +74,9 @@ test("unanswered withdrawal releases only its hold locally; independent delayed 
       const result = await withdrawDecision(a!.repo, { decision: "q1", reason: "The first question needs reframing" }) as any;
       assert.equal(result.ok, true, JSON.stringify(result)); withdrawal = result.withdrawal;
     });
-    assert.equal((await heldBy(a!.repo, u.first)).some((hold) => hold.decision === "q1"), false,
+    assert.equal((await heldBy(a!.repo, u.first)).some((hold) => hold.decision === u.q1), false,
       "unanswered withdrawal releases Q1 before another answer arrives");
-    assert.equal((await heldBy(a!.repo, u.second)).some((hold) => hold.decision === "q2"), true,
+    assert.equal((await heldBy(a!.repo, u.second)).some((hold) => hold.decision === u.q2), true,
       "Q2's unrelated ordinary hold survives");
     await actor(bob, false, async () => {
       const result = await answerDirect(b!.repo, { decision: "q1", option: "Reject" }) as any;
@@ -84,13 +86,13 @@ test("unanswered withdrawal releases only its hold locally; independent delayed 
     await settle(u.t); await checkSettled(u.t, u.ledger);
     for (const member of u.t.all) {
       const view = await decisionRound(member.repo, "R1") as any;
-      const q1 = view.decisions.find((d: any) => d.id === "q1");
+      const q1 = view.decisions.find((d: any) => d.id === u.q1);
       assert.ok(q1.answers.some((entry: any) => entry.id === answer && entry.by.principal === bob));
       assert.ok(q1.withdrawals.some((entry: any) => entry.id === withdrawal && entry.state === "conflict"
         && entry.conflictingAnswers.includes(answer)), "both independent human acts remain in history");
       assert.ok((await heldBy(member.repo, u.first)).some((hold) => hold.why === "withdrawal"),
         "the newly discovered conflict restricts Q1 work");
-      assert.ok((await heldBy(member.repo, u.second)).some((hold) => hold.decision === "q2"),
+      assert.ok((await heldBy(member.repo, u.second)).some((hold) => hold.decision === u.q2),
         "conflict handling cannot release Q2's unrelated hold");
     }
   } finally { u.cleanup(); }
@@ -136,14 +138,14 @@ test("answered withdrawal cancels a pending reading and confirmation without rev
     });
     for (const member of u.t.all) {
       const view = await decisionRound(member.repo, "R1") as any;
-      const q1 = view.decisions.find((d: any) => d.id === "q1");
+      const q1 = view.decisions.find((d: any) => d.id === u.q1);
       assert.equal(q1.standing, null, "the earlier direct answer cannot revive");
       assert.equal(q1.answers.length, 2);
       assert.ok(q1.answers.every((answer: any) => answer.withdrawn?.by === withdrawal),
         "both historical answers remain and the earlier one stays retired");
       assert.equal(view.decisions.find((d: any) => d.id === confirm)?.confirm.state, "no longer needed");
-      assert.equal((await heldBy(member.repo, u.first)).some((hold) => hold.decision === "q1"), false);
-      assert.equal((await heldBy(member.repo, u.second)).some((hold) => hold.decision === "q2"), true);
+      assert.equal((await heldBy(member.repo, u.first)).some((hold) => hold.decision === u.q1), false);
+      assert.equal((await heldBy(member.repo, u.second)).some((hold) => hold.decision === u.q2), true);
     }
   } finally { u.cleanup(); discard(tx); }
 });
@@ -211,7 +213,7 @@ test("withdrawing an executed ruling preserves its finding closure and receipt o
       assert.equal(finding?.state, "invalid", "withdrawal cannot silently reopen an executed closure");
       assert.ok(finding?.applications?.some((entry) => entry.eventId === application && entry.status === "executed"));
       const round = await decisionRound(member.repo, "R1") as any;
-      const historical = round.decisions.find((d: any) => d.id === "q1").answers.find((entry: any) => entry.id === answer);
+      const historical = round.decisions.find((d: any) => d.id === u.q1).answers.find((entry: any) => entry.id === answer);
       assert.ok(historical.withdrawn);
       assert.ok(historical.executions.some((entry: any) => entry.eventId === application),
         "the withdrawn answer still exposes the target-scope execution receipt");

@@ -11,6 +11,8 @@ import { postRound, answerDirect, reviseDecision, decisionRounds } from "./ops/d
 import { requestComparison, comparisonBrief, submitComparisonJudgment, recordComparisonJudgment,
   comparisonDetail, comparisonResolutionBrief, resolveComparison } from "./ops/comparisons.js";
 import { decisionsView } from "./ops/decision-holds.js";
+import { emitEvent, readScope } from "./eventlog.js";
+import { decisionScope, foldDecisions, comparisonBriefText } from "./shared-decisions.js";
 import { resolveDecisionIssue } from "./decision-issues.js";
 import { universeKey } from "./sidecar-config.js";
 import { discard } from "./test-tmp.js";
@@ -133,11 +135,13 @@ test("incompatible real judgment requires shown human resolution; third answer a
     const brief = await comparisonResolutionBrief(u.root, id) as any;
     assert.equal(brief.ok, true);
     assert.equal((await comparisonDetail(u.root, id) as any).comparison.projection.state, "incompatible");
+    let resolutionEvent = "";
     await env("resolver", false, async () => {
       const resolved = await resolveComparison(u.root, { request: id, preserve: u.alice,
         rationale: "Keep Alice's exact ruling after reviewing both sources and execution history.",
         shownHash: brief.shownHash, executionsHash: brief.executionsHash, source: "web" }) as any;
       assert.equal(resolved.ok, true, JSON.stringify(resolved));
+      resolutionEvent = resolved.event;
     });
     const after = await decisionsView(u.root);
     assert.equal(after.s.comparisons.find((x) => x.request.id === id)?.projection.preservedAnswer, u.alice);
@@ -150,7 +154,9 @@ test("incompatible real judgment requires shown human resolution; third answer a
       const revised = await reviseDecision(u.root, { decision: "d1", revises: [u.alice], findings: [u.finding], option: "Fix" }) as any;
       assert.equal(revised.ok, true, JSON.stringify(revised));
     });
-    assert.equal((await comparisonDetail(u.root, id) as any).comparison.projection.restrictsWork, true);
+    const historical = (await comparisonDetail(u.root, id) as any).comparison;
+    assert.equal(historical.projection.restrictsWork, true);
+    assert.ok(historical.resolutions.some((x: any) => x.id === resolutionEvent), "later revision retains the earlier resolution as history");
   } finally { u.cleanup(); }
 });
 
@@ -171,5 +177,98 @@ test("revising F1 does not stale an F2-only comparison", async () => {
     const comparison = (await comparisonDetail(u.root, id) as any).comparison;
     assert.equal(comparison.projection.state, "equivalent");
     assert.equal(comparison.projection.restrictsWork, false);
+  } finally { u.cleanup(); }
+});
+
+
+test("a scoped revision cannot replace the other issue's comparison source", async () => {
+  const u = await fixture(true);
+  try {
+    let revision = "";
+    await env("alice", false, async () => {
+      const changed = await reviseDecision(u.root,
+        { decision: "d1", revises: [u.alice], findings: [u.finding], option: "Fix" }) as any;
+      assert.equal(changed.ok, true, JSON.stringify(changed));
+      revision = changed.answer;
+    });
+    const candidates = (await decisionRounds(u.root)).intentCandidates;
+    const f2 = candidates.find((c) => c.findings.includes(u.secondFinding));
+    assert.ok(f2, JSON.stringify(candidates));
+    assert.deepEqual(new Set(f2.answers), new Set([u.alice, u.bob]));
+    assert.ok(!candidates.some((c) => c.findings.includes(u.secondFinding) && c.answers.includes(revision)));
+  } finally { u.cleanup(); }
+});
+
+test("resolution refuses a newly arrived judgment and replay rejects a subset proof", async () => {
+  const u = await fixture();
+  try {
+    const id = await requestAndJudge(u, "incompatible");
+    const old = await comparisonResolutionBrief(u.root, id) as any;
+    const request = old.shown.request;
+    const scope = decisionScope(universeKey(u.root));
+    await emitEvent(u.side, scope, { principal: "another-reader" }, "decision.comparison.judged", id, {
+      judgment: { requestId: id, contextHash: request.contextHash, issues: request.issues,
+        answerVersions: [`${request.left.answerId}\0${request.left.version}`, `${request.right.answerId}\0${request.right.version}`],
+        verdict: "incompatible", rationale: "I also found incompatible intent.",
+        reader: { principal: "another-reader", agent: "other-reader", session: "other-session", request: "other-launch", receipt: "other-receipt" } },
+      proof: { purpose: "pair-comparison", requestId: id, contextHash: request.contextHash,
+        brief: comparisonBriefText(request), receipt: "other-receipt", agent: "other-reader",
+        session: "other-session", launch: "other-launch", toolUseId: "other-launch", call: "other-call" },
+    });
+    const fresh = await comparisonResolutionBrief(u.root, id) as any;
+    assert.notEqual(fresh.shownHash, old.shownHash);
+    await env("resolver", false, async () => {
+      const refused = await resolveComparison(u.root, { request: id, preserve: u.alice,
+        rationale: "Preserve Alice", shownHash: old.shownHash, executionsHash: old.executionsHash, source: "web" }) as any;
+      assert.match(refused.error, /context hash|fresh brief/);
+    });
+    const forged = await emitEvent(u.side, scope, { principal: "resolver" }, "decision.comparison.resolved", id, {
+      resolution: { requestId: id, contextHash: request.contextHash, issues: request.issues,
+        answerVersions: [`${request.left.answerId}\0${request.left.version}`, `${request.right.answerId}\0${request.right.version}`],
+        preserve: u.alice, rationale: "Preserve Alice", human: { principal: "resolver", session: "web", request: id,
+          receipt: "forged-receipt", shownHash: old.shownHash } },
+      proof: { purpose: "human-comparison", source: "web", principal: "resolver", contextHash: request.contextHash,
+        shownHash: old.shownHash, receipt: "forged-receipt", session: "web", shown: old.shown,
+        executionsHash: old.executionsHash },
+    });
+    const replay = foldDecisions(await readScope(u.side, scope));
+    const comparison = replay.comparisons.find((x) => x.request.id === id)!;
+    assert.ok(!comparison.resolutions.some((x) => x.id === forged.id));
+  } finally { u.cleanup(); }
+});
+
+test("a corrected resolution changes the shown frontier before another human act", async () => {
+  const u = await fixture();
+  try {
+    const id = await requestAndJudge(u, "incompatible");
+    const initial = await comparisonResolutionBrief(u.root, id) as any;
+    let first = "";
+    await env("resolver", false, async () => {
+      const result = await resolveComparison(u.root, { request: id, preserve: u.alice,
+        rationale: "Preserve the first exact ruling", shownHash: initial.shownHash,
+        executionsHash: initial.executionsHash, source: "web" }) as any;
+      assert.equal(result.ok, true, JSON.stringify(result));
+      first = result.event;
+    });
+    const beforeCorrection = await comparisonResolutionBrief(u.root, id) as any;
+    const prior = beforeCorrection.shown.resolutions.find((r: any) => r.id === first);
+    assert.ok(prior);
+    await env("resolver", false, async () => {
+      const result = await resolveComparison(u.root, { request: id, preserve: u.bob,
+        rationale: "Correct my earlier choice after reviewing both exact rulings",
+        shownHash: beforeCorrection.shownHash, executionsHash: beforeCorrection.executionsHash,
+        revises: first, shownResolution: { id: first, preserve: u.alice, receipt: prior.human.receipt },
+        source: "web" }) as any;
+      assert.equal(result.ok, true, JSON.stringify(result));
+    });
+    const afterCorrection = await comparisonResolutionBrief(u.root, id) as any;
+    assert.notEqual(afterCorrection.shownHash, beforeCorrection.shownHash);
+    await env("another-resolver", false, async () => {
+      const stale = await resolveComparison(u.root, { request: id, preserve: u.alice,
+        rationale: "I saw only the earlier resolution", shownHash: beforeCorrection.shownHash,
+        executionsHash: beforeCorrection.executionsHash, source: "web" }) as any;
+      assert.match(stale.error, /context hash|fresh brief/);
+    });
+    assert.equal((await comparisonDetail(u.root, id) as any).comparison.projection.preservedAnswer, u.bob);
   } finally { u.cleanup(); }
 });

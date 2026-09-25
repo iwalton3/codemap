@@ -150,7 +150,7 @@ test("questionnaire source can be explicitly revised or withdrawn; independent a
     });
     assert.equal(bob.ok, true, JSON.stringify(bob));
     const candidates = (await decisionsView(u.root)).s;
-    assert.ok(candidates.decisions.find((d) => d.id === "choice")!.answers.some((a) => a.id === source));
+    assert.ok(candidates.decisions.find((d) => (d.label ?? d.id) === "choice")!.answers.some((a) => a.id === source));
     assert.equal((await import("./shared-decisions.js")).intentCandidates(candidates).some((c) => c.findings.includes(u.finding)), true);
     // A separate unanswered question can be withdrawn without being counted as pending.
     await env("alice@x.com", false, async () => {

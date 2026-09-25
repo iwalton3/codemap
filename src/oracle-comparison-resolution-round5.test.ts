@@ -30,7 +30,7 @@ async function fixture() {
   const transcripts = mkdtempSync(join(tmpdir(), "codemap-comparison-oracle-tx-"));
   const ledger = new Ledger();
   const [a, b] = t.all;
-  let finding = "", aliceAnswer = "", bobAnswer = "";
+  let finding = "", aliceAnswer = "", bobAnswer = "", decisionId = "";
   await actor(alice, true, async () => {
     const filed = await shareFinding(a!.repo, 7, {
       targetKind: "anchor", targetId: "src/pay.ts#transfer", text: "transfer doubles the charge",
@@ -52,6 +52,7 @@ async function fixture() {
       ],
     }] }) as any;
     assert.equal(posted.ok, true, JSON.stringify(posted));
+    decisionId = posted.ask[0].decision;
   });
   await settle(t); await checkSettled(t, ledger);
   await actor(alice, false, async () => {
@@ -63,7 +64,7 @@ async function fixture() {
     assert.equal(answer.recorded, true, JSON.stringify(answer)); bobAnswer = answer.answer;
   });
   await settle(t); await checkSettled(t, ledger);
-  return { t, transcripts, ledger, finding, aliceAnswer, bobAnswer,
+  return { t, transcripts, ledger, finding, aliceAnswer, bobAnswer, decisionId,
     cleanup: () => { t.dispose(); discard(transcripts); } };
 }
 
@@ -152,7 +153,7 @@ test("two clones converge on an informed correction; an unseen Carol is compared
       assert.equal(detail.comparison.projection.preservedAnswer, u.bobAnswer);
       assert.equal(detail.comparison.projection.acceptedResolutions.length, 2);
       const view = await decisionsView(member.repo);
-      const d = view.s.decisions.find((entry) => entry.id === "d1")!;
+      const d = view.s.decisions.find((entry) => entry.id === u.decisionId)!;
       assert.equal((d.answers.find((answer) => answer.id === u.aliceAnswer)?.comparisonLostOn?.length ?? 0) > 0, true);
       assert.equal(d.answers.find((answer) => answer.id === u.bobAnswer)?.comparisonLostOn?.length ?? 0, 0);
     }

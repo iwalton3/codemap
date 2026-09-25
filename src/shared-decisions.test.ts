@@ -1277,3 +1277,21 @@ test("short-answer revision names its question and preserves both human wordings
   assert.equal(d.answers.find((a) => a.id === first.id)?.words, "Keep the existing behavior");
   assert.equal(d.answers.find((a) => a.id === revised.id)?.revisionInvalid, undefined);
 });
+
+test("a reader brief binds the frozen questionnaire presentation", () => {
+  n = 1;
+  const out = foldDecisions([round, msg(d1, "I need to explain my choice")]);
+  const d = out.decisions.find((x) => x.id === d1.id)!;
+  const a = d.answers[0]!;
+  d.presentation = { questionnaire: { id: "Q1", title: "Review batch" },
+    section: { id: "s1", title: "Risk", questions: [] },
+    question: { id: d1.id, kind: "choice", prompt: d.payload.question, allowOther: false,
+      options: [{ id: "yes", label: "Settle" }, { id: "no", label: "No" }] } };
+  const byId = new Map(out.decisions.map((x) => [x.id, x]));
+  const brief = readerBrief(byId, d, a);
+  const manifest = briefManifest(byId, d, a);
+  const listed = briefListing(byId, d, a, brief, manifest);
+  assert.ok(Array.isArray(listed) && listed.some((x) => x.id === d.id));
+  d.presentation!.question.prompt = "A different question";
+  assert.match(String(briefListing(byId, d, a, brief, manifest)), /cannot be read onto|other labels/);
+});

@@ -27,7 +27,7 @@ const resolution = (id: string, preserve: string, revises?: string, principal = 
   answerVersions: judgment("j", "incompatible").answerVersions, preserve,
   ...(revises ? { revises, shownResolution: { id: revises, preserve: "a1", receipt: `human-receipt-${revises}` } } : {}), rationale: "I saw the two complete alternatives and choose this one.",
   at: "2026-09-25T00:10:00Z",
-  human: { principal, session: `human-${id}`, request: `ask-${id}`, receipt: `human-receipt-${id}`, shownHash: req.contextHash },
+  human: { principal, session: `human-${id}`, request: `ask-${id}`, receipt: `human-receipt-${id}`, shownHash: `resolution:v1:${req.contextHash}` },
 });
 const project = (js: ReaderJudgment[], hs: HumanResolution[] = [], versions = current) => {
   const out = deriveComparison(req, versions, js, hs);

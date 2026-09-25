@@ -37,6 +37,7 @@ const withEnv = async (vars: Record<string, string | undefined>, fn: () => Promi
 const asAgent = (fn: () => Promise<void>) => withEnv({ CODEMAP_AGENT_MODEL: "claude-opus-5" }, fn);
 const asPerson = (fn: () => Promise<void>) => withEnv({ CODEMAP_AGENT_MODEL: undefined }, fn);
 const err = (r: unknown): string | undefined => (r as { error?: string })?.error;
+const hasDecisionLabel = (id: string, label: string) => id === label || id.endsWith(`:${label}`);
 
 async function universe() {
   const root = mkdtempSync(join(tmpdir(), "codemap-decisions-"));
@@ -224,7 +225,10 @@ test("posting refuses a finding this store does not hold, closesOnAnswer, and an
       const ok = await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f)] }) as any;
       assert.equal(ok.ok, true, JSON.stringify(ok));
       assert.deepEqual(ok.ask[0].payload.question, payloadFor(f).question);
-      assert.match(String(err(await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d2", f)] }))), /already posted/);
+      const another = await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d2", f)] }) as any;
+      assert.equal(another.ok, true, JSON.stringify(another));
+      assert.notEqual(another.round, ok.round, "same display label publishes a distinct round");
+      assert.equal(another.label, ok.label);
     });
   } finally { u.cleanup(); }
 });
@@ -236,7 +240,7 @@ test("GATE (closed unseen): a logged answer is a ruling, never a close — the f
     await asAgent(async () => {
       await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f)] });
       let view = await decisionRounds(u.root) as any;
-      assert.ok(view.waitingOnYou.some((w: any) => w.decision === "d1"), "unanswered, it waits on you");
+      assert.ok(view.waitingOnYou.some((w: any) => hasDecisionLabel(w.decision, "d1")), "unanswered, it waits on you");
 
       transcript(u.transcripts).ask("toolu_1", [payloadFor(f)], { [payloadFor(f).question]: "Not a defect" });
       assert.match(String(err(await logQuestion(u.root, { toolUseId: "toolu_1" } as any, {}, u.transcripts))), /needs the round/);
@@ -247,7 +251,7 @@ test("GATE (closed unseen): a logged answer is a ruling, never a close — the f
       assert.equal((await readFinding(u.root, f))?.state, "issued", "the finding is untouched");
 
       view = await decisionRounds(u.root) as any;
-      assert.ok(!view.waitingOnYou.some((w: any) => w.decision === "d1"));
+      assert.ok(!view.waitingOnYou.some((w: any) => hasDecisionLabel(w.decision, "d1")));
       assert.ok(view.ruledNotCarriedOut.some((x: any) => x.finding === f && x.on === "settle" && x.ruler === "alice@x.com"));
       const round = await decisionRound(u.root, "R1") as any;
       assert.ok(round.held.some((h: any) => h.finding === f && h.held.some((x: any) => x.why === "ruled")));
@@ -330,7 +334,7 @@ test("D4 (P2.4, S0.8(d)): one call, two rounds — each question binds in its ow
       assert.match(r.refused[0].why, /more than one round you named \(R1, R2\)/, "D1's text is posted in both: which one it answers cannot be told");
       const [one, two] = [await decisionRound(u.root, "R1") as any, await decisionRound(u.root, "R2") as any];
       assert.equal(one.decisions[0].answers.length, 0);
-      assert.ok(two.decisions.find((d: any) => d.id === "d2").standing.ruled.some((x: any) => x.finding === g && x.on === "unblock"));
+      assert.ok(two.decisions.find((d: any) => (d.label ?? d.id) === "d2").standing.ruled.some((x: any) => x.finding === g && x.on === "unblock"));
     });
   } finally { u.cleanup(); }
 });
@@ -364,8 +368,8 @@ test("round five: a related question does not erase an earlier answer logged lat
       const r = await logQuestion(u.root, { toolUseId: "toolu_1", round: "R1" }, {}, u.transcripts) as any;
       assert.equal(r.answered[0]?.recorded, true, JSON.stringify(r));
       const view = await decisionRounds(u.root) as any;
-      assert.ok(view.ruledNotCarriedOut.some((x: any) => x.finding === f && x.decision === "d1"), "the original ruling keeps its own identity");
-      assert.ok(view.waitingOnYou.some((x: any) => x.decision === "d1b"), "the related question remains unanswered");
+      assert.ok(view.ruledNotCarriedOut.some((x: any) => x.finding === f && hasDecisionLabel(x.decision, "d1")), "the original ruling keeps its own identity");
+      assert.ok(view.waitingOnYou.some((x: any) => hasDecisionLabel(x.decision, "d1b")), "the related question remains unanswered");
     });
   } finally { u.cleanup(); }
 });
@@ -439,7 +443,7 @@ test("GATE (overwritten): after a click, an agent's unconfirmed relay and the pe
       assert.equal(un.standing, false);
       let view = await decisionRounds(u.root) as any;
       assert.ok(view.ruledNotCarriedOut.some((x: any) => x.finding === f && x.on === "settle"), "your ruling stands");
-      assert.ok(view.waitingOnYou.some((w: any) => w.decision === "d1" && /arrived after your ruling/.test(w.why)));
+      assert.ok(view.waitingOnYou.some((w: any) => hasDecisionLabel(w.decision, "d1") && /arrived after your ruling/.test(w.why)));
       // An agent's unconfirmed words after a verified ruling are never read (H6.8).
       const t = transcript(u.transcripts);
       assert.match(String(err(await readerBrief(u.root, { answer: un.answer, maps: [{ decision: "d1", option: "Real, fix it" }] }))), /never read/);
@@ -449,7 +453,7 @@ test("GATE (overwritten): after a click, an agent's unconfirmed relay and the pe
       assert.equal(m.recorded, true, JSON.stringify(m));
       view = await decisionRounds(u.root) as any;
       assert.ok(view.ruledNotCarriedOut.some((x: any) => x.finding === f && x.on === "settle"), "unread, the words do not displace it");
-      assert.equal(view.possiblySuperseded[0]?.decision, "d1", JSON.stringify(view.possiblySuperseded));
+      assert.ok(hasDecisionLabel(view.possiblySuperseded[0]?.decision, "d1"), JSON.stringify(view.possiblySuperseded));
       const all = await reviewQueue(u.root, { assignedOnly: false }) as any;
       assert.ok(all.queue.find((x: any) => x.id === f)?.possiblySuperseded, "and every surface marks it");
     });
@@ -472,7 +476,7 @@ test("B1 + B2 (Q2.2): the reader's verdict is its own submit_verdict call — on
       assert.match(String((await submitVerdict(u.root, { answer: a1, verdict: "D1 → Not a defect" }, {}, u.transcripts) as any).refused), /no reader_brief was issued/);
       const prompt = await briefOf(u.root, a1, mine);
       assert.match(String((await recordReading(u.root, { answer: a1 }, {}, u.transcripts) as any).note), /no verdict is held/, "a reader that has not submitted has nothing to record");
-      for (const [report, re] of [["I think they meant not a defect", /does not end with a verdict/], ["D1 → Not a bug", /not an option of D1/], ["D9 → Real, fix it", /not a question the reader.s brief listed for round R1/], ["unclear: two open\nD1 → Not a defect", /both unclear and a mapping/]] as const) {
+      for (const [report, re] of [["I think they meant not a defect", /does not end with a verdict/], ["D1 → Not a bug", /not an option of D1/], ["D9 → Real, fix it", /not a question the reader.s brief listed for round/], ["unclear: two open\nD1 → Not a defect", /both unclear and a mapping/]] as const) {
         const r = await submitVerdict(u.root, { answer: a1, verdict: report }, {}, u.transcripts) as any;
         assert.ok(re.test(String(r.refused)) && /not held/.test(r.note), `${report}: ${JSON.stringify(r)}`);
       }
@@ -481,15 +485,16 @@ test("B1 + B2 (Q2.2): the reader's verdict is its own submit_verdict call — on
       // ops1 part A: the reader said "Real, fix it"; your reading was "Not a defect". It binds nothing.
       const honest = await reads(u, t, a1, "Reading the words in context.\n\nD1 -> Real, fix it", { prompt });
       assert.equal(honest.rec.agree, false, JSON.stringify(honest.rec));
-      assert.deepEqual(honest.rec.reader, [{ decision: "d1", option: "Real, fix it" }], "the reader's own mapping, parsed — never the session's copy");
+      assert.deepEqual(honest.rec.reader, [{ decision: (await decisionRound(u.root, "R1") as any).decisions.find((d: any) => (d.label ?? d.id) === "d1").id, option: "Real, fix it" }], "the reader's own mapping, parsed — never the session's copy");
       const view = await decisionRounds(u.root) as any;
-      assert.ok(view.readingsInDispute.some((x: any) => x.decision === "d1"));
+      assert.ok(view.readingsInDispute.some((x: any) => hasDecisionLabel(x.decision, "d1")));
       assert.ok(!view.ruledNotCarriedOut.some((x: any) => x.finding === f), "nothing bound");
       // One reader reads one answer: the same reader's call for another answer does not carry its brief.
       await briefOf(u.root, a2, [{ decision: "d2", option: "Real, fix it" }]);
       const again = await reads(u, t, a2, "D2 → Real, fix it", { prompt, agentId: honest.id });
       assert.match(JSON.stringify(again.rec.invalid), /not launched with the brief issued/);
-      assert.deepEqual(parseVerdict("D2 → (none)", (await decisionRound(u.root, "R1") as any).decisions, "R1"), { maps: [{ decision: "d2", option: null }] });
+      const parsedRound = await decisionRound(u.root, "R1") as any;
+      assert.deepEqual(parseVerdict("D2 → (none)", parsedRound.decisions, parsedRound.round.id), { maps: [{ decision: parsedRound.decisions.find((d: any) => (d.label ?? d.id) === "d2").id, option: null }] });
     });
   } finally { u.cleanup(); }
 });
@@ -723,7 +728,7 @@ test("the discussion + S0.1: confirm_reading POSTS the confirm into the words' r
       const r = await logQuestion(u.root, { toolUseId: "toolu_c", round: "R1" }, {}, u.transcripts) as any;
       assert.match(String(r.answered.find((x: any) => x.decision === c.confirm)?.confirm), /^bound/, JSON.stringify(r));
       round = await decisionRound(u.root, "R1") as any;
-      const d = round.decisions.find((x: any) => x.id === "d1");
+      const d = round.decisions.find((x: any) => (x.label ?? x.id) === "d1");
       assert.equal(d.standing.id, a);
       assert.equal(d.standing.givenAt, typed, "bound at the time the words were typed");
       assert.ok(d.standing.ruled.some((x: any) => x.finding === f && x.on === "unblock"));
@@ -750,7 +755,7 @@ test("S0.2: 'No — ask me again' keeps the old ruling, flagged, and the rejecte
       assert.match(String(r.answered.find((x: any) => x.decision === c.confirm)?.confirm), /rejected/, JSON.stringify(r));
       const view = await decisionRounds(u.root) as any;
       assert.ok(view.ruledNotCarriedOut.some((x: any) => x.finding === f && x.on === "settle"), "the old ruling stands");
-      assert.equal(view.possiblySuperseded[0]?.decision, "d1", "flagged, until a replacement answer rules");
+      assert.ok(hasDecisionLabel(view.possiblySuperseded[0]?.decision, "d1"), "flagged, until a replacement answer rules");
       assert.ok(view.waitingOnYou.some((w: any) => /not what you meant/.test(w.why)));
       assert.match(String(err(await confirmReading(u.root, { answer: a, maps }))), /already said this reading is not what they meant/);
     });
@@ -783,7 +788,7 @@ test("confirm_reading refuses what the fold would void, and a replacement of a c
       t.typed("m1", "hmm", later(1));
       const a = (await relayAnswer(u.root, { round: "R1", decision: "d1", session: SESSION, entryId: "m1" }, {}, u.transcripts) as any).answer;
       assert.match(String(err(await confirmReading(u.root, { answer: a, maps: [{ decision: "d1", option: "Not a defect" }, { decision: "d1", option: "Real, fix it" }] }))), /takes one option/);
-      assert.match(String(err(await confirmReading(u.root, { answer: a, maps: [{ decision: "d9", option: null }] }))), /not a question in round R1/);
+      assert.match(String(err(await confirmReading(u.root, { answer: a, maps: [{ decision: "d9", option: null }] }))), /not a question in round/);
       const c = await confirmReading(u.root, { answer: a, maps: [{ decision: "d1", option: "Real, fix it" }] }) as any;
       assert.equal(c.ok, true, JSON.stringify(c));
       assert.match(String(err(await postRound(u.root, { round: { id: "R2", source: "x" }, decisions: [{ ...decision("dz", f, {}, "D1", "R2"), supersedes: c.confirm }] }))), /automatic question supersession/);
@@ -842,7 +847,7 @@ test("R18 (P2.2 (9)): a round's held list shows every hold on its findings, incl
     await asAgent(async () => {
       const r2 = await decisionRound(u.root, "R2") as any;
       const row = r2.held.find((h: any) => h.finding === f);
-      assert.ok(row && row.held.some((x: any) => x.decision === "d1") && !row.held.some((x: any) => x.decision === "d2"), JSON.stringify(r2.held));
+      assert.ok(row && row.held.some((x: any) => hasDecisionLabel(x.decision, "d1")) && !row.held.some((x: any) => hasDecisionLabel(x.decision, "d2")), JSON.stringify(r2.held));
     });
   } finally { u.cleanup(); }
 });
@@ -1021,22 +1026,22 @@ test("round five: a differently worded confirmation remains visible but cannot b
       const maps = [{ decision: "d1", option: "Real, fix it" }];
       const c = await confirmReading(u.root, { answer: a, maps }) as any;
       assert.equal(c.ok, true, JSON.stringify(c));
-      assert.equal(c.confirm, confirmId(a, { kind: "options", payload: c.ask, options: c.ask.options.map((o: any) => ({ label: o.label, effects: [] })) }), "the op derives the id from the text it posts");
+      assert.equal(c.label, confirmId(a, { kind: "options", payload: c.ask, options: c.ask.options.map((o: any) => ({ label: o.label, effects: [] })) }), "the op derives the display id from the text it posts");
       // Another clone, on a build that words the confirm differently, posts the same reading.
       const b = bindDecisions(u.root, {});
       if ("error" in b) throw new Error(b.error);
       const payload = { ...c.ask, question: c.ask.question.replace("is that what you meant?", "did you mean this?") };
       const posted = { round: "R1", ref: c.ref, kind: "options" as const, payload, options: payload.options.map((o: any) => ({ label: o.label, effects: [] })), confirms: { answer: a, readings: [maps] } };
       const other = { id: confirmId(a, posted), ...posted };
-      assert.notEqual(other.id, c.confirm);
-      await postConfirmEvent(b.cfg.path, b.cfg.universe, b.actor, other);
+      assert.notEqual(other.id, c.label);
+      const otherEvent = await postConfirmEvent(b.cfg.path, b.cfg.universe, b.actor, other);
       t.ask("toolu_o", [payload], { [payload.question]: "Yes" }, later(2));
       await logQuestion(u.root, { toolUseId: "toolu_o", round: "R1" }, {}, u.transcripts);
       const round = await decisionRound(u.root, "R1") as any;
-      const d = round.decisions.find((x: any) => x.id === "d1");
+      const d = round.decisions.find((x: any) => (x.label ?? x.id) === "d1");
       assert.notEqual(d.standing.id, a, JSON.stringify(round.decisions.map((x: any) => [x.id, x.answers.length, x.confirm])));
       assert.ok(d.standing.ruled.some((x: any) => x.finding === f && x.on === "settle"));
-      assert.equal(round.decisions.find((x: any) => x.id === other.id)?.confirm.state, "unverifiable");
+      assert.equal(round.decisions.find((x: any) => x.id === otherEvent.id)?.confirm.state, "unverifiable");
     });
   } finally { u.cleanup(); }
 });
@@ -1053,7 +1058,7 @@ test("GATE (impl-2, overwritten): a confirm's Yes on words older than a later pi
     await asAgent(async () => {
       transcript(u.transcripts).ask("toolu_c", [c.ask], { [c.ask.question]: "Yes" }, later(2));
       await logQuestion(u.root, { toolUseId: "toolu_c", round: "R1" }, {}, u.transcripts);
-      const d = (await decisionRound(u.root, "R1") as any).decisions.find((x: any) => x.id === "d1");
+      const d = (await decisionRound(u.root, "R1") as any).decisions.find((x: any) => (x.label ?? x.id) === "d1");
       assert.equal(d.standing.via, "direct", JSON.stringify(d.standing));
       assert.ok(d.standing.ruled.some((x: any) => x.finding === f && x.on === "settle"), "the later pick stands");
     });
@@ -1070,7 +1075,7 @@ test("GATE (impl-2, closed unseen): no confirm path writes a findings event", as
       const c = await confirmReading(u.root, { answer: a, maps: [{ decision: "d1", option: "Not a defect" }] }) as any;
       transcript(u.transcripts).ask("toolu_c", [c.ask], { [c.ask.question]: "Yes" }, later(2));
       await logQuestion(u.root, { toolUseId: "toolu_c", round: "R1" }, {}, u.transcripts);
-      assert.ok((await decisionRound(u.root, "R1") as any).decisions.find((x: any) => x.id === "d1").standing.confirmed, "the Yes bound");
+      assert.ok((await decisionRound(u.root, "R1") as any).decisions.find((x: any) => (x.label ?? x.id) === "d1").standing.confirmed, "the Yes bound");
     });
     assert.equal(otherEvents(u.side), before, "nothing outside the decisions log was written");
     assert.equal((await readFinding(u.root, f))?.state, "issued");
@@ -1157,14 +1162,14 @@ test("GATE (codex round, overwritten): a Yes survives another clone's wording an
     await asAgent(async () => {
       const maps = [{ decision: "d1", option: "Real, fix it" }];
       const c = await confirmReading(u.root, { answer: a, maps }) as any;
-      assert.equal(c.confirm, confirmId(a, { kind: "options", payload: c.ask, options: c.ask.options.map((o: any) => ({ label: o.label, effects: [] })) }));
+      assert.equal(c.label, confirmId(a, { kind: "options", payload: c.ask, options: c.ask.options.map((o: any) => ({ label: o.label, effects: [] })) }));
       const b = bound(u);
       await postConfirmEvent(b.cfg.path, b.cfg.universe, b.actor, otherClone(c, a, [maps], (q) => q.replace("is that what you meant?", "did you mean this?")));
       transcript(u.transcripts).ask("toolu_c", [c.ask], { [c.ask.question]: "Yes" }, later(2));
       await logQuestion(u.root, { toolUseId: "toolu_c", round: "R1" }, {}, u.transcripts);
       // A pull brings another clone's question numbered D1 — the ref the Yes acted on.
       await postConfirmEvent(b.cfg.path, b.cfg.universe, b.actor, otherClone(c, a, [maps], (q) => q.replace(/^D2:/, "D1:").replace("is that", "was that"), "D1"));
-      const d = (await decisionRound(u.root, "R1") as any).decisions.find((x: any) => x.id === "d1");
+      const d = (await decisionRound(u.root, "R1") as any).decisions.find((x: any) => (x.label ?? x.id) === "d1");
       assert.equal(d.standing.id, a, JSON.stringify(d.standing));
       assert.ok(d.standing.ruled.some((x: any) => x.finding === f && x.on === "unblock"));
     });
@@ -1231,10 +1236,10 @@ test("round five: a (none) confirm holds, related questions keep independent hol
       await postRound(v.root, { round: { id: "R1", source: "x" }, decisions: [two] });
       await tick();
       await postRound(v.root, { round: { id: "R2", source: "x" }, decisions: [{ ...decision("d1b", f, {}, "D7", "R2"), follows: "d1" }] });
-      assert.ok((await heldOn(v.root, g)).some((h: any) => h.decision === "d1" && h.why === "undecided"), "related question does not release D1's hold");
+      assert.ok((await heldOn(v.root, g)).some((h: any) => hasDecisionLabel(h.decision, "d1") && h.why === "undecided"), "related question does not release D1's hold");
     });
     await asPerson(async () => { await answerDirect(v.root, { decision: "d1b", option: "Real, fix it" }); });
-    assert.ok((await heldOn(v.root, g)).some((h: any) => h.decision === "d1"), "D1b rules only its own scope");
+    assert.ok((await heldOn(v.root, g)).some((h: any) => hasDecisionLabel(h.decision, "d1")), "D1b rules only its own scope");
     await asPerson(async () => { assert.equal((await withdrawDecision(v.root, { decision: "d1", reason: "No longer asking about both" }) as any).ok, true); });
     assert.equal((await heldOn(v.root, g)).length, 0, "released by explicit withdrawal of D1");
   } finally { v.cleanup(); }
@@ -1293,9 +1298,9 @@ test("Round five replaces vanishing gate: cancelled replies remain visible; miss
     await asAgent(async () => {
       const b = bound(u);
       const never = otherClone(c, "never-recorded", [[{ decision: "d2", option: "Real, fix it" }]], (q) => q.replace(/^D3:/, "D9:"), "D9");
-      await postConfirmEvent(b.cfg.path, b.cfg.universe, b.actor, never);
+      const neverEvent = await postConfirmEvent(b.cfg.path, b.cfg.universe, b.actor, never);
       const view = await decisionRounds(u.root) as any;
-      assert.ok(view.waitingOnYou.some((x: any) => x.decision === never.id && /not a confirm codemap can verify/.test(x.why)), JSON.stringify(view.waitingOnYou));
+      assert.ok(view.waitingOnYou.some((x: any) => x.decision === neverEvent.id && /not a confirm codemap can verify/.test(x.why)), JSON.stringify(view.waitingOnYou));
     });
   } finally { u.cleanup(); }
 });
@@ -1363,7 +1368,7 @@ test("round five: changed response cancels a completed reading and its pending c
       const correction = await relayAnswer(u.root, { round: "R1", decision: "d1", session: SESSION, entryId: "correction" }, {}, u.transcripts) as any;
       assert.equal(correction.recorded, true);
       const view = await decisionRound(u.root, "R1") as any;
-      const d = view.decisions.find((x: any) => x.id === "d1");
+      const d = view.decisions.find((x: any) => (x.label ?? x.id) === "d1");
       const historic = d.answers.find((a: any) => a.id === original.answer);
       assert.equal(historic.cancelled.by, correction.answer);
       assert.ok(historic.reading.id);
@@ -1471,8 +1476,8 @@ test("round five lifecycle: explicit withdrawal retires own ruling without reviv
     assert.ok(d.answers.every((a: any) => /retract/.test(a.withdrawn?.reason)), "the older answer does not revive");
     assert.ok(!old.ruledNotCarriedOut.some((x: any) => x.answer === answer));
     const next = await decisionRound(u.root, "R2") as any;
-    assert.equal(next.decisions[0].follows, "d1");
-    assert.ok(next.waitingOnYou.some((x: any) => x.decision === "d2"));
+    assert.equal(next.decisions[0].follows, old.decisions[0].id);
+    assert.ok(next.waitingOnYou.some((x: any) => hasDecisionLabel(x.decision, "d2")));
   } finally { u.cleanup(); }
 });
 
@@ -1489,11 +1494,11 @@ test("round five lifecycle: unanswered withdrawal releases only its own hold", a
       assert.equal(out.ok, true, JSON.stringify(out));
     });
     const v = await decisionRounds(u.root) as any;
-    assert.ok(!v.waitingOnYou.some((x: any) => x.decision === "d1"));
-    assert.ok(v.waitingOnYou.some((x: any) => x.decision === "d2"));
+    assert.ok(!v.waitingOnYou.some((x: any) => hasDecisionLabel(x.decision, "d1")));
+    assert.ok(v.waitingOnYou.some((x: any) => hasDecisionLabel(x.decision, "d2")));
     const mark = (await decisionsView(u.root)).mark(f);
-    assert.ok(Array.isArray(mark.held) && mark.held.some((x: any) => x.decision === "d2"));
-    assert.ok(Array.isArray(mark.held) && !mark.held.some((x: any) => x.decision === "d1"));
+    assert.ok(Array.isArray(mark.held) && mark.held.some((x: any) => hasDecisionLabel(x.decision, "d2")));
+    assert.ok(Array.isArray(mark.held) && !mark.held.some((x: any) => hasDecisionLabel(x.decision, "d1")));
   } finally { u.cleanup(); }
 });
 

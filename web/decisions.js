@@ -92,9 +92,21 @@ class DecisionsPage extends Component {
 
   questionnaireReadOnly(q) {
     return html`<div class="op-card"><h2>${q.title}</h2>${when(!!q.context, () => html`<p>${q.context}</p>`)}
+      ${when(!!q.recipient, () => html`<p class="dim">Routed to ${q.recipient}. Any team member may answer under their own identity.</p>`)}
       ${each(q.sections, (section) => html`<section><h3>${section.title}</h3>
         ${when(!!section.context, () => html`<p>${section.context}</p>`)}
-        ${each(section.questions, (question) => html`<div class="fs"><b>${question.id}</b> — ${question.prompt}</div>`, (question) => question.id)}
+        ${each(section.questions, (question) => html`<div class="op-card"><h4>${question.id} — ${question.prompt}</h4>
+          ${when(!!question.context, () => html`<p class="dim">${question.context}</p>`)}
+          ${when(!!question.action, () => html`<p class="dim">Action meaning: ${question.action}</p>`)}
+          ${when(question.kind === 'choice', () => html`
+            ${each(question.kind === 'choice' ? question.options : [], (option) => html`<div class="fs">${option.label}${option.description ? ' — ' + option.description : ''}${option.action ? '; action: ' + option.action : ''}</div>`, (option) => option.id)}
+            ${when(question.kind === 'choice' && question.allowOther, () => html`<div class="fs">Other — write your answer</div>`)}`)}
+          ${when(question.kind === 'short', () => html`<div class="fs dim">Write a short answer.</div>`)}
+          ${when(question.kind === 'list', () => html`<div class="fs dim">Submitting this list approves every unmarked item. Marked items each need a correction.</div>
+            ${each(question.kind === 'list' ? question.items : [], (item) => html`<div class="fs">Mark wrong: ${item.text}
+              ${when(!!item.context, () => html`<div class="dim">${item.context}</div>`)}
+              ${when(!!item.action, () => html`<div class="dim">Action meaning: ${item.action}</div>`)}</div>`, (item) => item.id)}`)}
+        </div>`, (question) => question.id)}
       </section>`, (section) => section.id)}</div>`;
   }
 
@@ -196,6 +208,8 @@ class DecisionsPage extends Component {
       ${when(!!brief && 'error' in brief, () => html`<div class="attn-banner">${brief.error}</div>`)}
       ${when(canAct, () => html`<div class="op-card"><h2>${state === 'resolved' && mine.length ? 'Correct a prior resolution' : 'Resolve this disagreement'}</h2>
         <div class="fs">Choose which exact ruling to preserve after reviewing both alternatives, reader judgments and executed closures above.</div>
+        <div class="fs dim">Exact context bound to this choice (receipt ${brief.shownHash}):</div>
+        <pre class="fs">${JSON.stringify(brief.shown, null, 2)}</pre>
         ${when(state === 'resolved' && !mine.length, () => html`<div class="fs dim">A different choice from another principal will remain a visible dispute.</div>`)}
         ${each([request.left, request.right], (x) => html`<label class="fs"><input type="radio" name="comparison-preserve" value="${x.answerId}"
           checked="${this.state.preserve === x.answerId}" on-change="${() => { this.state.preserve = x.answerId; }}"> Preserve ${x.answerId} (${x.principal}: ${x.words})</label>`, (x) => x.answerId)}
@@ -312,7 +326,7 @@ class DecisionsPage extends Component {
   }
 
   /** One decision: its question as asked, its standing answer, and — if it wants one — the controls. */
-  decision(d, blocked) {
+  decision(d, blocked, questionnaire = false) {
     // Blocked, answering is refused anyway (P3.1 (4)): no controls that cannot work.
     const s = d.standing, busy = this.state.busy === d.id;
     const retired = d.answers.some((answer) => !!answer.withdrawn);
@@ -350,8 +364,9 @@ class DecisionsPage extends Component {
           on-click="${() => this.approveWithdrawal(d.id, s?.id)}">approve exact withdrawal for an agent</button>
         ${when(!!this.state.withdrawalApprovals[d.id], () => html`<div class="fs dim">Approved withdrawal receipt: <code>${this.state.withdrawalApprovals[d.id]}</code>. Give this ID and the same reason to the agent.</div>`)}
       </div>`)}
-      ${when(!inactive && d.kind === 'options' && (Object.values(d.currentByFinding || {}).some(Boolean) || (d.currentByIssue || []).some((entry) => !!entry.answer)), () => html`<div class="op-actions">
+      ${when(!inactive && (d.kind === 'options' || d.kind === 'bulk') && (Object.values(d.currentByFinding || {}).some(Boolean) || (d.currentByIssue || []).some((entry) => !!entry.answer)), () => html`<div class="op-actions">
         <div class="fs dim">Select the exact findings or bugs to revise. Earlier answers stay in history.</div>
+        ${when(d.kind === 'bulk', () => html`<div class="fs dim">For a list revision, one marked item is ruled wrong and the other items in the selected scope are approved. Approve all removes every marked item in that scope.</div>`)}
         ${each(Object.keys(d.currentByFinding || {}), (f) => html`<label><input type="checkbox"
           checked="${(this.state.revisionFindings[d.id] || []).includes(f)}"
           on-change="${() => this.toggleRevision(d.id, f)}"> finding ${f} (current: ${d.currentByFinding[f] || 'unanswered'})</label>`, (f) => f)}
@@ -363,7 +378,7 @@ class DecisionsPage extends Component {
         ${when(reviewed, () => html`<div class="fs dim">Revision context shown for ${revisionScope.revises.join(', ')}. Receipt ${presentation.presentation}. Review the question and sources before choosing a new answer.</div>
           <pre class="fs">${JSON.stringify(presentation.displayed, null, 2)}</pre>`)}
         ${each(d.options, (o) => html`<button class="pullbtn" disabled="${busy || !reviewed}"
-          on-click="${() => this.revise(d, o.label)}">revise selected to ${o.label}</button>`, (o) => o.label)}
+          on-click="${() => this.revise(d, o.label)}">${d.kind === 'bulk' ? (o.approveAll ? 'revise selected scope to approve all' : `revise selected scope: mark ${o.label} wrong`) : `revise selected to ${o.label}`}</button>`, (o) => o.label)}
       </div>`)}
       ${when(!inactive && d.kind === 'words' && !!s, () => html`<div class="op-actions">
         <input placeholder="revised answer" value="${this.state.words[d.id] || ''}"
@@ -376,15 +391,15 @@ class DecisionsPage extends Component {
       ${when(d.answers.length > 0, () => html`<details><summary>answer history (${d.answers.length})</summary>
         ${each(d.answers, (a) => html`<div class="fs dim">${a.id}: ${a.words}${a.revision ? ' — revises ' + a.revision.of.join(', ') + ' for ' + [...a.revision.findings, ...(a.revision.issues || []).map((issue) => issue.id)].join(', ') : ''}${a.revisionInvalid ? ' — invalid: ' + a.revisionInvalid : ''}${a.withdrawn ? ' — withdrawn: ' + a.withdrawn.reason : ''}</div>`, (a) => a.id)}
       </details>`)}
-      ${when(!replaced && d.kind === 'options', () => html`<div class="op-actions">
+      ${when(!replaced && !questionnaire && d.kind === 'options', () => html`<div class="op-actions">
         ${each(d.options, (o) => html`<button class="pullbtn" disabled="${busy}" on-click="${() => this.answer(d.id, o.park ? { park: o.park } : { option: o.label })}">${o.label}</button>`, (o) => o.label)}
       </div>`)}
-      ${when(!replaced && d.kind === 'bulk', () => html`<div class="op-actions">
+      ${when(!replaced && !questionnaire && d.kind === 'bulk', () => html`<div class="op-actions">
         <span class="dim">check any to rule on separately; the rest are approved</span>
         ${each(d.options.filter((o) => !o.approveAll), (o) => html`<label><input type="checkbox" checked="${checked.includes(o.label)}" on-change="${() => this.toggle(d.id, o.label)}"> ${o.label}</label>`, (o) => o.label)}
         <button class="pullbtn" disabled="${busy}" on-click="${() => this.answer(d.id, { checked: checked.length ? checked : [d.options.find((o) => o.approveAll).label] })}">${checked.length ? `rule ${checked.length} separately, approve the rest` : 'approve all'}</button>
       </div>`)}
-      ${when(!replaced && d.kind !== 'bulk', () => html`<div class="op-actions">
+      ${when(!replaced && !questionnaire && d.kind !== 'bulk', () => html`<div class="op-actions">
         <input placeholder="${d.kind === 'words' ? 'your answer' : 'or say it in your own words…'}" value="${this.state.words[d.id] || ''}"
           on-change="${(e, v) => { this.state.words = { ...this.state.words, [d.id]: v }; }}">
         <button class="pullbtn" disabled="${busy || !(this.state.words[d.id] || '').trim()}" on-click="${() => this.answer(d.id, { words: this.state.words[d.id] })}">send</button>
@@ -446,7 +461,7 @@ class DecisionsPage extends Component {
     return pageShell(d, taskError(this.load) || failed, () => html`
       ${when(!!this.state.err, () => html`<div class="attn-banner"><span class="attn-n">✕</span><span>${this.state.err}</span></div>`)}
       ${when(!!this.props.query.comparison, () => this.comparisonView(comparison, resolutionBrief, qlist?.currentPrincipal))}
-      ${when(!this.props.query.comparison, () => html`<div class="crumbs"><b>${u}</b> <span class="sep">·</span> <a href="${href(decisionsUrl(u))}">decisions</a>${one ? html` <span class="sep">·</span> ${one.round.id}` : ''}</div>
+      ${when(!this.props.query.comparison, () => html`<div class="crumbs"><b>${u}</b> <span class="sep">·</span> <a href="${href(decisionsUrl(u))}">decisions</a>${one ? html` <span class="sep">·</span> ${one.round.label ?? one.round.id}` : ''}</div>
       ${when(!!one, () => html`
         <div class="dim">${one.round.source}${one.round.pr ? ' · PR ' + one.round.pr : ''}${one.round.prevalidated ? ' · pre-validated: ' + one.round.prevalidated.sortedBy : ''}</div>
         ${each(one.round.notes || [], (n) => html`<div class="fs dim">decided rather than asked: ${n}</div>`, (n, i) => 'n' + i)}
@@ -455,7 +470,9 @@ class DecisionsPage extends Component {
           ${when(!questionnaire.currentPrincipal, () => html`<div class="attn-banner">No local principal identity is configured. The questionnaire is readable, but drafts and submission need a Git identity.</div>`)}
           ${when(questionnaire.currentPrincipal && questionnaire.status.status !== 'blocked', () => html`<div data-questionnaire-host></div>`)}
           ${when(!questionnaire.currentPrincipal || questionnaire.status.status === 'blocked', () => this.questionnaireReadOnly(questionnaire.questionnaire))}
-          ${this.questionnaireProgress(questionnaire)}`)}
+          ${this.questionnaireProgress(questionnaire)}
+          <div class="sec">submitted rulings and revisions</div>
+          ${each(one.decisions, (x) => this.decision(x, one.status === 'blocked' || !questionnaire.currentPrincipal, true), (x) => x.id)}`)}
         ${when(!questionnaire, () => html`${each(one.decisions, (x) => this.decision(x, one.status === 'blocked'), (x) => x.id)}`)}
         ${this.views(one)}`)}
       ${when(!one && !!list, () => html`

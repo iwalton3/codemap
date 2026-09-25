@@ -131,7 +131,8 @@ export function deriveComparison(r: ComparisonRequest, current: Record<string, s
       reason = "resolution does not match exact alternatives, versions and scope";
     else if (!nonempty(h.id) || !nonempty(h.rationale) || !nonempty(h.at)
       || !nonempty(h.human?.principal) || !nonempty(h.human?.session) || !nonempty(h.human?.request)
-      || !nonempty(h.human?.receipt) || h.human.shownHash !== r.contextHash)
+      || !nonempty(h.human?.receipt) || !nonempty(h.human?.shownHash)
+      || !h.human.shownHash.startsWith("resolution:v1:"))
       reason = "resolution needs an explicit human act shown the complete context";
     else if (state !== "incompatible" && state !== "disputed") reason = "human resolution requires an incompatible or disputed reader judgment";
     else if (resolutionCounts.get(h.id)! > 1) reason = "resolution id repeats";

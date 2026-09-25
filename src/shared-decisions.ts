@@ -88,7 +88,7 @@ export interface FoldedAnswer {
     resolves?: { answers: [string, string]; priorResolution: string; shownHash: string } };
   revisionInvalid?: string;
   /** Source receipt for a selected question in one atomic stakeholder submission. */
-  questionnaire?: { id: string; version: string; submission: string; attemptId: string; payloadHash: string;
+  questionnaire?: { id: string; publication?: string; version: string; submission: string; attemptId: string; payloadHash: string;
     questionId: string; answer: QuestionnaireAnswer; approvals?: string[];
     corrections?: { itemId: string; text: string; verdict: "pending" }[] };
   /** What it was given through, so one call or message answers a decision once (B1.4). */
@@ -410,6 +410,8 @@ function confirmRefusal(decisions: Map<string, FoldedDecision>, c: FoldedDecisio
   if (d.round !== c.round) return "it is not in the round of the words it confirms";
   if (d.confirms) return "it confirms words on another confirm";
   if (!Array.isArray(cf.readings) || !cf.readings.length || cf.readings.length > 2) return "it offers no reading, or more than two";
+  if (cf.readings.some((reading) => !validMaps(reading) || reading.some((mapping) => !decisions.has(mapping.decision))))
+    return "a reading names a question that is not an exact decision here";
   const labels = cf.readings.length === 1 ? [CONFIRM_YES, CONFIRM_NO] : ["Reading 1", "Reading 2"];
   if (c.kind !== "options" || c.payload.multiSelect || c.options.length !== 2 || c.options.some((o, i) => o.label !== labels[i] || o.effects.length || o.park)) return "its options are not the confirm's";
   // A matching ref and option label cannot authorize different action prose. The generated
@@ -496,7 +498,7 @@ export function briefListing(decisions: Map<string, FoldedDecision>, d: FoldedDe
     try { question = JSON.parse(m[2]!); labels = JSON.parse(BRIEF_OPTS.exec(lines[i + 1] ?? "")?.[1] ?? ""); context = JSON.parse(BRIEF_CONTEXT.exec(lines[i + 2] ?? "")?.[1] ?? ""); } catch { return `the reader's brief lists ${m[1]} unreadably`; }
     const matches = candidates.filter((x) => x.ref === m[1] && x.payload.question === question
       && Array.isArray(labels) && labels.length === x.options.length && x.options.every((o, j) => o.label === labels[j])
-      && canonical(context) === canonical({ id: x.id, kind: x.kind, payload: x.payload, options: x.options }));
+      && canonical(context) === canonical({ id: x.id, kind: x.kind, payload: x.payload, options: x.options, presentation: x.presentation }));
     if (!matches.length) return `the reader's brief lists ${m[1]} as a question these words cannot be read onto, or with other labels`;
     if (entries) {
       const e = entries[at++], t = matches.find((x) => x.id === e?.id);
@@ -620,6 +622,18 @@ export function revisionPresentation(d: FoldedDecision, sources: FoldedAnswer[],
 export function foldDecisions(events: LogEvent[]): SharedDecisions {
   const rounds = new Map<string, DecisionRound>();
   const decisions = new Map<string, FoldedDecision>();
+  const exactRound = (id: string): DecisionRound | undefined => {
+    const exact = rounds.get(id);
+    if (exact) return exact;
+    const matching = [...rounds.values()].filter((r) => r.label === id);
+    return matching.length === 1 ? matching[0] : undefined;
+  };
+  const exactDecision = (id: string): FoldedDecision | undefined => {
+    const exact = decisions.get(id);
+    if (exact) return exact;
+    const matching = [...decisions.values()].filter((d) => d.label === id);
+    return matching.length === 1 ? matching[0] : undefined;
+  };
   const questions = new Map<string, LoggedQuestion>();
   const causal = causality(events);
   const answerEvents = new Map<string, LogEvent>();
@@ -662,10 +676,10 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
   }
 
   const acceptAnswer = (e: LogEvent, pos: number, data: any, answerId = e.id): void => {
-    const d = decisions.get(str(data?.decision) ?? "");
+    const d = exactDecision(str(data?.decision) ?? "");
     if (!d || (postedPos.get(d.id) ?? Infinity) > pos || data.hash !== d.hash) return;
     if (data?.via?.kind === "revision-relay" && e.kind !== "decision.answer.revised") return;
-    const r = resolve(d, data.via as AnswerVia, e.actor, questions);
+    const r = resolve(d, data.via as AnswerVia, e.actor, questions, rounds);
     if (!r || (r.park !== undefined && !ISO_DATE.test(r.park))) return;
     const givenAt = r.givenAt ?? e.at;
     const given = ms(givenAt);
@@ -700,15 +714,18 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
     switch (e.kind) {
       case "decision.round.posted": {
         const r = data?.round;
-        if (!r || typeof r !== "object" || !str(r.id) || !str(r.source) || rounds.has(r.id) || !Array.isArray(data?.decisions)) break;
+        if (!r || typeof r !== "object" || !str(r.id) || !str(r.source) || (!data?.publication && rounds.has(r.id)) || !Array.isArray(data?.decisions)) break;
+        if (new Set(data.decisions.map((raw: Decision) => raw?.id)).size !== data.decisions.length) break;
         if (r.questionnaire && (checkQuestionnaireDecisions(r.questionnaire, data.decisions)
           || data.decisions.some((raw: Decision) => checkDecision(raw)))) break;
-        if (r.questionnaire && [...rounds.values()].some((prior) => prior.id === r.questionnaire.id
+        if (!data?.publication && r.questionnaire && [...rounds.values()].some((prior) => prior.id === r.questionnaire.id
           || prior.questionnaire?.id === r.questionnaire.id || prior.questionnaire?.id === r.id)) break;
         const pv = r.prevalidated;
         const prevalidated = pv && typeof pv === "object" && str(pv.record) && str(pv.sortedBy) ? { record: pv.record as string, sortedBy: pv.sortedBy as string } : undefined;
-        rounds.set(r.id, {
-          id: r.id, source: r.source, universe: str(r.universe) ?? "",
+        const roundId = data?.publication ? e.id : r.id;
+        if (rounds.has(roundId)) break;
+        rounds.set(roundId, {
+          id: roundId, ...(data?.publication ? { label: r.id } : {}), source: r.source, universe: str(r.universe) ?? "",
           ...(str(r.pr) ? { pr: r.pr } : {}), ...(str(r.branch) ? { branch: r.branch } : {}),
           ...(Array.isArray(r.notes) ? { notes: r.notes.filter((n: unknown) => str(n)) } : {}),
           ...(prevalidated ? { prevalidated } : {}),
@@ -716,11 +733,10 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
           postedBy: e.actor, at: e.at,
         });
         for (const raw of data.decisions as Decision[]) {
-          // Immutable once posted: the hash binding means nothing if the text under it can
-          // move. A second posting of an id is ignored, whatever it says.
-          if (!raw || typeof raw !== "object" || decisions.has(raw.id) || raw.round !== r.id || checkDecision(raw)) continue;
+          if (!raw || typeof raw !== "object" || (!data?.publication && decisions.has(raw.id)) || raw.round !== r.id || checkDecision(raw)) continue;
           const d: FoldedDecision = {
-            id: raw.id, round: raw.round, ref: raw.ref, kind: raw.kind,
+            id: data?.publication ? `${e.id}:${raw.id}` : raw.id, ...(data?.publication ? { label: raw.id } : {}),
+            round: roundId, ref: raw.ref, kind: raw.kind,
             payload: normalizeQuestion(raw.payload),
             // A retired field on an old posting is ignored, never a reason to lose the question (S0.7).
             options: raw.options.map(({ closesOnAnswer: _c, ...o }: DecisionOption & { closesOnAnswer?: unknown }) => o),
@@ -750,16 +766,18 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
         // Its own kind, because a round is immutable once posted (above). Kept whatever its
         // `confirms` says — whether it is a confirm codemap could have written is judged below.
         const raw = data?.decision as (Decision & { confirms?: Confirms }) | undefined;
-        const r = rounds.get(str(data?.round) ?? "");
-        if (!r || !raw || typeof raw !== "object" || decisions.has(raw.id) || raw.round !== r.id || checkDecision(raw)) break;
+        const r = exactRound(str(data?.round) ?? "");
+        if (!r || !raw || typeof raw !== "object" || (!data?.publication && decisions.has(raw.id)) || raw.round !== (r.label ?? r.id) && raw.round !== r.id || checkDecision(raw)) break;
         const cf = raw.confirms as unknown as Record<string, unknown> | undefined;
-        decisions.set(raw.id, {
-          id: raw.id, round: raw.round, ref: raw.ref, kind: raw.kind, payload: normalizeQuestion(raw.payload), options: raw.options,
+        const confirmId = data?.publication ? e.id : raw.id;
+        if (decisions.has(confirmId)) break;
+        decisions.set(confirmId, {
+          id: confirmId, ...(data?.publication ? { label: raw.id } : {}), round: r.id, ref: raw.ref, kind: raw.kind, payload: normalizeQuestion(raw.payload), options: raw.options,
           hash: decisionHash(raw), postedAt: typeof e.at === "string" ? e.at : "", postingEvent: e.id, answers: [],
           confirms: { answer: str(cf?.answer) ?? "", readings: Array.isArray(cf?.readings) ? cf.readings as Mapping[][] : [],
             ...(Array.isArray(cf?.knownReplacements) && cf.knownReplacements.every((x) => typeof x === "string") ? { knownReplacements: cf.knownReplacements as string[] } : {}) },
         });
-        postedPos.set(raw.id, pos);
+        postedPos.set(confirmId, pos);
         break;
       }
 
@@ -770,10 +788,10 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
 
 
       case "decision.questionnaire.submitted": {
-        const round = rounds.get(str(data?.round) ?? "");
+        const round = exactRound(str(data?.round) ?? "");
         const q = round?.questionnaire;
         const staged = data?.staged as StagedSubmission | undefined;
-        if (!q || !staged || e.subject !== q.id || isAgentActor(e.actor)
+        if (!q || !staged || (e.subject !== q.id && e.subject !== round?.id) || isAgentActor(e.actor)
           || !str(staged.attemptId) || !str(staged.payloadHash)) break;
         const checked = stageSubmission(q, {
           questionnaireId: staged.questionnaireId, version: staged.version,
@@ -781,11 +799,11 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
         });
         if (!checked.ok || checked.value.payloadHash !== staged.payloadHash
           || JSON.stringify(checked.value.listApprovals) !== JSON.stringify(staged.listApprovals)) break;
-        const attemptKey = `${e.actor.principal}\0${q.id}\0${staged.attemptId}`;
+        const attemptKey = `${e.actor.principal}\0${round!.id}\0${staged.attemptId}`;
         if (seenQuestionnaireAttempts.has(attemptKey)) break;
         const questions = new Map(q.sections.flatMap((section) => section.questions.map((question) => [question.id, question] as const)));
         const entries = checked.value.answers.map((answer) => {
-          const d = decisions.get(answer.questionId), question = questions.get(answer.questionId);
+          const d = [...decisions.values()].find((candidate) => candidate.round === round!.id && (candidate.label ?? candidate.id) === answer.questionId), question = questions.get(answer.questionId);
           if (!d || !question || d.round !== round.id || (postedPos.get(d.id) ?? Infinity) > pos) return null;
           let via: AnswerVia;
           if (answer.kind === "choice" && question.kind === "choice") {
@@ -803,7 +821,7 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
           } else return null;
           const approval = checked.value.listApprovals.find((x) => x.questionId === answer.questionId);
           const meta = {
-            id: q.id, version: checked.value.version, submission: e.id,
+            id: q.id, publication: round!.id, version: checked.value.version, submission: e.id,
             attemptId: staged.attemptId, payloadHash: staged.payloadHash,
             questionId: answer.questionId, answer,
             ...(approval ? { approvals: approval.approvedItemIds,
@@ -1265,14 +1283,17 @@ function bind(decisions: Map<string, FoldedDecision>, answersById: Map<string, {
 
 /** An answer's words, its picks, and whether it is verified — or null when it binds to
  *  nothing this fold can check. */
-function resolve(d: FoldedDecision, via: AnswerVia, actor: Actor, questions: Map<string, LoggedQuestion>): Resolved | null {
+function resolve(d: FoldedDecision, via: AnswerVia, actor: Actor, questions: Map<string, LoggedQuestion>, rounds: Map<string, DecisionRound>): Resolved | null {
   if (!via || typeof via !== "object") return null;
   switch (via.kind) {
     case "question": {
       const q = questions.get(via.question);
       // The logged call bound this question to this decision's round, and carries its payload
       // exactly (B1.4, S0.8(d)).
-      if (!q || q.bound[d.payload.question] !== d.round || !q.questions.some((x) => sameQuestion(x, d.payload))) return null;
+      const bound = q?.bound[d.payload.question];
+      const legacyRound = rounds.get(d.round)?.label === bound
+        && [...rounds.values()].filter((round) => round.label === bound).length === 1;
+      if (!q || (bound !== d.round && !legacyRound) || !q.questions.some((x) => sameQuestion(x, d.payload))) return null;
       const v = q.answers[d.payload.question];
       // What a transcript records: a string, or a list of them for a multi-select.
       if (typeof v !== "string" && !(Array.isArray(v) && v.every((x) => typeof x === "string"))) return null;
@@ -1502,9 +1523,15 @@ export function comparisonSourcesCurrent(s: SharedDecisions, request: Comparison
 }
 
 
+/** Complete frozen comparison display, including the receipts outside this scope. */
+export function resolutionShownHash(shown: unknown): string {
+  return "resolution:v1:" + createHash("sha256").update(canonical({ version: 1, shown })).digest("hex");
+}
+
 /** Replay accepts only requests whose source is exactly the posted question and response. */
 function foldComparisons(s: SharedDecisions, events: LogEvent[]): FoldedComparison[] {
   const byId = new Map<string, { request: ComparisonRequest; judgments: ReaderJudgment[]; resolutions: HumanResolution[] }>();
+  const causal = causality(events);
   for (const e of events.filter((x) => x.kind === "decision.comparison.requested")) {
     const data = e.data as any;
     if (e.kind === "decision.comparison.requested") {
@@ -1542,6 +1569,11 @@ function foldComparisons(s: SharedDecisions, events: LogEvent[]): FoldedComparis
       const h = data?.resolution ? { ...data.resolution, id: e.id, at: e.at } as HumanResolution : undefined;
       const r = byId.get(h?.requestId ?? "");
       const proof = data?.proof;
+      const prior = r ? deriveComparison(r.request,
+        { [r.request.left.answerId]: r.request.left.version,
+          [r.request.right.answerId]: r.request.right.version },
+        r.judgments.filter((j) => causal.saw(e.id, j.id)),
+        r.resolutions.filter((prior) => causal.saw(e.id, prior.id))) : undefined;
       if (!r || !h || e.subject !== h.requestId || !proof
         || proof.purpose !== "human-comparison" || proof.contextHash !== r.request.contextHash
         || proof.shownHash !== h.human.shownHash || proof.receipt !== h.human.receipt
@@ -1550,8 +1582,10 @@ function foldComparisons(s: SharedDecisions, events: LogEvent[]): FoldedComparis
         || !Array.isArray(proof.shown.executions)
         || proof.executionsHash !== createHash("sha256").update(JSON.stringify(proof.shown.executions)).digest("hex")
         || !Array.isArray(proof.shown.judgments) || !Array.isArray(proof.shown.resolutions)
-        || !proof.shown.judgments.every((x: ReaderJudgment) => r.judgments.some((j) => same(j, x)))
-        || !proof.shown.resolutions.every((x: HumanResolution) => r.resolutions.some((prior) => same(prior, x)))
+        || proof.shownHash !== resolutionShownHash(proof.shown)
+        || !prior?.ok
+        || !same(proof.shown.judgments, prior.value.acceptedJudgments)
+        || !same(proof.shown.resolutions, prior.value.acceptedResolutions)
         || (isAgentActor(e.actor) && (proof.source !== "question" || !str(proof.session) || !str(proof.toolUseId)))
         || (!isAgentActor(e.actor) && proof.source !== "web" && proof.source !== "question")) continue;
       r.resolutions.push(h);
@@ -1679,6 +1713,7 @@ export function intentCandidates(s: SharedDecisions): IntentCandidate[] {
     for (const a of d.answers) {
       if (!a.verified || a.resolvedOutBy || a.cancelled || a.elsewhere) continue;
       for (const finding of a.revision?.findings ?? named(d)) {
+        if (!revisionCovers(a, { kind: "finding", id: finding })) continue;
         if (revisedOutOn(a, { kind: "finding", id: finding })) continue;
         if (lostOn(a, { kind: "finding", id: finding })) continue;
         const key = `${d.id}\0${a.by.principal}\0${finding}`;
@@ -1711,6 +1746,7 @@ export function intentCandidates(s: SharedDecisions): IntentCandidate[] {
     for (const a of d.answers) {
       if (!a.verified || a.resolvedOutBy || a.cancelled || a.elsewhere) continue;
       for (const issue of namedIssues(d)) {
+        if (!revisionCovers(a, issue) || revisedOutOn(a, issue)) continue;
         if (lostOn(a, issue)) continue;
         const key = `${d.id}\0${a.by.principal}\0${issueKey(issue)}`;
         const prev = bugCurrent.get(key);
@@ -1740,12 +1776,12 @@ export function intentCandidates(s: SharedDecisions): IntentCandidate[] {
   // That is still an independent intent comparison; no issue hold is invented for it.
   for (const d of s.decisions) {
     if (d.resolves || d.confirms?.invalid || d.withdrawn) continue;
-    const scopes: (Pick<CanonicalIssue, "kind" | "id"> & Partial<CanonicalIssue>)[] = [
-      ...named(d).map((id) => ({ kind: "finding" as const, id })), ...namedIssues(d),
-    ];
-    if (!scopes.length) scopes.push({ kind: "decision", id: d.id });
+    if (named(d).length || namedIssues(d).length) continue;
+    const scopes: (Pick<CanonicalIssue, "kind" | "id"> & Partial<CanonicalIssue>)[] =
+      [{ kind: "decision", id: d.id }];
     const current = d.answers.filter((a) => a.verified && !a.sourceAnswer && !a.cancelled
-      && !a.withdrawn && !a.resolvedOutBy && !a.elsewhere && scopes.some((scope) => !lostOn(a, scope)));
+      && !a.withdrawn && !a.resolvedOutBy && !a.elsewhere
+      && scopes.some((scope) => revisionCovers(a, scope) && !revisedOutOn(a, scope) && !lostOn(a, scope)));
     const byPrincipal = new Map<string, FoldedAnswer>();
     for (const a of current) {
       const prior = byPrincipal.get(a.by.principal);
@@ -2131,10 +2167,10 @@ export function supersededFindings(s: SharedDecisions): Map<string, { decision: 
 // --- writing --------------------------------------------------------------------------
 
 export const postRoundEvent = (logRoot: string, universe: string, actor: Actor, round: Omit<DecisionRound, "postedBy" | "at">, decisions: Decision[]) =>
-  emitEvent(logRoot, decisionScope(universe), actor, "decision.round.posted", round.id, { round, decisions });
+  emitEvent(logRoot, decisionScope(universe), actor, "decision.round.posted", round.id, { publication: 2, round, decisions });
 
 export const postConfirmEvent = (logRoot: string, universe: string, actor: Actor, decision: Decision & { confirms: Confirms }) =>
-  emitEvent(logRoot, decisionScope(universe), actor, "decision.confirm.posted", decision.id, { round: decision.round, decision });
+  emitEvent(logRoot, decisionScope(universe), actor, "decision.confirm.posted", decision.id, { publication: 2, round: decision.round, decision });
 
 export const logQuestionEvent = (logRoot: string, universe: string, actor: Actor, q: Omit<LoggedQuestion, "id" | "loggedBy" | "at">) =>
   emitEvent(logRoot, decisionScope(universe), actor, "decision.question.logged", q.toolUseId, q as unknown as Record<string, unknown>);
@@ -2148,8 +2184,11 @@ export const submitQuestionnaireEvent = (
 ) => emitEventChecked(logRoot, decisionScope(universe), actor, async (events) => {
   if (isAgentActor(actor)) return { error: "questionnaire submission needs the principal's own act" };
   const s = foldDecisions(events);
-  const round = s.rounds.find((x) => x.id === roundId);
-  const q = round?.questionnaire;
+  const exact = s.rounds.find((x) => x.id === roundId);
+  const matches = exact ? [exact] : s.rounds.filter((x) => x.label === roundId);
+  if (matches.length !== 1) return { error: matches.length ? `round ${roundId} is ambiguous; use ${matches.map((x) => x.id).join(", ")}` : `no round ${roundId}` };
+  const round = matches[0]!;
+  const q = round.questionnaire;
   if (!q || q.id !== staged.questionnaireId) return { error: "no published questionnaire with that round and ID" };
   const checked = stageSubmission(q, {
     questionnaireId: staged.questionnaireId, version: staged.version,
@@ -2159,15 +2198,16 @@ export const submitQuestionnaireEvent = (
     || JSON.stringify(checked.value.listApprovals) !== JSON.stringify(staged.listApprovals))
     return { error: "submission no longer matches the frozen questionnaire or payload" };
   const previous = events.find((e) => e.kind === "decision.questionnaire.submitted"
-    && e.subject === q.id && e.actor.principal === actor.principal
+    && (e.subject === round.id || e.subject === q.id) && (e.data as any)?.round === round.id
+    && e.actor.principal === actor.principal
     && (e.data as any)?.staged?.attemptId === staged.attemptId);
   if (previous) return (previous.data as any)?.staged?.payloadHash === staged.payloadHash
     ? { existing: previous } : { error: "this attempt ID was already used with different answers" };
   for (const answer of checked.value.answers) {
-    const d = s.decisions.find((x) => x.id === answer.questionId && x.round === round.id);
+    const d = s.decisions.find((x) => (x.label ?? x.id) === answer.questionId && x.round === round.id);
     if (!d || d.withdrawn) return { error: `question ${answer.questionId} is missing or withdrawn` };
   }
-  return { kind: "decision.questionnaire.submitted", subject: q.id,
+  return { kind: "decision.questionnaire.submitted", subject: round.id,
     data: { round: round.id, staged: checked.value } as unknown as Record<string, unknown> };
 });
 

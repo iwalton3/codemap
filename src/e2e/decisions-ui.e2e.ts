@@ -111,7 +111,8 @@ describe("the decisions UI", { skip: pw ? false : "playwright not resolvable (se
     await page.click("button.pullbtn:has-text('Park until 2099-01-01')");
     await page.waitForSelector("text=parked (1)", { timeout: 10_000 });
     const text = (await page.textContent("main"))!;
-    assert.match(text, /R1 D2 — until 2099-01-01/);
+    const round = await ops.decisionRound(root, "R1") as any;
+    assert.ok(text.includes(`${round.round.id} D2 — until 2099-01-01`));
     assert.match(text, /waiting on you \(0\)/);
     assert.deepEqual(errors, []);
     await page.close();
@@ -137,7 +138,7 @@ describe("the decisions UI", { skip: pw ? false : "playwright not resolvable (se
     await question.locator("button").filter({ hasText: /^send$/ }).click();
     await page.waitForSelector("text=the premise is wrong", { timeout: 10_000 });
     const first = await ops.decisionRound(root, "R1") as any;
-    const answer = first.decisions.find((d: any) => d.id === "d1").answers.find((a: any) => a.words === "the premise is wrong");
+    const answer = first.decisions.find((d: any) => (d.label ?? d.id) === "d1").answers.find((a: any) => a.words === "the premise is wrong");
     const confirmation = await asAgent(() => ops.confirmReading(root, { answer: answer.id, maps: [{ decision: "d1", option: "Not a defect" }] })) as any;
     assert.equal(confirmation.ok, true, JSON.stringify(confirmation));
     await reply.fill("the premise is right; investigate it");
@@ -176,11 +177,12 @@ describe("the decisions UI", { skip: pw ? false : "playwright not resolvable (se
   });
 
   test("a published questionnaire submits selected answers and keeps the rest pending", async () => {
+    const listPrompt = `D21: mark incorrect statements about ${finding}`;
     const questionnaire: Questionnaire = { id: "Q-browser", title: "Review this work", recipient: "izzie@x.com", sections: [
       { id: "first", title: "First", questions: [
         { id: "q-short", kind: "short", prompt: "D20: explain the intended behavior?" },
-        { id: "q-list", kind: "list", prompt: "D21: mark incorrect statements", items: [
-          { id: "item-a", text: "Keep A" }, { id: "item-b", text: "Keep B" },
+        { id: "q-list", kind: "list", prompt: listPrompt, items: [
+          { id: "item-a", text: "Keep A", action: `unblocks ${finding}` }, { id: "item-b", text: "Keep B" },
         ] },
       ] },
     ] };
@@ -188,9 +190,9 @@ describe("the decisions UI", { skip: pw ? false : "playwright not resolvable (se
       { id: "q-short", round: "RQ-browser", ref: "D20", kind: "words",
         payload: { question: "D20: explain the intended behavior?", options: [] }, options: [] },
       { id: "q-list", round: "RQ-browser", ref: "D21", kind: "bulk",
-        payload: { question: "D21: mark incorrect statements", multiSelect: true,
+        payload: { question: listPrompt, multiSelect: true,
           options: [{ label: "Keep A" }, { label: "Keep B" }, { label: "Approve all" }] },
-        options: [{ label: "Keep A", effects: [] }, { label: "Keep B", effects: [] },
+        options: [{ label: "Keep A", effects: [{ findings: [finding], on: "unblock" }] }, { label: "Keep B", effects: [] },
           { label: "Approve all", approveAll: true, effects: [] }] },
     ] })) as any;
     assert.equal(posted.ok, true, JSON.stringify(posted));
@@ -213,8 +215,102 @@ describe("the decisions UI", { skip: pw ? false : "playwright not resolvable (se
     const done = await ops.questionnaireDetail(root, 'RQ-browser', 'izzie@x.com') as any;
     assert.equal(done.progress.find((x: any) => x.principal === 'izzie@x.com').counts.unanswered, 0);
     assert.equal(done.questions.find((x: any) => x.questionId === 'q-list').answers.length, 1);
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForSelector('text=submitted rulings and revisions');
+    const shortRuling = page.locator('.op-card').filter({ hasText: 'D20: explain the intended behavior?' }).last();
+    assert.match((await shortRuling.textContent())!, /answer history \(1\)/);
+    await shortRuling.getByRole('button', { name: 'review exact revision context' }).click();
+    await shortRuling.locator('pre').waitFor();
+    await shortRuling.getByPlaceholder('revised answer').fill('Keep behavior B');
+    await shortRuling.getByPlaceholder('revised answer').press('Tab');
+    await shortRuling.getByRole('button', { name: 'revise answer' }).click();
+    await page.waitForFunction(() => document.body.textContent?.includes('Keep behavior B'));
+    const revised = await ops.decisionRound(root, 'RQ-browser') as any;
+    assert.ok(revised.decisions.find((d: any) => (d.label ?? d.id) === 'q-short').answers.some((a: any) => a.revision));
+    const beforeListRevision = await ops.decisionRound(root, 'RQ-browser') as any;
+    const listState = beforeListRevision.decisions.find((d: any) => (d.label ?? d.id) === 'q-list');
+    assert.ok(listState?.currentByFinding?.[finding], JSON.stringify(listState));
+    const listRuling = page.locator('.op-card').filter({ hasText: listPrompt })
+      .filter({ has: page.getByPlaceholder('reason for withdrawal') }).first();
+    assert.match((await listRuling.textContent())!, /Select the exact findings or bugs to revise/);
+    await listRuling.getByLabel(new RegExp(`finding ${finding}`)).check();
+    await listRuling.getByRole('button', { name: 'review exact revision context' }).click();
+    await listRuling.locator('pre').waitFor();
+    await listRuling.getByRole('button', { name: 'revise selected scope: mark Keep A wrong' }).click();
+    await listRuling.getByText('answer history (2)').waitFor();
+    const listRevised = await ops.decisionRound(root, 'RQ-browser') as any;
+    assert.ok(listRevised.decisions.find((d: any) => (d.label ?? d.id) === 'q-list').answers.some((a: any) => a.revision));
+    await listRuling.getByPlaceholder('reason for withdrawal').fill('The list needs a fresh question');
+    await listRuling.getByPlaceholder('reason for withdrawal').press('Tab');
+    await listRuling.getByRole('button', { name: 'withdraw this ruling' }).click();
+    await page.waitForFunction(() => document.body.textContent?.includes('The list needs a fresh question'));
+    const withdrawn = await ops.decisionRound(root, 'RQ-browser') as any;
+    assert.ok(withdrawn.decisions.find((d: any) => (d.label ?? d.id) === 'q-list').answers.some((a: any) => a.withdrawn));
     assert.deepEqual(errors, []);
     await page.close();
+  });
+
+  test("an identity-less or blocked questionnaire shows the complete frozen form without submission", async () => {
+    const choicePrompt = `D30: read the rationale and decide whether ${finding} should close. Choice context. Action: settle or fix.`;
+    const listPrompt = `D32: inspect ${finding} item by item. List context. Action: settle or fix.`;
+    const questionnaire: Questionnaire = { id: "Q-readonly", title: "Frozen review", context: "Read the whole batch",
+      recipient: "stakeholder@x.com", sections: [{ id: "section", title: "Risk section", context: "Section context", questions: [
+        { id: "q-read-choice", kind: "choice", prompt: choicePrompt, context: "Choice context", action: "settle or fix",
+          allowOther: true, options: [
+            { id: "reject", label: "Reject", description: "Claim is invalid", action: `settles ${finding} as refuted` },
+            { id: "fix", label: "Fix", description: "Work remains", action: `unblocks ${finding}` },
+          ] },
+        { id: "q-read-short", kind: "short", prompt: "D31: explain why. Short context", context: "Short context" },
+        { id: "q-read-list", kind: "list", prompt: listPrompt, context: "List context", action: "settle or fix",
+          items: [
+            { id: "item-reject", text: "Reject item", context: "Reject context", action: `settles ${finding} as refuted` },
+            { id: "item-fix", text: "Fix item", context: "Fix context", action: `unblocks ${finding}` },
+          ] },
+      ] }] };
+    const posted = await asAgent(() => ops.postRound(root, { round: { id: "RQ-readonly", source: "e2e", questionnaire }, decisions: [
+      { id: "q-read-choice", round: "RQ-readonly", ref: "D30", kind: "options", payload: { question: choicePrompt,
+        options: [{ label: "Reject", description: "Claim is invalid" }, { label: "Fix", description: "Work remains" }] },
+        options: [{ label: "Reject", effects: [{ findings: [finding], on: "settle", as: "refuted" }] },
+          { label: "Fix", effects: [{ findings: [finding], on: "unblock" }] }] },
+      { id: "q-read-short", round: "RQ-readonly", ref: "D31", kind: "words",
+        payload: { question: "D31: explain why. Short context", options: [] }, options: [] },
+      { id: "q-read-list", round: "RQ-readonly", ref: "D32", kind: "bulk", payload: { question: listPrompt,
+        multiSelect: true, options: [{ label: "Reject item", description: "Reject context" },
+          { label: "Fix item", description: "Fix context" }, { label: "Approve all", description: "" }] },
+        options: [{ label: "Reject item", effects: [{ findings: [finding], on: "settle", as: "refuted" }] },
+          { label: "Fix item", effects: [{ findings: [finding], on: "unblock" }] },
+          { label: "Approve all", approveAll: true, effects: [] }] },
+    ] })) as any;
+    assert.equal(posted.ok, true, JSON.stringify(posted));
+    spawnSync("git", ["config", "--unset", "user.email"], { cwd: root });
+    const oldGlobal = process.env.GIT_CONFIG_GLOBAL;
+    process.env.GIT_CONFIG_GLOBAL = "/dev/null";
+    let readonlyServer: Server | undefined;
+    try {
+      readonlyServer = await startServer(root);
+      const page = await browser.newPage();
+      await page.goto(`${readonlyServer.url}/#/u/${universe}/decisions/RQ-readonly/`, { waitUntil: "networkidle" });
+      const content = (await page.textContent("main"))!;
+      for (const expected of ["Read the whole batch", "Section context", "Choice context", "Claim is invalid",
+        `settles ${finding} as refuted`, "Other — write your answer", "Short context", "Write a short answer",
+        "List context", "Reject context", "Fix context", "Submitting this list approves every unmarked item"])
+        assert.ok(content.includes(expected), expected);
+      assert.equal(await page.locator(".questionnaire-form").count(), 0);
+      assert.equal(await page.getByRole("button", { name: /submit/i }).count(), 0);
+      writeFileSync(join(root, ".codemap", "sidecar"), join(root, "missing-sidecar"));
+      try {
+        await page.reload({ waitUntil: "networkidle" });
+        const blocked = (await page.textContent("main"))!;
+        assert.match(blocked, /questionnaire log is blocked/i);
+        assert.match(blocked, /Submitting this list approves every unmarked item/);
+        assert.match(blocked, /Claim is invalid/);
+        assert.equal(await page.getByRole("button", { name: /submit/i }).count(), 0);
+      } finally { writeFileSync(join(root, ".codemap", "sidecar"), side); }
+      await page.close();
+    } finally {
+      readonlyServer?.stop();
+      if (oldGlobal === undefined) delete process.env.GIT_CONFIG_GLOBAL; else process.env.GIT_CONFIG_GLOBAL = oldGlobal;
+    }
   });
 
   test("a human sees exact comparison evidence and explicitly resolves it", async () => {
@@ -296,7 +392,7 @@ describe("the decisions UI", { skip: pw ? false : "playwright not resolvable (se
     await card.getByRole("button", { name: "revise selected to Repair it" }).click();
     await page.waitForFunction(() => document.body.textContent?.includes("you said: Repair it"));
     const revised = await ops.decisionRound(root, "R-bug-web") as any;
-    const current = revised.decisions.find((d: any) => d.id === "bug-web");
+    const current = revised.decisions.find((d: any) => (d.label ?? d.id) === "bug-web");
     const second = current.answers.find((a: any) => a.revision?.of.includes(first.answer));
     assert.ok(second, JSON.stringify(current.answers));
     assert.deepEqual(second.revision.issues, [issue]);

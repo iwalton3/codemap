@@ -2283,6 +2283,8 @@ export interface DecisionOption {
 
 export interface Decision {
   id: string;
+  /** Caller-supplied local ID; published records use provenance in `id`. */
+  label?: string;
   round: string;
   /** Round-local label a reply names ("D2"). */
   ref: string;
@@ -2308,6 +2310,8 @@ export interface Decision {
 
 export interface DecisionRound {
   id: string;
+  /** Caller-supplied round ID; published records use provenance in `id`. */
+  label?: string;
   /** A review round's or plan's slug, or "ad hoc". */
   source: string;
   universe: string;
