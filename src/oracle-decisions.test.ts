@@ -2,7 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { team, settle } from "./oracle.js";
 import { Ledger, checkAlways, checkSettled } from "./oracle-properties.js";
-import { shareFinding } from "./ops-shared.js";
+import { shareFinding, reassignFinding, reportOnFinding } from "./ops-shared.js";
+import { reviewQueue } from "./ops/annotations.js";
 import { postRound, answerDirect, confirmReading, decisionRound, decisionStatus, nominateComparison, withdrawDecision, CONFIRM_YES } from "./ops/decisions.js";
 
 test("a changed response and a stale clone's confirmation converge without reviving its old reading", async () => {
@@ -98,6 +99,16 @@ test("two clones retain a nominated comparison and its local retrieval cursor", 
       assert.equal(status.changed, true);
       assert.ok(status.intentCandidates.some((x: any) => x.nomination?.id === nominated.nomination));
       assert.ok(status.held.some((x: any) => x.finding === f.id && x.held?.some((h: any) => h.why === "comparison")));
+    }
+    const assigned = await reassignFinding(alice!.repo, 7, f.id, { kind: "fix" }) as any;
+    assert.equal(assigned.ok, true, JSON.stringify(assigned));
+    await settle(t);
+    await checkSettled(t, ledger);
+    for (const member of t.all) {
+      assert.ok(!(await reviewQueue(member.repo) as any).queue.some((x: any) => x.id === f.id),
+        "human assignment cannot offer comparison-held work on either clone");
+      const refused = await reportOnFinding(member.repo, 7, f.id, "fixed", "premature work") as any;
+      assert.match(String(refused.error), /comparison/);
     }
   } finally {
     t?.dispose();
