@@ -38,6 +38,7 @@ export const comparisonUrl = (u, id) => href(decisionsUrl(u), { comparison: id }
  * @typedef {{ d: ApiMap['/api/decisions']|null, r: ApiMap['/api/decisions/round']|null, qlist: ApiMap['/api/decisions/questionnaires']|null, qdetail: ApiMap['/api/decisions/questionnaire']|null, comparison: ApiMap['/api/decisions/comparison']|null, resolutionBrief: ApiMap['/api/decisions/comparison/resolution']|null, busy: string|null, err: string|null, rationale: string, preserve: string, revises: string,
  *   words: Record<string,string>, reasons: Record<string,string>, checked: Record<string,string[]>, revisionFindings: Record<string,string[]>, revisionIssues: Record<string,string[]>,
  *   revisionPresentations: Record<string,{presentation:string,contextHash:string,displayed:any,scopeKey:string}>,
+ *   revisionMarked: Record<string,string[]>, revisionCorrections: Record<string,Record<string,string>>,
  *   withdrawalApprovals: Record<string,string> }} DecState
  * @extends {Component<DecProps, DecState>}
  */
@@ -47,7 +48,7 @@ class DecisionsPage extends Component {
   constructor(props) {
     super(props);
     /** @type {DecState} */
-    this.state = { d: null, r: null, qlist: null, qdetail: null, comparison: null, resolutionBrief: null, busy: null, err: null, rationale: '', preserve: '', revises: '', words: {}, reasons: {}, checked: {}, revisionFindings: {}, revisionIssues: {}, revisionPresentations: {}, withdrawalApprovals: {} };
+    this.state = { d: null, r: null, qlist: null, qdetail: null, comparison: null, resolutionBrief: null, busy: null, err: null, rationale: '', preserve: '', revises: '', words: {}, reasons: {}, checked: {}, revisionFindings: {}, revisionIssues: {}, revisionPresentations: {}, revisionMarked: {}, revisionCorrections: {}, withdrawalApprovals: {} };
     /** @type {null|(() => void)} */
     this.qUnmount = null;
   }
@@ -70,7 +71,7 @@ class DecisionsPage extends Component {
       await this.nextRender();
       const host = this.querySelector('[data-questionnaire-host]');
       if (host instanceof HTMLElement) this.qUnmount = mountQuestionnaire(host, {
-        questionnaire: qdetail.questionnaire, version: qdetail.version, principal: qdetail.currentPrincipal,
+        questionnaire: qdetail.questionnaire, publicationId: qdetail.id, version: qdetail.version, principal: qdetail.currentPrincipal,
         onSubmit: async (submission) => {
           const out = await attestedPost('/api/decisions/questionnaire/submit', { u, round: qdetail.round, submission });
           if (!out || out.error || out.ok !== true) return { error: out?.error ?? 'Submission was not confirmed.' };
@@ -272,6 +273,16 @@ class DecisionsPage extends Component {
     return { findings, issues, revises, scopeKey: JSON.stringify({ findings, issues, revises }) };
   }
 
+  revisionListItems(d, scope) {
+    const question = d.presentation?.question;
+    if (question?.kind !== 'list') return [];
+    const issueKey = (issue) => JSON.stringify([issue.kind, issue.universe, issue.scope, issue.id]);
+    const issues = new Set(scope.issues.map(issueKey));
+    return question.items.filter((item) => d.options.find((option) => option.label === item.text)?.effects.some((effect) =>
+      effect.findings.some((finding) => scope.findings.includes(finding))
+      || (effect.issues || []).some((issue) => issues.has(issueKey(issue)))));
+  }
+
   async presentRevision(d) {
     if (this.state.busy) return;
     const scope = this.revisionScope(d);
@@ -292,13 +303,22 @@ class DecisionsPage extends Component {
     if (this.state.busy) return;
     const scope = this.revisionScope(d), shown = this.state.revisionPresentations[d.id];
     if (!shown || shown.scopeKey !== scope.scopeKey) return;
+    const items = this.revisionListItems(d, scope);
+    const isList = d.presentation?.question.kind === 'list';
+    const marked = (this.state.revisionMarked[d.id] || []).filter((id) => items.some((item) => item.id === id));
+    const corrections = this.state.revisionCorrections[d.id] || {};
+    if (isList && (!items.length || marked.some((id) => !corrections[id]?.trim()))) {
+      this.state.err = 'Every marked list item needs its own correction.'; return;
+    }
     this.state.busy = d.id; this.state.err = null;
     try {
       const r = await attestedPost('/api/decisions/revise', {
         u: this.props.params.universe, decision: d.id, revises: scope.revises,
         findings: scope.findings, issues: scope.issues,
         seen: { presentation: shown.presentation, contextHash: shown.contextHash },
-        ...(option ? { option } : { words: this.state.words[d.id] || '' }),
+        ...(isList ? { list: { items: items.map((item) => item.id), approveUnmarked: true,
+          marked: items.filter((item) => marked.includes(item.id)).map((item) => ({ itemId: item.id, correction: corrections[item.id] })) } }
+          : option ? { option } : { words: this.state.words[d.id] || '' }),
       });
       if (r?.error) { this.state.err = r.error; return; }
       this.state.revisionPresentations = { ...this.state.revisionPresentations, [d.id]: undefined };
@@ -366,7 +386,7 @@ class DecisionsPage extends Component {
       </div>`)}
       ${when(!inactive && (d.kind === 'options' || d.kind === 'bulk') && (Object.values(d.currentByFinding || {}).some(Boolean) || (d.currentByIssue || []).some((entry) => !!entry.answer)), () => html`<div class="op-actions">
         <div class="fs dim">Select the exact findings or bugs to revise. Earlier answers stay in history.</div>
-        ${when(d.kind === 'bulk', () => html`<div class="fs dim">For a list revision, one marked item is ruled wrong and the other items in the selected scope are approved. Approve all removes every marked item in that scope.</div>`)}
+        ${when(d.kind === 'bulk' && d.presentation?.question.kind !== 'list', () => html`<div class="fs dim">Select a ruling for the chosen scope.</div>`)}
         ${each(Object.keys(d.currentByFinding || {}), (f) => html`<label><input type="checkbox"
           checked="${(this.state.revisionFindings[d.id] || []).includes(f)}"
           on-change="${() => this.toggleRevision(d.id, f)}"> finding ${f} (current: ${d.currentByFinding[f] || 'unanswered'})</label>`, (f) => f)}
@@ -377,8 +397,25 @@ class DecisionsPage extends Component {
           on-click="${() => this.presentRevision(d)}">review exact revision context</button>
         ${when(reviewed, () => html`<div class="fs dim">Revision context shown for ${revisionScope.revises.join(', ')}. Receipt ${presentation.presentation}. Review the question and sources before choosing a new answer.</div>
           <pre class="fs">${JSON.stringify(presentation.displayed, null, 2)}</pre>`)}
-        ${each(d.options, (o) => html`<button class="pullbtn" disabled="${busy || !reviewed}"
-          on-click="${() => this.revise(d, o.label)}">${d.kind === 'bulk' ? (o.approveAll ? 'revise selected scope to approve all' : `revise selected scope: mark ${o.label} wrong`) : `revise selected to ${o.label}`}</button>`, (o) => o.label)}
+        ${when(d.presentation?.question.kind === 'list' && reviewed, () => html`
+          <div class="fs dim">Review every item in this scope. Unmarked items are approved; each marked item needs a correction.</div>
+          ${each(this.revisionListItems(d, revisionScope), (item) => html`<div class="op-card">
+            <label><input type="checkbox" checked="${(this.state.revisionMarked[d.id] || []).includes(item.id)}"
+              on-change="${() => { const current = this.state.revisionMarked[d.id] || [];
+                this.state.revisionMarked = { ...this.state.revisionMarked, [d.id]: current.includes(item.id)
+                  ? current.filter((id) => id !== item.id) : [...current, item.id] }; }}"> Mark wrong: ${item.text}</label>
+            ${when(!!item.context, () => html`<div class="fs dim">${item.context}</div>`)}
+            ${when(!!item.action, () => html`<div class="fs dim">Action meaning: ${item.action}</div>`)}
+            <textarea placeholder="Correction for ${item.text}" disabled="${!(this.state.revisionMarked[d.id] || []).includes(item.id)}"
+              on-input="${(e, value) => { this.state.revisionCorrections = { ...this.state.revisionCorrections,
+                [d.id]: { ...(this.state.revisionCorrections[d.id] || {}), [item.id]: value } }; }}">${this.state.revisionCorrections[d.id]?.[item.id] || ''}</textarea>
+          </div>`, (item) => item.id)}
+          <button class="pullbtn" disabled="${busy || !(this.revisionListItems(d, revisionScope).length)
+            || (this.state.revisionMarked[d.id] || []).filter((id) => this.revisionListItems(d, revisionScope).some((item) => item.id === id))
+              .some((id) => !(this.state.revisionCorrections[d.id]?.[id] || '').trim())}"
+            on-click="${() => this.revise(d)}">revise reviewed list</button>`)}
+        ${when(d.presentation?.question.kind !== 'list', () => html`${each(d.options, (o) => html`<button class="pullbtn" disabled="${busy || !reviewed}"
+          on-click="${() => this.revise(d, o.label)}">revise selected to ${o.label}</button>`, (o) => o.label)}`)}
       </div>`)}
       ${when(!inactive && d.kind === 'words' && !!s, () => html`<div class="op-actions">
         <input placeholder="revised answer" value="${this.state.words[d.id] || ''}"
@@ -389,7 +426,7 @@ class DecisionsPage extends Component {
           on-click="${() => this.revise(d)}">revise answer</button>
       </div>`)}
       ${when(d.answers.length > 0, () => html`<details><summary>answer history (${d.answers.length})</summary>
-        ${each(d.answers, (a) => html`<div class="fs dim">${a.id}: ${a.words}${a.revision ? ' — revises ' + a.revision.of.join(', ') + ' for ' + [...a.revision.findings, ...(a.revision.issues || []).map((issue) => issue.id)].join(', ') : ''}${a.revisionInvalid ? ' — invalid: ' + a.revisionInvalid : ''}${a.withdrawn ? ' — withdrawn: ' + a.withdrawn.reason : ''}</div>`, (a) => a.id)}
+        ${each(d.answers, (a) => html`<div class="fs dim">${a.id}: ${a.words}${a.revision ? ' — revises ' + a.revision.of.join(', ') + ' for ' + [...a.revision.findings, ...(a.revision.issues || []).map((issue) => issue.id)].join(', ') : ''}${a.questionnaire?.approvals ? ' — approved: ' + a.questionnaire.approvals.join(', ') : ''}${a.questionnaire?.corrections?.length ? ' — corrections: ' + a.questionnaire.corrections.map((c) => c.itemId + ': ' + c.text + ' (' + c.verdict + ')').join('; ') : ''}${a.revisionInvalid ? ' — invalid: ' + a.revisionInvalid : ''}${a.withdrawn ? ' — withdrawn: ' + a.withdrawn.reason : ''}</div>`, (a) => a.id)}
       </details>`)}
       ${when(!replaced && !questionnaire && d.kind === 'options', () => html`<div class="op-actions">
         ${each(d.options, (o) => html`<button class="pullbtn" disabled="${busy}" on-click="${() => this.answer(d.id, o.park ? { park: o.park } : { option: o.label })}">${o.label}</button>`, (o) => o.label)}

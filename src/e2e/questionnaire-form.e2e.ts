@@ -33,7 +33,7 @@ describe("questionnaire form in a browser", { skip: pw ? false : "playwright not
           import { mountQuestionnaire } from '/questionnaire.js';
           window.calls = []; window.failSubmit = false;
           mountQuestionnaire(document.querySelector('#form'), {
-            questionnaire: ${JSON.stringify(q)}, version: 'v1', principal: 'alice',
+            questionnaire: ${JSON.stringify(q)}, publicationId: new URLSearchParams(location.search).get('publication') || 'pub-1', version: 'v1', principal: 'alice',
             onSubmit: async (payload) => { window.calls.push(payload); return window.failSubmit
               ? { error: 'temporarily unavailable' } : { ok: true, receipt: 'receipt-1' }; },
           });
@@ -74,6 +74,17 @@ describe("questionnaire form in a browser", { skip: pw ? false : "playwright not
     assert.equal(await page.locator('[data-question-id="short"] textarea').inputValue(), "");
     assert.equal(await page.locator('[data-question-id="list"] input[data-select-question]').isChecked(), false);
     assert.deepEqual(errors, []);
+    await page.close();
+  });
+
+  test("the mounted form isolates drafts by exact publication", async () => {
+    const page = await browser.newPage();
+    await page.goto(`${base}/?publication=first`);
+    await page.locator('[data-question-id="short"] textarea').fill("Only first publication");
+    await page.goto(`${base}/?publication=second`);
+    assert.equal(await page.locator('[data-question-id="short"] textarea').inputValue(), "");
+    await page.goto(`${base}/?publication=first`);
+    assert.equal(await page.locator('[data-question-id="short"] textarea').inputValue(), "Only first publication");
     await page.close();
   });
 

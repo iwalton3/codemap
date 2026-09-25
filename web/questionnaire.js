@@ -12,26 +12,26 @@
  *   | {questionId: string, kind: 'short', text: string}
  *   | {questionId: string, kind: 'list', approveUnmarked: true, marked: {itemId: string, correction: string}[]}} QuestionnaireAnswer */
 /** @typedef {{selected: string[], answers: Record<string, any>}} LocalDraft */
-/** @typedef {{questionnaire: Questionnaire, version: string, principal: string,
+/** @typedef {{questionnaire: Questionnaire, publicationId: string, version: string, principal: string,
  *   onSubmit: (payload: {questionnaireId: string, version: string, attemptId: string, answers: QuestionnaireAnswer[]}) => Promise<{ok: true, receipt: string} | {error: string}>,
  *   storage?: Storage }} FormOptions */
 
-/** Exact ID/version and principal keep one person's draft out of another's form. */
-export const draftStorageKey = (principal, questionnaireId, version) =>
-  `codemap.questionnaire.draft.${JSON.stringify([principal, questionnaireId, version])}`;
+/** Publication ID, version and principal isolate each local draft. */
+export const draftStorageKey = (principal, publicationId, version) =>
+  `codemap.questionnaire.draft.${JSON.stringify([principal, publicationId, version])}`;
 
 /** @returns {LocalDraft} */
-export function loadQuestionnaireDraft(storage, principal, questionnaireId, version) {
+export function loadQuestionnaireDraft(storage, principal, publicationId, version) {
   try {
-    const raw = JSON.parse(storage.getItem(draftStorageKey(principal, questionnaireId, version)) || 'null');
+    const raw = JSON.parse(storage.getItem(draftStorageKey(principal, publicationId, version)) || 'null');
     if (raw && Array.isArray(raw.selected) && raw.selected.every((x) => typeof x === 'string')
       && raw.answers && typeof raw.answers === 'object' && !Array.isArray(raw.answers)) return raw;
   } catch { /* Local storage can be unavailable or contain a damaged draft. */ }
   return { selected: [], answers: {} };
 }
 
-export function saveQuestionnaireDraft(storage, principal, questionnaireId, version, draft) {
-  try { storage.setItem(draftStorageKey(principal, questionnaireId, version), JSON.stringify(draft)); return true; }
+export function saveQuestionnaireDraft(storage, principal, publicationId, version, draft) {
+  try { storage.setItem(draftStorageKey(principal, publicationId, version), JSON.stringify(draft)); return true; }
   catch { return false; }
 }
 
@@ -95,16 +95,16 @@ const anchorId = (id, version) => `questionnaire-${encodeURIComponent(version.sl
  * @param {FormOptions} options
  */
 export function mountQuestionnaire(host, options) {
-  const { questionnaire: q, version, principal, onSubmit } = options;
+  const { questionnaire: q, publicationId, version, principal, onSubmit } = options;
   let storage;
   try { storage = options.storage ?? window.localStorage; }
   catch { storage = { getItem: () => null, setItem: () => { throw new Error('Local draft storage unavailable'); } }; }
   /** @type {LocalDraft} */
-  let draft = loadQuestionnaireDraft(storage, principal, q.id, version);
+  let draft = loadQuestionnaireDraft(storage, principal, publicationId, version);
   /** @type {{attemptId: string, payload: string}|null} */
   let pending = null;
   let busy = false;
-  const persist = () => saveQuestionnaireDraft(storage, principal, q.id, version, draft);
+  const persist = () => saveQuestionnaireDraft(storage, principal, publicationId, version, draft);
   const root = node('div', 'questionnaire-form');
   const style = node('style', '', `.questionnaire-form{display:grid;gap:1rem}.questionnaire-form .q-section{border-top:1px solid #465064;padding-top:1rem}.questionnaire-form .q-question{border:1px solid #465064;border-radius:.5rem;padding:1rem;margin:.75rem 0}.questionnaire-form .q-items{display:grid;gap:.5rem}.questionnaire-form textarea{display:block;width:100%;min-height:4rem}.questionnaire-form .q-error{color:#f27b7b}.questionnaire-form .q-nav{display:flex;flex-wrap:wrap;gap:.5rem}.questionnaire-form .q-actions{display:flex;flex-wrap:wrap;gap:.5rem}`);
   append(root, style);

@@ -18,7 +18,7 @@ import { canonicalIssueKey, resolveDecisionIssue, type CanonicalIssueReference }
 import {
   CONFIRM_NO, CONFIRM_YES, NONE, canonicalMaps, briefManifest, briefListing, briefRefusal, readingRefusal, readerBrief as briefFor, bindRefusal, checkDecision, checkQuestionnaireDecisions, confirmPayload, confirmState, confirmedWords, decisionHash, logQuestionEvent,
   mapsKey, named, namedIssues, possiblySuperseded, postConfirmEvent, postRoundEvent, validMaps,
-  approveDecisionWithdrawalEvent, presentDecisionRevisionEvent, revisionRelayQuestion, withdrawalScope, standingForIssue,
+  approveDecisionWithdrawalEvent, presentDecisionRevisionEvent, revisionRelayQuestion, withdrawalScope, standingForIssue, checkListRevision, type ListRevision,
   readingsInDispute, intentCandidates, nominateComparisonEvent, recordAnswerEvent, submitQuestionnaireEvent, recordReadingEvent, ruledNotCarriedOut, standing, standingForFinding, waitingOnMe, awaitingReading, parked, withdrawDecisionEvent, reviseAnswerEvent,
   type AnswerVia, type BriefEntry, type FoldedDecision, type Mapping, type SharedDecisions,
 } from "../shared-decisions.js";
@@ -179,7 +179,9 @@ const comparisonSummaries = (s: SharedDecisions) => s.comparisons.map((compariso
 /** Published questionnaire, exact answers and per-principal completion. */
 export async function questionnaireDetail(root: string, id: string, principal?: string) {
   const v = await decisionsView(root);
-  const matches = roundMatches(v.s, id).filter((r) => r.questionnaire);
+  const questionnaires = v.s.rounds.filter((r) => r.questionnaire);
+  const exact = questionnaires.find((r) => r.id === id);
+  const matches = exact ? [exact] : questionnaires.filter((r) => r.label === id || r.questionnaire?.id === id);
   if (matches.length > 1) return { error: ambiguous("questionnaire", id, matches), status: v.status };
   const round = matches[0];
   const q = round?.questionnaire;
@@ -1098,7 +1100,7 @@ export async function reviseDecision(root: string, input: { decision: string; re
   findings: string[]; issues?: CanonicalIssueReference[];
   seen?: { presentation: string; contextHash: string };
   resolves?: { answers: [string, string]; priorResolution: string; shownHash: string };
-  option?: string; words?: string }, via: Via = {}) {
+  option?: string; words?: string; list?: ListRevision }, via: Via = {}) {
   const b = bindDecisions(root, via);
   if ("error" in b) return b;
   if (isAgentActor(b.actor)) return { error: "revision needs the principal's own act" };
@@ -1122,12 +1124,23 @@ export async function reviseDecision(root: string, input: { decision: string; re
     return { error: "revision sources must be current verified direct or questionnaire answers" };
   if (sources.some((a) => a!.by.principal !== b.actor.principal) && !input.seen)
     return { error: "cross-principal revision needs the exact presented source receipt" };
-  if (!!input.option === !!input.words) return { error: "revision needs exactly one option or new words" };
+  const listError = checkListRevision(d, { findings: input.findings, issues }, input.list);
+  if (listError) return { error: listError };
+  const listQuestion = d.presentation?.question;
+  const isList = listQuestion?.kind === "list";
+  if (isList && !input.seen) return { error: "list revision needs the exact shown context receipt" };
+  if (isList ? input.option !== undefined || input.words !== undefined
+    : !!input.option === !!input.words) return { error: "revision needs the exact list answer or one option or new words" };
   if (input.option && !d.options.some((o) => o.label === input.option)) return { error: `${input.option} is not an option of ${d.ref}` };
   if (input.words !== undefined && !input.words.trim()) return { error: "revision words must be nonempty" };
-  const viaAnswer = input.option ? { kind: "direct" as const, option: input.option } : { kind: "direct" as const, words: input.words! };
+  const marked = isList ? new Set(input.list!.marked.map((item) => item.itemId)) : undefined;
+  const checked = isList ? listQuestion.items.filter((item) => marked!.has(item.id)).map((item) => item.text) : [];
+  const viaAnswer = isList
+    ? { kind: "direct" as const, checked: checked.length ? checked : [d.options.find((o) => o.approveAll)!.label] }
+    : input.option ? { kind: "direct" as const, option: input.option } : { kind: "direct" as const, words: input.words! };
   const event = await reviseAnswerEvent(b.cfg.path, b.cfg.universe, b.actor,
     { decision: d.id, hash: d.hash, via: viaAnswer,
+      ...(isList ? { list: input.list } : {}),
       revision: { of: input.revises, findings: input.findings,
         ...(issues.length ? { issues } : {}), ...(input.seen ? { seen: input.seen } : {}),
         ...(input.resolves ? { resolves: input.resolves } : {}) } });

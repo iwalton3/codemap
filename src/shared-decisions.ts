@@ -613,10 +613,60 @@ export function revisionPresentation(d: FoldedDecision, sources: FoldedAnswer[],
   scope: RevisionScope, sourceReceipt: string) {
   const context = { decision: d.id, to,
     answers: sources.map((a) => ({ id: a.id, responseHash: a.responseHash, questionHash: d.hash })),
-    scope, display: { question: d.payload, answers: sources.map((a) => a.words),
+    scope, display: { question: d.payload,
+      ...(d.presentation?.question.kind === "list" ? { questionnaire: d.presentation } : {}),
+      answers: sources.map((a) => a.words),
       action: d.options.map((option) => ({ label: option.label, effects: option.effects })) } };
   return { ...context,
     contextHash: createHash("sha256").update(canonical(context)).digest("hex"), sourceReceipt };
+}
+
+export interface ListRevision {
+  items: string[];
+  approveUnmarked: true;
+  marked: { itemId: string; correction: string }[];
+}
+
+/** A list revision reviews every frozen item that bears on its named scope. */
+export function checkListRevision(d: FoldedDecision, scope: RevisionScope, list: unknown): string | null {
+  const question = d.presentation?.question;
+  if (question?.kind !== "list") return list === undefined ? null : "only a questionnaire list accepts item corrections";
+  if (!list || typeof list !== "object") return "a questionnaire list revision needs its reviewed items and corrections";
+  const raw = list as Partial<ListRevision>;
+  if (raw.approveUnmarked !== true || !Array.isArray(raw.items) || !Array.isArray(raw.marked)
+    || Object.keys(raw).some((key) => !["items", "approveUnmarked", "marked"].includes(key)))
+    return "a list revision must approve unmarked reviewed items";
+  if (!Array.isArray(scope?.findings) || !scope.findings.every((id) => typeof id === "string")
+    || (scope.issues !== undefined && (!Array.isArray(scope.issues) || !scope.issues.every(validIssue))))
+    return "list revision needs an exact selected scope";
+  const selected = new Set([...scope.findings.map((id) => `finding:${id}`),
+    ...(scope.issues ?? []).map((issue) => issueKey(issue))]);
+  const expected = question.items.filter((item) => {
+    const option = d.options.find((o) => o.label === item.text);
+    return option?.effects.some((effect) => effect.findings.some((id) => selected.has(`finding:${id}`))
+      || effectIssues(effect).some((issue) => selected.has(issueKey(issue))));
+  }).map((item) => item.id);
+  if (!expected.length || raw.items.length !== expected.length || new Set(raw.items).size !== expected.length
+    || expected.some((id) => !raw.items!.includes(id))) return "list revision items must match the exact selected scope";
+  const marked = new Set<string>();
+  for (const item of raw.marked) {
+    if (!item || typeof item.itemId !== "string" || !expected.includes(item.itemId)
+      || typeof item.correction !== "string" || !item.correction.trim()
+      || Object.keys(item).some((key) => !["itemId", "correction"].includes(key))
+      || marked.has(item.itemId)) return "each marked list item needs its own correction and stable id";
+    marked.add(item.itemId);
+  }
+  return null;
+}
+
+function listRevisionMatchesAnswer(d: FoldedDecision, list: ListRevision | undefined, via: AnswerVia): boolean {
+  const question = d.presentation?.question;
+  if (question?.kind !== "list") return true;
+  if (!list || via?.kind !== "direct") return false;
+  const marked = new Set(list.marked.map((item) => item.itemId));
+  const labels = question.items.filter((item) => marked.has(item.id)).map((item) => item.text);
+  const checked = labels.length ? labels : [d.options.find((option) => option.approveAll)?.label];
+  return canonical(via.checked) === canonical(checked);
 }
 
 export function foldDecisions(events: LogEvent[]): SharedDecisions {
@@ -710,7 +760,7 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
   };
 
   events.forEach((e, pos) => {
-    const data = e.data as any;
+    let data = e.data as any;
     switch (e.kind) {
       case "decision.round.posted": {
         const r = data?.round;
@@ -781,7 +831,27 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
         break;
       }
 
-      case "decision.answer.revised":
+      case "decision.answer.revised": {
+        const d = exactDecision(str(data?.decision) ?? "");
+        const validList = d && !checkListRevision(d, data?.revision ?? { findings: [], issues: [] }, data?.list)
+          && listRevisionMatchesAnswer(d, data?.list, data?.via);
+        if (d?.presentation?.question.kind === "list" && validList) {
+          const list = data.list as ListRevision;
+          const question = d.presentation.question;
+          const marked = new Set(list.marked.map((item) => item.itemId));
+          data = { ...data, questionnaireMeta: {
+            id: d.presentation.questionnaire.id, publication: d.round,
+            version: questionnaireVersion(rounds.get(d.round)!.questionnaire!), submission: e.id,
+            attemptId: e.id, payloadHash: createHash("sha256").update(canonical(list)).digest("hex"),
+            questionId: question.id, answer: { questionId: question.id, kind: "list", approveUnmarked: true,
+              marked: list.marked },
+            approvals: list.items.filter((id) => !marked.has(id)),
+            corrections: list.marked.map((item) => ({ itemId: item.itemId, text: item.correction, verdict: "pending" as const })),
+          } };
+        }
+        acceptAnswer(e, pos, data);
+        break;
+      }
       case "decision.answer.recorded":
         acceptAnswer(e, pos, data);
         break;
@@ -987,11 +1057,16 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
       && str(relay.toolUseId) && str(relay.answeredAt) && ms(relay.answeredAt) !== undefined
       && relayQuestion && sameQuestion(relay.question, relayQuestion)
       && relay.answer === a.words && targets.every((x) => (ms(x!.givenAt) ?? Infinity) < ms(relay.answeredAt)!);
-    const valid = (a.via === "direct" || !!relayValid) && a.verified && !a.sourceAnswer && targets.length > 0
+    const valid = (a.via === "direct" || a.via === "questionnaire" || !!relayValid) && a.verified && !a.sourceAnswer && targets.length > 0
       && targets.every((x) => x?.verified && !x.sourceAnswer && (x.via === "direct" || x.via === "questionnaire"))
       && new Set(rev.of).size === rev.of.length && scopeValid
+      && !checkListRevision(d, { findings, issues }, (answerEvents.get(a.id)?.data as any)?.list)
+      && listRevisionMatchesAnswer(d, (answerEvents.get(a.id)?.data as any)?.list,
+        (answerEvents.get(a.id)?.data as any)?.via)
       && (!!relayValid || targets.every((x) => causal.saw(sourceEventId(a.id), sourceEventId(x!.id))))
-      && (samePrincipal || !!seen || !!relayValid);
+      && (d.presentation?.question.kind !== "list" || !!seen)
+      && (samePrincipal || !!seen || !!relayValid)
+      && (!rev.seen || !!seen);
     if (!valid) {
       a.revisionInvalid = "revision needs exact source, scope and verified human act-time context";
       a.cancelled = { by: a.id, reason: a.revisionInvalid };
@@ -2293,6 +2368,7 @@ export const withdrawDecisionEvent = (logRoot: string, universe: string, actor: 
 
 export const reviseAnswerEvent = (logRoot: string, universe: string, actor: Actor,
   input: { decision: string; hash: string; via: Extract<AnswerVia, { kind: "direct" | "revision-relay" }>;
+    list?: ListRevision;
     revision: { of: string[]; findings: string[]; issues?: CanonicalIssueReference[];
       seen?: { presentation: string; contextHash: string };
       resolves?: { answers: [string, string]; priorResolution: string; shownHash: string } } }) =>
@@ -2311,6 +2387,10 @@ export const reviseAnswerEvent = (logRoot: string, universe: string, actor: Acto
       || !findings.every((f) => named(d).length ? named(d).includes(f) : d.kind === "words" && f === d.id)
       || !issues.every((issue) => validIssue(issue) && namedIssues(d).some((named) => issueKey(named) === issueKey(issue))))
       return { error: "revision needs exact source answer ids and canonical scope" };
+    const listError = checkListRevision(d, { findings, issues }, input.list);
+    if (listError) return { error: listError };
+    if (!listRevisionMatchesAnswer(d, input.list, input.via))
+      return { error: "list revision answer does not match its marked item corrections" };
     const sources = of.map((id) => d.answers.find((a) => a.id === id));
     if (sources.some((a) => !a?.verified || a.sourceAnswer || (a.via !== "direct" && a.via !== "questionnaire") || a.cancelled))
       return { error: "revision source is not a current direct or questionnaire answer" };
@@ -2332,7 +2412,9 @@ export const reviseAnswerEvent = (logRoot: string, universe: string, actor: Acto
         || sources.some((a) => (ms(a!.givenAt) ?? Infinity) >= ms(proof.answeredAt)!))
         return { error: "relay did not prove exact predecessor context at human answer time" };
     }
-    if (sources.some((a) => a!.by.principal !== actor.principal) && input.via.kind !== "revision-relay") {
+    if (d.presentation?.question.kind === "list" && !seen)
+      return { error: "list revision needs the exact shown context receipt" };
+    if ((seen || sources.some((a) => a!.by.principal !== actor.principal)) && input.via.kind !== "revision-relay") {
       const shown = events.find((e) => e.id === seen?.presentation && e.kind === "decision.revision.presented");
       const expected = shown && revisionPresentation(d, sources as FoldedAnswer[], actor.principal,
         { findings, ...(issues.length ? { issues } : {}) }, str((shown.data as any)?.sourceReceipt) ?? "");
@@ -2340,7 +2422,7 @@ export const reviseAnswerEvent = (logRoot: string, universe: string, actor: Acto
         || !str((shown.data as any)?.sourceReceipt) || shown.subject !== d.id
         || shown.id !== seen?.presentation || expected?.contextHash !== seen?.contextHash
         || canonical(shown.data) !== canonical(expected))
-        return { error: "cross-principal revision needs an exact human presentation receipt" };
+        return { error: "revision needs an exact human presentation receipt for its selected scope" };
     }
     return { kind: "decision.answer.revised", subject: d.id, data: input };
   });

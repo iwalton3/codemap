@@ -70,15 +70,20 @@ test("questionnaire submissions stay with the exact same-label publication", asy
   try {
     t = await team(["alice@acme.test", "bob@acme.test"]);
     const [alice, bob] = t.all;
-    const publish = (text: string) => {
+    const publish = (text: string, label = "Q1") => {
       const prompt = `D1: ${text}`;
-      const questionnaire = { id: "Q1", title: text, sections: [{ id: "s", title: "Section", questions: [
+      const questionnaire = { id: label, title: text, sections: [{ id: "s", title: "Section", questions: [
         { id: "d1", kind: "choice" as const, prompt, allowOther: false, options: [{ id: "yes", label: "Yes" }, { id: "no", label: "No" }] },
       ] }] };
       return { round: { id: "R1", source: text, questionnaire }, decisions: [{ id: "d1", round: "R1", ref: "D1", kind: "options" as const,
         payload: { question: prompt, options: [{ label: "Yes" }, { label: "No" }] },
         options: [{ label: "Yes", effects: [] }, { label: "No", effects: [] }] }] };
     };
+    const plain = await postRound(alice!.repo, { round: { id: "plain", source: "collision" },
+      decisions: [{ ...question("Plain round?"), round: "plain" }] }) as any;
+    assert.equal(plain.ok, true, JSON.stringify(plain));
+    const collision = await postRound(alice!.repo, publish("Questionnaire label collides?", plain.round)) as any;
+    assert.equal(collision.ok, true, JSON.stringify(collision));
     const l = await postRound(alice!.repo, publish("Left publication?")) as any;
     const r = await postRound(bob!.repo, publish("Right publication?")) as any;
     assert.equal(l.ok, true, JSON.stringify(l));
@@ -91,6 +96,12 @@ test("questionnaire submissions stay with the exact same-label publication", asy
     assert.equal((await submitQuestionnaire(bob!.repo, answer(r, "no")) as any).ok, true);
     await settle(t);
     for (const member of t.all) {
+      const collided = await questionnaireDetail(member.repo, plain.round) as any;
+      assert.equal(collided.id, collision.round);
+      const { questionnaireStatus } = await import("./ops/questionnaire-status.js");
+      assert.equal((await questionnaireStatus(member.repo, plain.round) as any).id, collision.round);
+      const { questionnaireList } = await import("./ops/decisions.js");
+      assert.ok((await questionnaireList(member.repo) as any).questionnaires.some((q: any) => q.id === collision.round));
       const bare = await questionnaireDetail(member.repo, "Q1") as any;
       assert.match(bare.error, /ambiguous/);
       const left = await questionnaireDetail(member.repo, l.round) as any;

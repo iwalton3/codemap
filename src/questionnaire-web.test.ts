@@ -50,3 +50,15 @@ test("a list explicitly approves unmarked items as one reviewed unit", () => {
   if (result.ok) assert.deepEqual(result.value.answers, [{ questionId: "list", kind: "list", approveUnmarked: true,
     marked: [{ itemId: "a", correction: "Change A" }, { itemId: "c", correction: "Change C" }] }]);
 });
+
+
+test("equal-text publications with one label have separate drafts and counts", () => {
+  const storage = memory();
+  const draft = { selected: ["list"], answers: { list: { kind: "list", marked: [] } } };
+  saveQuestionnaireDraft(storage, "alice", "publication-a", "v1", draft);
+  assert.deepEqual(loadQuestionnaireDraft(storage, "alice", "publication-a", "v1"), draft);
+  assert.deepEqual(loadQuestionnaireDraft(storage, "alice", "publication-b", "v1"), { selected: [], answers: {} });
+  assert.equal(Object.keys(loadQuestionnaireDraft(storage, "alice", "publication-b", "v1").answers).length, 0);
+  assert.deepEqual(loadQuestionnaireDraft(storage, "bob", "publication-a", "v1"), { selected: [], answers: {} });
+  assert.deepEqual(loadQuestionnaireDraft(storage, "alice", "publication-a", "v2"), { selected: [], answers: {} });
+});

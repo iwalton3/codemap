@@ -474,7 +474,7 @@ const server = createServer(async (req, res) => {
       const root = rootFor(body.u ?? null);
       const out = await withLock<unknown>(root, () => ops.reviseDecision(root, {
         decision: String(body.decision ?? ""), revises: body.revises, findings: body.findings, issues: body.issues,
-        seen: body.seen, resolves: body.resolves, option: body.option, words: body.words,
+        seen: body.seen, resolves: body.resolves, option: body.option, words: body.words, list: body.list,
       }));
       res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
       res.end(JSON.stringify(out));

@@ -236,10 +236,19 @@ describe("the decisions UI", { skip: pw ? false : "playwright not resolvable (se
     await listRuling.getByLabel(new RegExp(`finding ${finding}`)).check();
     await listRuling.getByRole('button', { name: 'review exact revision context' }).click();
     await listRuling.locator('pre').waitFor();
-    await listRuling.getByRole('button', { name: 'revise selected scope: mark Keep A wrong' }).click();
+    const reviseList = listRuling.getByRole('button', { name: 'revise reviewed list' });
+    assert.equal(await reviseList.isDisabled(), false, "the reviewed item can be explicitly approved");
+    await listRuling.getByLabel('Mark wrong: Keep A').check();
+    await page.waitForFunction(() => [...document.querySelectorAll('button')].some((button) =>
+      button.textContent?.includes('revise reviewed list') && button.disabled));
+    assert.equal(await reviseList.isDisabled(), true, "marking wrong requires a correction");
+    await listRuling.getByPlaceholder('Correction for Keep A').fill('Keep A must change');
+    await reviseList.click();
     await listRuling.getByText('answer history (2)').waitFor();
     const listRevised = await ops.decisionRound(root, 'RQ-browser') as any;
-    assert.ok(listRevised.decisions.find((d: any) => (d.label ?? d.id) === 'q-list').answers.some((a: any) => a.revision));
+    const revision = listRevised.decisions.find((d: any) => (d.label ?? d.id) === 'q-list').answers.find((a: any) => a.revision);
+    assert.deepEqual(revision.questionnaire.corrections, [{ itemId: 'item-a', text: 'Keep A must change', verdict: 'pending' }]);
+    assert.match((await listRuling.textContent())!, /Keep A must change/);
     await listRuling.getByPlaceholder('reason for withdrawal').fill('The list needs a fresh question');
     await listRuling.getByPlaceholder('reason for withdrawal').press('Tab');
     await listRuling.getByRole('button', { name: 'withdraw this ruling' }).click();
