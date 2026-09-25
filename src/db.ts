@@ -892,6 +892,22 @@ function migrate(d: DatabaseSync): void {
     );
     CREATE INDEX IF NOT EXISTS ix_reader_verdicts_answer ON reader_verdicts(answer);
 
+    -- New reader purposes use a compound identity. The answer-keyed tables above remain
+    -- intact while existing interpretation calls and pending receipts complete.
+    CREATE TABLE IF NOT EXISTS reader_work_requests (
+      purpose TEXT NOT NULL, request_id TEXT NOT NULL, body TEXT NOT NULL,
+      PRIMARY KEY (purpose, request_id)
+    );
+    CREATE TABLE IF NOT EXISTS reader_work_receipts (
+      seq INTEGER PRIMARY KEY AUTOINCREMENT,
+      purpose TEXT NOT NULL, request_id TEXT NOT NULL, receipt TEXT NOT NULL UNIQUE,
+      body TEXT NOT NULL, held_at TEXT NOT NULL, state TEXT NOT NULL,
+      why TEXT, call TEXT,
+      FOREIGN KEY (purpose, request_id) REFERENCES reader_work_requests(purpose, request_id)
+    );
+    CREATE INDEX IF NOT EXISTS ix_reader_work_receipts_request
+      ON reader_work_receipts(purpose, request_id, seq);
+
     -- Requirements (COD-29). A separate table from nodes/node_versions on purpose,
     -- not a new LogicalNodeType: the two kinds have inverted truthmakers, and sharing
     -- storage is what would let a requirement reach the staleness path. See schema.ts.
