@@ -647,8 +647,8 @@ test("a local finding reported fixed is not left counted as open", async () => {
   } finally { u.cleanup(); }
 });
 
-/** A closed finding an agent finds live again has a word for it now. */
-test("an agent asks to REOPEN rather than writing it in the thread", async () => {
+/** A closed finding an agent finds live again can reopen the closure it observed. */
+test("an agent reopens a shared finding against its observed closure", async () => {
   const u = await universe();
   try {
     let mine!: { id: string };
@@ -660,13 +660,13 @@ test("an agent asks to REOPEN rather than writing it in the thread", async () =>
       const r = await closeFinding(u.root, {
         id: mine.id, result: "answered", detail: "the submitter force-pushed the guard away; it is live again",
         state: "created",
-      }) as { asked?: string };
-      assert.equal(r.asked, "reopen", "reopening is a person's, and now it is sayable");
+      }) as { error?: string };
+      assert.equal(r.error, undefined);
     });
     const f = (await readFinding(u.root, mine.id))!;
-    assert.equal(f.state, "refuted", "still closed until a person acts");
-    assert.equal(f.pending?.ask, "reopen");
-    assert.match(f.pending!.rationale, /force-pushed/);
+    assert.equal(f.state, "created");
+    assert.equal(f.closed, undefined);
+    assert.equal(f.pending, undefined);
   } finally { u.cleanup(); }
 });
 

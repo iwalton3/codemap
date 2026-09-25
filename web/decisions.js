@@ -23,7 +23,7 @@ export const decisionsUrl = (u, round) => `/u/${u}/decisions/${round ? round + '
 /**
  * @typedef {{ params: { universe: string, round?: string }, query: Record<string, string> }} DecProps
  * @typedef {{ d: ApiMap['/api/decisions']|null, r: ApiMap['/api/decisions/round']|null, busy: string|null, err: string|null,
- *   words: Record<string,string>, checked: Record<string,string[]> }} DecState
+ *   words: Record<string,string>, reasons: Record<string,string>, checked: Record<string,string[]> }} DecState
  * @extends {Component<DecProps, DecState>}
  */
 class DecisionsPage extends Component {
@@ -32,7 +32,7 @@ class DecisionsPage extends Component {
   constructor(props) {
     super(props);
     /** @type {DecState} */
-    this.state = { d: null, r: null, busy: null, err: null, words: {}, checked: {} };
+    this.state = { d: null, r: null, busy: null, err: null, words: {}, reasons: {}, checked: {} };
   }
   load = this.createTask(async () => {
     const u = this.props.params.universe, round = this.props.params.round;
@@ -55,6 +55,18 @@ class DecisionsPage extends Component {
     } catch (e) { this.state.err = errText(e); } finally { this.state.busy = null; }
   }
 
+  async withdraw(decision, answer) {
+    if (this.state.busy) return;
+    this.state.busy = decision; this.state.err = null;
+    try {
+      const r = await attestedPost('/api/decisions/withdraw', {
+        u: this.props.params.universe, decision, ...(answer ? { answer } : {}), reason: this.state.reasons[decision] || '',
+      });
+      if (r && r.error) { this.state.err = r.error; return; }
+      this.load.run();
+    } catch (e) { this.state.err = errText(e); } finally { this.state.busy = null; }
+  }
+
   toggle(decision, label) {
     const now = this.state.checked[decision] || [];
     this.state.checked = { ...this.state.checked, [decision]: now.includes(label) ? now.filter((x) => x !== label) : [...now, label] };
@@ -64,18 +76,21 @@ class DecisionsPage extends Component {
   decision(d, blocked) {
     // Blocked, answering is refused anyway (P3.1 (4)): no controls that cannot work.
     const s = d.standing, busy = this.state.busy === d.id;
-    const moved = !!d.replacedBy, inactive = blocked || !!d.cancellation || !!d.confirms?.invalid || !!d.resolutionInvalid;
+    const moved = !!d.replacedBy, inactive = blocked || !!d.cancellation || !!d.withdrawn || !!d.confirms?.invalid || !!d.resolutionInvalid;
     const replaced = moved || inactive;
     const checked = this.state.checked[d.id] || [];
     return html`<div class="op-card ${replaced ? 'moved' : ''}">
       <div class="ft"><b>${d.ref}</b> <span class="qbadge">${d.kind}</span>
         ${when(!!d.confirm, () => html`<span class="qbadge ${d.confirm.state === 'open' ? '' : 'drift'}">confirm of your words on ${d.confirm.of ?? '(gone)'}: ${d.confirm.state}</span>`)}
         ${when(moved, () => html`<span class="qbadge drift">replaced by ${d.replacedBy}</span>`)}
+        ${when(!!d.withdrawn, () => html`<span class="qbadge drift">withdrawn</span>`)}
         ${when(!!s, () => html`<span class="qbadge ${s.verified ? '' : 'drift'}">${s.verified ? 'answered' : 'answered, unverified'}</span>`)}
       </div>
       <div class="fs">${d.payload.question}</div>
       ${each(d.options, (o) => html`<div class="fs dim">• <b>${o.label}</b>${d.confirms?.invalid ? ' — inactive' : o.effects.length ? ' — ' + o.effects.map((e) => `${e.on === 'settle' ? 'close as ' + e.as : 'fix'}: ${e.findings.join(', ')}`).join('; ') : ''}</div>`, (o) => o.label)}
       ${when(!!d.cancellation, () => html`<div class="fs dim">Cancelled: ${d.cancellation.reason}</div>`)}
+      ${when(!!d.withdrawn, () => html`<div class="fs dim">Withdrawn: ${d.withdrawn.reason} (${d.withdrawn.id})</div>`)}
+      ${each((d.withdrawals || []).filter((w) => w.state === 'conflict'), (w) => html`<div class="fs dim">Withdrawal pending conflict (${w.id}): ${w.reason}. Answer(s) ${(w.conflictingAnswers || []).join(', ') || 'another withdrawal'} need resolution before work continues.</div>`, (w) => w.id)}
       ${each(d.answers.filter((a) => a.cancelled), (a) => html`<div class="fs dim">Previous answer: “${a.words}” — ${a.cancelled.reason}${a.reading ? '; reading ' + a.reading.id + ' retained as history' : ''}</div>`, (a) => a.id)}
       ${when(!!d.resolutionInvalid, () => html`<div class="fs dim">This resolution is invalid: ${d.resolutionInvalid}. Ask a valid question showing both exact answers.</div>`)}
       ${when(!!d.confirms?.invalid, () => html`<div class="fs dim">Invalid confirmation: ${d.confirms.invalid}. Its options cannot act on findings; ask a valid question.</div>`)}
@@ -84,6 +99,12 @@ class DecisionsPage extends Component {
       ${when(!!(d.possiblySuperseded && d.possiblySuperseded.length), () => html`<div class="fs"><span class="qbadge drift">possibly superseded</span>
         your later words may change this — until they are read or you confirm, the ruling above stands:
         ${each(d.possiblySuperseded || [], (p) => html`<div class="fs dim">“${p.words}” (${p.state})</div>`, (p) => p.answer)}</div>`)}
+      ${when(!blocked && !d.withdrawn && !d.confirms && !d.replacedBy, () => html`<div class="op-actions">
+        <input placeholder="reason for withdrawal" value="${this.state.reasons[d.id] || ''}"
+          on-change="${(e, v) => { this.state.reasons = { ...this.state.reasons, [d.id]: v }; }}">
+        <button class="pullbtn" disabled="${busy || !(this.state.reasons[d.id] || '').trim()}"
+          on-click="${() => this.withdraw(d.id, s?.id)}">${s ? 'withdraw this ruling' : 'withdraw unanswered question'}</button>
+      </div>`)}
       ${when(!replaced && d.kind === 'options', () => html`<div class="op-actions">
         ${each(d.options, (o) => html`<button class="pullbtn" disabled="${busy}" on-click="${() => this.answer(d.id, o.park ? { park: o.park } : { option: o.label })}">${o.label}</button>`, (o) => o.label)}
       </div>`)}

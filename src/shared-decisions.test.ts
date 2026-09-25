@@ -1297,3 +1297,55 @@ test("round five: nominated cross-question scope holds work without choosing an 
   assert.ok(!intentCandidates(foldDecisions([round, alice, bob, nomination, correction])).some((x) => x.nomination?.id === nomination.id),
     "a nomination of historical words cannot keep holding after a current correction");
 });
+
+
+test("round five: concurrent answer keeps a withdrawal attempt visible and restricts work", () => {
+  const base: any = { ...round, id: "withdraw-base", writer: "w-base", writerPrev: "GENESIS", after: [] };
+  const bob: any = { id: "answer-bob", kind: "decision.answer.recorded", subject: "d1", actor: { principal: "bob" },
+    at: at(21), writer: "w-bob", writerPrev: "GENESIS", after: [base.id],
+    data: { decision: "d1", hash: h(d1), via: { kind: "direct", option: "No" } } };
+  const questionWithdrawal: any = { id: "withdraw-question", kind: "decision.withdrawn", subject: "d1", actor: { principal: "alice" },
+    at: at(22), writer: "w-alice", writerPrev: "GENESIS", after: [base.id],
+    data: { decision: "d1", reason: "obsolete question", knownAnswers: [] } };
+  for (const events of [[base, bob, questionWithdrawal], [base, questionWithdrawal, bob]]) {
+    const out = foldDecisions(events);
+    const d = out.decisions.find((x) => x.id === "d1")!;
+    assert.equal(d.withdrawn, undefined);
+    assert.equal(d.withdrawals?.[0]?.state, "conflict");
+    assert.deepEqual(d.withdrawals?.[0]?.conflictingAnswers, [bob.id]);
+    assert.equal(standing(d)?.id, bob.id, "the independent answer remains source evidence");
+    assert.ok(heldFindings(out, () => true).get("F3")?.some((h) => h.why === "withdrawal"));
+    assert.ok(!ruledNotCarriedOut(out, () => true).some((x) => x.decision === "d1"));
+    assert.ok(waitingOnMe(out, "2026-09-23").some((x) => /withdrawal withdraw-question conflicts/.test(x.why)));
+  }
+
+  const knowinglyLate: any = { ...bob, id: "answer-after-withdrawal", at: at(23), after: [questionWithdrawal.id] };
+  const late = foldDecisions([base, questionWithdrawal, knowinglyLate]);
+  const lateDecision = late.decisions.find((x) => x.id === "d1")!;
+  assert.equal(lateDecision.withdrawals?.[0]?.state, "applied");
+  assert.equal(lateDecision.withdrawn?.id, questionWithdrawal.id);
+  assert.equal(standing(lateDecision), undefined);
+  assert.ok(lateDecision.answers.find((a) => a.id === knowinglyLate.id)?.cancelled,
+    "a knowingly late answer remains history without reactivating the question");
+
+  const relayedLate: any = { ...bob, id: "relayed-after-pull", at: at(23), after: [questionWithdrawal.id],
+    data: { ...bob.data, via: { kind: "message", session: "s", entryId: "message-1", text: "No", at: at(20), round: "R1" } } };
+  const relayed = foldDecisions([base, questionWithdrawal, relayedLate]);
+  const relayedDecision = relayed.decisions.find((x) => x.id === "d1")!;
+  assert.equal(relayedDecision.withdrawn, undefined);
+  assert.equal(relayedDecision.withdrawals?.[0]?.state, "conflict");
+  assert.deepEqual(relayedDecision.withdrawals?.[0]?.conflictingAnswers, [relayedLate.id]);
+  assert.equal(relayedDecision.answers.find((a) => a.id === relayedLate.id)?.cancelled, undefined,
+    "a recorder's later pull is not proof the person saw the withdrawal");
+  assert.ok(heldFindings(relayed, () => true).get("F3")?.some((h) => h.why === "withdrawal"));
+
+  const alice: any = { ...bob, id: "answer-alice", actor: { principal: "alice" }, at: at(20), writer: "w-alice", data: { ...bob.data, via: { kind: "direct", option: "No" } } };
+  const sourceWithdrawal: any = { ...questionWithdrawal, id: "withdraw-answer", writerPrev: alice.id, after: [alice.id],
+    data: { decision: "d1", answer: alice.id, reason: "I retract my ruling", knownAnswers: [alice.id] } };
+  const out = foldDecisions([base, alice, bob, sourceWithdrawal]);
+  const d = out.decisions.find((x) => x.id === "d1")!;
+  assert.equal(d.withdrawals?.[0]?.state, "conflict");
+  assert.deepEqual(d.withdrawals?.[0]?.conflictingAnswers, [bob.id]);
+  assert.equal(d.answers.find((a) => a.id === alice.id)?.withdrawn, undefined);
+  assert.ok(heldFindings(out, () => true).get("F3")?.some((h) => h.why === "withdrawal"));
+});

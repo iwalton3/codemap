@@ -20,7 +20,7 @@ import { db as openDb } from "./db.js";
 import type { State } from "./schema.js";
 import { shareFinding, closeFinding, bindDecisions, reassignFinding, sharedFindings, sharedSync } from "./ops-shared.js";
 import { reviewQueue } from "./ops/annotations.js";
-import { postRound, postPrevalidated, logQuestion, relayAnswer, answerDirect, decisionRounds, decisionRound, decisionStatus, waitDecisionStatus, nominateComparison, readerBrief, recordReading, submitVerdict as submitVerdictOp, confirmReading, parseVerdict, confirmId } from "./ops/decisions.js";
+import { postRound, postPrevalidated, logQuestion, relayAnswer, answerDirect, decisionRounds, decisionRound, decisionStatus, waitDecisionStatus, nominateComparison, readerBrief, recordReading, submitVerdict as submitVerdictOp, confirmReading, parseVerdict, confirmId, withdrawDecision } from "./ops/decisions.js";
 import { discard } from "./test-tmp.js";
 import { decisionsView, holdBuilds } from "./ops/decision-holds.js";
 import { decisionScope, foldDecisions, logQuestionEvent, postConfirmEvent, recordReadingEvent } from "./shared-decisions.js";
@@ -349,21 +349,22 @@ test("an unverifiable call writes nothing", async () => {
   } finally { u.cleanup(); }
 });
 
-test("GATE (vanishing) / A4 + K1: answered before the question was replaced and logged after, the answer counts on it — through log_question", async () => {
+test("round five: a related question does not erase an earlier answer logged later", async () => {
   const u = await universe();
   try {
     const f = await withFinding(u);
     await asAgent(async () => {
       await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f)] });
       await new Promise((r) => setTimeout(r, 30));
-      await postRound(u.root, { round: { id: "R2", source: "x" }, decisions: [{ ...decision("d1b", f, {}, "D7", "R2"), supersedes: "d1" }] });
-      // Answered between the two postings, logged only now — after the replacement.
+      await postRound(u.root, { round: { id: "R2", source: "x" }, decisions: [{ ...decision("d1b", f, {}, "D7", "R2"), follows: "d1" }] });
+      // Answered between the two postings, logged only now — after the related question.
       const [one, two] = [(await decisionRound(u.root, "R1") as any).round.at, (await decisionRound(u.root, "R2") as any).round.at];
       transcript(u.transcripts).ask("toolu_1", [payloadFor(f)], { [payloadFor(f).question]: "Not a defect" }, new Date((Date.parse(one) + Date.parse(two)) / 2).toISOString());
       const r = await logQuestion(u.root, { toolUseId: "toolu_1", round: "R1" }, {}, u.transcripts) as any;
       assert.equal(r.answered[0]?.recorded, true, JSON.stringify(r));
       const view = await decisionRounds(u.root) as any;
-      assert.ok(view.ruledNotCarriedOut.some((x: any) => x.finding === f && x.replacedBy === "d1b"), "the ruling holds until the replacement is answered (B2.4)");
+      assert.ok(view.ruledNotCarriedOut.some((x: any) => x.finding === f && x.decision === "d1"), "the original ruling keeps its own identity");
+      assert.ok(view.waitingOnYou.some((x: any) => x.decision === "d1b"), "the related question remains unanswered");
     });
   } finally { u.cleanup(); }
 });
@@ -636,8 +637,6 @@ test("R2 (P1.2): a reader whose reading the fold rejected was never used — it 
     const [f, g] = [await withFinding(u), await withFinding(u)];
     await asAgent(async () => {
       await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f), decision("d2", g, {}, "D2"), decision("d3", f, {}, "D3")] });
-      await new Promise((r) => setTimeout(r, 30));
-      await postRound(u.root, { round: { id: "R2", source: "x" }, decisions: [{ ...decision("d2b", g, {}, "D9", "R2"), supersedes: "d2" }] });
       const t = transcript(u.transcripts);
       t.typed("m1", "D2 is real", later(1));
       t.typed("m2", "D3 is not a defect", later(1));
@@ -645,14 +644,14 @@ test("R2 (P1.2): a reader whose reading the fold rejected was never used — it 
       const a2 = (await relayAnswer(u.root, { round: "R1", decision: "d3", session: SESSION, entryId: "m2" }, {}, u.transcripts) as any).answer;
       const brief1 = await briefOf(u.root, a1, [{ decision: "d1", option: "Real, fix it" }]);
       const x = nextReader();
-      // A foreign writer's reading of a1 by x, naming D2 — replaced before the words were typed.
+      // A foreign writer's reading of a1 by x, naming an unposted D9 outside its issued brief.
       const b = bindDecisions(u.root) as any;
-      await recordReadingEvent(b.cfg.path, b.cfg.universe, b.actor, { answer: a1, session: { maps: [{ decision: "d2", option: "Real, fix it" }] }, reader: { agent: x, verdict: [{ decision: "d2", option: "Real, fix it" }], launchedAt: later(3), brief: brief1, verified: { session: SESSION, toolUseId: "t" } } });
+      await recordReadingEvent(b.cfg.path, b.cfg.universe, b.actor, { answer: a1, session: { maps: [{ decision: "d9", option: "Real, fix it" }] }, reader: { agent: x, verdict: [{ decision: "d9", option: "Real, fix it" }], launchedAt: later(3), brief: brief1, verified: { session: SESSION, toolUseId: "t" } } });
       const r = await reads(u, t, a2, "D3 → Not a defect", { prompt: await briefOf(u.root, a2, [{ decision: "d3", option: "Not a defect" }]), agentId: x });
       assert.equal(r.rec.agree, true, JSON.stringify(r));
 
-      const refused = await submitVerdict(u.root, { answer: a1, verdict: "D2 → Real, fix it" }, {}, u.transcripts) as any;
-      assert.match(String(refused.refused), /names D2, which is not a question the reader's brief listed/, JSON.stringify(refused));
+      const refused = await submitVerdict(u.root, { answer: a1, verdict: "D9 → Real, fix it" }, {}, u.transcripts) as any;
+      assert.match(String(refused.refused), /names D9, which is not a question the reader's brief listed/, JSON.stringify(refused));
       assert.match(String(refused.note), /not held/);
     });
   } finally { u.cleanup(); }
@@ -786,12 +785,12 @@ test("confirm_reading refuses what the fold would void, and a replacement of a c
       assert.match(String(err(await confirmReading(u.root, { answer: a, maps: [{ decision: "d9", option: null }] }))), /not a question in round R1/);
       const c = await confirmReading(u.root, { answer: a, maps: [{ decision: "d1", option: "Real, fix it" }] }) as any;
       assert.equal(c.ok, true, JSON.stringify(c));
-      assert.match(String(err(await postRound(u.root, { round: { id: "R2", source: "x" }, decisions: [{ ...decision("dz", f, {}, "D1", "R2"), supersedes: c.confirm }] }))), /is a confirm/);
+      assert.match(String(err(await postRound(u.root, { round: { id: "R2", source: "x" }, decisions: [{ ...decision("dz", f, {}, "D1", "R2"), supersedes: c.confirm }] }))), /automatic question supersession/);
     });
   } finally { u.cleanup(); }
 });
 
-test("Q5/Q6: unread words on a superseded question cannot gain a new reading or confirmation", async () => {
+test("round five: withdrawn words cannot gain a new reading or confirmation", async () => {
   const u = await universe();
   try {
     const f = await withFinding(u);
@@ -799,13 +798,12 @@ test("Q5/Q6: unread words on a superseded question cannot gain a new reading or 
       await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f)] });
       const t = transcript(u.transcripts);
       t.typed("m1", "close it", later(0.02));
-      await new Promise((r) => setTimeout(r, 60));
-      await postRound(u.root, { round: { id: "R2", source: "x" }, decisions: [{ ...decision("d1b", f, {}, "D7", "R2"), supersedes: "d1" }] });
       const a = (await relayAnswer(u.root, { round: "R1", decision: "d1", session: SESSION, entryId: "m1" }, {}, u.transcripts) as any).answer;
+      await asPerson(async () => { assert.equal((await withdrawDecision(u.root, { decision: "d1", answer: a, reason: "I retract these words" }) as any).ok, true); });
       const view = await decisionRounds(u.root) as any;
       assert.ok(!view.awaitingReading.some((x: any) => x.answer === a));
-      assert.match(String(err(await readerBrief(u.root, { answer: a, maps: [{ decision: "d1", option: "Not a defect" }] }))), /superseded/);
-      assert.match(String(err(await confirmReading(u.root, { answer: a, maps: [{ decision: "d1", option: "Not a defect" }] }))), /superseded/);
+      assert.match(String(err(await readerBrief(u.root, { answer: a, maps: [{ decision: "d1", option: "Not a defect" }] }))), /withdrawn/);
+      assert.match(String(err(await confirmReading(u.root, { answer: a, maps: [{ decision: "d1", option: "Not a defect" }] }))), /withdrawn/);
     });
   } finally { u.cleanup(); }
 });
@@ -961,7 +959,7 @@ test("C3 (P3.1 (3), S0.8(e)): an id under two review keys is held on both rows, 
   } finally { u.cleanup(); }
 });
 
-test("P5 (bulk 8–10): posting refuses duplicate ids, a second or chained replacement, and a finding the team does not have", async () => {
+test("round five: posting refuses duplicate ids and supersession, permits related questions, and requires published findings", async () => {
   const u = await universe();
   try {
     const f = await withFinding(u);
@@ -971,11 +969,10 @@ test("P5 (bulk 8–10): posting refuses duplicate ids, a second or chained repla
       assert.match(String(err(dup)), /share the id d1/, JSON.stringify(dup).slice(0, 300));
       assert.equal((await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f), decision("d2", g, {}, "D2")] }) as any).ok, true);
 
-      const re = (id: string, ref: string, round: string, supersedes: string) => ({ ...decision(id, f, {}, ref, round), supersedes });
-      assert.match(String(err(await postRound(u.root, { round: { id: "R2", source: "x" }, decisions: [re("d1b", "D1", "R2", "d1"), re("d1c", "D2", "R2", "d1")] }))), /two decisions in this round replace d1/);
-      assert.equal((await postRound(u.root, { round: { id: "R2", source: "x" }, decisions: [re("d1b", "D1", "R2", "d1")] }) as any).ok, true);
-      assert.match(String(err(await postRound(u.root, { round: { id: "R3", source: "x" }, decisions: [re("d1c", "D1", "R3", "d1")] }))), /d1b already replaced — replace d1b instead/);
-      assert.equal((await postRound(u.root, { round: { id: "R3", source: "x" }, decisions: [re("d1c", "D1", "R3", "d1b")] }) as any).ok, true, "the chain stays linear");
+      const newQuestion = { ...decision("d1b", f, {}, "D1", "R2"), follows: "d1" };
+      assert.match(String(err(await postRound(u.root, { round: { id: "R2", source: "x" }, decisions: [{ ...newQuestion, supersedes: "d1" }] }))), /automatic question supersession/);
+      assert.equal((await postRound(u.root, { round: { id: "R2", source: "x" }, decisions: [newQuestion] }) as any).ok, true);
+      assert.equal((await postRound(u.root, { round: { id: "R3", source: "x" }, decisions: [{ ...decision("d1c", f, {}, "D1", "R3"), follows: "d1" }] }) as any).ok, true, "multiple related questions retain independent identity");
 
       const local = { ...(await readFinding(u.root, f))!, id: "f_local" };
       await writeLocalFinding(u.root, local as any, 7);
@@ -1111,7 +1108,7 @@ test("GATE (impl-2, held offered as work): an open confirm withholds its finding
   } finally { u.cleanup(); }
 });
 
-test("GATE (impl-2, vanishing): a rejected first reading strands nothing, an empty one consumes nothing, and a confirm whose words were cut stays listed", async () => {
+test("round five: rejected readings strand nothing and withdrawal cancels a pending confirmation", async () => {
   const u = await universe();
   try {
     const f = await withFinding(u);
@@ -1129,12 +1126,12 @@ test("GATE (impl-2, vanishing): a rejected first reading strands nothing, an emp
       assert.ok(view.awaitingReading.some((x: any) => x.answer === a), "the words still wait for a reader");
       const c = await confirmReading(u.root, { answer: a, maps: [{ decision: "d1", option: "Not a defect" }] }) as any;
       assert.equal(c.ok, true, JSON.stringify(c));
-      // Another clone's replacement of D1, posted before the words were typed, arrives: the words are cut.
-      await postRound(u.root, { round: { id: "R2", source: "x" }, decisions: [{ ...decision("d1b", f, {}, "D7", "R2"), supersedes: "d1" }] });
+      // The person withdraws those words; the pending confirmation loses authority.
+      await asPerson(async () => { assert.equal((await withdrawDecision(u.root, { decision: "d1", answer: a, reason: "I retract these words" }) as any).ok, true); });
       const round = await decisionRound(u.root, "R1") as any;
       assert.equal(round.decisions.find((x: any) => x.id === c.confirm)?.confirm.state, "no longer needed", JSON.stringify(round.decisions.map((x: any) => x.confirm)));
       view = await decisionRounds(u.root) as any;
-      assert.ok(!view.waitingOnYou.some((w: any) => w.decision === c.confirm), "an unread superseded question cannot gain a new interpretation");
+      assert.ok(!view.waitingOnYou.some((w: any) => w.decision === c.confirm), "withdrawn words cannot gain a new interpretation");
     });
   } finally { u.cleanup(); }
 });
@@ -1207,7 +1204,7 @@ test("GATE (codex round, closed unseen): reading, submitting, recording and conf
   } finally { u.cleanup(); }
 });
 
-test("GATE (codex round, held offered as work): a (none) confirm holds, a finding a replacement drops stays held until it rules, and a No stays answered after later Other words", async () => {
+test("round five: a (none) confirm holds, related questions keep independent holds, and No stays answered after Other", async () => {
   const heldOn = async (root: string, id: string) => ((await reviewQueue(root, { assignedOnly: false }) as any).queue.find((x: any) => x.id === id)?.held ?? []) as any[];
   const u = await universe();
   try {
@@ -1232,11 +1229,13 @@ test("GATE (codex round, held offered as work): a (none) confirm holds, a findin
         options: [{ label: "Not a defect", effects: [{ findings: [f, g], on: "settle" as const, as: "refuted" as const }] }, { label: "Real, fix it", effects: [{ findings: [f, g], on: "unblock" as const }] }] };
       await postRound(v.root, { round: { id: "R1", source: "x" }, decisions: [two] });
       await tick();
-      await postRound(v.root, { round: { id: "R2", source: "x" }, decisions: [{ ...decision("d1b", f, {}, "D7", "R2"), supersedes: "d1" }] });
-      assert.ok((await heldOn(v.root, g)).some((h: any) => h.decision === "d1" && h.why === "undecided"), "dropped by D1b, held by D1");
+      await postRound(v.root, { round: { id: "R2", source: "x" }, decisions: [{ ...decision("d1b", f, {}, "D7", "R2"), follows: "d1" }] });
+      assert.ok((await heldOn(v.root, g)).some((h: any) => h.decision === "d1" && h.why === "undecided"), "related question does not release D1's hold");
     });
     await asPerson(async () => { await answerDirect(v.root, { decision: "d1b", option: "Real, fix it" }); });
-    assert.equal((await heldOn(v.root, g)).length, 0, "released once D1b rules");
+    assert.ok((await heldOn(v.root, g)).some((h: any) => h.decision === "d1"), "D1b rules only its own scope");
+    await asPerson(async () => { assert.equal((await withdrawDecision(v.root, { decision: "d1", reason: "No longer asking about both" }) as any).ok, true); });
+    assert.equal((await heldOn(v.root, g)).length, 0, "released by explicit withdrawal of D1");
   } finally { v.cleanup(); }
   const w = await universe();
   try {
@@ -1441,5 +1440,90 @@ test("round five: nominate an exact independent pair outside inferred overlap", 
     const view = await decisionRounds(u.root) as any;
     assert.ok(view.intentCandidates.some((x: any) => x.evidence === "nominated" && x.findings.includes(f)));
     assert.ok((await decisionsView(u.root)).mark(f).held);
+  } finally { u.cleanup(); }
+});
+
+
+test("round five lifecycle: explicit withdrawal retires own ruling without reviving an older answer", async () => {
+  const u = await universe();
+  try {
+    const f = await withFinding(u);
+    await asAgent(async () => {
+      assert.equal((await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f)] }) as any).ok, true);
+      assert.match(String(err(await postRound(u.root, { round: { id: "R2", source: "x" }, decisions: [{ ...decision("d2", f, {}, "D2", "R2"), supersedes: "d1" }] }))), /automatic question supersession/);
+      assert.equal((await postRound(u.root, { round: { id: "R2", source: "x" }, decisions: [{ ...decision("d2", f, {}, "D2", "R2"), follows: "d1" }] }) as any).ok, true);
+    });
+    let answer = "";
+    await asPerson(async () => {
+      const earlier = (await answerDirect(u.root, { decision: "d1", option: "Real, fix it" }) as any).answer;
+      answer = (await answerDirect(u.root, { decision: "d1", option: "Not a defect" }) as any).answer;
+      assert.notEqual(earlier, answer);
+      const out = await withdrawDecision(u.root, { decision: "d1", answer, reason: "I retract that judgment" }) as any;
+      assert.equal(out.ok, true, JSON.stringify(out));
+      assert.match(String(err(await answerDirect(u.root, { decision: "d1", option: "Not a defect" }))), /withdrawn/);
+    });
+    const old = await decisionRound(u.root, "R1") as any;
+    const d = old.decisions[0];
+    assert.equal(d.standing, null);
+    assert.equal(d.answers.length, 2);
+    assert.ok(d.answers.some((a: any) => a.id === answer));
+    assert.ok(d.answers.every((a: any) => /retract/.test(a.withdrawn?.reason)), "the older answer does not revive");
+    assert.ok(!old.ruledNotCarriedOut.some((x: any) => x.answer === answer));
+    const next = await decisionRound(u.root, "R2") as any;
+    assert.equal(next.decisions[0].follows, "d1");
+    assert.ok(next.waitingOnYou.some((x: any) => x.decision === "d2"));
+  } finally { u.cleanup(); }
+});
+
+test("round five lifecycle: unanswered withdrawal releases only its own hold", async () => {
+  const u = await universe();
+  try {
+    const f = await withFinding(u);
+    await asAgent(async () => {
+      await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f)] });
+      await postRound(u.root, { round: { id: "R2", source: "x" }, decisions: [{ ...decision("d2", f, {}, "D2", "R2"), follows: "d1" }] });
+    });
+    await asPerson(async () => {
+      const out = await withdrawDecision(u.root, { decision: "d1", reason: "This question is no longer needed" }) as any;
+      assert.equal(out.ok, true, JSON.stringify(out));
+    });
+    const v = await decisionRounds(u.root) as any;
+    assert.ok(!v.waitingOnYou.some((x: any) => x.decision === "d1"));
+    assert.ok(v.waitingOnYou.some((x: any) => x.decision === "d2"));
+    const mark = (await decisionsView(u.root)).mark(f);
+    assert.ok(Array.isArray(mark.held) && mark.held.some((x: any) => x.decision === "d2"));
+    assert.ok(Array.isArray(mark.held) && !mark.held.some((x: any) => x.decision === "d1"));
+  } finally { u.cleanup(); }
+});
+
+test("round five: backlog work and fixed outcomes honor current comparison restrictions at the action boundary", async () => {
+  const u = await universe();
+  try {
+    const f = await withFinding(u);
+    const { findingBacklog, reportOnFinding } = await import("./ops-shared.js");
+    await asAgent(async () => {
+      await postRound(u.root, { round: { id: "R1", source: "work restriction" }, decisions: [decision("d1", f)] });
+    });
+    await asPerson(async () => { await answerDirect(u.root, { decision: "d1", option: "Not a defect" }); });
+    await withEnv({ CODEMAP_AGENT_MODEL: undefined, CODEMAP_PRINCIPAL: "bob@x.com" }, async () => {
+      await answerDirect(u.root, { decision: "d1", option: "Real, fix it" });
+      await reassignFinding(u.root, 7, f, { kind: "fix" });
+    });
+    const work = (await decisionsView(u.root)).work(f);
+    assert.equal(work.allowed, false);
+    assert.ok(work.restrictions !== "unknown" && work.restrictions.some((h) => h.why === "comparison"));
+    const backlog = await findingBacklog(u.root) as any;
+    assert.ok(backlog.paused.some((x: any) => x.id === f && x.work.reason.includes("comparison")));
+    assert.ok(![...backlog.due, ...backlog.woken, ...backlog.live, ...backlog.moved, ...backlog.unjudgeable].some((x: any) => x.id === f));
+    await asAgent(async () => {
+      assert.ok(!(await reviewQueue(u.root) as any).queue.some((x: any) => x.id === f));
+      assert.match(String(err(await reportOnFinding(u.root, 7, f, "fixed", "changed code"))), /comparison/);
+      const { remediateFinding } = await import("./ops-shared.js");
+      assert.match(String(err(await remediateFinding(u.root, 7, f, "fixed-on-branch"))), /comparison/);
+      const { closeFinding: closeAnyFinding } = await import("./ops.js");
+      assert.match(String(err(await closeAnyFinding(u.root, { id: f, result: "fixed", detail: "changed code", files: ["src/credit.js"], remediation: "fixed-on-branch" }))), /comparison/);
+      assert.equal((await readFinding(u.root, f))?.outcome, undefined, "preflight refused before writing an outcome");
+      assert.equal((await reportOnFinding(u.root, 7, f, "answered", "investigated only") as any).ok, true);
+    });
   } finally { u.cleanup(); }
 });

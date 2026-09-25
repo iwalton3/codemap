@@ -17,7 +17,7 @@ import { resolveSidecar } from "../sidecar-config.js";
 import {
   CONFIRM_NO, CONFIRM_YES, NONE, canonicalMaps, briefManifest, briefListing, briefRefusal, readingRefusal, readerBrief as briefFor, bindRefusal, checkDecision, confirmPayload, confirmState, confirmedWords, decisionHash, logQuestionEvent,
   mapsKey, named, possiblySuperseded, postConfirmEvent, postRoundEvent, validMaps,
-  readingsInDispute, intentCandidates, nominateComparisonEvent, recordAnswerEvent, recordReadingEvent, ruledNotCarriedOut, standing, waitingOnMe, awaitingReading, parked,
+  readingsInDispute, intentCandidates, nominateComparisonEvent, recordAnswerEvent, recordReadingEvent, ruledNotCarriedOut, standing, waitingOnMe, awaitingReading, parked, withdrawDecisionEvent,
   type AnswerVia, type BriefEntry, type FoldedDecision, type Mapping, type SharedDecisions,
 } from "../shared-decisions.js";
 import { decisionsView } from "./decision-holds.js";
@@ -49,7 +49,7 @@ export async function checkRound(root: string, r: NewRound): Promise<string | nu
   if (!r?.round || typeof r.round.id !== "string" || !r.round.id.trim() || typeof r.round.source !== "string" || !r.round.source.trim()) return "a round needs an id and a source";
   if (!Array.isArray(r.decisions) || !r.decisions.length) return "a round needs at least one decision";
   if (existing.rounds.some((x) => x.id === r.round.id)) return `round ${r.round.id} is already posted; a changed question is a new decision in a new round`;
-  const refs = new Set<string>(), ids = new Set<string>(), replaces = new Set<string>();
+  const refs = new Set<string>(), ids = new Set<string>();
   for (const d of r.decisions) {
     if (d?.round !== r.round.id) return `decision ${String(d?.id)} names round ${String(d?.round)}, not ${r.round.id}`;
     const bad = checkDecision(d);
@@ -84,17 +84,9 @@ export async function checkRound(root: string, r: NewRound): Promise<string | nu
       // On this map only, the team's clones could not carry a ruling on it out (bulk 10).
       if (!found.finding.origin) return `decision ${d.ref} names ${f}, which is on this map only — publish it first (\`codemap unify-findings\`)`;
     }
-    if (d.supersedes) {
-      const old = existing.decisions.find((x) => x.id === d.supersedes);
-      if (!old) return `decision ${d.ref} replaces ${d.supersedes}, which is not posted`;
-      // The fold ignores it too: a pick on a confirm already says what a replacement could.
-      if (old.confirms) return `decision ${d.ref} replaces ${old.ref}, which is a confirm: ask for a new confirm instead`;
-      // One replacement per question, so "the replacement decides" names one (bulk 9, ruled):
-      // re-asking a replaced question replaces its replacement, which keeps the chain linear.
-      if (old.replacedBy) return `decision ${d.ref} replaces ${d.supersedes}, which ${old.replacedBy} already replaced — replace ${old.replacedBy} instead`;
-      if (replaces.has(d.supersedes)) return `two decisions in this round replace ${d.supersedes}`;
-      replaces.add(d.supersedes);
-    }
+    if (d.supersedes) return `decision ${d.ref}: automatic question supersession is retired; use follows for context and withdraw a question explicitly`;
+    if (d.follows && !existing.decisions.some((x) => x.id === d.follows))
+      return `decision ${d.ref} follows ${d.follows}, which is not posted`;
   }
   return null;
 }
@@ -272,6 +264,8 @@ const found = (s: SharedDecisions, answer: string) => {
 };
 
 async function record(root: string, b: Bound, d: FoldedDecision, via: AnswerVia, relayedBy?: string) {
+  if (d.withdrawn || d.answers.some((a) => a.withdrawn))
+    return { decision: d.id, ref: d.ref, recorded: false as const, why: `${d.ref} has a withdrawal; ask a fresh question` };
   const { s } = await decisionsView(root);
   const knownReplacements = s.decisions.filter((x) => x.replacedBy).map((x) => x.replacedBy!);
   const e = await recordAnswerEvent(b.cfg.path, b.cfg.universe, b.actor, { decision: d.id, hash: d.hash, via, knownReplacements, ...(relayedBy ? { relayedBy } : {}) });
@@ -726,8 +720,39 @@ export async function answerDirect(root: string, input: { decision: string; opti
   const d = w.s.decisions.find((x) => x.id === input.decision);
   if (!d) return { error: `no decision ${input.decision}` };
   if (d.cancellation) return { error: d.cancellation.reason, cancelledBy: d.cancellation.by };
+  if (d.withdrawn) return { error: `question ${d.ref} was withdrawn: ${d.withdrawn.reason}`, withdrawnBy: d.withdrawn.id };
+  if (d.answers.some((a) => a.withdrawn)) return { error: `${d.ref} has a withdrawn ruling; ask a fresh question` };
   const { decision: _d, ...rest } = input;
   return { ok: true, ...(await record(root, b, d, { kind: "direct", ...rest })) };
 }
 
 export { decisionHash, CONFIRM_YES, CONFIRM_NO };
+
+/** Withdraw an unanswered question or this principal's answered ruling. The act is
+ *  preserved in the decision log; the projection retires its authority and pending readings. */
+export async function withdrawDecision(root: string, input: { decision: string; answer?: string; reason: string }, via: Via = {}) {
+  const b = bindDecisions(root, via);
+  if ("error" in b) return b;
+  if (isAgentActor(b.actor)) return { error: "withdrawal needs the principal's own act" };
+  const w = await writable(root);
+  if ("error" in w) return w;
+  const d = w.s.decisions.find((x) => x.id === input?.decision);
+  if (!d) return { error: `no decision ${String(input?.decision)}` };
+  if (d.withdrawn) return { error: `${d.ref} is already withdrawn (${d.withdrawn.id})` };
+  if (typeof input.reason !== "string" || !input.reason.trim()) return { error: "withdrawal needs a reason" };
+  const sources = d.answers.filter((a) => a.verified && !a.sourceAnswer);
+  if (input.answer) {
+    const a = sources.find((x) => x.id === input.answer);
+    if (!a) return { error: `${input.answer} is not a verified source answer on ${d.ref}` };
+    if (a.by.principal !== b.actor.principal) return { error: "withdrawing another principal's answer requires conflict resolution" };
+    if (sources.some((x) => x.by.principal !== b.actor.principal)) return { error: "independent answers require conflict resolution before withdrawal" };
+    if (a.withdrawn) return { error: `${input.answer} was already withdrawn (${a.withdrawn.by})` };
+  } else if (sources.length) return { error: `${d.ref} has a submitted answer; name the exact answer to withdraw its ruling` };
+  const e = await withdrawDecisionEvent(b.cfg.path, b.cfg.universe, b.actor,
+    { decision: d.id, ...(input.answer ? { answer: input.answer } : {}), reason: input.reason.trim(), knownAnswers: sources.map((a) => a.id) });
+  if ("error" in e) return e;
+  const after = (await decisionsView(root)).s.decisions.find((x) => x.id === d.id);
+  const accepted = input.answer ? after?.answers.find((a) => a.id === input.answer)?.withdrawn?.by === e.id : after?.withdrawn?.id === e.id;
+  if (!accepted) return { error: "the fold did not accept this withdrawal; its event remains available for inspection", withdrawal: e.id };
+  return { ok: true as const, withdrawal: e.id, decision: d.id, ...(input.answer ? { answer: input.answer } : {}) };
+}

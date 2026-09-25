@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Actor } from "./schema.js";
 import { sortEvents, readScope } from "./eventlog.js";
+import { testChain } from "./test-events.js";
 import {
   anchorBug, bugAckQueue, bugIdFor, bugScope, citedAnchors, commentOnBug, corroborateBug,
   fileBug, foldBugs, isTracked, needsHumanAck, promoteBug, readBugsShared, requestOnBug,
@@ -291,4 +292,30 @@ test("nothing the fold produces is a verdict about THIS checkout", async () => {
       assert.ok(!serialized.includes(derived), `${derived} is derived per clone — it must not travel`);
     }
   } finally { discard(root); }
+});
+
+test("an agent reopens a bug against the exact observed closure", async () => {
+  const root = tmp();
+  try {
+    const id = await fileBug(root, U, opus, NEW);
+    const close = await setBugState(root, U, opus, id, "invalid", "initial judgment");
+    assert.ok(!("error" in close));
+    const reopened = await setBugState(root, U, opus, id, "created", "new evidence");
+    assert.ok(!("error" in reopened));
+    assert.equal(reopened.kind, "bug.reopened");
+    assert.equal((reopened.data as Record<string, unknown>).observedClosure, close.id);
+    assert.equal((await one(root)).state, "created");
+  } finally { discard(root); }
+});
+
+test("bug replay rejects stale or context-free agent reopens", () => {
+  const events = testChain("w", [
+    { id: "1", kind: "bug.filed", subject: "b", actor: opus, data: { title: "claim", text: "claim", anchors: [] } },
+    { id: "2", kind: "bug.stateChanged", subject: "b", actor: opus, data: { state: "invalid" } },
+    { id: "3", kind: "bug.reopened", subject: "b", actor: opus, data: { state: "created", observedClosure: "2" } },
+    { id: "4", kind: "bug.stateChanged", subject: "b", actor: izzie, data: { state: "refuted" } },
+    { id: "5", kind: "bug.reopened", subject: "b", actor: opus, data: { state: "created", observedClosure: "2" } },
+  ]);
+  assert.equal(foldBugs(events).get("b")?.closed?.eventId, "4");
+  assert.equal(foldBugs(events.slice(0, 3)).get("b")?.state, "created");
 });

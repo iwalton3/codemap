@@ -23,7 +23,7 @@
  * trusts the logger for it. Everything that travels is checked here.
  */
 import { createHash } from "node:crypto";
-import { causality, emitEvent, type LogEvent } from "./eventlog.js";
+import { causality, emitEvent, emitEventChecked, type LogEvent } from "./eventlog.js";
 import { isAgentActor } from "./identity.js";
 import { canonical, normalizeQuestion, sameQuestion } from "./transcript.js";
 import { ISO_DATE, type Actor, type AskedQuestion, type Decision, type DecisionEffect, type DecisionOption, type DecisionRound, type LoggedQuestion } from "./schema.js";
@@ -69,6 +69,8 @@ export interface FoldedAnswer {
   resolvedOutBy?: string;
   /** Changed source response: historical evidence remains, pending authority does not. */
   cancelled?: { by: string; reason: string };
+  /** An explicit withdrawal retired this source and every older answer by its principal. */
+  withdrawn?: { by: string; reason: string };
   /** What it was given through, so one call or message answers a decision once (B1.4). */
   once?: string;
   /** The person's words as recorded — never an agent's summary of them. */
@@ -113,6 +115,12 @@ export interface FoldedAnswer {
   flags?: string[];
 }
 
+export interface WithdrawalRecord {
+  id: string; by: Actor; at: string; reason: string; answer?: string;
+  knownAnswers: string[]; state: "applied" | "conflict";
+  conflictingAnswers?: string[];
+}
+
 export interface ComparisonNomination {
   id: string; by: Actor; at: string; answers: [string, string]; findings: string[]; reason: string;
 }
@@ -138,6 +146,10 @@ export interface FoldedDecision extends Decision {
   confirms?: Confirms & { invalid?: string; never?: true; picked?: string };
   resolutionInvalid?: string;
   cancellation?: { by: string; reason: string };
+  /** An explicit withdrawal of an unanswered question. */
+  withdrawn?: { id: string; by: Actor; at: string; reason: string };
+  /** Every well-formed withdrawal act, including one contested by a concurrent answer. */
+  withdrawals?: WithdrawalRecord[];
   nominations?: ComparisonNomination[];
 }
 
@@ -524,6 +536,7 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
   /** Verified picks on confirms — the only answers that carry a confirm's meaning (P3.2). */
   const picks: { a: FoldedAnswer; c: FoldedDecision }[] = [];
   const nominationEvents: LogEvent[] = [];
+  const withdrawalEvents: LogEvent[] = [];
 
   // Questions first: a logged call is a fact about the transcript, and an answer event may
   // arrive from another writer before it in fold order.
@@ -573,6 +586,7 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
             // A retired field on an old posting is ignored, never a reason to lose the question (S0.7).
             options: raw.options.map(({ closesOnAnswer: _c, ...o }: DecisionOption & { closesOnAnswer?: unknown }) => o),
             ...(str(raw.supersedes) ? { supersedes: raw.supersedes } : {}),
+            ...(str(raw.follows) ? { follows: raw.follows } : {}),
             ...(str(raw.origin?.answer) ? { origin: { answer: raw.origin!.answer } } : {}),
             ...(Array.isArray(raw.notes) ? { notes: raw.notes } : {}),
             ...(raw.resolves ? { resolves: raw.resolves } : {}),
@@ -644,6 +658,11 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
 
       case "decision.comparison.nominated": {
         nominationEvents.push(e);
+        break;
+      }
+
+      case "decision.withdrawn": {
+        withdrawalEvents.push(e);
         break;
       }
 
@@ -776,6 +795,70 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
         if (a.cancelled) continue;
         const cancellation = d.cancellation ?? (a.sourceAnswer ? answersById.get(a.sourceAnswer)?.a.cancelled : undefined);
         if (cancellation) { a.cancelled = cancellation; changed = true; }
+      }
+    }
+  }
+
+  // The act stays visible even when another writer's answer makes it unsafe to apply.
+  // Only the authority projection is withheld; the event is never silently dropped.
+  for (const e of withdrawalEvents) {
+    const data = e.data as any;
+    const d = decisions.get(str(data?.decision) ?? "");
+    if (!d || isAgentActor(e.actor) || !str(data?.reason) || e.subject !== d.id) continue;
+    const target = str(data?.answer);
+    const known = data?.knownAnswers;
+    if (!Array.isArray(known) || !known.every((id: unknown) => str(id))) continue;
+    const sources = d.answers.filter((a) => a.verified && !a.sourceAnswer);
+    // A direct page answer is given at append time. For a relayed question/message,
+    // the recorder may have pulled after the person answered; its causal edge proves
+    // the recorder's knowledge, not the person's act-time knowledge.
+    const beforeOrConcurrent = sources.filter((a) => a.via !== "direct" || !causal.saw(a.id, e.id));
+    const visible = beforeOrConcurrent.filter((a) => causal.saw(e.id, a.id));
+    const unseen = beforeOrConcurrent.filter((a) => !known.includes(a.id) || !visible.includes(a));
+    const named = target ? sources.find((a) => a.id === target) : undefined;
+    if (target && (!named || !known.includes(target) || named.by.principal !== e.actor.principal)) continue;
+    const peers = target ? beforeOrConcurrent.filter((a) => a.by.principal !== named!.by.principal) : beforeOrConcurrent;
+    const conflicts = [...new Set([...unseen, ...peers].map((a) => a.id))];
+    const prior = d.withdrawn || d.answers.some((a) => a.withdrawn);
+    const record: WithdrawalRecord = { id: e.id, by: e.actor, at: e.at, reason: data.reason,
+      ...(target ? { answer: target } : {}), knownAnswers: [...known],
+      state: conflicts.length || prior ? "conflict" : "applied",
+      ...(conflicts.length ? { conflictingAnswers: conflicts } : {}),
+    };
+    (d.withdrawals ??= []).push(record);
+    if (record.state === "conflict") continue;
+    if (!target) {
+      d.withdrawn = { id: e.id, by: e.actor, at: e.at, reason: data.reason };
+      for (const a of d.answers) a.cancelled = { by: e.id, reason: `question withdrawn: ${data.reason}` };
+      continue;
+    }
+    for (const x of d.answers) if (x.by.principal === named!.by.principal && !x.sourceAnswer) {
+      x.withdrawn = { by: e.id, reason: data.reason };
+      x.cancelled = { by: e.id, reason: `ruling withdrawn: ${data.reason}` };
+    }
+  }
+
+  for (const d of decisions.values()) {
+    const retired = d.answers.find((a) => a.withdrawn)?.withdrawn;
+    if (!retired) continue;
+    for (const a of d.answers) if (!a.withdrawn && !a.cancelled)
+      a.cancelled = { by: retired.by, reason: `this question has a withdrawn ruling; ask a fresh question` };
+  }
+
+  // A withdrawal also invalidates any interpretation copies and confirmations that
+  // depended on the retired source. A late receipt remains history, never authority.
+  let withdrawnDependency = true;
+  while (withdrawnDependency) {
+    withdrawnDependency = false;
+    for (const d of decisions.values()) {
+      if (d.confirms && !d.cancellation) {
+        const source = answersById.get(d.confirms.answer)?.a;
+        if (source?.cancelled) { d.cancellation = source.cancelled; withdrawnDependency = true; }
+      }
+      for (const a of d.answers) {
+        if (a.cancelled) continue;
+        const cancellation = d.cancellation ?? (a.sourceAnswer ? answersById.get(a.sourceAnswer)?.a.cancelled : undefined);
+        if (cancellation) { a.cancelled = cancellation; withdrawnDependency = true; }
       }
     }
   }
@@ -1000,7 +1083,7 @@ function resolve(d: FoldedDecision, via: AnswerVia, actor: Actor, questions: Map
 
 /** In the ranking: every answer something has bound — a pick, a park, a bulk answer, words
  *  read or confirmed, including words that rule nothing — and not one about other questions. */
-const ranks = (a: FoldedAnswer): boolean => !a.free && !a.elsewhere && !a.resolvedOutBy && !a.cancelled;
+const ranks = (a: FoldedAnswer): boolean => !a.free && !a.elsewhere && !a.resolvedOutBy && !a.cancelled && !a.withdrawn;
 
 /** `x` outranks `y`: verified first, then the later given, then the later in the log. */
 const outranks = (x: FoldedAnswer, y: FoldedAnswer): boolean =>
@@ -1010,7 +1093,7 @@ const outranks = (x: FoldedAnswer, y: FoldedAnswer): boolean =>
 const best = (as: FoldedAnswer[]): FoldedAnswer | undefined => as.reduce<FoldedAnswer | undefined>((b, a) => (!b || outranks(a, b) ? a : b), undefined);
 
 /** A decision's standing answer, derived from the whole set whenever it is read. */
-export const standing = (d: FoldedDecision): FoldedAnswer | undefined => best(d.answers.filter(ranks));
+export const standing = (d: FoldedDecision): FoldedAnswer | undefined => d.withdrawn ? undefined : best(d.answers.filter(ranks));
 
 /** Words still waiting for a binding on `d`: unread, read as unclear, or read two ways. */
 const pending = (d: FoldedDecision): FoldedAnswer[] => d.answers.filter((a) => a.free && !a.elsewhere && !a.cancelled);
@@ -1217,7 +1300,7 @@ export function waitingOnMe(s: SharedDecisions, today: string): WaitingItem[] {
   const out: WaitingItem[] = [];
   const byId = new Map(s.decisions.map((x) => [x.id, x]));
   for (const d of s.decisions) {
-    if (d.cancellation) continue;
+    if (d.cancellation || d.withdrawn) continue;
     if (d.confirms?.invalid) {
       out.push({ decision: d.id, round: d.round, ref: d.ref, why: `not a confirm codemap can verify (${d.confirms.invalid}) — answering it binds nothing; ask for a new confirm` });
       continue;
@@ -1290,6 +1373,9 @@ export function waitingOnMe(s: SharedDecisions, today: string): WaitingItem[] {
       if (!(d.followUps ?? []).some((f) => byId.get(f)?.origin?.answer === a.id)) item(`you asked to rule on "${label}" separately, and it has not been asked yet`);
     }
   }
+  for (const d of s.decisions) for (const w of d.withdrawals ?? []) if (w.state === "conflict")
+    out.push({ decision: d.id, round: d.round, ref: d.ref,
+      why: `withdrawal ${w.id} conflicts with answer(s) ${(w.conflictingAnswers ?? []).join(", ") || "another withdrawal"}; resolve intent before acting` });
   for (const c of intentCandidates(s)) {
     const d = byId.get(c.decisions[0])!;
     out.push({ decision: d.id, round: d.round, ref: d.ref, why: `human rulings ${c.answers.join(" and ")} may conflict on intent; show both to the person and ask which to preserve before acting` });
@@ -1308,7 +1394,7 @@ export function parked(s: SharedDecisions, today: string): Parked[] {
   const out: Parked[] = [];
   for (const d of s.decisions) {
     const a = standing(d);
-    if (d.replacedBy || !parkedOn(a, today)) continue;
+    if (d.replacedBy || d.withdrawn || !parkedOn(a, today)) continue;
     out.push({ decision: d.id, round: d.round, ref: d.ref, until: a!.park!, findings: named(d) });
   }
   return out;
@@ -1326,7 +1412,7 @@ export function awaitingReading(s: SharedDecisions): Unread[] {
   const out: Unread[] = [];
   const byId = new Map(s.decisions.map((x) => [x.id, x]));
   for (const d of s.decisions) {
-    if (d.kind === "words") continue;
+    if (d.kind === "words" || d.withdrawn) continue;
     for (const x of surfacing(byId, d)) {
       // H6.8, as `record_reading` refuses it: words that may still change another question are
       // not thereby readable.
@@ -1367,7 +1453,10 @@ export interface Uncarried extends Ruled {
 export function ruledNotCarriedOut(s: SharedDecisions, isOpen: (finding: string) => boolean): Uncarried[] {
   const out: Uncarried[] = [];
   const byId = new Map(s.decisions.map((x) => [x.id, x]));
-  const contested = new Set(intentCandidates(s).flatMap((c) => c.findings));
+  const contested = new Set([
+    ...intentCandidates(s).flatMap((c) => c.findings),
+    ...s.decisions.filter((d) => d.withdrawals?.some((w) => w.state === "conflict")).flatMap(named),
+  ]);
   for (const d of s.decisions) {
     const a = standing(d);
     // A replaced question is listed here, marked replaced, and nowhere else (B5.1).
@@ -1379,7 +1468,7 @@ export function ruledNotCarriedOut(s: SharedDecisions, isOpen: (finding: string)
 }
 
 export interface Hold {
-  decision: string; why: "undecided" | "ruled" | "comparison";
+  decision: string; why: "undecided" | "ruled" | "comparison" | "withdrawal";
   answers?: [string, string];
   /** When this hold on the finding last began (owner, S0.4): a person's assignment keeps a
    *  held finding on the work queue only if made after it. */
@@ -1443,6 +1532,14 @@ export function heldFindings(s: SharedDecisions, isOpen: (finding: string) => bo
       since: times.every((t) => ms(t) !== undefined) ? times.sort((a, b) => ms(a)! - ms(b)!)[1]! : "" });
     out.set(f, list);
   }
+  for (const d of s.decisions) for (const w of d.withdrawals ?? []) {
+    if (w.state !== "conflict") continue;
+    for (const f of named(d)) if (isOpen(f)) {
+      const list = out.get(f) ?? [];
+      list.push({ decision: d.id, why: "withdrawal", since: w.at });
+      out.set(f, list);
+    }
+  }
   for (const d of s.decisions) {
     // An open confirm holds every finding of every decision its readings map — `(none)` too, as
     // its text says (Q2.3 (2)) — beside the decision's own hold (the discussion: "two entries is
@@ -1452,6 +1549,7 @@ export function heldFindings(s: SharedDecisions, isOpen: (finding: string) => bo
       for (const r of d.confirms.readings) for (const m of r) for (const f of named(byId.get(m.decision)!)) add(d, f, "undecided");
       continue;
     }
+    if (d.withdrawn) continue;
     if (d.replacedBy) {
       for (const r of stillHeld(byId, d)) if (r.on === "settle") add(d, r.finding, "ruled");
       // Undecided when replaced, it holds what it names until something down its chain rules —
@@ -1523,3 +1621,23 @@ export const nominateComparisonEvent = (logRoot: string, universe: string, actor
   input: { answers: [string, string]; findings: string[]; reason: string }) =>
   emitEvent(logRoot, decisionScope(universe), actor, "decision.comparison.nominated",
     [...input.answers].sort().join("/"), input);
+
+export const withdrawDecisionEvent = (logRoot: string, universe: string, actor: Actor,
+  input: { decision: string; answer?: string; reason: string; knownAnswers: string[] }) =>
+  emitEventChecked(logRoot, decisionScope(universe), actor, async (events) => {
+    const d = foldDecisions(events).decisions.find((x) => x.id === input.decision);
+    if (!d) return { error: `no decision ${input.decision}` };
+    if (d.withdrawn) return { error: `${d.ref} is already withdrawn (${d.withdrawn.id})` };
+    if (isAgentActor(actor)) return { error: "withdrawal needs the principal's own act" };
+    const sources = d.answers.filter((a) => a.verified && !a.sourceAnswer);
+    if (canonical(sources.map((a) => a.id).sort()) !== canonical([...input.knownAnswers].sort()))
+      return { error: "answers changed before withdrawal; read the decision again" };
+    if (input.answer) {
+      const a = sources.find((x) => x.id === input.answer);
+      if (!a || a.by.principal !== actor.principal || a.withdrawn)
+        return { error: "the named ruling is not current authority of this principal" };
+      if (sources.some((x) => x.by.principal !== actor.principal))
+        return { error: "independent answers require conflict resolution before withdrawal" };
+    } else if (sources.length) return { error: "an answered question needs an exact answer withdrawal" };
+    return { kind: "decision.withdrawn", subject: input.decision, data: input };
+  });

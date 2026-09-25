@@ -1,5 +1,5 @@
 import { test } from "node:test";
-import { testEvent } from "./test-events.js";
+import { testChain, testEvent } from "./test-events.js";
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -379,9 +379,8 @@ test("mayTransition is the single rule both the fold and the writer use", () => 
   const promoted = { ...created, promotion: { at: "2026-01-01T00:00:00Z", by: izzie } } as unknown as SharedFinding;
   assert.equal(mayTransition(promoted, opus, "invalid"), true, "promotion says it matters, not that it is settled");
 
-  // Reopening is a person's call even unconfirmed: whoever closed it wrote a reason.
   const closed = { ...issued, state: "refuted" as FindingState };
-  assert.equal(mayTransition(closed, opus, "created"), false);
+  assert.equal(mayTransition(closed, opus, "created"), true, "an agent may reopen with observed closure context");
 });
 
 test("mayRevise is that same gate, so a human's raw note can be written up", () => {
@@ -686,4 +685,32 @@ test("a re-rated finding says what it was filed at", () => {
   // Filed with no severity at all, then rated: that IS a re-rate, and says so.
   const supplied = { severity: "high", revisions: [{ at: "t", by: izzie, was: { severity: undefined } }] } as unknown as SharedFinding;
   assert.equal(reratedFrom(supplied), "unset");
+});
+
+test("an agent reopens a finding against the exact observed closure", async () => {
+  const root = tmp();
+  try {
+    const id = await createFinding(root, 264, opus, NEW);
+    const close = await setState(root, 264, opus, id, "invalid", "initial judgment");
+    assert.ok(!("error" in close));
+    const reopened = await setState(root, 264, opus, id, "created", "new evidence");
+    assert.ok(!("error" in reopened));
+    assert.equal(reopened.kind, "finding.reopened");
+    assert.equal((reopened.data as Record<string, unknown>).observedClosure, close.id);
+    assert.equal((await one(root)).state, "created");
+  } finally { discard(root); }
+});
+
+test("finding replay rejects stale or context-free agent reopens", () => {
+  const events = testChain("w", [
+    { id: "1", kind: "finding.created", subject: "f", actor: opus, data: { targetKind: "anchor", targetId: "a", text: "claim" } },
+    { id: "2", kind: "finding.stateChanged", subject: "f", actor: opus, data: { state: "invalid" } },
+    { id: "3", kind: "finding.reopened", subject: "f", actor: opus, data: { state: "created", observedClosure: "2" } },
+    { id: "4", kind: "finding.stateChanged", subject: "f", actor: izzie, data: { state: "refuted" } },
+    { id: "5", kind: "finding.reopened", subject: "f", actor: opus, data: { state: "created", observedClosure: "2" } },
+  ]);
+  assert.equal(foldFindings(events).get("f")?.closed?.eventId, "4");
+  assert.equal(foldFindings(events.slice(0, 3)).get("f")?.state, "created");
+  const forged = testEvent({ id: "6", kind: "finding.stateChanged", subject: "f", actor: opus, data: { state: "created" } });
+  assert.equal(foldFindings([...events, forged]).get("f")?.state, "refuted");
 });

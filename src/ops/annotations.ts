@@ -835,16 +835,9 @@ export async function reviewQueue(
     // Refused in the queue's own shape, so a caller reading `queue` sees it empty, not absent.
     if (holds.unknown) return { total: 0, offset: 0, more: false, queue: [] as QueueItem[], error: `the decisions log cannot be read, so which findings a person's ruling holds is unknown and nothing is offered as work: ${holds.unknown}` };
     pending = pending.filter((a) => {
-      const held = holds.mark(a.id).held;
-      if (!Array.isArray(held)) return true;
-      const began = Math.max(...held.map((h) => Date.parse(h.since)));
-      const as = rowOf.get(a)?.assignment;
-      // Comparison is a restriction on dependent batch work. Assignment cannot resolve it.
-      // An ordinary hold whose start is unknown began after every assignment: withheld.
-      const keep = !held.some((h) => h.why === "comparison") && !!as && !isAgentActor(as.by)
-        && !Number.isNaN(began) && Date.parse(as.at) > began;
-      if (!keep) withheld++;
-      return keep;
+      const eligible = holds.work(a.id, rowOf.get(a)?.assignment);
+      if (!eligible.allowed) withheld++;
+      return eligible.allowed;
     });
   }
 
@@ -998,6 +991,10 @@ export async function closeLocalFinding(
 ): Promise<Record<string, unknown>> {
   const f = await readFinding(root, input.id).catch(() => null);
   if (!f) return { error: `no annotation or finding "${input.id}"` };
+  if (input.result === "fixed") {
+    const eligibility = (await decisionsView(root)).work(f.id, f.assignment);
+    if (!eligibility.allowed) return { error: eligibility.reason };
+  }
   // NO assignment precondition. Reporting back is what this records, and the ordinary
   // path that produces a finding — report_defect, publish, the submitter fixes it,
   // report back — has no assignment step anywhere in it. Requiring one made the tool
@@ -1206,6 +1203,10 @@ export async function remediateLocalFinding(
 ) {
   const f = await readFinding(root, id).catch(() => null);
   if (!f) return { error: `no finding "${id}"` };
+  if (state === "fixed-on-branch" || state === "fixed-on-default") {
+    const work = (await decisionsView(root)).work(id, f.assignment);
+    if (!work.allowed) return { error: work.reason };
+  }
   const actor = requireActor(root);
   if ("error" in actor) return actor;
   f.remediation = {
@@ -1490,6 +1491,10 @@ export async function closeAssignment(
   // outcome over the record of what happened at close time — and `reviewQueue`
   // filters resolved items out, so the write would be invisible afterwards.
   if (ann.resolved) return { error: "that finding was resolved while you were working on it — reopen it before recording an outcome" };
+  if (input.result === "fixed") {
+    const eligibility = (await decisionsView(root)).work(ann.id);
+    if (!eligibility.allowed) return { error: eligibility.reason };
+  }
   const files = input.files ?? [];
   if (input.result === "fixed" && files.length > 1) {
     return { error: `a fix may touch one file; this touched ${files.length} (${files.join(", ")}). Report \`declined\` with what the change needs — a multi-file change belongs to an agent the human dispatches, not to a review-tool edit.` };

@@ -108,7 +108,7 @@ export interface SharedBug {
   assignment?: { kind: "investigate" | "fix" | "answer"; by: Actor; at: string; note?: string };
   outcome?: { result: "fixed" | "answered" | "declined"; detail: string; files?: string[]; by: Actor; at: string };
   pending?: { ask: Ask; by: Actor; at: string; rationale: string };
-  closed?: { at: string; by: Actor; reason: string };
+  closed?: { eventId?: string; at: string; by: Actor; reason: string };
 
   revisions: { at: string; by: Actor; was: Record<string, unknown> }[];
   contested?: Contested[];
@@ -447,12 +447,24 @@ export function foldBugs(events: LogEvent[]): Map<string, SharedBug> {
         break;
       }
 
+      case "bug.reopened": {
+        const next = str(d, "state") as FindingState | undefined;
+        if (next !== "created" && next !== "issued") break;
+        if (!isClosed(b.state) || !b.closed?.eventId || str(d, "observedClosure") !== b.closed.eventId) break;
+        b.state = next;
+        b.closed = undefined;
+        b.pending = undefined;
+        break;
+      }
+
       case "bug.stateChanged": {
         const next = str(d, "state") as FindingState | undefined;
         if (!next || !["issued", "created", "invalid", "refuted", "resolved", "withdrawn"].includes(next)) break;
+        // Legacy human reopens remain valid; agents use an observed-closure act.
+        if (isClosed(b.state) && !isClosed(next) && isAgentActor(e.actor)) break;
         if (!mayTransition(b, e.actor, next)) break;
         b.state = next;
-        if (isClosed(next)) b.closed = { at: e.at, by: e.actor, reason: str(d, "reason") ?? next };
+        if (isClosed(next)) b.closed = { eventId: e.id, at: e.at, by: e.actor, reason: str(d, "reason") ?? next };
         else b.closed = undefined;
         b.pending = undefined;
         break;
@@ -588,6 +600,12 @@ export async function setBugState(
 ): Promise<LogEvent | { error: string }> {
   const current = (await readBugsShared(logRoot, universe)).get(id);
   if (!current) return { error: `no bug ${id} in ${universe}` };
+  if (isClosed(current.state) && (next === "created" || next === "issued")) {
+    if (!current.closed?.eventId) return { error: `cannot reopen ${id}: current closure has no event identity` };
+    return emit(logRoot, universe, actor, id, "bug.reopened", {
+      state: next, observedClosure: current.closed.eventId, ...(reason ? { reason } : {}),
+    });
+  }
   if (!mayTransition(current, actor, next)) {
     return {
       error: needsHumanAck(current)

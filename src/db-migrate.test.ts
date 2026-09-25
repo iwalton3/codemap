@@ -139,7 +139,7 @@ test("the standard projection's table set is pinned to a materializer version", 
   // (`settledBy`; round-bound answers). Fold-mind again, invisible to the pins.
   // 29: both again — ranking from the set, readings from the reader's own hand-back, and the
   // stamped-close path removed from the findings fold. No new event kind, no new table.
-  assert.equal(MATERIALIZER_VERSION, 35, "and record the new number here");
+  assert.equal(MATERIALIZER_VERSION, 36, "and record the new number here");
 });
 
 /**
@@ -171,7 +171,7 @@ test("the findings fold's event vocabulary is pinned to a materializer version",
     "finding.askDeclined", "finding.assigned", "finding.backlogReleased", "finding.backlogged",
     "finding.commented", "finding.corroborated", "finding.created", "finding.outcome",
     "finding.posted", "finding.promoted", "finding.promotedToBug", "finding.relocation",
-    "finding.remediated", "finding.requested", "finding.revised", "finding.rewitnessed",
+    "finding.remediated", "finding.reopened", "finding.requested", "finding.revised", "finding.rewitnessed",
     "finding.stateChanged", "finding.upstreamed",
   ], "the findings fold learned or forgot an event — bump MATERIALIZER_VERSION with it");
   // A witness FIELD is the same hazard: `deleted` changes what `landed` says for a row an
@@ -179,7 +179,7 @@ test("the findings fold's event vocabulary is pinned to a materializer version",
   const wo = src.slice(src.indexOf("const witnessOf"), src.indexOf("};", src.indexOf("const witnessOf")));
   assert.deepEqual([...new Set([...wo.matchAll(/str\(w, "(\w+)"\)|w!\.(\w+)/g)].map((m) => m[1] ?? m[2]!))].sort(),
     ["anchorId", "bodyHash", "deleted"], "the fold reads a new witness field — bump MATERIALIZER_VERSION with it");
-  assert.equal(MATERIALIZER_VERSION, 35, "and record the new number here");
+  assert.equal(MATERIALIZER_VERSION, 36, "and record the new number here");
 });
 
 /**
@@ -194,13 +194,13 @@ test("the decisions fold's event vocabulary is pinned to a materializer version"
   const kinds = [...new Set([...fold.matchAll(/case "(decision\.[a-zA-Z.]+)"|kind [!=]== "(decision\.[a-zA-Z.]+)"/g)]
     .map((m) => m[1] ?? m[2]!))].sort();
   assert.deepEqual(kinds, [
-    "decision.answer.recorded", "decision.comparison.nominated", "decision.confirm.posted", "decision.question.logged", "decision.reading.recorded", "decision.round.posted",
+    "decision.answer.recorded", "decision.comparison.nominated", "decision.confirm.posted", "decision.question.logged", "decision.reading.recorded", "decision.round.posted", "decision.withdrawn",
   ], "the decisions fold learned or forgot an event — bump MATERIALIZER_VERSION with it");
   const proj = readFileSync("src/shared-projections.ts", "utf8");
   const block = proj.slice(proj.indexOf("export const decisionsProjection"), proj.indexOf("/** Shared notes"));
   assert.deepEqual([...new Set([...block.matchAll(/INSERT INTO (\w+)/g)].map((m) => m[1]!))].sort(),
     ["decision_records", "decision_rounds", "logged_questions"], "the decisions projection's tables changed — bump MATERIALIZER_VERSION with them");
-  assert.equal(MATERIALIZER_VERSION, 35, "and record the new number here");
+  assert.equal(MATERIALIZER_VERSION, 36, "and record the new number here");
 });
 
 /**
@@ -224,10 +224,10 @@ test("the bugs fold's event vocabulary is pinned to a materializer version", asy
 
   assert.deepEqual(kinds, [
     "bug.anchored", "bug.assigned", "bug.backlogReleased", "bug.backlogged", "bug.commented",
-    "bug.corroborated", "bug.filed", "bug.outcome", "bug.promoted", "bug.requested", "bug.revised",
+    "bug.corroborated", "bug.filed", "bug.outcome", "bug.promoted", "bug.reopened", "bug.requested", "bug.revised",
     "bug.stateChanged", "bug.tracked", "bug.unanchored",
   ], "the bugs fold learned or forgot an event — bump MATERIALIZER_VERSION with it");
-  assert.equal(MATERIALIZER_VERSION, 35, "and record the new number here");
+  assert.equal(MATERIALIZER_VERSION, 36, "and record the new number here");
 });
 
 /**

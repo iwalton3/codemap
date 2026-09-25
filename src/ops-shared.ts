@@ -547,6 +547,12 @@ export const remediateFinding = homed(async function remediateFinding(
 ) {
   const b = bind(root, {});
   if ("error" in b) return b;
+  if (state === "fixed-on-branch" || state === "fixed-on-default") {
+    const f = (await cachedFindings(root, b.cfg, pr)).value.get(id);
+    if (!f) return { error: `no finding ${id} on pull request ${pr}` };
+    const work = (await decisionsView(root)).work(id, f.assignment);
+    if (!work.allowed) return { error: work.reason };
+  }
   await remediate(b.cfg.path, prKey(b.cfg, pr), b.actor, id, state, opts.detail, opts.ref);
   const mz = await materializeFindings(root, b.cfg, pr);
   return { ...mz, ok: true, id, remediation: state };
@@ -849,6 +855,8 @@ export async function findingBacklog(root: string, opts: { asOf?: string } = {})
     // did not move, and the only way to clear it was `resolve`, which asserts something
     // nobody checked. The bug queue is where it is tracked now.
     !isClosed(f.state) && !f.bug);
+  const decisions = await decisionsView(root);
+  const eligibility = new Map(all.map((f) => [f.id, decisions.work(f.id, f.assignment)]));
 
   const judge = await findingJudge(root, all);
   const trunk = judge.trunk;
@@ -886,8 +894,12 @@ export async function findingBacklog(root: string, opts: { asOf?: string } = {})
     // changed nothing a reader could see, and the natural response is to press again.
     ...(f.assignment ? { assignment: { kind: f.assignment.kind, by: f.assignment.by.principal, at: f.assignment.at } } : {}),
     ...(f.witnessAttached ? { witnessAttached: f.witnessAttached } : {}),
+    ...decisions.mark(f.id),
+    work: eligibility.get(f.id)!,
   });
   const b = {
+    /** Discoverable here, but withheld from the dependent work selection. */
+    paused: [] as (ReturnType<typeof row> & { pausedFrom: string })[],
     /** Carried, the date has passed. The release condition fired. */
     due: [] as ReturnType<typeof row>[],
     /** Carried, and the exact code the decision was about changed where it is judged (`findingJudge`). */
@@ -919,6 +931,10 @@ export async function findingBacklog(root: string, opts: { asOf?: string } = {})
     unjudgeable: [] as ReturnType<typeof row>[],
   };
 
+  const offer = (bucket: "due" | "woken" | "live" | "moved" | "unjudgeable", f: SharedFinding) => {
+    if (eligibility.get(f.id)?.allowed) b[bucket].push(row(f));
+    else b.paused.push({ ...row(f), pausedFrom: bucket });
+  };
   for (const f of all) {
     if (f.backlogged) {
       // Date first, because it is the condition that is guaranteed to fire. Drift is the
@@ -927,17 +943,20 @@ export async function findingBacklog(root: string, opts: { asOf?: string } = {})
       // Sliced on READ too. The write-side normalisation only fixes records made from now
       // on, and a record stored with a full timestamp compares as greater than the date it
       // names — so it slept a day past its own deadline.
-      if (f.backlogged.until.slice(0, 10) <= asOf) b.due.push(row(f));
-      else if (await judge.drifted(f, backlogWitnessOf(f)) === "moved") b.woken.push(row(f));
+      if (f.backlogged.until.slice(0, 10) <= asOf) offer("due", f);
+      else if (await judge.drifted(f, backlogWitnessOf(f)) === "moved") offer("woken", f);
       else b.sleeping.push(row(f));
       continue;
     }
     const d = await judge.drifted(f, f.witness);
-    if (d === "same") (landedOf.get(f.id) === "open" ? b.inReview : b.live).push(row(f));
-    else if (d === "moved") b.moved.push(row(f));
+    if (d === "same") {
+      if (landedOf.get(f.id) === "open") b.inReview.push(row(f));
+      else offer("live", f);
+    }
+    else if (d === "moved") offer("moved", f);
     // BEFORE the fall-through, or "never seen" lands in the bucket whose advice refuses.
     else if (d === "unfetched") b.unfetched.push(row(f));
-    else b.unjudgeable.push(row(f));
+    else offer("unjudgeable", f);
   }
 
   const rows = Object.values(b).flat();
@@ -1359,6 +1378,12 @@ export function bindDecisions(root: string, via: Via = {}): Bound | { error: str
 export const reportOnFinding = homed(async function reportOnFinding(root: string, pr: number | string, id: string, result: "fixed" | "answered" | "declined", detail: string, files?: string[]) {
   const b = bind(root);
   if ("error" in b) return b;
+  if (result === "fixed") {
+    const f = (await cachedFindings(root, b.cfg, pr)).value.get(id);
+    if (!f) return { error: `no finding ${id} on pull request ${pr}` };
+    const work = (await decisionsView(root)).work(id, f.assignment);
+    if (!work.allowed) return { error: work.reason };
+  }
   await recordOutcome(b.cfg.path, prKey(b.cfg, pr), b.actor, id, result, detail, files);
   const mz = await materializeFindings(root, b.cfg, pr);
   return { ...mz, ok: true, id, result, note: "reported — a person still has to close it" };

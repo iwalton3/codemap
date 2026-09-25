@@ -233,7 +233,8 @@ import { readScopeChecked, sortEvents, SHARD_EXT, type LogEvent, type ScopeDiagn
 // without moving their shards. Refold so old cached authority and holds are not served.
 // 33 -> 34: changed responses cancel pending readings and confirmations on existing shards.
 // 34 -> 35: explicit comparison nominations add holds from a new decision event.
-export const MATERIALIZER_VERSION = 35;
+// 35 → 36 refolds decision withdrawal authority and finding/bug reopen events.
+export const MATERIALIZER_VERSION = 36;
 
 /**
  * What the events in a scope are, cheaply.

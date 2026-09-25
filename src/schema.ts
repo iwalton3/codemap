@@ -2287,7 +2287,9 @@ export interface Decision {
   kind: "options" | "words" | "bulk";
   payload: AskedQuestion;
   options: DecisionOption[];
-  /** Replaces this decision; a changed question is a new decision, never an edit. */
+  /** A related earlier question for context only. It changes no earlier authority. */
+  follows?: string;
+  /** Retired input retained for reading historical records; new posts refuse it. */
   supersedes?: string;
   /** Posted because an answer asked for something no option held: the reader's `asks`
    *  (C1), or a bulk item checked to be ruled on separately. */

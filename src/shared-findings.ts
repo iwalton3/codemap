@@ -99,11 +99,8 @@ export const isStandingBehind = (v: Verdict): boolean => STANDS_BEHIND.includes(
  * already a terminal state and a `doubted` tier; the gap was only that an agent had no
  * word for it.
  */
-// `reopen` is the one an agent needed and could not say. A finding closed as `resolved`
-// that the submitter then force-pushed the fix away from is live again, and every other
-// channel was prose — `mayTransition` refuses agents any move off a closed state, and
-// the four closing asks are all the wrong direction. Same lexical-gap shape as the
-// `withdraw` complaint, one state over.
+// Keep the historical reopen ask for older records; new agent reopens are explicit
+// acts against the closure the agent observed.
 export const ASKS = ["promote", "invalidate", "refute", "resolve", "withdraw", "reopen"] as const;
 
 /**
@@ -115,7 +112,7 @@ export const ASK_FOR_STATE: Partial<Record<FindingState, Ask>> = {
   invalid: "invalidate", refuted: "refute", resolved: "resolve", withdrawn: "withdraw",
 };
 
-/** Reopening is always a person's, so an agent's attempt is always the ask. */
+/** Historical ask vocabulary, retained for existing requests. */
 export const REOPEN_STATES: readonly FindingState[] = ["created", "issued"];
 export type Ask = (typeof ASKS)[number];
 
@@ -357,6 +354,8 @@ export interface SharedFinding {
    * and the agent that did the work keeps its attribution.
    */
   closed?: {
+    /** Event whose closure is currently in force; a reopen must name this exact act. */
+    eventId?: string;
     at: string; by: Actor; reason: string;
     grantedAsk?: { ask: Ask; by: Actor; at: string; rationale: string };
   };
@@ -571,14 +570,12 @@ export function agentClosureNeedsAck(f: Ratcheted & { author?: Actor }): boolean
  *   - close an UNCONFIRMED finding as `invalid` or `refuted`.
  *
  * And may not: `resolved` (claims a defect was FIXED, which is a claim about the code
- * rather than about the report), `withdrawn` (retires a record somebody may still want),
- * or reopening anything already closed. Those stay `request_human`'s.
+ * rather than about the report), or `withdrawn` (retires a record somebody may still want).
+ * Reopening uses a separate event naming the closure it observed.
  */
 export function mayTransition(f: Ratcheted & { author?: Actor }, actor: Actor, next: FindingState): boolean {
   if (!isAgentActor(actor)) return true;
-  // Reopening is a person's call even on an unconfirmed finding: whoever closed it
-  // wrote a reason, and an agent re-litigating it is not triage.
-  if (isClosed(f.state)) return false;
+  if (isClosed(f.state)) return next === "created" || next === "issued";
   // Moving it back to the open pile is triage and always an agent's to do.
   if (next === "created" || next === "issued") return true;
   // Everything else here is a CLOSE. Confirmed, or filed by a person, and it needs an
@@ -932,10 +929,10 @@ export function foldFindings(events: LogEvent[]): Map<string, SharedFinding> {
       case "finding.stateChanged": {
         const next = str(d, "state") as FindingState | undefined;
         if (!next || !["issued", "created", "invalid", "refuted", "resolved", "withdrawn"].includes(next)) break;
-        // THE gate. An agent that tries to close a finding somebody stood behind is
-        // ignored by every reader, not just by its own client. A `decision` stamp on the event
-        // opens nothing (owner, 2026-09-23, S0.6): only `mayTransition` decides, and the
-        // verifier (I9) adds its own path under its own ruling.
+        // The ordinary closure gate still applies; an agent reopen needs a
+        // separate event with the closure it observed.
+        // Legacy human reopens remain valid; agents use an observed-closure act.
+        if (isClosed(f.state) && !isClosed(next) && isAgentActor(e.actor)) break;
         if (!mayTransition(f, e.actor, next)) break;
         f.state = next;
         // An ask is answered by the act it asked for — and SETTLED, not erased. Clearing
@@ -946,13 +943,23 @@ export function foldFindings(events: LogEvent[]): Map<string, SharedFinding> {
         if (open) open.settled = { as: "applied", by: e.actor, at: e.at, state: next };
         if (isClosed(next)) {
           f.closed = {
-            at: e.at, by: e.actor,
+            eventId: e.id, at: e.at, by: e.actor,
             // The person's own words if they gave any; otherwise the reason the ask
             // carried, which is what they were agreeing to. `next` alone says nothing.
             reason: str(d, "reason") ?? open?.rationale ?? next,
             ...(open ? { grantedAsk: { ask: open.ask, by: open.by, at: open.at, rationale: open.rationale } } : {}),
           };
         } else f.closed = undefined;
+        f.pending = undefined;
+        break;
+      }
+
+      case "finding.reopened": {
+        const next = str(d, "state") as FindingState | undefined;
+        if (next !== "created" && next !== "issued") break;
+        if (!isClosed(f.state) || !f.closed?.eventId || str(d, "observedClosure") !== f.closed.eventId) break;
+        f.state = next;
+        f.closed = undefined;
         f.pending = undefined;
         break;
       }
@@ -969,7 +976,7 @@ export function foldFindings(events: LogEvent[]): Map<string, SharedFinding> {
         f.relocation = { kind, ...(to ? { to } : {}), by: e.actor, at: e.at, rationale: str(d, "rationale") ?? "", ...(apply ? { applied: true } : {}) };
         if (apply) {
           if (kind === "moved" && to) f.target = { ...f.target, id: to };
-          else if (kind === "gone") { f.state = "invalid"; f.closed = { at: e.at, by: e.actor, reason: str(d, "rationale") || "the code it was about is gone" }; }
+          else if (kind === "gone") { f.state = "invalid"; f.closed = { eventId: e.id, at: e.at, by: e.actor, reason: str(d, "rationale") || "the code it was about is gone" }; }
         }
         break;
       }
@@ -1165,6 +1172,12 @@ export async function setState(
 ): Promise<LogEvent | { error: string }> {
   const current = (await readFindings(logRoot, pr)).get(id);
   if (!current) return { error: `no finding ${id} on pr ${pr}` };
+  if (isClosed(current.state) && (next === "created" || next === "issued")) {
+    if (!current.closed?.eventId) return { error: `cannot reopen ${id}: current closure has no event identity` };
+    return emit(logRoot, pr, actor, id, "finding.reopened", {
+      state: next, observedClosure: current.closed.eventId, ...(reason ? { reason } : {}),
+    });
+  }
   if (!mayTransition(current, actor, next)) {
     // ASKED, not refused. The agent has reached a conclusion and this is the moment it
     // says so; erroring here sent it looking for another verb, and what it reached for
@@ -1172,7 +1185,7 @@ export async function setState(
     // corrections written as remarks, against zero `request_human` asks ever recorded.
     // Recording the ask puts a `refuted pending` badge on the item, which is the whole
     // point: a person approves it from the row instead of reading the log for it.
-    const ask = isClosed(current.state) && REOPEN_STATES.includes(next) ? "reopen" as const : ASK_FOR_STATE[next];
+    const ask = ASK_FOR_STATE[next];
     if (ask) {
       const e = await emit(logRoot, pr, actor, id, "finding.requested", {
         ask,

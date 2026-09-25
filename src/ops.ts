@@ -83,6 +83,7 @@ export {
   annotateLegacyFinding,
 } from "./ops/annotations.js";
 
+import { decisionsView } from "./ops/decision-holds.js";
 import { resolveActor } from "./identity.js";
 import { revParse } from "./git.js";
 import {
@@ -97,7 +98,7 @@ import { readFinding, readBug, idsStartingWith, readSpec, readOperation } from "
 import { isRemediation, type Ask, type FindingState, type Remediation, type Verdict } from "./shared-findings.js";
 export { reportDefect, type DefectContext, type DefectInput } from "./ops/defect.js";
 export { promoteAnnotation } from "./promote-annotation.js";
-export { postRound, decisionRounds, decisionRound, decisionStatus, waitDecisionStatus, nominateComparison, logQuestion, relayAnswer, readerBrief, submitVerdict, recordReading, confirmReading, answerDirect } from "./ops/decisions.js";
+export { postRound, decisionRounds, decisionRound, decisionStatus, waitDecisionStatus, nominateComparison, logQuestion, relayAnswer, readerBrief, submitVerdict, recordReading, confirmReading, answerDirect, withdrawDecision } from "./ops/decisions.js";
 
 /**
  * Report back on whatever `review_queue` handed you — annotation or finding.
@@ -145,6 +146,12 @@ export async function closeFinding(
   if (!f) {
     if (at) return { error: `${input.id} is a legacy annotation finding, which records no commit — \`at\` applies to findings in the canonical table` };
     return closeAnnotation(root, input as never) as Promise<Record<string, unknown>>;
+  }
+  // This call can emit outcome, corroboration and remediation events. Check before the
+  // first write so a newly restricted finding cannot receive only part of the report.
+  if (input.result === "fixed" || input.remediation?.startsWith("fixed-")) {
+    const work = (await decisionsView(root)).work(f.id, f.assignment);
+    if (!work.allowed) return { error: work.reason };
   }
   if (!f.origin) {
     const r = await closeLocal(root, input as never);

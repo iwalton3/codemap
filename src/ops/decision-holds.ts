@@ -23,6 +23,27 @@ export interface HoldMark {
   possiblySuperseded?: { decision: string; words: string[] }[];
 }
 
+export interface WorkEligibility {
+  allowed: boolean;
+  /** Every active restriction remains visible, even when another has been released. */
+  restrictions: Hold[] | "unknown";
+  reason?: string;
+}
+
+/** A later human assignment can release an ordinary hold for work. A semantic comparison
+ * needs its own judgment or resolution; neither assignment nor an interactive caller does it. */
+export function workEligibility(mark: HoldMark, assigned?: { at: string; by: { principal: string; via?: { kind: "agent" } } }): WorkEligibility {
+  const held = mark.held;
+  if (held === "unknown") return { allowed: false, restrictions: "unknown", reason: "the decisions log cannot establish whether this finding is eligible for work" };
+  if (!held?.length) return { allowed: true, restrictions: [] };
+  const hard = held.filter((h) => h.why !== "undecided" && h.why !== "ruled");
+  if (hard.length) return { allowed: false, restrictions: held, reason: `finding work awaits comparison or withdrawal conflict resolution: ${hard.map((h) => h.answers?.join(" / ") ?? h.decision).join(", ")}` };
+  const began = Math.max(...held.map((h) => Date.parse(h.since)));
+  const humanAssignment = !!assigned && !assigned.by.via && Number.isFinite(Date.parse(assigned.at)) && Date.parse(assigned.at) > began;
+  if (humanAssignment) return { allowed: true, restrictions: held };
+  return { allowed: false, restrictions: held, reason: `a decision holds this finding from work: ${held.map((h) => `${h.decision} (${h.why})`).join(", ")}` };
+}
+
 export interface DecisionsView {
   s: SharedDecisions;
   status: ScopeStatus;
@@ -31,6 +52,7 @@ export interface DecisionsView {
   unknown?: string;
   /** The mark for finding `id` — the same for every row under that id (owner, P3.1 (3)). */
   mark(id: string): HoldMark;
+  work(id: string, assigned?: { at: string; by: { principal: string; via?: { kind: "agent" } } }): WorkEligibility;
   /** Open unless every row under the id says closed (owner, S0.8(e)). */
   isOpen(id: string): boolean;
 }
@@ -70,14 +92,16 @@ export async function decisionsView(root: string): Promise<DecisionsView> {
       if (!marks) { builds++; marks = { ...(unknown ? {} : { held: heldFindings(s, isOpen) }), flagged: supersededFindings(s) }; }
       return marks;
     };
+    const mark = (id: string): HoldMark => {
+      const { held, flagged } = built();
+      const h = held ? held.get(id) : "unknown";
+      const p = flagged.get(id);
+      return { ...(h === "unknown" || h?.length ? { held: h } : {}), ...(p ? { possiblySuperseded: p } : {}) };
+    };
     return {
       s, status, ...(unknown ? { unknown } : {}), isOpen,
-      mark: (id) => {
-        const { held, flagged } = built();
-        const h = held ? held.get(id) : "unknown";
-        const p = flagged.get(id);
-        return { ...(h === "unknown" || h?.length ? { held: h } : {}), ...(p ? { possiblySuperseded: p } : {}) };
-      },
+      mark,
+      work: (id, assigned) => workEligibility(mark(id), assigned),
     };
   };
   const complete: ScopeStatus = { status: "complete" };
