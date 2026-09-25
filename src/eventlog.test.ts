@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join, win32 } from "node:path";
 import type { Actor } from "./schema.js";
 import { ACK_KIND, evidenceDigest, chainCycles, wellFormed, mintId, shardFor, appendEvents, readShard, readScope, readScopeChecked, sortEvents, causalHeads,
-  causality, writerFor, detectForks, scopeStatus, emitEvent, scopesOnDisk, SHARD_EXT, GENESIS, SIDECAR_PROTOCOL, EVENT_SCHEMA,
+  causality, writerFor, detectForks, scopeStatus, emitEvent, emitEventChecked, scopesOnDisk, SHARD_EXT, GENESIS, SIDECAR_PROTOCOL, EVENT_SCHEMA,
   type LogEvent } from "./eventlog.js";
 import { projectionFor } from "./shared-projections.js";
 import { docScope } from "./shared-docs.js";
@@ -575,6 +575,24 @@ test("emitting builds a chain: GENESIS, then each event naming the last", async 
     assert.equal(a.eventSchema, EVENT_SCHEMA);
     const read = await readScopeChecked(root, "s");
     assert.equal(read.status, "complete", "a clone writing its own chain never forks it");
+  } finally { discard(root); }
+});
+
+test("checked append serializes admission, retry and refusal with the event", async () => {
+  const root = tmp();
+  try {
+    mkdirSync(join(root, ".git"), { recursive: true });
+    const attempt = () => emitEventChecked(root, "s", izzie, async (events) => {
+      const prior = events.find((e) => e.data?.attempt === "once");
+      return prior ? { existing: prior } : { kind: "noted", subject: "f_1", data: { attempt: "once" } };
+    });
+    const [a, b] = await Promise.all([attempt(), attempt()]);
+    assert.ok(!("error" in a) && !("error" in b));
+    assert.equal(a.id, b.id);
+    assert.equal((await readScope(root, "s")).length, 1);
+    const denied = await emitEventChecked(root, "s", izzie, async () => ({ error: "stale admission" }));
+    assert.deepEqual(denied, { error: "stale admission" });
+    assert.equal((await readScope(root, "s")).length, 1);
   } finally { discard(root); }
 });
 

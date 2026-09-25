@@ -368,9 +368,27 @@ export async function rotateWriter(logRoot: string): Promise<string> {
 export async function emitEvent(
   logRoot: string, scope: string, actor: Actor, kind: string, subject: string, data?: Record<string, unknown>,
 ): Promise<LogEvent> {
+  const result = await emitEventChecked(logRoot, scope, actor, async () => ({ kind, subject, data }));
+  if ("error" in result) throw new Error(result.error);
+  return result;
+}
+
+/** Recheck an admission decision against the scope while holding the append lock. */
+export async function emitEventChecked(
+  logRoot: string, scope: string, actor: Actor,
+  check: (events: LogEvent[]) => Promise<
+    | { kind: string; subject: string; data?: Record<string, unknown> }
+    | { existing: LogEvent }
+    | { error: string }
+  >,
+): Promise<LogEvent | { error: string }> {
   return withSidecarLock(logRoot, async () => {
+    const events = await readScope(logRoot, scope);
+    const admission = await check(events);
+    if ("error" in admission) return admission;
+    if ("existing" in admission) return admission.existing;
     const writer = await writerFor(logRoot);
-    const seen = causalHeads(await readScope(logRoot, scope));
+    const seen = causalHeads(events);
     // The chain's own file, not fold order. A shard is single-writer and
     // append-only, so its last line IS this chain's head by construction —
     // whereas fold order is a total order over the whole scope and would have to
@@ -379,12 +397,12 @@ export async function emitEvent(
     const own = await readShard(join(logRoot, shardFor(scope, writer)));
     const event: LogEvent = {
       sidecarProtocol: SIDECAR_PROTOCOL, eventSchema: EVENT_SCHEMA,
-      id: mintId(), kind, subject, actor, at: new Date().toISOString(), writer,
+      id: mintId(), kind: admission.kind, subject: admission.subject, actor, at: new Date().toISOString(), writer,
       writerPrev: own.length ? own[own.length - 1]!.id : GENESIS,
       // Always present, even empty: `after` is a list in protocol 1, and an absent
       // one used to be indistinguishable from "saw nothing".
       after: seen,
-      ...(data ? { data } : {}),
+      ...(admission.data ? { data: admission.data } : {}),
     };
     await appendEvents(logRoot, scope, writer, [event]);
     return event;
