@@ -237,7 +237,8 @@ import { readScopeChecked, sortEvents, SHARD_EXT, type LogEvent, type ScopeDiagn
 // 37 → 38: questionnaire submissions are one new decision event; old cached folds would hide them.
 // 38 → 39: comparison requests, judgments and resolutions change decision authority and add a projection table.
 // 39 → 40: explicit withdrawal approval and revision presentation are new decision events.
-export const MATERIALIZER_VERSION = 42;
+// 42 → 43: list relay revisions now fold into per-item authority; cached decisions must refold.
+export const MATERIALIZER_VERSION = 43;
 
 /**
  * What the events in a scope are, cheaply.

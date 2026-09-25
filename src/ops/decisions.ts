@@ -18,7 +18,7 @@ import { canonicalIssueKey, resolveDecisionIssue, type CanonicalIssueReference }
 import {
   CONFIRM_NO, CONFIRM_YES, NONE, canonicalMaps, briefManifest, briefListing, briefRefusal, readingRefusal, readerBrief as briefFor, bindRefusal, checkDecision, checkQuestionnaireDecisions, confirmPayload, confirmState, confirmedWords, decisionHash, logQuestionEvent,
   mapsKey, named, namedIssues, possiblySuperseded, postConfirmEvent, postRoundEvent, validMaps,
-  approveDecisionWithdrawalEvent, presentDecisionRevisionEvent, revisionRelayQuestion, withdrawalScope, standingForIssue, checkListRevision, type ListRevision,
+  approveDecisionWithdrawalEvent, presentDecisionRevisionEvent, revisionRelayQuestion, withdrawalScope, standingForIssue, checkListRevision, listRevisionItemIds, parseListRelayAnswer, type ListRevision,
   readingsInDispute, intentCandidates, nominateComparisonEvent, recordAnswerEvent, submitQuestionnaireEvent, recordReadingEvent, ruledNotCarriedOut, standing, standingForFinding, waitingOnMe, awaitingReading, parked, withdrawDecisionEvent, reviseAnswerEvent,
   type AnswerVia, type BriefEntry, type FoldedDecision, type Mapping, type SharedDecisions,
 } from "../shared-decisions.js";
@@ -1047,6 +1047,8 @@ export async function revisionRelayBrief(root: string,
   if (!sources?.length || sources.some((a) => !a?.verified || a.sourceAnswer || a.cancelled))
     return { error: "relay revision needs exact current verified source answers" };
   const scope = { findings: input.findings ?? [], ...(input.issues?.length ? { issues: input.issues } : {}) };
+  if (d.presentation?.question.kind === "list" && !listRevisionItemIds(d, scope).length)
+    return { error: "list revision needs selected items in its exact scope" };
   return { ok: true as const, decision: d.id, revises: input.revises, scope,
     question: revisionRelayQuestion(d, sources as FoldedDecision["answers"], b.actor.principal, scope) };
 }
@@ -1078,8 +1080,13 @@ export async function reviseDecisionRelayed(root: string,
   if (typeof answer !== "string" || !answer.trim()) return { error: "revision needs one exact human response" };
   const proof = { session: call.session, toolUseId: call.toolUseId, entryId: call.entryId,
     answeredAt: call.at, question: call.questions[0]!, answer };
+  const isList = d.presentation?.question.kind === "list";
+  const parsed = isList ? parseListRelayAnswer(answer) : null;
+  if (isList && !parsed) return { error: "list relay answer must approve all or give exact per-item correction JSON" };
+  const list = parsed ? { items: listRevisionItemIds(d, scope), ...parsed } : undefined;
   const event = await reviseAnswerEvent(b.cfg.path, b.cfg.universe, b.actor, {
     decision: d.id, hash: d.hash, via: { kind: "revision-relay", proof },
+    ...(list ? { list } : {}),
     revision: { of: input.revises, findings: scope.findings,
       ...(input.issues?.length ? { issues: input.issues } : {}) },
   });

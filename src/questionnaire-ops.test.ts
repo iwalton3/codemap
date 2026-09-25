@@ -7,7 +7,7 @@ import { spawnSync } from "node:child_process";
 import { indexBlob } from "./repo.js";
 import { writeStore } from "./store.js";
 import { shareFinding } from "./ops-shared.js";
-import { postRound, questionnaireDetail, submitQuestionnaire, presentDecisionRevision, reviseDecision, withdrawDecision } from "./ops/decisions.js";
+import { postRound, questionnaireDetail, submitQuestionnaire, presentDecisionRevision, reviseDecision, revisionRelayBrief, reviseDecisionRelayed, withdrawDecision } from "./ops/decisions.js";
 import { decisionScope, foldDecisions, currentAnswersForIssue } from "./shared-decisions.js";
 import { readScope } from "./eventlog.js";
 import { questionnaireVersion, type Questionnaire, type QuestionnaireAnswer } from "./questionnaire.js";
@@ -19,11 +19,11 @@ import { team, settle } from "./oracle.js";
 import { search } from "./ops.js";
 
 const src = "export function creditLine(cents) { return cents * 2; }\n";
-const env = async (principal: string | undefined, agent: boolean, fn: () => Promise<void>) => {
+const env = async <T>(principal: string | undefined, agent: boolean, fn: () => Promise<T>): Promise<T> => {
   const oldModel = process.env.CODEMAP_AGENT_MODEL, oldPrincipal = process.env.CODEMAP_PRINCIPAL;
   if (agent) process.env.CODEMAP_AGENT_MODEL = "claude-opus-5"; else delete process.env.CODEMAP_AGENT_MODEL;
   if (principal) process.env.CODEMAP_PRINCIPAL = principal; else delete process.env.CODEMAP_PRINCIPAL;
-  try { await fn(); } finally {
+  try { return await fn(); } finally {
     if (oldModel === undefined) delete process.env.CODEMAP_AGENT_MODEL; else process.env.CODEMAP_AGENT_MODEL = oldModel;
     if (oldPrincipal === undefined) delete process.env.CODEMAP_PRINCIPAL; else process.env.CODEMAP_PRINCIPAL = oldPrincipal;
   }
@@ -276,6 +276,64 @@ test("a list revision keeps per-item corrections and refuses incomplete or misma
   } finally { u.cleanup(); }
 });
 
+
+test("a list relay shows source corrections and records only the person's exact per-item verdict", async () => {
+  const u = await fixture();
+  const transcripts = mkdtempSync(join(tmpdir(), "codemap-list-relay-"));
+  try {
+    let source = "";
+    await env("alice@x.com", false, async () => {
+      const first = await submitQuestionnaire(u.root, submit(u.q, "list-relay-source", [
+        { questionId: "list", kind: "list", approveUnmarked: true,
+          marked: [{ itemId: "reject-item", correction: "The claim needs a narrower scope" }] },
+      ])) as any;
+      assert.equal(first.ok, true, JSON.stringify(first));
+      source = first.answers[0].id;
+    });
+    const d = (await decisionsView(u.root)).s.decisions.find((item) => (item.label ?? item.id) === "list")!;
+    const scope = { decision: d.id, revises: [source], findings: [u.finding] };
+    const shown = await env("bob@x.com", false, async () => presentDecisionRevision(u.root, scope)) as any;
+    assert.equal(shown.ok, true, JSON.stringify(shown));
+    assert.match(JSON.stringify(shown.displayed), /The claim needs a narrower scope/);
+    assert.match(JSON.stringify(shown.displayed), /alice@x.com/);
+
+    await env("bob@x.com", true, async () => {
+      const brief = await revisionRelayBrief(u.root, scope) as any;
+      assert.equal(brief.ok, true, JSON.stringify(brief));
+      assert.match(brief.question.question, /The claim needs a narrower scope/);
+      assert.match(brief.question.question, /"reviewedItems"/);
+      const answer = "Other: " + JSON.stringify({ approveUnmarked: true,
+        marked: [{ itemId: "fix-item", correction: "Fix item needs a boundary check" }] });
+      const session = "list-relay-session";
+      const toolUseId = "list-relay-call";
+      const when = new Date(Date.now() + 5000).toISOString();
+      const questions = [brief.question];
+      writeFileSync(join(transcripts, `${session}.jsonl`), [
+        { type: "assistant", uuid: "asked", timestamp: when,
+          message: { content: [{ type: "tool_use", id: toolUseId, name: "AskUserQuestion", input: { questions } }] } },
+        { type: "user", uuid: "answered", timestamp: when, sourceToolAssistantUUID: "asked",
+          message: { content: [{ type: "tool_result", tool_use_id: toolUseId, content: "answered" }] },
+          toolUseResult: { questions, answers: { [brief.question.question]: answer } } },
+      ].map((line) => JSON.stringify(line)).join("\n") + "\n");
+      const revised = await reviseDecisionRelayed(u.root, { ...scope, session, toolUseId }, {}, transcripts) as any;
+      assert.equal(revised.ok, true, JSON.stringify(revised));
+      const current = (await decisionsView(u.root)).s.decisions.find((item) => item.id === d.id)!;
+      const recorded = current.answers.find((item) => item.id === revised.revision)!;
+      assert.equal(recorded.revisionInvalid, undefined);
+      assert.deepEqual(recorded.questionnaire?.approvals, ["reject-item"]);
+      assert.deepEqual(recorded.questionnaire?.corrections,
+        [{ itemId: "fix-item", text: "Fix item needs a boundary check", verdict: "pending" }]);
+      const events = await readScope(u.side, decisionScope(universeKey(u.root)));
+      const changed = events.map((event) => event.id === revised.revision
+        ? { ...event, data: { ...(event.data as any), list: { ...((event.data as any).list),
+          marked: [{ itemId: "fix-item", correction: "agent-authored change" }] } } } : event);
+      const forged = foldDecisions(changed).decisions.find((item) => item.id === d.id)!
+        .answers.find((item) => item.id === revised.revision)!;
+      assert.ok(forged.revisionInvalid);
+      assert.ok(forged.cancelled);
+    });
+  } finally { u.cleanup(); discard(transcripts); }
+});
 
 test("a list correction survives two-clone sync and cached refold", async () => {
   let t: Awaited<ReturnType<typeof team>> | undefined;

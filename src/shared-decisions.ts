@@ -604,9 +604,15 @@ export const withdrawalScope = (d: FoldedDecision): RevisionScope =>
 export function revisionRelayQuestion(d: FoldedDecision, sources: FoldedAnswer[], to: string,
   scope: RevisionScope): AskedQuestion {
   const shown = revisionPresentation(d, sources, to, scope, "");
+  const listQuestion = d.presentation?.question;
+  const reviewedItems = listQuestion?.kind === "list"
+    ? listQuestion.items.filter((item) => listRevisionItemIds(d, scope).includes(item.id)) : undefined;
   return { question: JSON.stringify({ purpose: "explicit-ruling-revision", decision: d.id,
-      answers: shown.answers, scope: shown.scope, display: shown.display, contextHash: shown.contextHash }),
-    options: d.payload.options.length ? d.payload.options : [{ label: "Other", description: "Give the corrected answer in your own words" }] };
+      answers: shown.answers, scope: shown.scope, display: shown.display, contextHash: shown.contextHash,
+      ...(reviewedItems ? { reviewedItems, answerFormat: "Approve all reviewed items, or enter JSON: {\"approveUnmarked\":true,\"marked\":[{\"itemId\":\"id\",\"correction\":\"your correction\"}]}" } : {}) }),
+    options: d.presentation?.question.kind === "list"
+      ? [{ label: "Approve all reviewed items" }, { label: "Other", description: "Enter the exact per-item correction JSON shown in the question" }]
+      : d.payload.options.length ? d.payload.options : [{ label: "Other", description: "Give the corrected answer in your own words" }] };
 }
 
 export function revisionPresentation(d: FoldedDecision, sources: FoldedAnswer[], to: string,
@@ -615,7 +621,11 @@ export function revisionPresentation(d: FoldedDecision, sources: FoldedAnswer[],
     answers: sources.map((a) => ({ id: a.id, responseHash: a.responseHash, questionHash: d.hash })),
     scope, display: { question: d.payload,
       ...(d.presentation?.question.kind === "list" ? { questionnaire: d.presentation } : {}),
-      answers: sources.map((a) => a.words),
+      answers: d.presentation?.question.kind === "list"
+        ? sources.map((a) => ({ id: a.id, principal: a.by.principal, words: a.words,
+          ...(a.questionnaire ? { reviewed: { answer: a.questionnaire.answer,
+            approvals: a.questionnaire.approvals ?? [], corrections: a.questionnaire.corrections ?? [] } } : {}) }))
+        : sources.map((a) => a.words),
       action: d.options.map((option) => ({ label: option.label, effects: option.effects })) } };
   return { ...context,
     contextHash: createHash("sha256").update(canonical(context)).digest("hex"), sourceReceipt };
@@ -625,6 +635,33 @@ export interface ListRevision {
   items: string[];
   approveUnmarked: true;
   marked: { itemId: string; correction: string }[];
+}
+
+export function parseListRelayAnswer(answer: string): Pick<ListRevision, "approveUnmarked" | "marked"> | null {
+  if (answer === "Approve all reviewed items") return { approveUnmarked: true, marked: [] };
+  const words = answer.startsWith("Other:") ? answer.slice("Other:".length).trim() : answer;
+  let value: unknown;
+  try { value = JSON.parse(words); } catch { return null; }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const raw = value as Record<string, unknown>;
+  if (raw.approveUnmarked !== true || !Array.isArray(raw.marked)
+    || Object.keys(raw).some((key) => !["approveUnmarked", "marked"].includes(key))
+    || !raw.marked.every((item) => item && typeof item === "object" && !Array.isArray(item)
+      && typeof item.itemId === "string" && typeof item.correction === "string"
+      && Object.keys(item).every((key) => key === "itemId" || key === "correction"))) return null;
+  return { approveUnmarked: true, marked: raw.marked as ListRevision["marked"] };
+}
+
+export function listRevisionItemIds(d: FoldedDecision, scope: RevisionScope): string[] {
+  const question = d.presentation?.question;
+  if (question?.kind !== "list") return [];
+  const selected = new Set([...scope.findings.map((id) => `finding:${id}`),
+    ...(scope.issues ?? []).map((issue) => issueKey(issue))]);
+  return question.items.filter((item) => {
+    const option = d.options.find((o) => o.label === item.text);
+    return option?.effects.some((effect) => effect.findings.some((id) => selected.has(`finding:${id}`))
+      || effectIssues(effect).some((issue) => selected.has(issueKey(issue))));
+  }).map((item) => item.id);
 }
 
 /** A list revision reviews every frozen item that bears on its named scope. */
@@ -639,13 +676,7 @@ export function checkListRevision(d: FoldedDecision, scope: RevisionScope, list:
   if (!Array.isArray(scope?.findings) || !scope.findings.every((id) => typeof id === "string")
     || (scope.issues !== undefined && (!Array.isArray(scope.issues) || !scope.issues.every(validIssue))))
     return "list revision needs an exact selected scope";
-  const selected = new Set([...scope.findings.map((id) => `finding:${id}`),
-    ...(scope.issues ?? []).map((issue) => issueKey(issue))]);
-  const expected = question.items.filter((item) => {
-    const option = d.options.find((o) => o.label === item.text);
-    return option?.effects.some((effect) => effect.findings.some((id) => selected.has(`finding:${id}`))
-      || effectIssues(effect).some((issue) => selected.has(issueKey(issue))));
-  }).map((item) => item.id);
+  const expected = listRevisionItemIds(d, scope);
   if (!expected.length || raw.items.length !== expected.length || new Set(raw.items).size !== expected.length
     || expected.some((id) => !raw.items!.includes(id))) return "list revision items must match the exact selected scope";
   const marked = new Set<string>();
@@ -662,7 +693,12 @@ export function checkListRevision(d: FoldedDecision, scope: RevisionScope, list:
 function listRevisionMatchesAnswer(d: FoldedDecision, list: ListRevision | undefined, via: AnswerVia): boolean {
   const question = d.presentation?.question;
   if (question?.kind !== "list") return true;
-  if (!list || via?.kind !== "direct") return false;
+  if (!list) return false;
+  if (via?.kind === "revision-relay") {
+    const parsed = parseListRelayAnswer(via.proof?.answer);
+    return !!parsed && canonical(parsed) === canonical({ approveUnmarked: list.approveUnmarked, marked: list.marked });
+  }
+  if (via?.kind !== "direct") return false;
   const marked = new Set(list.marked.map((item) => item.itemId));
   const labels = question.items.filter((item) => marked.has(item.id)).map((item) => item.text);
   const checked = labels.length ? labels : [d.options.find((option) => option.approveAll)?.label];
@@ -1064,7 +1100,7 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
       && listRevisionMatchesAnswer(d, (answerEvents.get(a.id)?.data as any)?.list,
         (answerEvents.get(a.id)?.data as any)?.via)
       && (!!relayValid || targets.every((x) => causal.saw(sourceEventId(a.id), sourceEventId(x!.id))))
-      && (d.presentation?.question.kind !== "list" || !!seen)
+      && (d.presentation?.question.kind !== "list" || !!seen || !!relayValid)
       && (samePrincipal || !!seen || !!relayValid)
       && (!rev.seen || !!seen);
     if (!valid) {
@@ -1391,6 +1427,18 @@ function resolve(d: FoldedDecision, via: AnswerVia, actor: Actor, questions: Map
       if (!isAgentActor(actor) || !str(proof?.session) || !str(proof?.toolUseId)
         || !str(proof?.entryId) || !str(proof?.answeredAt) || ms(proof.answeredAt) === undefined
         || !str(proof?.answer)) return null;
+      if (d.presentation?.question.kind === "list") {
+        const parsed = parseListRelayAnswer(proof.answer);
+        const marked = new Set(parsed?.marked.map((item) => item.itemId) ?? []);
+        const labels = parsed && (marked.size
+          ? d.presentation.question.items.filter((item) => marked.has(item.id)).map((item) => item.text)
+          : [d.options.find((option) => option.approveAll)?.label]);
+        const picked = labels?.map((label) => d.options.find((option) => option.label === label));
+        return { verified: true, givenAt: proof.answeredAt,
+          once: `revision:${proof.session}\0${proof.toolUseId}`,
+          words: proof.answer, picked: picked?.every(Boolean) ? picked as DecisionOption[] : [],
+          free: !picked?.every(Boolean) };
+      }
       const picked = d.options.find((option) => option.label === proof.answer);
       return { verified: true, givenAt: proof.answeredAt,
         once: `revision:${proof.session}\0${proof.toolUseId}`,
@@ -2412,7 +2460,7 @@ export const reviseAnswerEvent = (logRoot: string, universe: string, actor: Acto
         || sources.some((a) => (ms(a!.givenAt) ?? Infinity) >= ms(proof.answeredAt)!))
         return { error: "relay did not prove exact predecessor context at human answer time" };
     }
-    if (d.presentation?.question.kind === "list" && !seen)
+    if (d.presentation?.question.kind === "list" && !seen && input.via.kind !== "revision-relay")
       return { error: "list revision needs the exact shown context receipt" };
     if ((seen || sources.some((a) => a!.by.principal !== actor.principal)) && input.via.kind !== "revision-relay") {
       const shown = events.find((e) => e.id === seen?.presentation && e.kind === "decision.revision.presented");
