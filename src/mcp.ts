@@ -24,6 +24,9 @@ import { enableAnalyzer } from "./analyzers/run.js";
 import { markReviewed, markReviewedBatch, unmarkReviewed } from "./reviews.js";
 import { withLock } from "./lock.js";
 import { SIGN_OFF_AXES, EVIDENCE_KINDS } from "./schema.js";
+import { applicationReaderBrief, submitApplicationVerdict, recordApplicationVerdict, applyRuling } from "./ops/ruling-application.js";
+import { questionnaireStatus, waitQuestionnaireStatus } from "./ops/questionnaire-status.js";
+import { comparisonDetail, requestComparison, comparisonBrief, submitComparisonJudgment, recordComparisonJudgment, comparisonResolutionBrief, resolveComparison } from "./ops/comparisons.js";
 
 /**
  * Tools that write to a universe's `.codemap/` are held under the write lock, so a
@@ -211,6 +214,25 @@ function violates(schema: unknown, args: Record<string, unknown>, path = ""): st
  * handler. Descriptions are for agents that already got here, and names are for the
  * ones still looking.
  */
+const APPLICATION_ISSUE_REF = {
+  type: "object", description: "Exact shared finding or bug identity. Supply kind, universe, id and source scope; findings also need their owning review key. A display label is not an identity.",
+  properties: {
+    kind: { type: "string", enum: ["finding", "bug"] },
+    universe: { type: "string", description: "The issue's universe key." },
+    id: { type: "string", description: "The exact finding or bug ID." },
+    scope: { type: "string", description: "The authoritative findings/... or bugs/... sidecar scope." },
+    review: { type: "string", description: "Required for a finding: exact owning PR number or branch:<name> review key." },
+  }, required: ["kind", "universe", "id", "scope"], additionalProperties: false,
+};
+const APPLICATION_RECEIPT_REF = {
+  type: "object", description: "A recorded independent reader's exact request and successful submit-call receipt.",
+  properties: {
+    requestId: { type: "string" }, receipt: { type: "string" },
+    agentId: { type: "string", description: "The independently launched subagent's ID." },
+    callId: { type: "string", description: "That subagent's submit_application_verdict tool-use ID." },
+  }, required: ["requestId", "receipt", "agentId", "callId"], additionalProperties: false,
+};
+
 const tools: Tool[] = [
   {
     name: "list_universes",
@@ -966,9 +988,9 @@ const tools: Tool[] = [
   },
   {
     name: "post_round",
-    description: "Post a round of questions for a person to answer, BEFORE asking them. Each decision carries the exact `AskUserQuestion` question it will be asked with (`payload`) and, per option, its `effects`: `{findings, on: \"settle\", as: \"refuted\"}` closes those findings once carried out, `{findings, on: \"unblock\"}` releases them as fix work. Ask with the `ask` payloads this returns, VERBATIM, then call `log_question` — a paraphrased question cannot be matched and reads as unverified.\n\n`kind`: \"options\" (a picked option is the ruling), \"words\" (the answer IS the words; no effects), or \"bulk\" (a multi-select whose options are items: a CHECKED item is ruled on separately, every unchecked item is approved; it must carry exactly one option with `approveAll: true`, because an empty multi-select cannot be submitted).\n\nThe question TEXT must name its ref and every finding its options act on — e.g. \"D13: close f_09deadcafef3 as refuted?\" — so words the person types back can be bound to what they were shown.\n\nRefused: a question text missing its ref or a finding; a finding this store does not hold, or holds only locally (publish it first); a settle without `as: \"refuted\"`, an unblock with an `as`, a park option on a multi-select, two options sharing a label, two decisions sharing an id; automatic question supersession (`supersedes`); the follows field links context only, so withdraw explicitly; an option label with a newline or an arrow (a reader's verdict names it on one line); and `closesOnAnswer` (no answer closes a finding). A person's ruling is NOT a close: a settle holds its finding until the verifier carries it out. For an intent conflict, a resolution decision may carry `resolves: {answers: [firstId, secondId]}`; its exact question must show both verified answers' ids and JSON-quoted words, and its two effect-free labels must be `Preserve <id>`. Ask the person verbatim. If they give new Other words, have a reader verify a `(none)` reading before treating those words as the new intent; then ask a fresh valid question for any action they require. A third answer not shown remains unresolved.",
+    description: "Post a round of questions for a person to answer, BEFORE asking them. Each decision carries the exact `AskUserQuestion` question it will be asked with (`payload`) and, per option, its `effects`: `{findings, on: \"settle\", as: \"refuted\"}` closes those findings once carried out, `{findings, on: \"unblock\"}` releases them as fix work. Ask with the `ask` payloads this returns, VERBATIM, then call `log_question` — a paraphrased question cannot be matched and reads as unverified.\n\n`kind`: \"options\" (a picked option is the ruling), \"words\" (the answer IS the words; no effects), or \"bulk\" (a multi-select whose options are items: a CHECKED item is ruled on separately, every unchecked item is approved; it must carry exactly one option with `approveAll: true`, because an empty multi-select cannot be submitted).\n\nThe question TEXT must name its ref and every finding its options act on — e.g. \"D13: close f_09deadcafef3 as refuted?\" — so words the person types back can be bound to what they were shown.\n\nRefused: a question text missing its ref or a finding; a finding this store does not hold, or holds only locally (publish it first); a settle without `as: \"refuted\"`, an unblock with an `as`, a park option on a multi-select, two options sharing a label, two decisions sharing an id; automatic question supersession (`supersedes`); the follows field links context only, so withdraw explicitly; an option label with a newline or an arrow (a reader's verdict names it on one line); and `closesOnAnswer` (no answer closes a finding). A person's ruling is NOT a close: a settle holds its finding until the verifier carries it out. For an intent conflict, a resolution decision may carry `resolves: {answers: [firstId, secondId]}`; its exact question must show both verified answers' ids and JSON-quoted words, and its two effect-free labels must be `Preserve <id>`. Ask the person verbatim. If they give new Other words, have a reader verify a `(none)` reading before treating those words as the new intent; then ask a fresh valid question for any action they require. A third answer not shown remains unresolved.\n\nFor an organized stakeholder questionnaire, include `round.questionnaire` with stable id, title, optional context and recipient, ordered sections, and question ids matching the decisions. Choice questions have stable option ids and descriptions plus an explicit Other policy; short questions accept text; list questions have stable item ids/context and make unmarked approval explicit. The published form is frozen. Publication returns the questionnaire id, web hash link and retrieval instructions; answer submission is a separate, attested browser act, never performed by this agent tool.",
     inputSchema: obj({
-      round: { type: "object", description: "{ id, source (a review round's or plan's slug, or \"ad hoc\"), pr?, branch?, notes? (decided-rather-than-asked lines) }" },
+      round: { type: "object", description: "{ id, source, pr?, branch?, notes?, questionnaire?: { id, title, context?, recipient?, sections: [{ id, title, context?, questions: [{ id (same as decision id), kind, prompt, ...format-specific choices/items and action meaning }] }] } }. A questionnaire freezes the entire displayed form and returns its stable retrieval ID and web link." },
       decisions: { type: "array", items: { type: "object" }, description: "Each { id, round, ref (\"D1\"), kind, payload (the AskUserQuestion question), options: [{ label (= the payload's option label, same order), effects, park?, recommended?, approveAll? }], follows?, origin? }" },
     }, ["round", "decisions"]),
     mutates: true,
@@ -1001,7 +1023,7 @@ const tools: Tool[] = [
   },
   {
     name: "reader_brief",
-    description: "The exact prompt to launch a reader subagent with, for one answer in the person's own words — and the moment YOUR reading of the words is taken, before any reader exists. Pass your reading as `maps`; it is fixed from here: asking again returns the same brief, and a different reading is refused (it is re-issued only if the round changed under it and no verdict is held). The brief holds their words, the questions they may be read onto with exact labels, and the verdict format — nothing of your reading. Launch a NEW general-purpose subagent (not a fork) with exactly this prompt, after the words were typed, and send it nothing else: the reader calls `submit_verdict` itself. Then `record_reading`. Refused: words after a verified ruling that no person confirmed, an unread and unbound answer on a withdrawn question, and a reading that could not bind. Known gaps, left open by the owner: stopping a reader before it submits and launching another, and launching a reader with a hand-built copy of the brief before asking for it.",
+    description: "The exact prompt to launch a reader subagent with, for one answer in the person's own words — and the moment YOUR reading of the words is taken, before any reader exists. Pass your reading as `maps`; it is fixed from here: asking again returns the same brief, and a different reading is refused (it is re-issued only if the round changed under it and no verdict is held). The brief holds their words, the questions they may be read onto with exact labels, a request ID, and the verdict format — nothing of your reading. Launch a NEW general-purpose subagent (not a fork) with exactly this prompt, after the words were typed, and send it nothing else: the reader calls `submit_verdict` itself. Then `record_reading`. Refused: words after a verified ruling that no person confirmed, an unread and unbound answer on a withdrawn question, and a reading that could not bind. Known gaps, left open by the owner: stopping a reader before it submits and launching another, and launching a reader with a hand-built copy of the brief before asking for it.",
     inputSchema: obj({
       answer: { type: "string", description: "The answer id (from `awaitingReading` on `decision_rounds`)." },
       maps: { type: "array", items: { type: "object" }, description: "YOUR reading of the words: [{ decision, option | null }], at least one line. Compared with the reader's verdict." },
@@ -1013,9 +1035,10 @@ const tools: Tool[] = [
   },
   {
     name: "submit_verdict",
-    description: "For a READER subagent only: your verdict on the words in your brief, which the brief tells you to send here yourself. `verdict` is your verdict lines as text — one per pick, `D<n> → <exact option label>`; `D<n> → (none)`; or the single line `unclear: <why>`. It is held on this machine and recorded once codemap finds this call in your own transcript. One that does not parse or could not bind is refused and not held: correct it and call again. The successful held result returns a receipt used only for transcript correlation. A session calling this itself is not a reader, and its verdict is discarded.",
+    description: "For a READER subagent only: your verdict on the words in your brief, which the brief tells you to send here yourself. `verdict` is your verdict lines as text — one per pick, `D<n> → <exact option label>`; `D<n> → (none)`; or the single line `unclear: <why>`. It is held on this machine and recorded once codemap finds this call in your own transcript. One that does not parse or could not bind is refused and not held: correct it and call again. Pass the exact `request` ID issued with a new brief; it binds this verdict to that frozen request. Older local answer-keyed briefs may omit it. The successful held result returns a receipt used only for transcript correlation. A session calling this itself is not a reader, and its verdict is discarded.",
     inputSchema: obj({
       answer: { type: "string", description: "The answer id your brief names." },
+      request: { type: "string", description: "Exact request ID from a new reader brief; legacy local briefs may omit it." },
       verdict: { type: "string", description: "Your verdict lines." },
     }, ["answer", "verdict"]),
     mutates: true,
@@ -1029,6 +1052,53 @@ const tools: Tool[] = [
     handler: (a, c) => ops.recordReading(c.universe.path, a as never),
   },
   {
+    name: "application_reader_brief",
+    description: "Issue an immutable, full claim-and-ruling brief for an independent application reader. Name the exact shared finding or bug and verified human answer. Reader slots 1 and 2 use role reader; when two readers disagree, role arbitrator in slot 3 requires their two recorded, independently launched receipts and includes both rationales. Launch a NEW general-purpose subagent (not a fork) with the returned prompt exactly, send it no message before its verdict, then have that subagent call `submit_application_verdict`. A brief alone does not close the issue.",
+    inputSchema: obj({
+      issue: APPLICATION_ISSUE_REF,
+      answerId: { type: "string", description: "Exact current verified human ruling answer event ID." },
+      role: { type: "string", enum: ["reader", "arbitrator"], description: "Omit for a reader; arbitration requires two recorded readers in disagreement." },
+      slot: { type: "integer", minimum: 1, maximum: 3, description: "1 or 2 for readers; 3 for arbitrator." },
+      readers: { type: "array", items: APPLICATION_RECEIPT_REF, description: "For an arbitrator, the two recorded reader receipts whose rationales it must read." },
+    }, ["issue", "answerId", "slot"]),
+    mutates: true,
+    handler: (a, c) => applicationReaderBrief(c.universe.path, a as never),
+  },
+  {
+    name: "submit_application_verdict",
+    description: "For the independent application reader subagent: submit sound or unsound with a concrete rationale for the exact immutable request. This only holds a machine-local receipt; it does not authenticate the caller or close the issue. The coordinator next calls `record_application_verdict` with this successful call's receipt and tool-use ID.",
+    inputSchema: obj({
+      requestId: { type: "string", description: "Exact requestId returned by application_reader_brief." },
+      verdict: { type: "string", enum: ["sound", "unsound"] },
+      rationale: { type: "string", description: "Why the ruling does or does not defeat this issue's premise." },
+    }, ["requestId", "verdict", "rationale"]),
+    mutates: true,
+    handler: async (a, c) => submitApplicationVerdict(c.universe.path, a as never),
+  },
+  {
+    name: "record_application_verdict",
+    description: "Authenticate one held reader verdict against the independently launched subagent's exact brief, its own submit_application_verdict call, and that call's successful receipt in the local transcript. Missing or unverifiable transcript evidence leaves the verdict pending. This records evidence only; it does not close the issue.",
+    inputSchema: obj({
+      requestId: { type: "string" }, receipt: { type: "string" },
+      agentId: { type: "string", description: "The reader subagent's ID." },
+      callId: { type: "string", description: "The reader's submit_application_verdict tool-use ID." },
+    }, ["requestId", "receipt", "agentId", "callId"]),
+    mutates: true,
+    handler: async (a, c) => recordApplicationVerdict(c.universe.path, a as never),
+  },
+  {
+    name: "apply_ruling",
+    description: "Apply one current verified human ruling to one exact shared issue, after independent reader evidence is recorded and authenticated. A direct, unambiguous issue mention needs one sound reader. Indirect application needs two independent readers; disagreement needs a third independent sound arbitrator who read both rationales. Rechecks current authority, comparison, issue claim/open epoch, and the unspent ruling–issue pair under the sidecar append lock. A bare approval or missing transcript never closes an issue. An already executed pair returns its original application receipt, including after reopen.",
+    inputSchema: obj({
+      issue: APPLICATION_ISSUE_REF,
+      answerId: { type: "string", description: "Exact current verified human ruling answer event ID." },
+      readers: { type: "array", items: APPLICATION_RECEIPT_REF, description: "One or two separately launched, recorded, soundness reader receipts as required by the displayed issue mention." },
+      arbitrator: APPLICATION_RECEIPT_REF,
+    }, ["issue", "answerId", "readers"]),
+    mutates: true,
+    handler: (a, c) => applyRuling(c.universe.path, a as never),
+  },
+  {
     name: "confirm_reading",
     description: "A decision marked `possiblySuperseded` has the person's typed words that may overturn its ruling, not yet bound. Ask them what they meant: this POSTS a confirm question into the words' round, with codemap's own text, and returns it as `ask` — for unread words, your own reading as `maps`, which they confirm (Yes), reject (\"No — ask me again\": then re-ask the original question), or answer in their own words (Other, read by a reader like any reply); for words the reader and you read differently, both readings as options. Until it is answered it holds the findings its readings act on and waits on the person. Ask it verbatim with AskUserQuestion, then `log_question` the call with that round. A Yes binds the reading as of when they TYPED the words. Asking again returns the open confirm rather than posting a second. Refused: a reading that could not bind, a ref two questions in the round share, and an unclear reading. An unread, unbound superseded question needs a fresh question; an already completed reading can still be confirmed.",
     inputSchema: obj({
@@ -1039,8 +1109,131 @@ const tools: Tool[] = [
     handler: (a, c) => ops.confirmReading(c.universe.path, a as never),
   },
   {
+    name: "comparison_detail",
+    description: "Read one exact pair comparison: both frozen question and answer sources, semantic reader judgments, current authority state, and any ruling application executions using either answer. Pending, unclear, incompatible and disputed states restrict dependent work; equivalent releases only this pair's restriction.",
+    inputSchema: obj({ id: { type: "string" } }, ["id"]),
+    mutates: false,
+    handler: (a, c) => comparisonDetail(c.universe.path, String(a.id)),
+  },
+  {
+    name: "request_comparison",
+    description: "Issue a durable semantic comparison request for two exact current answers from different principals. The request freezes complete displayed question, answer, option and item context plus canonical affected issue scope. Nominate an otherwise invisible pair first. A request pauses dependent work; a reader must judge meaning.",
+    inputSchema: obj({ answers: { type: "array", items: { type: "string" }, description: "Two exact answer IDs." },
+      issues: { type: "array", items: { type: "object" }, description: "Optional canonical issue refs narrowing the affected scope." } }, ["answers"]),
+    mutates: true,
+    handler: (a, c) => requestComparison(c.universe.path, a as never),
+  },
+  {
+    name: "comparison_reader_brief",
+    description: "Freeze the full neutral pair-comparison prompt for a NEW independent reader subagent. Launch it with exactly the returned prompt and no proposed coordinator interpretation; it calls submit_comparison_judgment itself. Then call record_comparison_judgment to verify its transcript and receipt.",
+    inputSchema: obj({ id: { type: "string", description: "Exact comparison request ID." } }, ["id"]),
+    mutates: true,
+    handler: (a, c) => comparisonBrief(c.universe.path, String(a.id)),
+  },
+  {
+    name: "submit_comparison_judgment",
+    description: "For the independent reader only: submit equivalent, incompatible or unclear with a rationale for the exact comparison request. This holds a local receipt; it does not itself release work. The coordinator records it after the successful call appears in the reader transcript.",
+    inputSchema: obj({ request: { type: "string" }, verdict: { type: "string", enum: ["equivalent", "incompatible", "unclear"] },
+      rationale: { type: "string" } }, ["request", "verdict", "rationale"]),
+    mutates: true,
+    handler: (a, c) => submitComparisonJudgment(c.universe.path, a as never),
+  },
+  {
+    name: "record_comparison_judgment",
+    description: "Verify the independent reader's exact issued brief, launch, own submit_comparison_judgment call and successful receipt from its transcript, then record one durable judgment. Pending transcript visibility grants no equivalence and releases no work.",
+    inputSchema: obj({ request: { type: "string" } }, ["request"]),
+    mutates: true,
+    handler: (a, c) => recordComparisonJudgment(c.universe.path, a as never),
+  },
+  {
+    name: "comparison_resolution_brief",
+    description: "Show the person both full alternatives, accepted reader judgments and any already executed closure receipts before asking them to resolve an incompatible or disputed comparison. Use its exact question with AskUserQuestion, then pass the verified call to resolve_comparison. A third unseen answer remains separate.",
+    inputSchema: obj({ id: { type: "string" } }, ["id"]),
+    mutates: false,
+    handler: (a, c) => comparisonResolutionBrief(c.universe.path, String(a.id)),
+  },
+  {
+    name: "resolve_comparison",
+    description: "Record the person's verified AskUserQuestion choice of one exact answer after showing complete alternatives and known execution receipts. This agent tool accepts only the question route; a person at the web page uses the attested browser route. A correction names the prior resolution it revises. Neither route reverts a historical closure.",
+    inputSchema: obj({ request: { type: "string" }, preserve: { type: "string" }, rationale: { type: "string" },
+      shownHash: { type: "string" }, executionsHash: { type: "string" }, session: { type: "string" }, toolUseId: { type: "string" },
+      revises: { type: "string" }, shownResolution: { type: "object" } },
+    ["request", "preserve", "rationale", "shownHash", "executionsHash", "session", "toolUseId"]),
+    mutates: true,
+    handler: (a, c) => resolveComparison(c.universe.path, {
+      request: String(a.request), preserve: String(a.preserve), rationale: String(a.rationale),
+      shownHash: String(a.shownHash), executionsHash: String(a.executionsHash),
+      session: String(a.session), toolUseId: String(a.toolUseId),
+      ...(a.revises ? { revises: String(a.revises), shownResolution: a.shownResolution as never } : {}),
+      source: "question",
+    }),
+  },
+  {
+    name: "decision_revision_relay_brief",
+    description: "Build the one exact AskUserQuestion to show a person before recording an informed revision through an agent. It includes the named predecessor answers, their displayed context, exact affected finding/bug scope, and available new choices. Ask it verbatim once; a later sync cannot retroactively prove what the person saw.",
+    inputSchema: obj({ decision: { type: "string" }, revises: { type: "array", items: { type: "string" } },
+      findings: { type: "array", items: { type: "string" } },
+      issues: { type: "array", items: { type: "object" }, description: "Optional exact canonical issue references." } },
+    ["decision", "revises", "findings"]),
+    mutates: false,
+    handler: (a, c) => ops.revisionRelayBrief(c.universe.path, a as never),
+  },
+  {
+    name: "record_relayed_decision_revision",
+    description: "Verify the exact single AskUserQuestion call/result that showed the predecessor and affected scope when the person answered, then append a scoped revision. The human answer time and source receipt come from that transcript, so a recorder's later pull cannot fabricate informed context. A mismatch or missing transcript refuses authority.",
+    inputSchema: obj({ decision: { type: "string" }, revises: { type: "array", items: { type: "string" } },
+      findings: { type: "array", items: { type: "string" } },
+      issues: { type: "array", items: { type: "object" } }, session: { type: "string" }, toolUseId: { type: "string" } },
+    ["decision", "revises", "findings", "session", "toolUseId"]),
+    mutates: true,
+    handler: (a, c) => ops.reviseDecisionRelayed(c.universe.path, a as never),
+  },
+  {
+    name: "execute_approved_decision_withdrawal",
+    description: "Execute one exact withdrawal already approved by the named principal. Supply the approval event ID, decision, optional answer ID, and identical reason. The fold matches scope, known answers, principal and receipt against the recorded human approval; an agent cannot approve its own withdrawal. Withdrawal retires pending authority only and preserves completed applications as history.",
+    inputSchema: obj({
+      decision: { type: "string", description: "Exact decision ID." },
+      answer: { type: "string", description: "Exact answered ruling ID; omit only for an unanswered question." },
+      reason: { type: "string", description: "Reason exactly as approved by the person." },
+      approval: { type: "string", description: "Recorded decision.withdrawal.approved event ID." },
+    }, ["decision", "reason", "approval"]),
+    mutates: true,
+    handler: (a, c) => ops.withdrawDecision(c.universe.path, {
+      decision: String(a.decision), ...(a.answer ? { answer: String(a.answer) } : {}),
+      reason: String(a.reason), approval: String(a.approval),
+    }),
+  },
+  {
+    name: "questionnaire_list",
+    description: "List published stakeholder questionnaires by stable ID, with recipient routing and per-principal submitted, withdrawn and unanswered progress. Drafts live only in each browser and are not shared answers. Run codemap sync explicitly before expecting remote submissions.",
+    inputSchema: obj({}),
+    mutates: false,
+    handler: (a, c) => ops.questionnaireList(c.universe.path),
+  },
+  {
+    name: "questionnaire_detail",
+    description: "Read one entire published questionnaire by stable questionnaire or round ID: ordered sections and exact questions, durable submitted answer sources, per-principal completion, and pending comparisons. A selected partial submission leaves untouched questions awaiting response. This is a local projected read; run codemap sync to receive remote answers.",
+    inputSchema: obj({ id: { type: "string", description: "Stable questionnaire or round ID." } }, ["id"]),
+    mutates: false,
+    handler: (a, c) => ops.questionnaireDetail(c.universe.path, String(a.id)),
+  },
+  {
+    name: "questionnaire_status",
+    description: "Read a published questionnaire by stable ID with exact submitted answers, per-person progress, history, pending readings/conflicts, local sync health, and an opaque content cursor. Remote answers arrive only after an explicit codemap sync. Reuse the ID in a later session without transcribing answers.",
+    inputSchema: obj({ id: { type: "string" }, cursor: { type: "string", description: "Optional cursor from a previous status." } }, ["id"]),
+    mutates: false,
+    handler: (a, c) => questionnaireStatus(c.universe.path, String(a.id), typeof a.cursor === "string" ? a.cursor : undefined),
+  },
+  {
+    name: "questionnaire_wait",
+    description: "Wait at most 60 seconds for a LOCAL projected questionnaire change from a prior cursor. This does not sync or wake an idle host; sync explicitly for remote answers. Returns changed content, blocked state, or a clean timeout.",
+    inputSchema: obj({ id: { type: "string" }, cursor: { type: "string" }, timeoutMs: { type: "integer", description: "Finite wait, 0 to 60000 milliseconds." } }, ["id", "cursor", "timeoutMs"]),
+    mutates: false,
+    handler: (a, c) => waitQuestionnaireStatus(c.universe.path, String(a.id), String(a.cursor), Number(a.timeoutMs)),
+  },
+  {
     name: "decision_rounds",
-    description: "Every posted round, and the three things the person reads: what waits on them (unanswered, or answers that need them again), rulings not yet carried out (a settle waits for the verifier; an unblock is fix work), readings in dispute, and what they parked (until its date; the day after, it waits on them again). `possiblySuperseded`: rulings the person's own later words may overturn, not yet bound — do not act on those rulings until `confirm_reading` settles them. Also free text still waiting for a reader — an agent's job, not theirs. `intentCandidates` contains mechanically detectable independent human rulings, including relayed human words: compare their exact intent even across different questions, and ask the person which to preserve before dependent action. Candidate detection is incomplete, and writer causality does not prove what the human knew when speaking. `status: \"blocked\"` means the log could not be read and these lists may be wrong.",
+    description: "Every posted round, and the three things the person reads: what waits on them (unanswered, or answers that need them again), rulings not yet carried out (a settle waits for the verifier; an unblock is fix work), readings in dispute, and what they parked (until its date; the day after, it waits on them again). `possiblySuperseded`: rulings the person's own later words may overturn, not yet bound — do not act on those rulings until `confirm_reading` settles them. Also free text still waiting for a reader — an agent's job, not theirs. `intentCandidates` contains mechanically detectable independent human rulings, including relayed human words: request an independent semantic comparison of their full intent, including across different questions. Equivalent reader evidence releases only that pair's restriction; incompatible intent needs a shown human resolution, and unclear intent remains pending. Candidate detection is incomplete, and writer causality does not prove what the human knew when speaking. `status: \"blocked\"` means the log could not be read and these lists may be wrong.",
     inputSchema: obj({}),
     mutates: false,
     handler: (a, c) => ops.decisionRounds(c.universe.path),
@@ -1054,12 +1247,13 @@ const tools: Tool[] = [
   },
   {
     name: "nominate_comparison",
-    description: "Nominate two exact verified answer ids from different principals for semantic comparison when their questions' declared issue links do not reveal the overlap. Name affected finding ids from either question and explain the relationship. This only creates a pending comparison hold; it neither decides which answer wins nor closes anything. Historical/cancelled answers and scope outside both questions are refused.",
+    description: "Nominate two exact verified answer ids from different principals for semantic comparison when their questions' declared links do not reveal the overlap. Name affected exact finding ids or canonical typed finding/bug refs and explain the relationship. This creates a pending comparison hold; a reader judges semantic intent before equivalence can release it. Historical/cancelled answers and scope outside both questions are refused.",
     inputSchema: obj({
       answers: { type: "array", items: { type: "string" }, description: "Two exact original answer ids." },
-      findings: { type: "array", items: { type: "string" }, description: "Affected exact finding ids named by either question." },
-      reason: { type: "string", description: "Why the answers may govern the same decision." },
-    }, ["answers", "findings", "reason"]),
+      findings: { type: "array", items: { type: "string" }, description: "Affected exact finding ids named by either question; ambiguous reviews need typed refs." },
+      issues: { type: "array", items: { type: "object" }, description: "Canonical affected finding or bug refs with universe, kind, scope and exact id." },
+      reason: { type: "string", description: "Why the answers may govern the same issue." },
+    }, ["answers", "reason"]),
     mutates: true,
     handler: (a, c) => ops.nominateComparison(c.universe.path, a as never),
   },

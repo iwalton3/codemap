@@ -385,3 +385,55 @@ export function readMessage(session: string, entryId: string, dir: string = tran
   }
   return { unverified: `entry ${entryId} is a ${String(e.type)}, not a message the person typed` };
 }
+
+/** A comparison reader's successful submit call/result, correlated by its held receipt. */
+export function findComparisonCalls(requestId: string, verdict: string, rationale: string,
+  dir: string = transcriptDir()): VerdictCall[] {
+  const files: { file: string; session: string; agentId?: string }[] = [];
+  let top: string[];
+  try { top = readdirSync(dir); } catch { return []; }
+  for (const name of top) {
+    if (name.endsWith(".jsonl") && SESSION.test(name.slice(0, -6)))
+      files.push({ file: join(dir, name), session: name.slice(0, -6) });
+    else if (SESSION.test(name)) {
+      let subs: string[] = [];
+      try { subs = readdirSync(join(dir, name, "subagents")); } catch { /* no subagents */ }
+      for (const subName of subs) {
+        const m = /^agent-(a[A-Za-z0-9]{6,63})\.jsonl$/.exec(subName);
+        if (m) files.push({ file: join(dir, name, "subagents", subName), session: name, agentId: m[1]! });
+      }
+    }
+  }
+  const out: VerdictCall[] = [];
+  for (const file of files) {
+    const rows = jsonl(file.file);
+    if (!rows) continue;
+    for (const row of rows) {
+      if (row.type !== "assistant" || !Array.isArray(row.message?.content)) continue;
+      if (file.agentId ? row.isSidechain !== true || row.agentId !== file.agentId : row.isSidechain === true) continue;
+      for (const call of row.message.content) {
+        if (call?.type !== "tool_use" || !/(^|__)submit_comparison_judgment$/.test(call.name ?? "")
+          || typeof call.id !== "string" || call.input?.request !== requestId
+          || call.input?.verdict !== verdict || call.input?.rationale !== rationale) continue;
+        const results = rows.filter((result) => result.type === "user" && result.isSidechain === row.isSidechain
+          && (!file.agentId || result.agentId === file.agentId) && Array.isArray(result.message?.content)
+          && result.message.content.some((block: any) => block?.type === "tool_result" && block.tool_use_id === call.id));
+        let state: VerdictCall["result"] = "missing", receipt: string | undefined;
+        if (results.length > 1) state = "failed";
+        else if (results.length === 1) {
+          const result = results[0]!;
+          const block = result.message.content.find((x: any) => x?.type === "tool_result" && x.tool_use_id === call.id);
+          const single = result.message.content.filter((x: any) => x?.type === "tool_result").length === 1;
+          const payload = (single ? resultObject(result.toolUseResult) : undefined) ?? resultObject(block?.content);
+          if (payload?.ok === true && payload?.held === true && typeof payload.receipt === "string" && payload.receipt) {
+            state = "held"; receipt = payload.receipt;
+          } else state = "failed";
+        }
+        out.push({ session: file.session, ...(file.agentId ? { agentId: file.agentId } : {}),
+          callId: call.id, at: typeof row.timestamp === "string" ? row.timestamp : "", result: state,
+          ...(receipt ? { receipt } : {}) });
+      }
+    }
+  }
+  return out.sort((a, b) => a.at.localeCompare(b.at));
+}

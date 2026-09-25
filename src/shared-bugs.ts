@@ -32,6 +32,7 @@ import { ISO_DATE, type Actor, type BugSeverity, type BugWitness } from "./schem
 import { isAgentActor, isIndependent, isErrorIndependent, reviewerKey } from "./identity.js";
 import { emitEvent, mintId, readScope, causality, type LogEvent } from "./eventlog.js";
 import { applyRevision, newContestState, type Contested } from "./contest.js";
+import { issueClaimHash, validateApplicationCapsule, type ApplicationAttempt } from "./ruling-application.js";
 import {
   isClosed, mayTransition, mayRevise, needsHumanAck,
   isAsk, type Ask, type Corroboration, type ExternalRef, type FindingComment,
@@ -108,6 +109,9 @@ export interface SharedBug {
   assignment?: { kind: "investigate" | "fix" | "answer"; by: Actor; at: string; note?: string };
   outcome?: { result: "fixed" | "answered" | "declined"; detail: string; files?: string[]; by: Actor; at: string };
   pending?: { ask: Ask; by: Actor; at: string; rationale: string };
+  applications?: ApplicationAttempt[];
+  /** Last accepted opening act; captured by a ruling application. */
+  openEpoch?: string;
   closed?: { eventId?: string; at: string; by: Actor; reason: string };
 
   revisions: { at: string; by: Actor; was: Record<string, unknown> }[];
@@ -239,10 +243,25 @@ const CONTESTABLE = ["title", "text", "severity", "category"] as const;
  * that refuses to load — or that lets one bad client rewrite everyone's state — is
  * worse than one that ignores a record.
  */
-export function foldBugs(events: LogEvent[]): Map<string, SharedBug> {
+interface ApplicationReplay {
+  all: LogEvent[];
+  causal: ReturnType<typeof causality>;
+  snapshots: Map<string, Map<string, SharedBug>>;
+}
+
+function foldBugsInternal(events: LogEvent[], replay: ApplicationReplay): Map<string, SharedBug> {
   const out = new Map<string, SharedBug>();
   const contest = newContestState();
   const causal = causality(events);
+  const spent = new Set<string>();
+  const atAct = (e: LogEvent): SharedBug | undefined => {
+    let snapshot = replay.snapshots.get(e.id);
+    if (!snapshot) {
+      snapshot = foldBugsInternal(replay.all.filter((prior) => replay.causal.saw(e.id, prior.id)), replay);
+      replay.snapshots.set(e.id, snapshot);
+    }
+    return snapshot.get(e.subject);
+  };
 
   for (const e of events) {
     const d = e.data as Data | undefined;
@@ -274,6 +293,7 @@ export function foldBugs(events: LogEvent[]): Map<string, SharedBug> {
         // Same rule as a finding, from `via` and not from a prefix on a name: an
         // agent PROPOSES a bug, a person stands behind one.
         state: isAgentActor(e.actor) ? "issued" : "created",
+        openEpoch: e.id,
         corroboration: [],
         thread: [],
         tracking: [],
@@ -452,8 +472,40 @@ export function foldBugs(events: LogEvent[]): Map<string, SharedBug> {
         if (next !== "created" && next !== "issued") break;
         if (!isClosed(b.state) || !b.closed?.eventId || str(d, "observedClosure") !== b.closed.eventId) break;
         b.state = next;
+        b.openEpoch = e.id;
         b.closed = undefined;
         b.pending = undefined;
+        break;
+      }
+
+      case "bug.rulingApplied": {
+        const attempts = (b.applications ??= []);
+        const checked = validateApplicationCapsule(d?.capsule, "bug", e.subject);
+        if ("error" in checked) {
+          attempts.push({ eventId: e.id, at: e.at, by: e.actor, status: "refused", reason: checked.error });
+          break;
+        }
+        const capsule = checked.capsule;
+        if (spent.has(capsule.key)) {
+          attempts.push({ eventId: e.id, at: e.at, by: e.actor, status: "duplicate", key: capsule.key, capsule });
+          break;
+        }
+        const act = atAct(e);
+        if (!act || isClosed(act.state) || act.state !== capsule.issue.openState
+          || act.openEpoch !== capsule.issue.openEpoch
+          || issueClaimHash("bug", act) !== capsule.issue.claimHash) {
+          attempts.push({ eventId: e.id, at: e.at, by: e.actor, status: "refused",
+            key: capsule.key, capsule, reason: "issue was not open with this claim in the act-time view" });
+          break;
+        }
+        spent.add(capsule.key);
+        attempts.push({ eventId: e.id, at: e.at, by: e.actor, status: "executed", key: capsule.key, capsule });
+        if (!isClosed(b.state) && b.openEpoch === capsule.issue.openEpoch
+          && issueClaimHash("bug", b) === capsule.issue.claimHash) {
+          b.state = "invalid";
+          b.closed = { eventId: e.id, at: e.at, by: e.actor, reason: capsule.reason };
+          b.pending = undefined;
+        }
         break;
       }
 
@@ -465,13 +517,17 @@ export function foldBugs(events: LogEvent[]): Map<string, SharedBug> {
         if (!mayTransition(b, e.actor, next)) break;
         b.state = next;
         if (isClosed(next)) b.closed = { eventId: e.id, at: e.at, by: e.actor, reason: str(d, "reason") ?? next };
-        else b.closed = undefined;
+        else { b.closed = undefined; b.openEpoch = e.id; }
         b.pending = undefined;
         break;
       }
     }
   }
   return out;
+}
+
+export function foldBugs(events: LogEvent[]): Map<string, SharedBug> {
+  return foldBugsInternal(events, { all: events, causal: causality(events), snapshots: new Map() });
 }
 
 /**

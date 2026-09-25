@@ -10,7 +10,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  foldDecisions, decisionHash, checkDecision, heldFindings, standing, waitingOnMe, readingsInDispute, ruledNotCarriedOut, awaitingReading, parked,
+  foldDecisions, decisionHash, checkDecision, heldFindings, standing, standingForFinding, waitingOnMe, readingsInDispute, ruledNotCarriedOut, awaitingReading, parked,
   possiblySuperseded, confirmPayload, confirmState, supersededFindings, readerBrief, briefManifest, briefListing, readingRefusal, intentCandidates, CONFIRM_YES, CONFIRM_NO,
   type FoldedDecision, type SharedDecisions, type Mapping,
 } from "./shared-decisions.js";
@@ -58,10 +58,10 @@ const fold = (evs: any[]) => {
   folded = new Map(out.decisions.map((d) => [d.id, d]));
   return { out, b: Object.fromEntries(out.decisions.map((d) => [d.id, d])) as B };
 };
-/** The decisions of the latest fold, which `possiblySuperseded` walks down replacement chains. */
+/** The decisions of the latest fold, used by `possiblySuperseded` to inspect related answers. */
 let folded = new Map<string, FoldedDecision>();
 const sup = (d: FoldedDecision) => possiblySuperseded(d, folded);
-const dump = (b: B, out: SharedDecisions) => JSON.stringify(Object.fromEntries(Object.entries(b).map(([k, d]) => [k, { answers: d.answers, replacedBy: d.replacedBy }])), null, 1).slice(0, 3000) + JSON.stringify(out.questions).slice(0, 600);
+const dump = (b: B, out: SharedDecisions) => JSON.stringify(Object.fromEntries(Object.entries(b).map(([k, d]) => [k, { answers: d.answers, follows: d.follows }])), null, 1).slice(0, 3000) + JSON.stringify(out.questions).slice(0, 600);
 const run = (name: string, extra: () => any[], check: (b: B, out: SharedDecisions) => boolean) => test(name, () => {
   n = 1;
   const { out, b } = fold(extra());
@@ -437,7 +437,7 @@ test("a confirm is never replaced: a posting that names one as replaced is kept,
   const C = confirmOf(first.b, "d1", a, leave);
   const R = post("RX", [{ ...D("dx", "D1", q("D1: close F3?", ["A", "B"]), [{ label: "A", effects: [settle("F3")] }, { label: "B", effects: [] }]), round: "RX", supersedes: "c1" }]);
   const { b } = fold([...evs, C, R]);
-  assert.ok(!b.c1!.replacedBy && !!b.dx && !b.dx.supersedes && waits(fold([...evs, C, R]).out, "c1", /confirm what/));
+  assert.ok(!!b.dx && b.dx.follows === "c1" && waits(fold([...evs, C, R]).out, "c1", /confirm what/));
 });
 test("R8: an agent's ad hoc question that merely starts like the old confirm binds nothing", () => {
   n = 1;
@@ -624,15 +624,6 @@ run("R5: ...and so does an unclear reading whose session side is empty", () => {
 }, (b, out) => !b.d1!.answers[0]!.reading && awaitingReading(out).length === 1);
 // --- which readings count (owner, P1.2 "Not used"): only an accepted reading claims a slot
 
-both("R1: a reading the fold rejects does not block the answer's next reader", () => {
-  n = 1;
-  const R4b = post("R4b", [reask(d4, "d4b", "D8", "R4b", { supersedes: "d4" })]);
-  const M = msg(d1, "D1 settle and D4 A");
-  // D4 was replaced before the words were typed, so this reading cannot bind.
-  const bad = reading(M, [{ decision: "d1", option: "Settle" }, { decision: "d4", option: "A" }]);
-  const good = reading(M, [{ decision: "d1", option: "Settle" }]);
-  return { first: [R4b, M, bad, good], second: [R4b, M, good, bad] };
-}, (b, out) => rules(b.d1!, "F3", "settle") && !!b.d1!.answers[0]!.reading && !awaitingReading(out).length);
 both("R1: ...nor does one naming a words decision", () => {
   n = 1;
   const M = msg(d1, "Settle it");
@@ -642,24 +633,13 @@ both("R1: ...nor does one naming a words decision", () => {
 test("R2: a reader whose reading was rejected may read another answer", () => {
   for (const rejectedFirst of [true, false]) {
     n = 1;
-    const R4b = post("R4b", [reask(d4, "d4b", "D8", "R4b", { supersedes: "d4" })]);
     const M1 = msg(d1, "D4 A please", "u1"), M2 = msg(d3, "now", "u2");
-    M1.data.knownReplacements = ["d4b"];
-    const bad = reading(M1, [{ decision: "d4", option: "A" }]), good = reading(M2, [{ decision: "d3", option: "Now" }]);
+    const bad = reading(M1, [{ decision: "d5", option: null }]), good = reading(M2, [{ decision: "d3", option: "Now" }]);
     good.data.reader.agent = bad.data.reader.agent;
-    const { b, out } = fold([R4b, M1, M2, ...(rejectedFirst ? [bad, good] : [good, bad])]);
+    const { b, out } = fold([M1, M2, ...(rejectedFirst ? [bad, good] : [good, bad])]);
     assert.ok(!!b.d3!.answers[0]!.reading && rules(b.d3!, "F20", "unblock") && !b.d1!.answers[0]!.reading, dump(b, out));
   }
 });
-run("R2 (F12): a reading of words cut as given after their question was replaced claims nothing — its reader may read another answer", () => {
-  const R1b = post("R1b", [reask(d1, "d1b", "D7", "R1b", { supersedes: "d1" })]);
-  const cut = msg(d1, "A on D4", "u1");
-  cut.data.knownReplacements = ["d1b"];
-  const M2 = msg(d4, "B", "u2");
-  const r1 = reading(cut, [{ decision: "d4", option: "A" }]), r2 = reading(M2, [{ decision: "d4", option: "B" }]);
-  r2.data.reader.agent = r1.data.reader.agent;
-  return [R1b, cut, M2, r1, r2];
-}, (b) => !b.d1!.answers.length && !!b.d4!.answers.find((a) => a.via === "message" && a.words === "B")?.reading && rules(b.d4!, "F30", "unblock"));
 run("Q2.2 (Step 6 part 7, reverses R1's fold half): a bindable verdict claims its slot even when the session side could never bind — disputed, not freed for another reader", () => {
   const M = msg(d1, "hmm");
   return [M, reading(M, [{ decision: "d1", option: "Settle" }], [{ decision: "d5", option: null }])];
@@ -766,12 +746,6 @@ run("DROP: a reading naming a decision in another round", () => {
   const [L, A] = call(d1, "hmm");
   return [post("R2", [other]), L, A, reading(A, [{ decision: "x4", option: "A" }])];
 }, (b) => !b.x4!.answers.length && !b.d1!.answers[0]!.reading);
-run("DROP: an answer given after a replacement it already knew", () => {
-  const r = post("R1b", [reask(d1, "d1b", "D7", "R1b", { supersedes: "d1" })]);
-  const a = page(d1, { option: "Settle" }); a.data.knownReplacements = ["d1b"];
-  return [r, a];
-},
-  (b, out) => b.d1!.replacedBy === "d1b" && !b.d1!.answers.length && !waits(out, "d1"));
 run("DROP: a second posting of a decision id cannot change it", () => [post("R1c", [{ ...d1, payload: q("D1: something else about F3 and F7?", ["Settle", "No"]), round: "R1c" }])],
   (b) => b.d1!.payload.question === "D1: approve the fix for F3 and F7?");
 run("DROP: an answer value that is neither text nor a list of text", () => call(d1, { label: "Settle" }), (b) => !b.d1!.answers.length);
@@ -810,27 +784,6 @@ test("R16: a round with no time keeps its questions; nothing typed binds to them
   const P = fold([R, page(dt, { option: "A" })]);
   assert.ok(rules(P.b.dt!, "F30", "settle"), dump(P.b, P.out));
 });
-
-// --- plan A4: given before a replacement, recorded after
-
-both("c3 (A4): answered at :02, replaced at :03, logged at :04 — the answer counts on D1, whatever the fold order, and holds F3 until the replacement rules", () => {
-  n = 1;
-  const d1b = reask(d1, "d1b", "D7", "R1b", { supersedes: "d1" });
-  const L = logQ([d1.payload], { [d1.payload.question]: "Settle" }, { answeredAt: "2026-09-23T00:00:02Z" });
-  const R2 = post("R1b", [d1b]); R2.at = "2026-09-23T00:00:03Z";
-  const A = answer(d1, { kind: "question", question: L.id }); A.at = "2026-09-23T00:00:04Z";
-  return { first: [L, R2, A], second: [L, A, R2] };
-}, (b, out) => rules(b.d1!, "F3", "settle") && held(out, "F3", "ruled") && ruledNotCarriedOut(out, () => true).some((u) => u.decision === "d1" && u.replacedBy === "d1b"));
-run("A4 (R23): words given before the replacement are still read, onto a question in their round", () => {
-  const [L, A] = call(d1, "settle, and A on D4");
-  return [L, A, post("R1b", [reask(d1, "d1b", "D7", "R1b", { supersedes: "d1" })]), reading(A, [{ decision: "d1", option: "Settle" }, { decision: "d4", option: "A" }])];
-}, (b) => rules(b.d1!, "F3", "settle") && rules(b.d4!, "F30", "settle"));
-run("A4 (R23): a reading onto a question replaced before the words were typed binds nothing", () => {
-  const R2 = post("R4b", [reask(d4, "d4b", "D8", "R4b", { supersedes: "d4" })]);
-  const [L, A] = call(d1, "settle, and A on D4");
-  A.data.knownReplacements = ["d4b"];
-  return [R2, L, A, reading(A, [{ decision: "d1", option: "Settle" }, { decision: "d4", option: "A" }])];
-}, (b) => !b.d1!.answers[0]!.reading && !b.d4!.answers.length);
 
 // --- what posting refuses (the fold drops exactly what the ops refuse)
 
@@ -884,81 +837,8 @@ test("garbage events are dropped, never thrown on", () => {
   assert.ok(out.decisions.every((d) => !d.answers.length));
 });
 
-// --- the hold outlives its question until the question is answered again (B2.4)
-
-const d1b = reask(d1, "d1b", "D7", "R1b", { supersedes: "d1", options: [{ label: "Settle", effects: [settle("F3"), unblock("F7")] }, { label: "No", effects: [unblock("F3")] }] });
-const replaced = (out: SharedDecisions, f: string) => ruledNotCarriedOut(out, () => true).some((u) => u.decision === "d1" && u.finding === f && u.replacedBy === "d1b");
-run("B2.4: a ruling on a question since replaced holds, and is listed replaced, until the replacement is answered", () =>
-  [page(d1, { option: "Settle" }), post("R1b", [d1b])],
-  (b, out) => held(out, "F3", "ruled") && replaced(out, "F3") && !waits(out, "d1") && waits(out, "d1b", /not answered/));
-run("...and the replacement's answer decides: 'No' releases F3 as fix work", () =>
-  [page(d1, { option: "Settle" }), post("R1b", [d1b]), page(d1b, { option: "No" })],
-  (b, out) => !held(out, "F3", "ruled") && !replaced(out, "F3") && rules(b.d1b!, "F3", "unblock"));
 run("a settled finding that has since closed is held by nothing", () => [page(d1, { option: "Settle" })],
   (b, out) => held(out, "F3", "ruled") && !held(out, "F3", undefined, (f) => f !== "F3"));
-const dS = D("dS", "D8", q("D8: are F1 and F2 real?", ["Not defects", "Real"]), [{ label: "Not defects", effects: [settle("F1", "F2")] }, { label: "Real", effects: [unblock("F1", "F2")] }]);
-const dSb = { ...D("dSb", "D1", q("D1: is F1 real?", ["Not a defect", "Real, fix F1"]), [{ label: "Not a defect", effects: [settle("F1")] }, { label: "Real, fix F1", effects: [unblock("F1")] }]), round: "R2", supersedes: "dS" };
-run("H4: a replacement takes over only the findings it names", () =>
-  [post("RS", [{ ...dS, round: "RS" }]), page({ ...dS, round: "RS" }, { option: "Not defects" }), post("R2", [dSb]), page(dSb, { option: "Real, fix F1" })],
-  (b, out) => !held(out, "F1", "ruled") && held(out, "F2", "ruled") && ruledNotCarriedOut(out, () => true).some((u) => u.decision === "dS" && u.finding === "F2" && u.replacedBy === "dSb"));
-run("H6.2: an unverified answer on the replacement leaves your verified ruling standing, and waits for you", () => {
-  const P = page(d1, { option: "Settle" }), R = post("R1b", [d1b]), A = unv(d1b, "no, fix it");
-  return [P, R, A, reading(A, [{ decision: "d1b", option: "No" }])];
-}, (b, out) => rules(b.d1b!, "F3", "unblock") && held(out, "F3", "ruled") && replaced(out, "F3") && waits(out, "d1b", /arrived after your ruling on D1/));
-run("c5 (Q2): a verified COPY's ruling on a replaced question is not taken over by an unverified answer on the replacement", () => {
-  const L = logQ([d4.payload], { [d4.payload.question]: "A, and settle D1" });
-  const A = answer(d4, { kind: "question", question: L.id });
-  const RA = reading(A, [{ decision: "d4", option: "A" }, { decision: "d1", option: "Settle" }]);
-  const U = unv(d1b, "real");
-  return [L, A, RA, post("R1b", [d1b]), U, reading(U, [{ decision: "d1b", option: "No" }])];
-}, (b, out) => held(out, "F3", "ruled") && replaced(out, "F3"));
-run("H6.3: the ruling passes down a chain until a later question is answered", () => {
-  const d1c = reask(d1b, "d1c", "D9", "R1c", { supersedes: "d1b" });
-  return [page(d1, { option: "Settle" }), post("R1b", [d1b]), post("R1c", [d1c])];
-}, (b, out) => held(out, "F3", "ruled") && replaced(out, "F3"));
-run("...and the later answer takes it over", () => {
-  const d1c = reask(d1b, "d1c", "D9", "R1c", { supersedes: "d1b" });
-  return [page(d1, { option: "Settle" }), post("R1b", [d1b]), post("R1c", [d1c]), page(d1c, { option: "No" })];
-}, (b, out) => !held(out, "F3", "ruled") && !replaced(out, "F3"));
-run("H6.4: of two replacements from two clones the first in log order replaces; the second is live and flagged", () =>
-  [post("R1b", [d1b]), post("R1x", [reask(d1b, "d1x", "D8", "R1x")])],
-  (b, out) => b.d1!.replacedBy === "d1b" && b.d1x!.replaceLost === "d1b" && waits(out, "d1x", /conflicting replacement/) && waits(out, "d1x", /not answered/));
-
-// --- R13 (owner, P1.3 "Read on D1"): words typed on D1 before it was replaced
-
-/** Words typed on d1 half a second before d1b replaced it — and recorded after that. */
-const onReplaced = (...more: ((M: any) => any[])[]) => {
-  const R = post("R1b", [d1b]), M = msg(d1, "close it", "u1", new Date(Date.parse(R.at) - 500).toISOString());
-  return [R, M, ...more.flatMap((f) => f(M))];
-};
-run("Q5/Q6: unread superseded words leave the reader queue", () => onReplaced(),
-  (b, out) => b.d1!.replacedBy === "d1b" && !awaitingReading(out).some((u) => u.decision === "d1") && waits(out, "d1b", /not answered/));
-run("R13: read two ways, they are in dispute", () => onReplaced((M) => [reading(M, [{ decision: "d1", option: "Settle" }], [{ decision: "d1", option: "No" }])]),
-  (b, out) => readingsInDispute(out).some((x) => x.decision === "d1") && waits(out, "d1", /read two different ways/));
-run("R13: bound onto D1, they rule D1 as of when typed and hold F3 until D1b is answered (B2.4)", () => onReplaced((M) => [reading(M, [{ decision: "d1", option: "Settle" }])]),
-  (b, out) => rules(b.d1!, "F3", "settle") && held(out, "F3", "ruled") && ruledNotCarriedOut(out, () => true).some((u) => u.decision === "d1" && u.replacedBy === "d1b") && !awaitingReading(out).length);
-run("Q5/Q6: unread words on a superseded question cannot flag an accepted ruling as actionable", () => [page(d1, { option: "Settle" }), ...onReplaced()],
-  (b, out) => !flagged(b.d1!) && !supersededFindings(out).has("F3"));
-run("R13 + P3.3: once D1b rules, the words leave every list", () => [page(d1, { option: "Settle" }), ...onReplaced(() => [page(d1b, { option: "No" })]), ...others()],
-  (b, out) => !awaitingReading(out).length && !waits(out, "d1") && !flagged(b.d1!) && !readingsInDispute(out).length);
-/** D1 replaced, undecided, by a D1c that asks about F3 only: F7 is the finding it drops. */
-const d1c = reask(d1, "d1c", "D7", "R1c", { supersedes: "d1", options: [{ label: "Settle", effects: [settle("F3")] }, { label: "No", effects: [unblock("F3")] }] });
-const heldBy = (out: SharedDecisions, f: string) => (heldFindings(out, () => true).get(f) ?? []).map((x) => x.decision);
-both("Q1.4 (C2): a finding the replacement drops stays held by the undecided replaced question until the replacement rules", () => {
-  n = 1;
-  const R = post("R1c", [d1c]), M = msg(d1, "hmm", "u1", new Date(Date.parse(R.at) - 500).toISOString());
-  const RM = reading(M, [{ decision: "d1", option: null }]);
-  return { first: [R, M, RM], second: [M, RM, R] };
-}, (b, out) => heldBy(out, "F7").includes("d1") && heldBy(out, "F3").includes("d1") && heldBy(out, "F3").includes("d1c"));
-run("Q1.4 (C2): ...and once it rules, the dropped finding is released with no ruling on it", () => [post("R1c", [d1c]), page(d1c, { option: "No" })],
-  (b, out) => !heldBy(out, "F7").length && !heldBy(out, "F3").length);
-run("Q3.3 (b): ...unless D1 still holds a ruling its replacement never took over — then they stay listed beside it", () => {
-  const d1c = reask(d1, "d1c", "D7", "R1c", { supersedes: "d1", options: [{ label: "Settle", effects: [settle("F3")] }, { label: "No", effects: [unblock("F3")] }] });
-  const P = page(d1, { option: "Settle" }), R = post("R1c", [d1c]), M = msg(d1, "close it", "u1", new Date(Date.parse(R.at) - 500).toISOString());
-  return [P, R, M, page(d1c, { option: "No" }), ...others()];
-}, (b, out) => ruledNotCarriedOut(out, () => true).some((u) => u.decision === "d1" && u.finding === "F7") && waits(out, "d1", /remains visible for F7/));
-run("Q5/Q6: an unverified replacement answer does not re-enable old unread words", () => onReplaced(() => [unv(d1b, "no")]),
-  (b, out) => !awaitingReading(out).some((u) => u.decision === "d1"));
 
 // --- Q1.2 (owner, "While they could change something"): words are moot only when no question
 // they may be read onto would change
@@ -1038,9 +918,6 @@ run("S0.4: released by an unblock, then held again by a later answer — the hol
 }, (b, out) => held(out, "F30", "ruled") && since(out, "F30")[0] === "2026-09-23T00:10:00Z");
 run("S0.4: continuously held — undecided, then ruled — the hold began at the posting", () => [page(d1, { option: "Settle" })],
   (b, out) => held(out, "F3", "ruled") && since(out, "F3")[0] === round.at);
-run("S0.4: a replacement inherits the start of a hold its predecessor still had", () => [page(d1, { option: "Settle" }), post("R1b", [d1b])],
-  (b, out) => since(out, "F3").every((s) => s === round.at));
-
 // --- the views, and parks
 
 const isParked = (out: SharedDecisions, id: string, today: string) => parked(out, today).some((p) => p.decision === id);
@@ -1074,7 +951,7 @@ run("Q13: a follow-up to a reading's copy attaches to the decision the copy is o
 
 // --- 2026-09-24 decision round: historical admission and human conflicts -------------------
 
-test("Q2: an unknown replacement cannot erase an accepted direct answer", () => {
+test("round five: a historical supersedes field is context only and cannot erase an accepted answer", () => {
   n = 1;
   const r = post("R2", [reask(d1, "d1x", "D7", "R2", { supersedes: "d1" })]);
   const a = page(d1, { option: "Settle" });
@@ -1083,6 +960,7 @@ test("Q2: an unknown replacement cannot erase an accepted direct answer", () => 
   const old = s.decisions.find((d) => d.id === "d1")!;
   assert.equal(old.answers[0]?.id, a.id);
   assert.equal(standing(old)?.options[0], "Settle");
+  assert.equal(s.decisions.find((d) => d.id === "d1x")?.follows, "d1");
 });
 
 test("F2/F7: identical shown refs keep two identities and reject an ambiguous verdict", () => {
@@ -1348,4 +1226,54 @@ test("round five: concurrent answer keeps a withdrawal attempt visible and restr
   assert.deepEqual(d.withdrawals?.[0]?.conflictingAnswers, [bob.id]);
   assert.equal(d.answers.find((a) => a.id === alice.id)?.withdrawn, undefined);
   assert.ok(heldFindings(out, () => true).get("F3")?.some((h) => h.why === "withdrawal"));
+});
+
+test("scoped revision keeps the older answer on untouched findings and its source history", () => {
+  n = 1;
+  const first = page(d1, { option: "No" });
+  const revised: any = ev("decision.answer.revised", {
+    decision: d1.id, hash: h(d1), via: { kind: "direct", option: "Settle" },
+    revision: { of: [first.id], findings: ["F3"] },
+  }, person);
+  first.writer = "w-person"; first.writerPrev = "GENESIS"; first.after = [round.id];
+  revised.writer = "w-person"; revised.writerPrev = first.id; revised.after = [first.id];
+  const s = foldDecisions([round, first, revised]);
+  const d = s.decisions.find((x) => x.id === d1.id)!;
+  assert.deepEqual(d.answers.map((a) => a.id), [first.id, revised.id]);
+  assert.equal(d.answers[0]!.cancelled, undefined);
+  assert.equal(d.answers[1]!.revisionInvalid, undefined);
+  assert.equal(standingForFinding(d, "F3")?.id, revised.id);
+  assert.equal(standingForFinding(d, "F7")?.id, first.id);
+  assert.equal(heldFindings(s, () => true).get("F3")?.[0]?.why, "ruled");
+  assert.equal(heldFindings(s, () => true).get("F7"), undefined);
+  assert.equal(ruledNotCarriedOut(s, () => true).find((x) => x.finding === "F3")?.answer, revised.id);
+});
+
+test("revision with an unseen source stays as invalid history", () => {
+  n = 1;
+  const first = page(d1, { option: "Settle" });
+  const revised: any = ev("decision.answer.revised", {
+    decision: d1.id, hash: h(d1), via: { kind: "direct", option: "No" },
+    revision: { of: [first.id], findings: ["F3"] },
+  }, person);
+  const s = foldDecisions([round, first, revised]);
+  const d = s.decisions.find((x) => x.id === d1.id)!;
+  assert.ok(d.answers.find((a) => a.id === revised.id)?.revisionInvalid);
+  assert.equal(d.answers.find((a) => a.id === first.id)?.cancelled, undefined);
+});
+
+test("short-answer revision names its question and preserves both human wordings", () => {
+  n = 1;
+  const first: any = page(d5, { words: "Keep the existing behavior" });
+  first.writer = "w-person"; first.writerPrev = "GENESIS"; first.after = [round.id];
+  const revised: any = ev("decision.answer.revised", {
+    decision: d5.id, hash: h(d5), via: { kind: "direct", words: "Change the behavior" },
+    revision: { of: [first.id], findings: [d5.id] },
+  }, person);
+  revised.writer = "w-person"; revised.writerPrev = first.id; revised.after = [first.id];
+  const s = foldDecisions([round, first, revised]);
+  const d = s.decisions.find((x) => x.id === d5.id)!;
+  assert.equal(standing(d)?.id, revised.id);
+  assert.equal(d.answers.find((a) => a.id === first.id)?.words, "Keep the existing behavior");
+  assert.equal(d.answers.find((a) => a.id === revised.id)?.revisionInvalid, undefined);
 });

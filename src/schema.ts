@@ -10,6 +10,7 @@
  */
 
 import { createHash } from "node:crypto";
+import type { Questionnaire } from "./questionnaire.js";
 
 // ---------------------------------------------------------------------------
 // On-disk layout
@@ -2252,8 +2253,14 @@ export interface AskedQuestion {
   multiSelect?: boolean;
 }
 
+export type CanonicalIssueReference =
+  | { kind: "finding"; universe: string; id: string; scope: string; review: string }
+  | { kind: "bug"; universe: string; id: string; scope: string };
+
 export interface DecisionEffect {
   findings: string[];
+  /** Exact shared issue identities; bugs use this alongside the legacy findings field. */
+  issues?: CanonicalIssueReference[];
   /** `settle` closes the findings when carried out; `unblock` releases them as fix work. */
   on: "settle" | "unblock";
   /** How a settle closes them — required on a settle and refused on an unblock. Only
@@ -2308,6 +2315,8 @@ export interface DecisionRound {
   branch?: string;
   /** "Decided rather than asked" lines: notes with no effects. */
   notes?: string[];
+  /** Frozen stakeholder display and ordered answer formats for this round. */
+  questionnaire?: Questionnaire;
   /** Set only by the import of a skill round whose record says two sorters and an arbitrator
    *  sorted it. It closes nothing — no answer closes a finding; it is kept as provenance, which
    *  may decide how much reading later work needs (owner, 2026-09-23). */

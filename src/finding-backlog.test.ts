@@ -148,7 +148,7 @@ test("a closed finding is in no bucket at all", async () => {
     }
     const b = await findingBacklog(root, { asOf: "2026-09-01" });
     assert.equal(b.attention, 0);
-    assert.deepEqual(b.counts, { due: 0, woken: 0, sleeping: 0, live: 0, moved: 0, unfetched: 0, unjudgeable: 0, inReview: 0 });
+    assert.deepEqual(b.counts, { paused: 0, due: 0, woken: 0, sleeping: 0, live: 0, moved: 0, unfetched: 0, unjudgeable: 0, inReview: 0 });
   } finally { discard(root); }
 });
 

@@ -16,7 +16,11 @@ import { resolvePlaywright, launchPlaywright, startServer, type Server } from ".
 import * as ops from "../ops.js";
 import { shareFinding } from "../ops-shared.js";
 import { readFinding } from "../store.js";
+import type { Questionnaire } from "../questionnaire.js";
 import { discard } from "../test-tmp.js";
+import { emitEvent, readScope } from "../eventlog.js";
+import { comparisonBriefText, decisionScope, foldDecisions } from "../shared-decisions.js";
+import { resolveSidecar } from "../sidecar-config.js";
 
 const pw = resolvePlaywright();
 
@@ -167,6 +171,150 @@ describe("the decisions UI", { skip: pw ? false : "playwright not resolvable (se
     assert.match(content, /Not a defect: close as refuted/);
     assert.match(content, /Real, fix it: fix work/);
     assert.match(content, /acts on:/);
+    assert.deepEqual(errors, []);
+    await page.close();
+  });
+
+  test("a published questionnaire submits selected answers and keeps the rest pending", async () => {
+    const questionnaire: Questionnaire = { id: "Q-browser", title: "Review this work", recipient: "izzie@x.com", sections: [
+      { id: "first", title: "First", questions: [
+        { id: "q-short", kind: "short", prompt: "D20: explain the intended behavior?" },
+        { id: "q-list", kind: "list", prompt: "D21: mark incorrect statements", items: [
+          { id: "item-a", text: "Keep A" }, { id: "item-b", text: "Keep B" },
+        ] },
+      ] },
+    ] };
+    const posted = await asAgent(() => ops.postRound(root, { round: { id: "RQ-browser", source: "e2e", questionnaire }, decisions: [
+      { id: "q-short", round: "RQ-browser", ref: "D20", kind: "words",
+        payload: { question: "D20: explain the intended behavior?", options: [] }, options: [] },
+      { id: "q-list", round: "RQ-browser", ref: "D21", kind: "bulk",
+        payload: { question: "D21: mark incorrect statements", multiSelect: true,
+          options: [{ label: "Keep A" }, { label: "Keep B" }, { label: "Approve all" }] },
+        options: [{ label: "Keep A", effects: [] }, { label: "Keep B", effects: [] },
+          { label: "Approve all", approveAll: true, effects: [] }] },
+    ] })) as any;
+    assert.equal(posted.ok, true, JSON.stringify(posted));
+    const { page, errors } = await open(`/u/${universe}/decisions/RQ-browser/`);
+    await page.waitForSelector('.questionnaire-form', { timeout: 10_000 });
+    assert.match((await page.textContent('main'))!, /Review this work/);
+    const short = page.locator('[data-question-id="q-short"]');
+    await short.locator('textarea').fill('Keep behavior A');
+    await short.getByRole('button', { name: 'Submit this answer' }).click();
+    await page.waitForFunction(() => document.body.textContent?.includes('1 submitted'));
+    const partial = await ops.questionnaireDetail(root, 'RQ-browser', 'izzie@x.com') as any;
+    assert.equal(partial.progress.find((x: any) => x.principal === 'izzie@x.com').counts.submitted, 1);
+    assert.equal(partial.progress.find((x: any) => x.principal === 'izzie@x.com').counts.unanswered, 1);
+    await page.waitForSelector('[data-question-id="q-list"]');
+    const list = page.locator('[data-question-id="q-list"]');
+    await list.locator('input[type="checkbox"]').nth(2).check();
+    await list.locator('textarea').nth(1).fill('Change B');
+    await list.getByRole('button', { name: /Submit this list/ }).click();
+    await page.waitForFunction(() => document.body.textContent?.includes('2 submitted'));
+    const done = await ops.questionnaireDetail(root, 'RQ-browser', 'izzie@x.com') as any;
+    assert.equal(done.progress.find((x: any) => x.principal === 'izzie@x.com').counts.unanswered, 0);
+    assert.equal(done.questions.find((x: any) => x.questionId === 'q-list').answers.length, 1);
+    assert.deepEqual(errors, []);
+    await page.close();
+  });
+
+  test("a human sees exact comparison evidence and explicitly resolves it", async () => {
+    const view = await ops.decisionRounds(root) as any;
+    const candidate = view.intentCandidates.find((x: any) => x.findings.includes(finding));
+    assert.ok(candidate, JSON.stringify(view.intentCandidates));
+    const requested = await asAgent(() => ops.requestComparison(root, { answers: candidate.answers })) as any;
+    assert.equal(requested.ok, true, JSON.stringify(requested));
+    const id = requested.id as string;
+    const request = requested.comparison.request;
+    const cfg = resolveSidecar(root)!;
+    await emitEvent(cfg.path, decisionScope(cfg.universe), { principal: "independent-reader@x.com" },
+      "decision.comparison.judged", id, {
+        judgment: { requestId: id, contextHash: request.contextHash, issues: request.issues,
+          answerVersions: [`${request.left.answerId}\0${request.left.version}`, `${request.right.answerId}\0${request.right.version}`],
+          verdict: "incompatible", rationale: "The first permits closure while the second requires work.",
+          reader: { principal: "independent-reader@x.com", agent: "reader-e2e", session: "reader-session",
+            request: "reader-launch", receipt: "reader-receipt" } },
+        proof: { purpose: "pair-comparison", requestId: id, contextHash: request.contextHash,
+          brief: comparisonBriefText(request), receipt: "reader-receipt", agent: "reader-e2e",
+          session: "reader-session", launch: "reader-launch", toolUseId: "reader-launch", call: "reader-call" },
+      });
+    const pure = foldDecisions(await readScope(cfg.path, decisionScope(cfg.universe)));
+    assert.equal(pure.comparisons.find((x) => x.request.id === id)?.projection.state, "incompatible", JSON.stringify(pure.comparisons));
+    const detail = await ops.comparisonDetail(root, id) as any;
+    assert.equal(detail.comparison.projection.state, "incompatible", JSON.stringify(detail.comparison.projection));
+    const { page, errors } = await open(`/u/${universe}/decisions/?comparison=${encodeURIComponent(id)}`);
+    await page.waitForSelector("text=incompatible intent", { timeout: 10_000 });
+    const content = (await page.textContent("main"))!;
+    assert.match(content, /D1: is the currency finding/);
+    assert.match(content, /Not a defect: close as refuted/);
+    assert.match(content, /The first permits closure while the second requires work/);
+    assert.match(content, /executed closures involving these rulings/);
+    assert.match(content, /No local principal identity is configured|Resolve this disagreement/);
+    await page.locator(`input[name="comparison-preserve"][value="${request.left.answerId}"]`).check();
+    await page.locator(".op-card label").filter({ hasText: "Reason for this choice" }).locator("textarea").fill("The first ruling matches the product intent.");
+    await page.getByRole("button", { name: "record explicit resolution" }).click();
+    await page.waitForSelector("text=resolved by human choice", { timeout: 10_000 });
+    const resolved = await ops.comparisonDetail(root, id) as any;
+    assert.equal(resolved.comparison.projection.preservedAnswer, request.left.answerId);
+    const prior = resolved.comparison.projection.acceptedResolutions[0];
+    await page.locator("select").selectOption(prior.id);
+    await page.locator(`input[name="comparison-preserve"][value="${request.right.answerId}"]`).check();
+    await page.locator(".op-card label").filter({ hasText: "Reason for this choice" }).locator("textarea")
+      .fill("On review, the second ruling matches the product intent.");
+    await page.getByRole("button", { name: "record corrected resolution" }).click();
+    await page.waitForFunction((wanted: string) => document.body.textContent?.includes(`Preserved answer: ${wanted}`), request.right.answerId);
+    const corrected = await ops.comparisonDetail(root, id) as any;
+    assert.equal(corrected.comparison.projection.preservedAnswer, request.right.answerId);
+    assert.equal(corrected.comparison.projection.acceptedResolutions[1].revises, prior.id);
+    assert.deepEqual(errors, []);
+    await page.close();
+  });
+
+  test("a person reviews a bug-scoped revision and approves an exact agent withdrawal", async () => {
+    const anchor = (await readFinding(root, finding))!.target.id;
+    const cfg = resolveSidecar(root)!;
+    const bug = await asAgent(() => ops.reportBug(root, {
+      title: "Unexpected currency behavior", description: "The premise needs a product ruling", anchors: [anchor],
+    })) as any;
+    assert.equal(bug.ok, true, JSON.stringify(bug));
+    const issue = { kind: "bug" as const, universe: cfg.universe, scope: `bugs/${cfg.universe}`, id: bug.id };
+    const posted = await asAgent(() => ops.postRound(root, { round: { id: "R-bug-web", source: "e2e" }, decisions: [{
+      id: "bug-web", round: "R-bug-web", ref: "D30", kind: "options",
+      payload: { question: `D30: how should ${bug.id} be handled?`, options: [{ label: "Not a defect" }, { label: "Repair it" }] },
+      options: [{ label: "Not a defect", effects: [{ findings: [], issues: [issue], on: "settle", as: "refuted" }] },
+        { label: "Repair it", effects: [{ findings: [], issues: [issue], on: "unblock" }] }],
+    }] })) as any;
+    assert.equal(posted.ok, true, JSON.stringify(posted));
+    const first = await ops.answerDirect(root, { decision: "bug-web", option: "Not a defect" }) as any;
+    assert.equal(first.recorded, true, JSON.stringify(first));
+
+    const { page, errors } = await open(`/u/${universe}/decisions/R-bug-web/`);
+    const card = page.locator(".op-card").filter({ hasText: `D30: how should ${bug.id}` });
+    await card.getByLabel(new RegExp(`bug ${bug.id}`)).check();
+    await card.getByRole("button", { name: "review exact revision context" }).click();
+    await card.getByText("Revision context shown").waitFor();
+    assert.match((await card.textContent())!, new RegExp(first.answer));
+    await card.getByRole("button", { name: "revise selected to Repair it" }).click();
+    await page.waitForFunction(() => document.body.textContent?.includes("you said: Repair it"));
+    const revised = await ops.decisionRound(root, "R-bug-web") as any;
+    const current = revised.decisions.find((d: any) => d.id === "bug-web");
+    const second = current.answers.find((a: any) => a.revision?.of.includes(first.answer));
+    assert.ok(second, JSON.stringify(current.answers));
+    assert.deepEqual(second.revision.issues, [issue]);
+
+    await card.getByPlaceholder("reason for withdrawal").fill("The product owner is reconsidering this instruction");
+    await card.getByPlaceholder("reason for withdrawal").press("Tab");
+    await card.getByRole("button", { name: "approve exact withdrawal for an agent" }).click();
+    await card.getByText("Approved withdrawal receipt").waitFor();
+    const receiptText = (await card.textContent())!;
+    const approval = receiptText.match(/Approved withdrawal receipt: ([0-9a-z-]+)/)?.[1];
+    assert.ok(approval, receiptText);
+    const executed = await asAgent(() => ops.withdrawDecision(root, {
+      decision: "bug-web", answer: second.id, reason: "The product owner is reconsidering this instruction", approval,
+    })) as any;
+    assert.equal(executed.ok, true, JSON.stringify(executed));
+    await page.reload({ waitUntil: "networkidle" });
+    assert.match((await page.textContent("main"))!, /Ruling withdrawn. Ask a fresh question/);
+    assert.equal(await page.getByRole("button", { name: "withdraw unanswered question" }).count(), 0);
     assert.deepEqual(errors, []);
     await page.close();
   });

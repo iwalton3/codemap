@@ -7,7 +7,7 @@ import { headCommit, readBlobs } from "../git.js";
 import { branchKey } from "../review-target.js";
 import { linkedBranches, readAnchorStore, loadNodes, readAnnotations, writeAnnotations, readFindings, readFinding, writeLocalFinding, findAnchorsOutsideWork, readPushes, bodyHashAt, readOrphans, snapshotRefusal, snapshotKey, readSharedNotes, idsStartingWith } from "../store.js";
 import { readSnapshot } from "../snapshots.js";
-import { resolveSidecar } from "../sidecar-config.js";
+import { resolveSidecar, universeKey } from "../sidecar-config.js";
 import {
   findingTier, isClosed, mayTransition, needsHumanAck, ASK_FOR_STATE, REOPEN_STATES,
   type Ask, type FindingState, type FindingTier, type Remediation, type SharedFinding, type Verdict,
@@ -16,6 +16,7 @@ import { requireActor, isAgentActor, actorLabel, reviewerKey, isIndependent, isE
 import { isAgentAuthored, publishStateOf, type PublishState } from "../pr-push.js";
 import { genId, liveAnchors, resolveRefs, loadNodesShared} from "./shared.js";
 import { decisionsView, type HoldMark } from "./decision-holds.js";
+import { findingWork, findingMark } from "./finding-work.js";
 
 // ---------------------------------------------------------------------------
 // Annotations
@@ -830,12 +831,14 @@ export async function reviewQueue(
   // it and says so, unless a PERSON assigned it after the latest hold on it began, which keeps
   // it, marked (owner, P1.4 + S0.4). The catalogue (`assignedOnly: false`) marks it instead (B5.2).
   const holds = await decisionsView(root);
+  const universe = universeKey(root);
   let withheld = 0;
   if (assignedOnly) {
     // Refused in the queue's own shape, so a caller reading `queue` sees it empty, not absent.
     if (holds.unknown) return { total: 0, offset: 0, more: false, queue: [] as QueueItem[], error: `the decisions log cannot be read, so which findings a person's ruling holds is unknown and nothing is offered as work: ${holds.unknown}` };
     pending = pending.filter((a) => {
-      const eligible = holds.work(a.id, rowOf.get(a)?.assignment);
+      const row = rowOf.get(a);
+      const eligible = row ? findingWork(holds, row, universe) : holds.work(a.id);
       if (!eligible.allowed) withheld++;
       return eligible.allowed;
     });
@@ -888,7 +891,7 @@ export async function reviewQueue(
       ...triageState(a),
       ...(a.postedRef ? { postedRef: a.postedRef } : {}),
       ...(prOf.has(a.id) ? { pr: prOf.get(a.id), shared: sharedIds.has(a.id) } : {}),
-      ...holds.mark(a.id),
+      ...(rowOf.get(a) ? findingMark(holds, rowOf.get(a)!, universe) : holds.mark(a.id)),
     }));
     return {
       total, offset, more, queue: brief, ...heldNote,
@@ -945,7 +948,7 @@ export async function reviewQueue(
       ...targetState(a),
       ...triageState(a),
       ...(a.postedRef ? { postedRef: a.postedRef } : {}),
-      ...holds.mark(a.id),
+      ...(rowOf.get(a) ? findingMark(holds, rowOf.get(a)!, universe) : holds.mark(a.id)),
     });
   }
   return { total, offset, more, queue, ...heldNote };
@@ -992,7 +995,7 @@ export async function closeLocalFinding(
   const f = await readFinding(root, input.id).catch(() => null);
   if (!f) return { error: `no annotation or finding "${input.id}"` };
   if (input.result === "fixed") {
-    const eligibility = (await decisionsView(root)).work(f.id, f.assignment);
+    const eligibility = findingWork(await decisionsView(root), f, universeKey(root));
     if (!eligibility.allowed) return { error: eligibility.reason };
   }
   // NO assignment precondition. Reporting back is what this records, and the ordinary
@@ -1204,7 +1207,7 @@ export async function remediateLocalFinding(
   const f = await readFinding(root, id).catch(() => null);
   if (!f) return { error: `no finding "${id}"` };
   if (state === "fixed-on-branch" || state === "fixed-on-default") {
-    const work = (await decisionsView(root)).work(id, f.assignment);
+    const work = findingWork(await decisionsView(root), f, universeKey(root));
     if (!work.allowed) return { error: work.reason };
   }
   const actor = requireActor(root);

@@ -1,10 +1,10 @@
 # Decision rounds — the worked cases
 
-**The gate for plan `2026-09-22-decision-rounds` (I11).** Three past rounds are worked by hand
-against `PROPOSAL-decision-rounds.md` §7 as the plan amends it. Nothing here is built. No schema
-is written until the owner has marked every C-item below **holds** or **wrong**. **The owner
-marked it on 2026-09-23** (*The owner's marks*, at the end). The table before that section holds
-the session's proposals, and it is kept as the evidence for them.
+**Historical gate for plan `2026-09-22-decision-rounds` (I11).** Three past rounds were worked
+by hand against `PROPOSAL-decision-rounds.md` §7. The statements below about what was
+not yet built describe that 2026-09-23 stage; they are preserved as evidence, not
+current implementation status. **The owner marked the C-items on 2026-09-23**
+(*The owner's marks*). The current round-five policy crosswalk is at the end.
 
 Written 2026-09-23. The plan (`.git/plan/2026-09-22-decision-rounds/plan.md`) holds the C-list's
 full text. This document holds its evidence.
@@ -1367,3 +1367,47 @@ This changes prior Q3.3(b)'s reader-queue rule: omitted findings keep the old qu
 > Yes existing readings can still be confirmed. What can't be is a question that was superseded before being read and lacking any intent bindings on it, as that would allow old questions to conflict with new ones in action intent, which could cause conflicts.
 
 A completed reading awaiting confirmation survives supersession. A launched reader with no submitted verdict is unfinished. A fresh ruling on an unread and unbound superseded question requires a fresh valid question.
+
+## Current-policy crosswalk — round five, 2026-09-25
+
+The preceding case transcripts, owner quotations and prior plan readings are
+historical evidence. Where they mention automatic replacement, `supersedes`,
+`replacedBy`, replacement-chain takeover or close-on-answer, the current contract
+is [Rulings contract](rulings-contract.md) C1–C7 and the approved round-five plan.
+This crosswalk states the current rule and the observed acceptance checks. It does
+not turn a historical proposal into a current owner quote.
+
+| Earlier rule or case | Current policy | Required observation / status |
+|---|---|---|
+| Automatic question replacement and partial successor (earlier B2.4, H4, Q3.3; item C) | **Retired.** Q2 about A neither hides nor cancels Q1 about A/B. Only explicit scoped revision or withdrawal changes Q1 authority. | Both questions, holds and unfinished/disputed readings remain visible. Changed response cancels its own reading; an unrelated new question does not. |
+| Legacy pending verdict recovery and text-only brief reconstruction (A, B) | **Retired recovery work.** Owner confirmed no legacy rulings. New briefs bind exact source IDs, full display and receipt context at issuance. | Delayed receipt plus same-looking D1 after sync cannot reinterpret the issued brief. No claim of legacy migration validation. |
+| Close-on-answer, `prevalidated`, and the former “own” answer class (B2.3, H1, B5.3) | **Retired.** A recorded answer never closes by itself; provenance offers no reader shortcut. | Separate sound application reading and guarded application are needed. Already-closed no-op spends nothing; executed ruling/issue pair is one-shot even after reopen. |
+| Same-principal correction (A2/S0.5) | **Retained with explicit scope.** Rank by human given time, deterministic log order for ties. Preserve earlier source; name exact affected questions/items/issues. | Q1 A/B and a correction about A leave B unchanged. Changed response cancels pending validation. |
+| Cross-principal informed revision versus independent answer (C4/C6) | A named revision requires proof of what the second human saw at act time. Recorder pull/cause is insufficient. Independent answers remain candidates for comparison. | Direct display receipt or verified relay proves predecessor/context; forged or mismatched context cannot revise. Real-operation act-time receipt and refusal probes pass. |
+| Unanswered and answered withdrawal (C5) | Explicit human withdrawal, or agent execution of exact recorded human approval. Unanswered withdrawal ends only its own request/holds. Answered withdrawal retires only pending scoped authority/readings/holds, preserves closures and history, never revives an older answer. | Delayed independent answer stays visible; knowledgeable late answer cannot reactivate. Exact human approval and two-clone withdrawal probes pass. |
+| Equivalent, incompatible and unclear intent (E, F, G, H) | Candidate comparison pauses dependent batch work. Reader-equivalent releases only that comparison; incompatible requires human resolution; unclear stays pending. Historical losing answers do not re-enter the current comparison set. | Full context reaches reader; assignment and action guards agree with queue/marks. A later unseen answer is assessed afresh. |
+| Corrected resolution (D, H) | An explicit informed correction moves the authority frontier; independent contradictory resolutions are preserved for arbitration. | Choosing Bob after first choosing Alice leaves Bob current, no double losing flags. Corrected-frontier and concurrent-resolution two-clone probes pass. |
+| Confirmation correspondence (I) | The complete approved action presentation must match at admission and replay; a matching prefix or D1 label is insufficient. | Contradictory action prose has no authority and remains visibly invalid; valid control still works. |
+| Questionnaire (C7 and backlog case) | One organized batch, stable question/item IDs, multiple choice/Other, short answer, reviewed list. Local per-principal drafts approve nothing. Submit selected complete questions atomically; unmarked list items are explicitly approved. | Whole batch visible, partial receipt and per-person progress, second respondent, same-attempt retry, retrieval by ID after sync. Browser form, CLI JSON, two-clone retrieval and content cursor probes pass. |
+| Finding and bug invalidity (C3) | Canonical typed target; direct shown exact ID/link permits one sound reader, indirect requires two and arbitration on disagreement. Application event closes and spends once; reopen never refunds it. | Both issue folds and consumers agree after replay/two-clone sync. Bug-scoped revision and finding/bug application matrix probes pass. |
+
+**Workflow together.** A reviewer publishes a frozen questionnaire with recipient
+routing and a stable ID; a stakeholder reviews the whole batch, saves local drafts
+or submits selected questions, and receives exact receipts. The requesting agent
+syncs the sidecar and reads status/detail by ID, or waits for a bounded local
+projection change. Each submitted answer remains a source record. Readers judge
+its exact answer version and issue context; a changed response cancels pending
+validation. A separate application closes an invalid finding or bug only with
+current sound evidence. A later conflict or withdrawal leaves the execution
+visible; a separate reopen act can reopen the issue, while that ruling/issue pair
+remains spent. Pending comparison and arbitration restrict dependent batch work
+through selection and action boundaries. An agent may investigate or put the
+conflict to a human, and can execute an exact approved withdrawal; it cannot supply the human approval itself.
+
+**Verification boundary.** The round-five real-operation and two-clone acceptance
+probes now cover A–I, withdrawal, questionnaire retrieval, typed application,
+consumer restrictions and storage upgrade. `src/decision-lifecycle-round5.test.ts`
+passes its focused cases. The browser suite passes the decisions and questionnaire flows. The final
+`npm test` run passed 1,982 unit tests and 165 e2e tests with no failures or
+skips. The producer-to-consumer inventory is recorded in the local implementation
+evidence beside the approved plan.

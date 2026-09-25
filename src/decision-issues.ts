@@ -10,9 +10,8 @@ export type IssueReference =
   | { kind: "finding"; universe: string; id: string; review?: number | string; scope?: string }
   | { kind: "bug"; universe: string; id: string; scope?: string };
 
-export type CanonicalIssueReference =
-  | { kind: "finding"; universe: string; id: string; scope: string; review: string }
-  | { kind: "bug"; universe: string; id: string; scope: string };
+export type { CanonicalIssueReference } from "./schema.js";
+import type { CanonicalIssueReference } from "./schema.js";
 
 export type ResolvedIssue =
   | { ok: true; ref: Extract<CanonicalIssueReference, { kind: "finding" }>; key: string; issue: SharedFinding }

@@ -58,13 +58,14 @@ Decided, not yet built. This is the work queue.
 | [`docs/close-audit-2026-09-21-asym.jsonl`](close-audit-2026-09-21-asym.jsonl) | 16 | the same items under §8.7's asymmetric roles. Data, not prose. |
 | [`docs/close-audit-2026-09-22-paired.jsonl`](close-audit-2026-09-22-paired.jsonl) | 24 | §8.8's paired pre/post-repair run. Data, not prose. |
 
-## Active Design Drafts
+## Active Behavioral Contracts
 
-Agreed direction with unresolved contract details; not implementation-ready plans.
+Owner-approved behavior and current implementation status; historical proposals remain in their original sections.
 
 | doc | status |
 |---|---|
-| [`docs/rulings-contract.md`](rulings-contract.md) | Round five: questionnaires for stakeholders, durable answers, reader-validated closure, conflict resolution, and explicit withdrawal/revision. Owner case rulings recorded; remaining design details marked. No legacy rulings exist to migrate. |
+| [`docs/rulings-contract.md`](rulings-contract.md) | Round five current behavioral contract: stakeholder questionnaires, durable answers, semantic comparison, reader-validated one-shot closure, and explicit withdrawal/revision. Owner case rulings and implementation status are distinguished. No legacy rulings exist to migrate. |
+| [`docs/rulings-workflow.md`](rulings-workflow.md) | Current publication, web submission, sync/read/wait, revision, withdrawal, comparison and one-shot application workflow with CLI and MCP entry points. |
 
 ## Decision Record
 

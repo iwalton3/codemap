@@ -21,7 +21,7 @@ import { reviewLinksProjection, findingsProjection, docsProjection, notesProject
 import { anchorIndex, derivationsOf, type AnchorIndex, resolveAnchor} from "./anchor-resolve.js";
 import { findingKeyScope, branchKey, branchOf, isBranchKey, normalizeBranch } from "./review-target.js";
 import { reviewScope, foldReviewLinks, linkReview } from "./shared-reviews.js";
-import { resolveSidecar, scopeFor, sidecarIdentity, inUniverse, checkSidecarBinding, type SidecarConfig } from "./sidecar-config.js";
+import { resolveSidecar, scopeFor, sidecarIdentity, inUniverse, checkSidecarBinding, universeKey, type SidecarConfig } from "./sidecar-config.js";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { ISO_DATE, parseAsOf, type BugWitness } from "./schema.js";
@@ -34,7 +34,7 @@ import {
   createFinding, corroborate, comment, promote, request, setState, recordOutcome,
   markPosted, markUpstreamed, promoteToBug, needsHumanAck, ackQueue, mayRevise,
   revise, resolveContest, relocate, remediate, agentClosureNeedsAck, declineAsk, isStandingBehind, reratedFrom, type Remediation,
-  foldFindings, findingScope, findingTier, byReadingOrder,
+  foldFindings, findingScope, prOfScope, findingTier, byReadingOrder,
   type SharedFinding, type Verdict, type Ask, type FindingState, type NewFinding, type FindingTier,
 } from "./shared-findings.js";
 import { publishWalkthrough, currentWalkthrough, staleWalkthroughs, foldWalkthroughs, walkthroughScope, walkthroughShaped } from "./shared-walkthrough.js";
@@ -51,6 +51,7 @@ import { docsVerdict } from "./docs-lookup.js";
 import { queueContestedTriage } from "./ops/triage.js";
 import { liveAnchors, liveIndex, anchorFiles } from "./ops/shared.js";
 import { decisionsView } from "./ops/decision-holds.js";
+import { findingWork, findingMark } from "./ops/finding-work.js";
 export { mirrorTriage, mirrorTriageBatch, mirrorTriageClear } from "./triage-publish.js";
 import { homed, linkedBranches, prsLinkedTo, writeLocalLink, readSharedNotes, readAnnotations, readAnchorStore, readFindings, loadNodes, loadNodeVersions, nodeIdsWithPublishableVersions, derivationLookup, workIndexFor, readLocalTriage, replaceLocalTriage, coveredTriageTargets, attributeLocalWalkthrough, readBlockedScopes, findingCountsByPr, readUnpublishedWalkthroughs, readStoreMeta, writeStoreMeta, foldedScopes, hasFoldedFromSidecar, SIDECAR_LINEAGE, type SidecarMark } from "./store.js";
 import { holdsLock, withLock } from "./lock.js";
@@ -550,7 +551,8 @@ export const remediateFinding = homed(async function remediateFinding(
   if (state === "fixed-on-branch" || state === "fixed-on-default") {
     const f = (await cachedFindings(root, b.cfg, pr)).value.get(id);
     if (!f) return { error: `no finding ${id} on pull request ${pr}` };
-    const work = (await decisionsView(root)).work(id, f.assignment);
+    const scope = findingScope(prKey(b.cfg, pr));
+    const work = findingWork(await decisionsView(root), f, b.cfg.universe, { scope, review: prOfScope(scope) });
     if (!work.allowed) return { error: work.reason };
   }
   await remediate(b.cfg.path, prKey(b.cfg, pr), b.actor, id, state, opts.detail, opts.ref);
@@ -856,7 +858,8 @@ export async function findingBacklog(root: string, opts: { asOf?: string } = {})
     // nobody checked. The bug queue is where it is tracked now.
     !isClosed(f.state) && !f.bug);
   const decisions = await decisionsView(root);
-  const eligibility = new Map(all.map((f) => [f.id, decisions.work(f.id, f.assignment)]));
+  const universe = universeKey(root);
+  const eligibility = new Map(all.map((f) => [f, findingWork(decisions, f, universe)]));
 
   const judge = await findingJudge(root, all);
   const trunk = judge.trunk;
@@ -894,8 +897,8 @@ export async function findingBacklog(root: string, opts: { asOf?: string } = {})
     // changed nothing a reader could see, and the natural response is to press again.
     ...(f.assignment ? { assignment: { kind: f.assignment.kind, by: f.assignment.by.principal, at: f.assignment.at } } : {}),
     ...(f.witnessAttached ? { witnessAttached: f.witnessAttached } : {}),
-    ...decisions.mark(f.id),
-    work: eligibility.get(f.id)!,
+    ...findingMark(decisions, f, universe),
+    work: eligibility.get(f)!,
   });
   const b = {
     /** Discoverable here, but withheld from the dependent work selection. */
@@ -932,7 +935,7 @@ export async function findingBacklog(root: string, opts: { asOf?: string } = {})
   };
 
   const offer = (bucket: "due" | "woken" | "live" | "moved" | "unjudgeable", f: SharedFinding) => {
-    if (eligibility.get(f.id)?.allowed) b[bucket].push(row(f));
+    if (eligibility.get(f)?.allowed) b[bucket].push(row(f));
     else b.paused.push({ ...row(f), pausedFrom: bucket });
   };
   for (const f of all) {
@@ -1381,7 +1384,8 @@ export const reportOnFinding = homed(async function reportOnFinding(root: string
   if (result === "fixed") {
     const f = (await cachedFindings(root, b.cfg, pr)).value.get(id);
     if (!f) return { error: `no finding ${id} on pull request ${pr}` };
-    const work = (await decisionsView(root)).work(id, f.assignment);
+    const scope = findingScope(prKey(b.cfg, pr));
+    const work = findingWork(await decisionsView(root), f, b.cfg.universe, { scope, review: prOfScope(scope) });
     if (!work.allowed) return { error: work.reason };
   }
   await recordOutcome(b.cfg.path, prKey(b.cfg, pr), b.actor, id, result, detail, files);
@@ -1850,6 +1854,7 @@ export async function sharedFindings(
   // Marked, never dropped: this is a catalogue, and `queue` waits on a PERSON, who is exactly
   // who should see a finding their ruling holds (owner, B5.2 + H7.13).
   const holds = await decisionsView(root);
+  const universe = universeKey(root);
   const offset = Math.max(0, Math.floor(opts.offset ?? 0));
   const limit = opts.limit !== undefined ? Math.max(1, Math.floor(opts.limit)) : undefined;
   const rows = limit === undefined ? chosen.slice(offset) : chosen.slice(offset, offset + limit);
@@ -1899,7 +1904,7 @@ export async function sharedFindings(
       ? { shown: page.rows.length, offset: page.offset, more: page.remaining, nextOffset: page.offset + page.rows.length }
       : {}),
     findings: page.rows.map((f) => {
-      const row = { ...view(f), tier: findingTier(f), target: { ...f.target, where: place(f).state, at: place(f).at, lastFile: place(f).file }, ...holds.mark(f.id) };
+      const row = { ...view(f), tier: findingTier(f), target: { ...f.target, where: place(f).state, at: place(f).at, lastFile: place(f).file }, ...findingMark(holds, f, universe) };
       if (!opts.terse) return row;
       const light = { ...row } as Record<string, unknown>;
       for (const k of HEAVY) light[k] = undefined;

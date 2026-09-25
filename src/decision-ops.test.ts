@@ -17,10 +17,11 @@ import { spawnSync } from "node:child_process";
 import { indexBlob } from "./repo.js";
 import { writeStore, readFinding, writeLocalFinding } from "./store.js";
 import { db as openDb } from "./db.js";
+import { readerReceipts, readerRequests } from "./reader-local.js";
 import type { State } from "./schema.js";
 import { shareFinding, closeFinding, bindDecisions, reassignFinding, sharedFindings, sharedSync } from "./ops-shared.js";
 import { reviewQueue } from "./ops/annotations.js";
-import { postRound, postPrevalidated, logQuestion, relayAnswer, answerDirect, decisionRounds, decisionRound, decisionStatus, waitDecisionStatus, nominateComparison, readerBrief, recordReading, submitVerdict as submitVerdictOp, confirmReading, parseVerdict, confirmId, withdrawDecision } from "./ops/decisions.js";
+import { postRound, postPrevalidated, logQuestion, relayAnswer, answerDirect, decisionRounds, decisionRound, decisionStatus, waitDecisionStatus, nominateComparison, readerBrief, recordReading, submitVerdict as submitVerdictOp, confirmReading, parseVerdict, confirmId, withdrawDecision, reviseDecision, revisionRelayBrief, reviseDecisionRelayed, interpretationRequestId } from "./ops/decisions.js";
 import { discard } from "./test-tmp.js";
 import { decisionsView, holdBuilds } from "./ops/decision-holds.js";
 import { decisionScope, foldDecisions, logQuestionEvent, postConfirmEvent, recordReadingEvent } from "./shared-decisions.js";
@@ -1526,4 +1527,173 @@ test("round five: backlog work and fixed outcomes honor current comparison restr
       assert.equal((await reportOnFinding(u.root, 7, f, "answered", "investigated only") as any).ok, true);
     });
   } finally { u.cleanup(); }
+});
+
+
+test("round five: direct scoped revision keeps source and reports scoped standing", async () => {
+  const u = await universe();
+  try {
+    const f = await withFinding(u);
+    await asAgent(async () => { assert.equal((await postRound(u.root, {
+      round: { id: "R1", source: "x" }, decisions: [decision("d1", f)],
+    }) as any).ok, true); });
+    await asPerson(async () => {
+      const first = (await answerDirect(u.root, { decision: "d1", option: "Real, fix it" }) as any).answer;
+      const out = await reviseDecision(u.root, { decision: "d1", revises: [first], findings: [f], option: "Not a defect" }) as any;
+      assert.equal(out.ok, true, JSON.stringify(out));
+      assert.equal(out.standing, true);
+      assert.match(String(err(await reviseDecision(u.root, { decision: "d1", revises: ["missing"], findings: [f], option: "Not a defect" }))), /source/);
+      const after = await decisionRound(u.root, "R1") as any;
+      assert.equal(after.decisions[0].answers.length, 2);
+      assert.equal(after.decisions[0].currentByFinding[f], out.revision);
+      assert.equal(after.decisions[0].answers[0].id, first);
+    });
+  } finally { u.cleanup(); }
+});
+
+
+test("round five: a canonical bug ruling and independent answer restrict real bug work", async () => {
+  const u = await universe();
+  try {
+    const remote = spawnSync("git", ["remote", "add", "origin", "https://github.com/acme/api.git"], { cwd: u.root });
+    assert.equal(remote.status, 0, remote.stderr?.toString());
+    const f = await withFinding(u);
+    const { reportBug, listBugs, bugDetail, updateBug, backlogBugOp, releaseBugBacklogOp } = await import("./ops/bugs.js");
+    const { resolveDecisionIssue } = await import("./decision-issues.js");
+    let bugId = "";
+    await asAgent(async () => {
+      const filed = await reportBug(u.root, { title: "Credit doubles", description: "Wrong calculation", anchors: [u.anchor] }) as any;
+      assert.equal(filed.ok, true, JSON.stringify(filed));
+      bugId = filed.id;
+    });
+    const universeKey = (await import("./sidecar-config.js")).universeKey;
+    assert.equal(universeKey(u.root), "acme/api");
+    const resolved = await resolveDecisionIssue(u.root, { kind: "bug", universe: universeKey(u.root), id: bugId });
+    assert.equal(resolved.ok, true, JSON.stringify(resolved));
+    if (!resolved.ok) return;
+    const ref = resolved.ref;
+    const d = {
+      id: "bug-d1", round: "BUG-R1", ref: "D1", kind: "options" as const,
+      payload: payloadFor(bugId),
+      options: [
+        { label: "Not a defect", effects: [{ findings: [], issues: [ref], on: "settle" as const, as: "refuted" as const }] },
+        { label: "Real, fix it", effects: [{ findings: [], issues: [ref], on: "unblock" as const }] },
+      ],
+    };
+    await asAgent(async () => {
+      const posted = await postRound(u.root, { round: { id: "BUG-R1", source: "typed-bug" }, decisions: [d, decision("legacy-finding", f, {}, "D2", "BUG-R1")] }) as any;
+      assert.equal(posted.ok, true, JSON.stringify(posted));
+    });
+    const pending = (await decisionsView(u.root)).issueWork(ref);
+    assert.equal(pending.allowed, false);
+    const findingRef = await resolveDecisionIssue(u.root, { kind: "finding", universe: universeKey(u.root), id: f, review: 7 });
+    assert.equal(findingRef.ok, true, JSON.stringify(findingRef));
+    if (findingRef.ok) assert.equal((await decisionsView(u.root)).issueWork(findingRef.ref).allowed, false, "typed reads preserve legacy finding holds");
+    assert.equal((await listBugs(u.root, { open: true })).bugs.length, 0);
+    let alice: any;
+    await asPerson(async () => { alice = await answerDirect(u.root, { decision: d.id, option: "Not a defect" }); });
+    assert.equal(alice.recorded, true, JSON.stringify(alice));
+    const ruled = (await decisionsView(u.root)).issueWork(ref);
+    assert.equal(ruled.allowed, false);
+    assert.ok(ruled.restrictions !== "unknown" && ruled.restrictions.some((h) => h.why === "ruled"));
+    let separate: any;
+    await withEnv({ CODEMAP_AGENT_MODEL: undefined, CODEMAP_PRINCIPAL: "bob@x.com" }, async () => {
+      separate = await answerDirect(u.root, { decision: "legacy-finding", option: "Real, fix it" });
+    });
+    await asAgent(async () => {
+      const nominated = await nominateComparison(u.root, { answers: [alice.answer, separate.answer], issues: [ref], reason: "the finding answer qualifies the bug ruling" }) as any;
+      assert.equal(nominated.ok, true, JSON.stringify(nominated));
+      assert.equal(nominated.candidate.evidence, "nominated");
+      assert.ok(nominated.candidate.issues.some((issue: any) => issue.id === bugId));
+    });
+    await withEnv({ CODEMAP_AGENT_MODEL: undefined, CODEMAP_PRINCIPAL: "bob@x.com" }, async () => {
+      const bob = await answerDirect(u.root, { decision: d.id, option: "Real, fix it" }) as any;
+      assert.equal(bob.recorded, true, JSON.stringify(bob));
+    });
+    await asAgent(async () => {
+      const nomination = await nominateComparison(u.root, { answers: [alice.answer, (await decisionRound(u.root, "BUG-R1") as any).decisions[0].answers.find((a: any) => a.by.principal === "bob@x.com").id], issues: [ref], reason: "both address the same bug" }) as any;
+      assert.equal(nomination.alreadyCandidate, true, JSON.stringify(nomination));
+    });
+    const work = (await decisionsView(u.root)).issueWork(ref);
+    assert.equal(work.allowed, false);
+    assert.ok(work.restrictions !== "unknown" && work.restrictions.some((h) => h.why === "comparison"));
+    const all = await listBugs(u.root);
+    assert.equal(all.paused, 1);
+    assert.equal(all.bugs[0]?.decisionWork.allowed, false);
+    assert.equal((await bugDetail(u.root, bugId) as any).decisionWork.allowed, false);
+    await asAgent(async () => {
+      assert.match(String(err(await updateBug(u.root, { id: bugId, state: "resolved" }))), /comparison/);
+    });
+    await asPerson(async () => {
+      assert.equal((await backlogBugOp(u.root, bugId, { until: "2027-01-01", reason: "later" }) as any).ok, true);
+      assert.match(String(err(await releaseBugBacklogOp(u.root, bugId, "resume"))), /comparison/);
+    });
+  } finally { u.cleanup(); }
+});
+
+
+test("round five: interpretation receipts use exact purpose/request and transcript proof", async () => {
+  const u = await universe();
+  try {
+    await asAgent(async () => {
+      const { t, a, mine, prompt } = await wordsWithBrief(u);
+      const brief = await readerBrief(u.root, { answer: a, maps: mine }) as any;
+      assert.match(brief.request, /^read_[0-9a-f]{24}$/);
+      assert.match(prompt, new RegExp(brief.request));
+      assert.equal(readerRequests(u.root, "answer-interpretation").length, 1);
+      assert.equal((await submitVerdictOp(u.root, { answer: a, request: "wrong", verdict: "D1 → Not a defect" }, {}, u.transcripts) as any).held, undefined);
+      const verdict = "D1 → Not a defect";
+      t.reader(nextReader(), verdict, { answer: a, prompt });
+      const held = await submitVerdict(u.root, { answer: a, request: brief.request, verdict }, {}, u.transcripts) as any;
+      assert.equal(held.held, true, JSON.stringify(held));
+      assert.equal(held.request, brief.request);
+      const key = { purpose: "answer-interpretation" as const, requestId: brief.request };
+      assert.equal(readerReceipts(u.root, key)[0]?.receipt, held.receipt);
+      assert.equal((openDb(u.root).prepare("SELECT COUNT(*) AS n FROM reader_verdicts WHERE answer = ?").get(a) as any).n, 0);
+      const recorded = await recordReading(u.root, { answer: a }, {}, u.transcripts) as any;
+      assert.equal(recorded.recorded, true, JSON.stringify(recorded));
+      assert.equal(readerReceipts(u.root, key)[0]?.state, "recorded");
+    });
+  } finally { u.cleanup(); }
+});
+
+test("round five: real relay revision verifies exact shown source and human given time", async () => {
+  const u = await universe();
+  try {
+    const f = await withFinding(u);
+    await asAgent(async () => {
+      assert.equal((await postRound(u.root, { round: { id: "R1", source: "relay-revision" }, decisions: [decision("d1", f)] }) as any).ok, true);
+    });
+    let first: any;
+    await asPerson(async () => { first = await answerDirect(u.root, { decision: "d1", option: "Not a defect" }); });
+    assert.equal(first.recorded, true, JSON.stringify(first));
+    await withEnv({ CODEMAP_AGENT_MODEL: "relay-model", CODEMAP_PRINCIPAL: "bob@x.com" }, async () => {
+      const input = { decision: "d1", revises: [first.answer], findings: [f] };
+      const brief = await revisionRelayBrief(u.root, input) as any;
+      assert.equal(brief.ok, true, JSON.stringify(brief));
+      const t = transcript(u.transcripts);
+      const wrong = { ...brief.question, question: brief.question.question.replace(first.answer, "wrong-source") };
+      t.ask("toolu_wrong_source", [wrong], { [wrong.question]: "Real, fix it" }, later(1));
+      const refused = await reviseDecisionRelayed(u.root, { ...input, session: SESSION, toolUseId: "toolu_wrong_source" }, {}, u.transcripts) as any;
+      assert.match(String(refused.error), /exact predecessor/);
+      t.ask("toolu_exact_revision", [brief.question], { [brief.question.question]: "Real, fix it" }, later(2));
+      assert.equal((await postRound(u.root, { round: { id: "R2", source: "recorder later context" }, decisions: [decision("d2", f, {}, "D2", "R2")] }) as any).ok, true);
+      const revised = await reviseDecisionRelayed(u.root, { ...input, session: SESSION, toolUseId: "toolu_exact_revision" }, {}, u.transcripts) as any;
+      assert.equal(revised.ok, true, JSON.stringify(revised));
+      assert.equal(revised.standing, true, JSON.stringify(revised));
+      assert.equal((await decisionRound(u.root, "R1") as any).decisions[0].currentByFinding[f], revised.revision);
+    });
+  } finally { u.cleanup(); }
+});
+
+
+test("round five: interpretation request identity changes with source and shown context", () => {
+  const base = { answer: "a1", responseHash: "response-v1", brief: "exact reader prompt",
+    manifest: [{ id: "d1", hash: "question-v1", ref: "D1" }],
+    maps: [{ decision: "d1", option: "Real, fix it" }] };
+  const first = interpretationRequestId(base);
+  assert.equal(interpretationRequestId(base), first);
+  assert.notEqual(interpretationRequestId({ ...base, responseHash: "response-v2" }), first);
+  assert.notEqual(interpretationRequestId({ ...base, brief: "changed exact reader prompt" }), first);
+  assert.notEqual(interpretationRequestId({ ...base, manifest: [{ id: "d1", hash: "question-v2", ref: "D1" }] }), first);
 });

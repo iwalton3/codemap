@@ -12,18 +12,23 @@
 import { createHash, randomUUID } from "node:crypto";
 import { isAgentActor } from "../identity.js";
 import { bindDecisions, type Bound, type Via } from "../ops-shared.js";
-import { lookupFinding, readStoreMeta, SIDECAR_LINEAGE, type SidecarMark } from "../store.js";
+import { lookupFinding, readStoreMeta, rulingApplicationsForAnswer, SIDECAR_LINEAGE, type SidecarMark } from "../store.js";
 import { resolveSidecar } from "../sidecar-config.js";
+import { canonicalIssueKey, resolveDecisionIssue, type CanonicalIssueReference } from "../decision-issues.js";
 import {
-  CONFIRM_NO, CONFIRM_YES, NONE, canonicalMaps, briefManifest, briefListing, briefRefusal, readingRefusal, readerBrief as briefFor, bindRefusal, checkDecision, confirmPayload, confirmState, confirmedWords, decisionHash, logQuestionEvent,
-  mapsKey, named, possiblySuperseded, postConfirmEvent, postRoundEvent, validMaps,
-  readingsInDispute, intentCandidates, nominateComparisonEvent, recordAnswerEvent, recordReadingEvent, ruledNotCarriedOut, standing, waitingOnMe, awaitingReading, parked, withdrawDecisionEvent,
+  CONFIRM_NO, CONFIRM_YES, NONE, canonicalMaps, briefManifest, briefListing, briefRefusal, readingRefusal, readerBrief as briefFor, bindRefusal, checkDecision, checkQuestionnaireDecisions, confirmPayload, confirmState, confirmedWords, decisionHash, logQuestionEvent,
+  mapsKey, named, namedIssues, possiblySuperseded, postConfirmEvent, postRoundEvent, validMaps,
+  approveDecisionWithdrawalEvent, presentDecisionRevisionEvent, revisionRelayQuestion, withdrawalScope, standingForIssue,
+  readingsInDispute, intentCandidates, nominateComparisonEvent, recordAnswerEvent, submitQuestionnaireEvent, recordReadingEvent, ruledNotCarriedOut, standing, standingForFinding, waitingOnMe, awaitingReading, parked, withdrawDecisionEvent, reviseAnswerEvent,
   type AnswerVia, type BriefEntry, type FoldedDecision, type Mapping, type SharedDecisions,
 } from "../shared-decisions.js";
 import { decisionsView } from "./decision-holds.js";
 import { findVerdictCalls, isUnverified, readCall, readMessage, readReader, sameQuestion, sessionHolding, transcriptDir } from "../transcript.js";
-import { db } from "../db.js";
+import { saveReaderRequest, readerRequests, holdReaderReceipt, readerReceipts, settleReaderReceipt,
+  legacyReaderRequest, legacyReaderVerdicts, holdLegacyReaderVerdict, pendingLegacyReaderAnswers,
+  settleLegacyReaderVerdict, noteLegacyReaderVerdict, type LegacyReaderVerdict } from "../reader-local.js";
 import type { AskedQuestion, Decision, DecisionRound } from "../schema.js";
+import { questionnaireVersion, stageSubmission, type SubmissionDraft } from "../questionnaire.js";
 import type { ScopeStatus } from "../eventlog.js";
 
 /** Today by UTC date, for the views: parks are dated, and the fold holds no clock. Taken once
@@ -48,6 +53,13 @@ export async function checkRound(root: string, r: NewRound): Promise<string | nu
   const existing = w.s;
   if (!r?.round || typeof r.round.id !== "string" || !r.round.id.trim() || typeof r.round.source !== "string" || !r.round.source.trim()) return "a round needs an id and a source";
   if (!Array.isArray(r.decisions) || !r.decisions.length) return "a round needs at least one decision";
+  if (r.round.questionnaire) {
+    const qError = checkQuestionnaireDecisions(r.round.questionnaire, r.decisions);
+    if (qError) return qError;
+    if (existing.rounds.some((round) => round.questionnaire?.id === r.round.questionnaire!.id
+      || round.id === r.round.questionnaire!.id || round.questionnaire?.id === r.round.id))
+      return `questionnaire ${r.round.questionnaire.id} collides with a published questionnaire or round ID`;
+  }
   if (existing.rounds.some((x) => x.id === r.round.id)) return `round ${r.round.id} is already posted; a changed question is a new decision in a new round`;
   const refs = new Set<string>(), ids = new Set<string>();
   for (const d of r.decisions) {
@@ -84,6 +96,11 @@ export async function checkRound(root: string, r: NewRound): Promise<string | nu
       // On this map only, the team's clones could not carry a ruling on it out (bulk 10).
       if (!found.finding.origin) return `decision ${d.ref} names ${f}, which is on this map only — publish it first (\`codemap unify-findings\`)`;
     }
+    for (const o of d.options) for (const e of o.effects) for (const issue of e.issues ?? []) {
+      const found = await resolveDecisionIssue(root, issue);
+      if (!found.ok) return `decision ${d.ref}: ${found.error}`;
+      if (canonicalIssueKey(found.ref) !== canonicalIssueKey(issue)) return `decision ${d.ref}: ${issue.id} did not resolve to the stated scope`;
+    }
     if (d.supersedes) return `decision ${d.ref}: automatic question supersession is retired; use follows for context and withdraw a question explicitly`;
     if (d.follows && !existing.decisions.some((x) => x.id === d.follows))
       return `decision ${d.ref} follows ${d.follows}, which is not posted`;
@@ -103,6 +120,12 @@ export async function postRound(root: string, r: NewRound, via: Via = {}, dir: s
   const { s } = await decisionsView(root);
   return {
     ok: true, round: r.round.id,
+    ...(r.round.questionnaire ? { questionnaire: {
+      id: r.round.questionnaire.id,
+      version: questionnaireVersion(r.round.questionnaire),
+      link: `/#/u/${encodeURIComponent(b.cfg.universe)}/decisions/${encodeURIComponent(r.round.id)}/`,
+      retrieve: `questionnaire_detail(${JSON.stringify(r.round.questionnaire.id)}) or open the link after sidecar sync`,
+    } } : {}),
     // What to ask with, verbatim — a paraphrase reads as unverified (C14).
     ask: r.decisions.map((d) => ({ decision: d.id, ref: d.ref, payload: s.decisions.find((x) => x.id === d.id)?.payload ?? d.payload })),
   };
@@ -115,6 +138,85 @@ export async function postPrevalidated(root: string, b: Bound, r: NewRound, prev
   if (bad) return { error: bad };
   await postRoundEvent(b.cfg.path, b.cfg.universe, b.actor, { ...r.round, universe: b.cfg.universe, ...(prevalidated ? { prevalidated } : {}) }, r.decisions);
   return { ok: true as const, round: r.round.id };
+}
+
+const comparisonSummaries = (s: SharedDecisions) => s.comparisons.map((comparison) => ({
+  id: comparison.request.id,
+  state: comparison.projection.state,
+  answers: [comparison.request.left.answerId, comparison.request.right.answerId] as [string, string],
+  decisions: [comparison.request.left.questionId, comparison.request.right.questionId] as [string, string],
+  issues: comparison.request.issues,
+  restrictsWork: comparison.projection.restrictsWork,
+}));
+
+/** Published questionnaire, exact answers and per-principal completion. */
+export async function questionnaireDetail(root: string, id: string, principal?: string) {
+  const v = await decisionsView(root);
+  const round = v.s.rounds.find((r) => r.questionnaire?.id === id || r.id === id);
+  const q = round?.questionnaire;
+  if (!round || !q) return { error: `no questionnaire ${id}`, status: v.status };
+  const questions = q.sections.flatMap((section) => section.questions);
+  const records = questions.map((question) => {
+    const d = v.s.decisions.find((x) => x.round === round.id && x.id === question.id);
+    return { questionId: question.id, decision: d?.id, withdrawn: !!d?.withdrawn,
+      answers: d?.answers.filter((a) => a.verified && !a.sourceAnswer).map((a) => ({
+        id: a.id, principal: a.by.principal, at: a.givenAt,
+        source: a.questionnaire ?? { via: a.via, words: a.words },
+        cancelled: a.cancelled, withdrawn: a.withdrawn, verified: a.verified,
+      })) ?? [] };
+  });
+  const people = new Set([...(q.recipient ? [q.recipient] : []), ...(principal ? [principal] : []),
+    ...records.flatMap((r) => r.answers.map((a) => a.principal))]);
+  const progress = [...people].map((person) => {
+    const submitted = records.filter((r) => !r.withdrawn && r.answers.some((a) => a.principal === person
+      && !a.withdrawn && !a.cancelled)).map((r) => r.questionId);
+    const withdrawn = records.filter((r) => r.withdrawn || (!submitted.includes(r.questionId)
+      && r.answers.some((a) => a.principal === person && a.withdrawn))).map((r) => r.questionId);
+    const unanswered = records.filter((r) => !submitted.includes(r.questionId)
+      && !withdrawn.includes(r.questionId)).map((r) => r.questionId);
+    return { principal: person, submitted, withdrawn, unanswered,
+      counts: { submitted: submitted.length, withdrawn: withdrawn.length, unanswered: unanswered.length } };
+  });
+  return { id: q.id, round: round.id, questionnaire: q, version: questionnaireVersion(q),
+    status: v.status, questions: records, progress,
+    comparisons: intentCandidates(v.s).filter((candidate) => candidate.decisions.some((decision) =>
+      v.s.decisions.find((d) => d.id === decision)?.round === round.id)),
+    comparisonRecords: comparisonSummaries(v.s).filter((comparison) => comparison.decisions.some((decision) =>
+      v.s.decisions.find((d) => d.id === decision)?.round === round.id)) };
+}
+
+export async function questionnaireList(root: string, principal?: string) {
+  const v = await decisionsView(root);
+  const entries = await Promise.all(v.s.rounds.filter((r) => r.questionnaire).map(async (r) => {
+    const detail = await questionnaireDetail(root, r.id, principal);
+    if ("error" in detail) return null;
+    return { id: detail.id, round: detail.round, title: detail.questionnaire.title,
+      recipient: detail.questionnaire.recipient, version: detail.version, progress: detail.progress };
+  }));
+  return { status: v.status, questionnaires: entries.filter((x) => x !== null) };
+}
+
+/** Selected answers are staged together, then admitted under the sidecar append lock. */
+export async function submitQuestionnaire(root: string,
+  input: { round: string; submission: SubmissionDraft }, via: Via = {}) {
+  const b = bindDecisions(root, via);
+  if ("error" in b) return b;
+  const w = await writable(root);
+  if ("error" in w) return w;
+  const round = w.s.rounds.find((r) => r.id === input?.round);
+  const q = round?.questionnaire;
+  if (!q) return { error: `no published questionnaire on round ${String(input?.round)}` };
+  const staged = stageSubmission(q, input.submission);
+  if (!staged.ok) return { error: staged.errors.join("; ") };
+  const event = await submitQuestionnaireEvent(b.cfg.path, b.cfg.universe, b.actor, round!.id, staged.value);
+  if ("error" in event) return event;
+  const after = await decisionsView(root);
+  const answers = after.s.decisions.flatMap((d) => d.answers)
+    .filter((a) => a.questionnaire?.submission === event.id)
+    .map((a) => ({ id: a.id, questionId: a.questionnaire!.questionId,
+      corrections: a.questionnaire!.corrections ?? [], approvals: a.questionnaire!.approvals ?? [] }));
+  return { ok: true as const, questionnaire: q.id, round: round!.id,
+    submission: event.id, attemptId: staged.value.attemptId, answers };
 }
 
 // --- reading ---------------------------------------------------------------------------
@@ -130,8 +232,10 @@ function withHeld<T extends { answer: string }>(root: string, list: T[]): (T & {
   let held: Map<string, string | undefined>;
   try {
     held = new Map();
-    for (const r of db(root).prepare("SELECT answer, why FROM reader_verdicts WHERE state = 'pending' ORDER BY seq").all() as { answer: string; why?: string }[])
-      if (!held.has(r.answer)) held.set(r.answer, r.why);
+    for (const item of list) {
+      const pending = heldFor(root, item.answer).find((h) => h.state === "pending");
+      if (pending) held.set(item.answer, pending.why);
+    }
   } catch { return list; }
   return list.map((u) => (held.has(u.answer) ? { ...u, verdict: held.get(u.answer) ?? "a reader's verdict is held; record_reading records it" } : u));
 }
@@ -150,6 +254,7 @@ export async function decisionRounds(root: string) {
     ruledNotCarriedOut: ruledNotCarriedOut(s, v.isOpen),
     readingsInDispute: readingsInDispute(s),
     intentCandidates: intentCandidates(s),
+    comparisons: comparisonSummaries(s),
     parked: parked(s, now),
     possiblySuperseded: superseding(s),
     // Waiting on an agent, not on the person: shown so it is not mistaken for nothing.
@@ -166,14 +271,27 @@ export async function decisionRound(root: string, id: string) {
   const byId = new Map(s.decisions.map((x) => [x.id, x]));
   const mine = (x: { round: string }) => x.round === id;
   const findings = [...new Set(s.decisions.filter(mine).flatMap(named))];
+  const cfg = resolveSidecar(root);
+  const heldMarks = await Promise.all(findings.map(async (finding) => {
+    const issue = cfg ? await resolveDecisionIssue(root, { kind: "finding", universe: cfg.universe, id: finding }) : null;
+    if (issue?.ok) return { finding, ...v.issueMark(issue.ref) };
+    return { finding, ...v.mark(finding), ...(issue && issue.reason === "ambiguous"
+      ? { ambiguity: issue.error } : {}) };
+  }));
   return {
     ...v.status,
     round,
+    comparisons: comparisonSummaries(s).filter((comparison) => comparison.decisions.some((decision) =>
+      s.decisions.find((d) => d.id === decision)?.round === id)),
     decisions: s.decisions.filter(mine).map((d) => ({
-      ...d, standing: standing(d) ?? null, possiblySuperseded: possiblySuperseded(d, byId),
+      ...d, standing: standing(d) ?? null,
+      answers: d.answers.map((a) => ({ ...a, executions: rulingApplicationsForAnswer(root, a.sourceAnswer ?? a.id) })),
+      currentByFinding: Object.fromEntries(named(d).map((f) => [f, standingForFinding(d, f)?.id ?? null])),
+      currentByIssue: namedIssues(d).map((issue) => ({ issue, answer: standingForIssue(d, issue)?.id ?? null })),
+      possiblySuperseded: possiblySuperseded(d, byId),
       ...(d.confirms ? { confirm: { state: confirmState(byId, d)!, of: confirmedWords(byId, d)?.d.ref ?? null } } : {}),
     })),
-    held: findings.map((finding) => ({ finding, ...v.mark(finding) })).filter((h) => h.held || h.possiblySuperseded),
+    held: heldMarks.filter((h) => h.held || h.possiblySuperseded),
     waitingOnYou: waitingOnMe(s, now).filter(mine),
     ruledNotCarriedOut: ruledNotCarriedOut(s, v.isOpen).filter(mine),
     readingsInDispute: readingsInDispute(s).filter(mine),
@@ -215,7 +333,7 @@ export async function waitDecisionStatus(root: string, id: string, cursor: strin
 /** Nominate a pair whose semantic overlap the declared question/finding links miss.
  * This adds a comparison hold; it never resolves one or authorizes an application. */
 export async function nominateComparison(root: string,
-  input: { answers: [string, string]; findings: string[]; reason: string }, via: Via = {}) {
+  input: { answers: [string, string]; findings?: string[]; issues?: CanonicalIssueReference[]; reason: string }, via: Via = {}) {
   const b = bindDecisions(root, via);
   if ("error" in b) return b;
   const w = await writable(root);
@@ -224,8 +342,18 @@ export async function nominateComparison(root: string,
   if (!Array.isArray(ids) || ids.length !== 2 || ids[0] === ids[1]
     || !ids.every((id) => typeof id === "string" && id.trim())) return { error: "name two distinct exact answer ids" };
   if (!input.reason?.trim()) return { error: "explain the semantic overlap being nominated" };
-  if (!Array.isArray(input.findings) || !input.findings.length || !input.findings.every((id) => typeof id === "string" && id.trim())
-    || new Set(input.findings).size !== input.findings.length) return { error: "name distinct exact finding ids in the affected scope" };
+  const findings = input.findings ?? [], issues = input.issues ?? [];
+  if (!Array.isArray(findings) || !findings.every((id) => typeof id === "string" && id.trim())
+    || new Set(findings).size !== findings.length || !Array.isArray(issues) || (!findings.length && !issues.length))
+    return { error: "name distinct exact finding IDs or canonical issues in the affected scope" };
+  const issueKeys = new Set<string>();
+  for (const issue of issues) {
+    const resolved = await resolveDecisionIssue(root, issue);
+    if (!resolved.ok) return { error: resolved.error };
+    const key = canonicalIssueKey(resolved.ref);
+    if (key !== canonicalIssueKey(issue) || issueKeys.has(key)) return { error: `${issue.id} has a duplicate or mismatched issue scope` };
+    issueKeys.add(key);
+  }
   const pair = ids.map((id) => found(w.s, id));
   if (pair.some((x) => !x?.a.verified || x.a.sourceAnswer)) return { error: "both answers must be verified original response ids" };
   const [left, right] = pair as [{ d: FoldedDecision; a: FoldedDecision["answers"][number] }, { d: FoldedDecision; a: FoldedDecision["answers"][number] }];
@@ -236,20 +364,24 @@ export async function nominateComparison(root: string,
         || (other.givenAt === a.givenAt && other.seq > a.seq)));
   if (!pair.every((x) => current(x!))) return { error: "a named answer is no longer current; nominate the current response instead" };
   const scope = new Set([...named(left.d), ...named(right.d)]);
-  for (const id of input.findings) {
+  for (const id of findings) {
     if (!scope.has(id)) return { error: `${id} is outside both questions' stated issue scope` };
     const target = lookupFinding(root, id);
     if (!target || "ambiguous" in target) return { error: `${id} is not an unambiguous finding in this store` };
   }
+  const typedScope = new Set([...namedIssues(left.d), ...namedIssues(right.d)].map(canonicalIssueKey));
+  for (const key of issueKeys) if (!typedScope.has(key)) return { error: "an issue is outside both questions stated issue scope" };
   const automatic = intentCandidates(w.s).find((candidate) => ids.every((id) => candidate.answers.includes(id))
-    && input.findings.every((id) => candidate.findings.includes(id)));
+    && findings.every((id) => candidate.findings.includes(id))
+    && [...issueKeys].every((key) => candidate.issues?.some((issue) => canonicalIssueKey(issue) === key)));
   if (automatic) return { ok: true as const, alreadyCandidate: true as const, candidate: automatic };
   const existing = [...(left.d.nominations ?? []), ...(right.d.nominations ?? [])].find((n) =>
     n.answers.length === 2 && ids.every((id) => n.answers.includes(id))
-      && input.findings.every((id) => n.findings.includes(id)));
+      && findings.every((id) => n.findings.includes(id))
+      && [...issueKeys].every((key) => n.issues?.some((issue) => canonicalIssueKey(issue) === key)));
   if (existing) return { ok: true as const, nomination: existing.id, existing: true as const };
   const e = await nominateComparisonEvent(b.cfg.path, b.cfg.universe, b.actor,
-    { answers: ids, findings: input.findings, reason: input.reason.trim() });
+    { answers: ids, findings, ...(issues.length ? { issues } : {}), reason: input.reason.trim() });
   const after = await decisionsView(root);
   const candidate = intentCandidates(after.s).find((x) => x.nomination?.id === e.id);
   if (!candidate) return { error: "the fold did not accept the nomination; it remains in the log for inspection", nomination: e.id };
@@ -267,8 +399,7 @@ async function record(root: string, b: Bound, d: FoldedDecision, via: AnswerVia,
   if (d.withdrawn || d.answers.some((a) => a.withdrawn))
     return { decision: d.id, ref: d.ref, recorded: false as const, why: `${d.ref} has a withdrawal; ask a fresh question` };
   const { s } = await decisionsView(root);
-  const knownReplacements = s.decisions.filter((x) => x.replacedBy).map((x) => x.replacedBy!);
-  const e = await recordAnswerEvent(b.cfg.path, b.cfg.universe, b.actor, { decision: d.id, hash: d.hash, via, knownReplacements, ...(relayedBy ? { relayedBy } : {}) });
+  const e = await recordAnswerEvent(b.cfg.path, b.cfg.universe, b.actor, { decision: d.id, hash: d.hash, via, ...(relayedBy ? { relayedBy } : {}) });
   return outcome(root, d, e.id);
 }
 
@@ -278,7 +409,7 @@ async function outcome(root: string, d: Pick<FoldedDecision, "id" | "ref">, id: 
   const now = s.decisions.find((x) => x.id === d.id);
   const a = now?.answers.find((x) => x.id === id);
   // The fold dropped it: say so rather than report an answer nobody will see.
-  if (!now || !a) return { decision: d.id, ref: d.ref, recorded: false as const, why: "the fold did not accept this answer (a paraphrased question, a question posted after it was answered, one it was given after it was replaced, or an unverified park)" };
+  if (!now || !a) return { decision: d.id, ref: d.ref, recorded: false as const, why: "the fold did not accept this answer (check its question, source time, or verification)" };
   const top = standing(now);
   return {
     decision: d.id, ref: d.ref, recorded: true as const, answer: id, verified: a.verified, standing: top?.id === a.id,
@@ -299,7 +430,7 @@ function confirmOutcome(s: SharedDecisions, c: FoldedDecision, a: FoldedDecision
   if (a.free) return "their own words on the confirm: have a reader read them (reader_brief, then record_reading), like any typed reply";
   if (!t) return "the words it asks about are no longer an answer here";
   if (t.a.confirmed?.answer === a.id) return "bound: the reading is ruled, as of when they typed the words";
-  if (a.options[0] === CONFIRM_NO) return `rejected: the ruling on ${t.d.ref} stands, flagged — re-ask ${t.d.ref} (the person must give a replacement answer)`;
+  if (a.options[0] === CONFIRM_NO) return `rejected: the ruling on ${t.d.ref} stands, flagged — re-ask ${t.d.ref} (the person must answer a fresh question)`;
   return "not the latest pick on those words, or they were bound another way: this binds nothing";
 }
 
@@ -353,7 +484,7 @@ export async function logQuestion(root: string, input: { session?: string; toolU
   const answered = [];
   for (const d of before.decisions) {
     // A replaced question is answered too: the fold keeps an answer given before the
-    // replacement was posted, whenever it is recorded (plan A4, K1).
+    // later question was posted, whenever it is recorded.
     if (binding[d.payload.question] !== d.round || !call.questions.some((q) => sameQuestion(q, d.payload)) || call.answers[d.payload.question] === undefined) continue;
     // Judged per decision: a round can grow after it is posted.
     if (!(Date.parse(call.at) > Date.parse(d.postedAt))) { refused.push({ question: d.payload.question, why: `the call was answered at ${call.at}, and ${d.ref} was posted at ${d.postedAt || "an unknown time"}: an answer binds only to a question posted before it` }); continue; }
@@ -453,20 +584,41 @@ export function parseVerdict(report: string, listed: Pick<FoldedDecision, "id" |
  *  transcript ~12 ms after it returns (measured 2026-09-24). */
 const graceMs = () => Number(process.env.CODEMAP_VERDICT_GRACE_MS ?? 60_000);
 
-interface ReaderRequest { answer: string; maps: Mapping[]; reading?: string; asks?: string; brief: string; manifest?: BriefEntry[]; issuedAt: string }
+interface ReaderRequest { answer: string; maps: Mapping[]; reading?: string; asks?: string; brief: string; manifest?: BriefEntry[]; issuedAt: string; requestId?: string; responseHash?: string }
 type HeldState = "pending" | "recorded" | "invalid" | "superseded";
-interface HeldVerdict { seq: number; answer: string; verdict: string; heldAt: string; state: HeldState; why?: string; call?: string; receipt?: string; knownReplacements?: string[] }
-
-const requestOf = (root: string, answer: string): ReaderRequest | undefined => {
-  const r = db(root).prepare("SELECT body FROM reader_requests WHERE answer = ?").get(answer) as { body: string } | undefined;
-  return r ? JSON.parse(r.body) : undefined;
+interface HeldVerdict extends LegacyReaderVerdict { requestId?: string }
+export const interpretationRequestId = (input: { answer: string; responseHash?: string; brief: string;
+  manifest: BriefEntry[]; maps: Mapping[]; reading?: string; asks?: string }): string =>
+  `read_${createHash("sha256").update(JSON.stringify({ answer: input.answer,
+    responseHash: input.responseHash, brief: input.brief, manifest: input.manifest, maps: input.maps,
+    reading: input.reading ?? null, asks: input.asks ?? null })).digest("hex").slice(0, 24)}`;
+const interpretationKey = (requestId: string) => ({ purpose: "answer-interpretation" as const, requestId });
+const newRequests = (root: string): ReaderRequest[] => readerRequests(root, "answer-interpretation")
+  .map(({ requestId, body }) => ({ ...JSON.parse(body) as ReaderRequest, requestId }));
+const legacyRequestOf = (root: string, answer: string): ReaderRequest | undefined => {
+  const legacy = legacyReaderRequest(root, answer);
+  return legacy ? JSON.parse(legacy) : undefined;
 };
-const heldFor = (root: string, answer: string): HeldVerdict[] =>
-  (db(root).prepare("SELECT seq, answer, verdict, held_at AS heldAt, state, why, call, receipt, known_replacements AS knownJson FROM reader_verdicts WHERE answer = ? ORDER BY seq").all(answer) as unknown as (HeldVerdict & { knownJson?: string })[])
-    .map(({ knownJson, ...h }) => ({ ...h, why: h.why ?? undefined, call: h.call ?? undefined,
-      receipt: h.receipt ?? undefined, knownReplacements: knownJson ? JSON.parse(knownJson) : undefined }));
-const settle = (root: string, seq: number, state: HeldState, why?: string, call?: string) =>
-  db(root).prepare("UPDATE reader_verdicts SET state = ?, why = ?, call = COALESCE(?, call) WHERE seq = ?").run(state, why ?? null, call ?? null, seq);
+const requestOf = (root: string, answer: string, requestId?: string): ReaderRequest | undefined => {
+  const fresh = newRequests(root).find((r) => r.answer === answer && (!requestId || r.requestId === requestId));
+  return fresh || (requestId ? undefined : legacyRequestOf(root, answer));
+};
+const heldFor = (root: string, answer: string): HeldVerdict[] => {
+  const legacy: HeldVerdict[] = legacyReaderVerdicts(root, answer);
+  const current = newRequests(root).filter((r) => r.answer === answer).flatMap((request) =>
+    readerReceipts(root, interpretationKey(request.requestId!)).map((row) => ({
+      seq: row.seq, answer, verdict: (JSON.parse(row.body) as { verdict: string }).verdict,
+      heldAt: row.heldAt, state: row.state === "cancelled" ? "superseded" as const : row.state,
+      ...(row.why ? { why: row.why } : {}), ...(row.call ? { call: row.call } : {}),
+      receipt: row.receipt, requestId: request.requestId,
+    })));
+  return [...legacy, ...current].sort((x, y) => x.heldAt.localeCompare(y.heldAt) || (x.requestId ? 1 : -1));
+};
+const settle = (root: string, held: HeldVerdict, state: HeldState, why?: string, call?: string) =>
+  held.requestId && held.receipt
+    ? settleReaderReceipt(root, interpretationKey(held.requestId), held.receipt,
+      state === "superseded" ? "cancelled" : state === "pending" ? "invalid" : state, why, call)
+    : settleLegacyReaderVerdict(root, held.seq, state, why, call);
 
 /**
  * The exact prompt to launch a reader with, for answer `answer` (owner, P1.4), and the moment
@@ -483,7 +635,6 @@ export async function readerBrief(root: string, input: { answer: string; maps: M
   if (d.kind === "words") return { error: `${d.ref} takes words: they are the answer, never read` };
   if (!a.free || a.elsewhere) return { error: `answer ${a.id} is not words waiting for a reading` };
   if (a.reading) return { error: `answer ${a.id} is already read (${a.reading.id}): one reading per answer` };
-  if (d.replacedBy) return { error: `${d.ref} was superseded before these words were read: ask a fresh question` };
   // Never read (H6.8): after a verified ruling, unconfirmed words are shown to the person, not bound.
   if (!a.verified && standing(d)?.verified) return { error: `answer ${a.id} is unconfirmed and came after ${d.ref}'s verified ruling: it is shown to the person, never read` };
   const maps = validMaps(input?.maps);
@@ -492,16 +643,28 @@ export async function readerBrief(root: string, input: { answer: string; maps: M
   const why = bindRefusal(byId, d, a, maps);
   if (why) return { error: `your reading cannot bind: ${why}` };
   const note = `launch a NEW general-purpose subagent (not a fork) with exactly this as its prompt, and send it nothing else. It calls submit_verdict itself; then record_reading(${a.id}) records its verdict — any later decisions call here does too`;
+  const baseBrief = briefFor(byId, d, a);
+  const manifest = briefManifest(byId, d, a);
+  const requestId = interpretationRequestId({ answer: a.id, responseHash: a.responseHash,
+    brief: baseBrief, manifest, maps, reading: input.reading, asks: input.asks });
+  const brief = baseBrief.replace("with `answer:", 'with `request: "' + requestId + '"`, `answer:');
   const prev = requestOf(root, a.id);
-  if (prev && !briefRefusal(byId, d, a, prev.brief, [], prev.manifest)) {
+  if (prev && prev.brief.replace(/with `request: "[^"]+"`, `answer:/, "with `answer:") === baseBrief
+    && JSON.stringify(prev.manifest ?? []) === JSON.stringify(manifest)
+    && prev.responseHash === a.responseHash && mapsKey(prev.maps) !== mapsKey(maps))
+    return { error: `your reading of ${a.id} was taken when its brief was issued (${prev.issuedAt}), and a reader may have read since: it cannot change` };
+  if (prev && (prev.requestId === requestId || (!prev.requestId && prev.brief === baseBrief
+    && !briefRefusal(byId, d, a, prev.brief, [], prev.manifest)))) {
     if (mapsKey(prev.maps) !== mapsKey(maps)) return { error: `your reading of ${a.id} was taken when its brief was issued (${prev.issuedAt}), and a reader may have read since: it cannot change` };
-    return { ok: true, answer: a.id, prompt: prev.brief, existing: true, note };
+    return { ok: true, answer: a.id, ...(prev.requestId ? { request: prev.requestId } : {}), prompt: prev.brief, existing: true, note };
   }
   if (prev && heldFor(root, a.id).some((h) => h.state === "pending")) return { error: `the round changed under the brief issued for ${a.id}, but a reader's verdict is held for it: record_reading first` };
-  const brief = briefFor(byId, d, a);
-  const req: ReaderRequest = { answer: a.id, maps, ...(input.reading ? { reading: input.reading } : {}), ...(input.asks ? { asks: input.asks } : {}), brief, manifest: briefManifest(byId, d, a), issuedAt: new Date().toISOString() };
-  db(root).prepare("INSERT OR REPLACE INTO reader_requests(answer, body) VALUES(?, ?)").run(a.id, JSON.stringify(req));
-  return { ok: true, answer: a.id, prompt: brief, note };
+  const req: ReaderRequest = { answer: a.id, maps, ...(input.reading ? { reading: input.reading } : {}),
+    ...(input.asks ? { asks: input.asks } : {}), brief, manifest, issuedAt: new Date().toISOString(),
+    responseHash: a.responseHash };
+  const saved = saveReaderRequest(root, interpretationKey(requestId), JSON.stringify(req));
+  if ("error" in saved) return saved;
+  return { ok: true, answer: a.id, request: requestId, prompt: brief, note };
 }
 
 /**
@@ -509,7 +672,7 @@ export async function readerBrief(root: string, input: { answer: string; maps: M
  * is parsed against the brief as issued and HELD on this machine — it writes nothing to the
  * log. Refused once an earlier reader's verdict for the answer has been recorded.
  */
-export async function submitVerdict(root: string, input: { answer: string; verdict: string }, via: Via = {}, dir: string = transcriptDir()) {
+export async function submitVerdict(root: string, input: { answer: string; verdict: string; request?: string }, via: Via = {}, dir: string = transcriptDir()) {
   const b = bindDecisions(root, via);
   if ("error" in b) return b;
   await recordHeld(root, b, dir);
@@ -520,11 +683,13 @@ export async function submitVerdict(root: string, input: { answer: string; verdi
   const { d, a } = x;
   if (a.cancelled) return { error: a.cancelled.reason, cancelledBy: a.cancelled.by };
   if (a.reading) return { ok: false, refused: `answer ${a.id} is already read: an earlier reader's verdict counts, one reading per answer` };
-  const req = requestOf(root, a.id);
+  const currentReq = requestOf(root, a.id);
+  const req = input.request ? requestOf(root, a.id, input.request) : currentReq;
   if (!req) return { ok: false, refused: `no reader_brief was issued for ${a.id} on this machine` };
+  if (req.requestId !== currentReq?.requestId)
+    return { ok: false, refused: `reader request ${String(input.request)} is no longer the current brief for ${a.id}` };
   if (typeof input.verdict !== "string") return { ok: false, refused: "verdict is your verdict lines, as text" };
   const byId = new Map(w.s.decisions.map((y) => [y.id, y]));
-  if (d.replacedBy) return { ok: false, refused: `${d.ref} was superseded before these words were read: ask a fresh question` };
   const listed = briefListing(byId, d, a, req.brief, req.manifest);
   if (typeof listed === "string") return { ok: false, refused: `the brief you were given no longer matches the round (${listed}): stop; your parent must ask for a new brief` };
   const v = parseVerdict(input.verdict, listed, d.round);
@@ -532,17 +697,28 @@ export async function submitVerdict(root: string, input: { answer: string; verdi
   const why = v.unclear ? null : bindRefusal(byId, d, a, v.maps);
   if (why) return { ok: false, refused: `that verdict cannot bind: ${why}`, note: "not held: correct the verdict and call submit_verdict again" };
   const receipt = randomUUID();
-  const knownReplacements = w.s.decisions.filter((x) => x.replacedBy).map((x) => x.replacedBy!);
-  db(root).prepare("INSERT INTO reader_verdicts(answer, verdict, held_at, state, receipt, known_replacements) VALUES(?, ?, ?, 'pending', ?, ?)")
-    .run(a.id, input.verdict, new Date().toISOString(), receipt, JSON.stringify(knownReplacements));
-  return { ok: true, held: true, receipt, note: "held on this machine; codemap records it once it finds this call in your own transcript. You are done: stop now." };
+  if (req.requestId) {
+    const held = holdReaderReceipt(root, interpretationKey(req.requestId), receipt,
+      JSON.stringify({ answer: a.id, verdict: input.verdict }));
+    if ("error" in held) return held;
+  } else {
+    holdLegacyReaderVerdict(root, a.id, input.verdict, receipt);
+  }
+  return { ok: true, held: true, receipt, ...(req.requestId ? { request: req.requestId } : {}),
+    note: "held on this machine; codemap records it once it finds this call in your own transcript. You are done: stop now." };
 }
 
 /** Records every held verdict that now verifies — the "next call" of Q2.2. Asked first by every
  *  decisions op an agent reaches that may write. Never fails its caller. */
 async function recordHeld(root: string, b: Bound, dir: string): Promise<void> {
   let answers: string[];
-  try { answers = (db(root).prepare("SELECT DISTINCT answer FROM reader_verdicts WHERE state = 'pending'").all() as { answer: string }[]).map((r) => r.answer); } catch { return; }
+  try {
+    answers = [...new Set([
+      ...pendingLegacyReaderAnswers(root),
+      ...newRequests(root).filter((r) => readerReceipts(root, interpretationKey(r.requestId!)).some((h) => h.state === "pending"))
+        .map((r) => r.answer),
+    ])];
+  } catch { return; }
   for (const answer of answers) {
     try { await settleAnswer(root, b, answer, dir); } catch { /* left pending: the next call tries again */ }
   }
@@ -556,34 +732,36 @@ async function recordHeld(root: string, b: Bound, dir: string): Promise<void> {
 async function settleAnswer(root: string, b: Bound, answer: string, dir: string): Promise<void> {
   const w = await writable(root);
   if ("error" in w) return;
-  const held = heldFor(root, answer), req = requestOf(root, answer), x = found(w.s, answer);
+  const held = heldFor(root, answer), x = found(w.s, answer);
   const pending = held.filter((h) => h.state === "pending");
-  if (!x || !req) { for (const h of pending) settle(root, h.seq, "invalid", `answer ${answer} is no longer words here`); return; }
-  if (x.a.cancelled) { for (const h of pending) settle(root, h.seq, "invalid", x.a.cancelled.reason); return; }
-  if (x.a.reading) { for (const h of pending) settle(root, h.seq, "superseded", `answer ${answer} is already read (${x.a.reading.id})`); return; }
+  if (!x) { for (const h of pending) settle(root, h, "invalid", `answer ${answer} is no longer words here`); return; }
+  if (x.a.cancelled) { for (const h of pending) settle(root, h, "invalid", x.a.cancelled.reason); return; }
+  if (x.a.reading) { for (const h of pending) settle(root, h, "superseded", `answer ${answer} is already read (${x.a.reading.id})`); return; }
   const { d, a } = x;
   const byId = new Map(w.s.decisions.map((y) => [y.id, y]));
   const claimed = new Set(held.map((h) => h.call).filter(Boolean));
   for (const h of pending) {
+    const req = h.requestId ? requestOf(root, answer, h.requestId) : legacyRequestOf(root, answer) ?? requestOf(root, answer);
+    if (!req) { settle(root, h, "invalid", "the exact issued reader request is missing"); continue; }
     const calls = findVerdictCalls(answer, h.verdict, 0, dir).filter((c) => !claimed.has(c.callId));
     const matches = h.receipt ? calls.filter((c) => c.result === "held" && c.receipt === h.receipt)
       : calls.filter((c) => c.result === "legacy-held");
     const call = matches.length === 1 ? matches[0] : undefined;
     if (!h.receipt && matches.length > 1) {
-      db(root).prepare("UPDATE reader_verdicts SET why = ? WHERE seq = ?")
-        .run("legacy verdict has multiple successful-held calls; its reader cannot be identified — re-ask with a fresh question", h.seq);
+      noteLegacyReaderVerdict(root, h.seq,
+        "legacy verdict has multiple successful-held calls; its reader cannot be identified — re-ask with a fresh question");
       return;
     }
     if (!call) {
       if (Date.now() - Date.parse(h.heldAt) > graceMs()) {
-        settle(root, h.seq, "invalid", h.receipt ? "its successful submit_verdict result and receipt were not found in this machine's transcripts"
+        settle(root, h, "invalid", h.receipt ? "its successful submit_verdict result and receipt were not found in this machine's transcripts"
           : "legacy verdict has no unique successful-held call/result pair; re-ask the reader");
         continue;
       }
       return;   // a missing or ambiguous result keeps the first slot through the grace
     }
     claimed.add(call.callId);
-    const bad = (why: string) => settle(root, h.seq, "invalid", why, call.callId);
+    const bad = (why: string) => settle(root, h, "invalid", why, call.callId);
     if (!call.agentId) { bad(`submitted from session ${call.session}'s own conversation, not by a reader subagent`); continue; }
     const r = readReader(call.agentId, call.callId, dir);
     if (isUnverified(r)) { bad(r.unverified); continue; }
@@ -595,17 +773,19 @@ async function settleAnswer(root: string, b: Bound, answer: string, dir: string)
     const listed = briefListing(byId, d, a, req.brief, req.manifest);
     const v = typeof listed === "string" ? { error: listed } : parseVerdict(h.verdict, listed, d.round);
     if ("error" in v) { bad(v.error); continue; }
-    const why = readingRefusal(byId, d, a, { verdict: v.maps, unclear: v.unclear, session: req.maps, launchedAt: r.launchedAt, brief: req.brief, manifest: req.manifest, knownReplacements: h.knownReplacements });
+    const why = readingRefusal(byId, d, a, { verdict: v.maps, unclear: v.unclear, session: req.maps,
+      launchedAt: r.launchedAt, brief: req.brief, manifest: req.manifest });
     if (why) { bad(why); continue; }
     await recordReadingEvent(b.cfg.path, b.cfg.universe, b.actor, {
-      answer, knownReplacements: h.knownReplacements, session: { ...(req.reading ? { reading: req.reading } : {}), maps: req.maps },
-      reader: { agent: r.agentId, verdict: v.maps, ...(v.unclear ? { unclear: v.unclear } : {}), launchedAt: r.launchedAt, brief: req.brief, manifest: req.manifest, verified: { session: r.session, toolUseId: r.toolUseId, call: call.callId } },
+      answer, ...(h.knownReplacements ? { knownReplacements: h.knownReplacements } : {}), session: { ...(req.reading ? { reading: req.reading } : {}), maps: req.maps },
+      reader: { agent: r.agentId, verdict: v.maps, ...(v.unclear ? { unclear: v.unclear } : {}), launchedAt: r.launchedAt, brief: req.brief, manifest: req.manifest, verified: { session: r.session, toolUseId: r.toolUseId, call: call.callId,
+        ...(h.requestId ? { requestId: h.requestId } : {}), ...(h.receipt ? { receipt: h.receipt } : {}) } },
       ...(req.asks ? { asks: req.asks } : {}),
     });
     const after = found((await decisionsView(root)).s, answer);
     if (!after?.a.reading) { bad("the fold did not accept it: the decisions log changed while it was being recorded"); return; }
-    settle(root, h.seq, "recorded", undefined, call.callId);
-    for (const rest of pending.filter((p) => p.seq > h.seq)) settle(root, rest.seq, "superseded", "an earlier held verdict was recorded");
+    settle(root, h, "recorded", undefined, call.callId);
+    for (const rest of pending.slice(pending.indexOf(h) + 1)) settle(root, rest, "superseded", "an earlier held verdict was recorded");
     return;
   }
 }
@@ -670,22 +850,19 @@ export async function confirmReading(root: string, input: { answer: string; maps
   if (d.confirms) return { error: `${d.ref} is itself a confirm: words on it are read like any other reply (reader_brief, then record_reading)` };
   if (d.kind === "words") return { error: `${d.ref} takes words: they are the answer, never read onto options` };
   if (!a.free || a.elsewhere) return { error: `answer ${a.id} is not words waiting for a binding` };
-  if (d.replacedBy && !a.reading) return { error: `${d.ref} was superseded before these words were read: ask a fresh question` };
   // An unclear reading has no mapping to confirm: re-ask the question (owner, "Agreed").
   if (a.reading?.unclear) return { error: `the reader could not tell which question these words answer (${a.reading.unclear}): re-ask ${d.ref} itself` };
   let readings: Mapping[][];
   // A session side that cannot bind is not offered: the reader's reading alone (Q2.2, Step 6 part 7).
-  if (a.reading && !a.reading.agree) readings = bindRefusal(byId, d, a, a.reading.session.maps, a.reading.knownReplacements) ? [a.reading.reader.maps] : [a.reading.reader.maps, a.reading.session.maps];
+  if (a.reading && !a.reading.agree) readings = bindRefusal(byId, d, a, a.reading.session.maps) ? [a.reading.reader.maps] : [a.reading.reader.maps, a.reading.session.maps];
   else {
     const maps = validMaps(input?.maps);
     if (!maps) return { error: "give your own reading of their words as maps: [{ decision, option | null }]" };
     if ((a.rejected ?? []).some((r) => mapsKey(r) === mapsKey(maps))) return { error: "the person already said this reading is not what they meant: re-ask the original question" };
     readings = [maps];
   }
-  const knownReplacements = s.decisions.filter((x) => x.replacedBy).map((x) => x.replacedBy!);
   for (const r of readings) {
-    // A new interpretation uses today's knowledge; a completed reading keeps its admission.
-    const why = bindRefusal(byId, d, a, r, a.reading ? a.reading.knownReplacements : knownReplacements);
+    const why = bindRefusal(byId, d, a, r);
     if (why) return { error: `that reading cannot bind: ${why}` };
     for (const id of new Set(r.map((m) => m.decision))) {
       const t = byId.get(id)!;
@@ -699,7 +876,7 @@ export async function confirmReading(root: string, input: { answer: string; maps
   if (open) return { ok: true, confirm: open.id, ref: open.ref, round: open.round, ask: open.payload, existing: true, note: `already posted: ask it verbatim, then log_question the call with round ${d.round}` };
   const ref = `D${Math.max(0, ...s.decisions.filter((y) => y.round === d.round).map((y) => Number(y.ref.slice(1)))) + 1}`;
   const payload = confirmPayload(byId, d, a, readings, ref);
-  const posted = { round: d.round, ref, kind: "options" as const, payload, options: payload.options.map((o) => ({ label: o.label, effects: [] })), confirms: { answer: a.id, readings, knownReplacements } };
+  const posted = { round: d.round, ref, kind: "options" as const, payload, options: payload.options.map((o) => ({ label: o.label, effects: [] })), confirms: { answer: a.id, readings } };
   const id = confirmId(a.id, posted), decision = { id, ...posted };
   const bad = checkDecision(decision);
   if (bad) return { error: `the confirm could not be posted: ${bad}` };
@@ -730,10 +907,10 @@ export { decisionHash, CONFIRM_YES, CONFIRM_NO };
 
 /** Withdraw an unanswered question or this principal's answered ruling. The act is
  *  preserved in the decision log; the projection retires its authority and pending readings. */
-export async function withdrawDecision(root: string, input: { decision: string; answer?: string; reason: string }, via: Via = {}) {
+export async function withdrawDecision(root: string, input: { decision: string; answer?: string; reason: string; approval?: string }, via: Via = {}) {
   const b = bindDecisions(root, via);
   if ("error" in b) return b;
-  if (isAgentActor(b.actor)) return { error: "withdrawal needs the principal's own act" };
+  if (isAgentActor(b.actor) && !input.approval) return { error: "agent withdrawal needs exact recorded human approval" };
   const w = await writable(root);
   if ("error" in w) return w;
   const d = w.s.decisions.find((x) => x.id === input?.decision);
@@ -749,10 +926,157 @@ export async function withdrawDecision(root: string, input: { decision: string; 
     if (a.withdrawn) return { error: `${input.answer} was already withdrawn (${a.withdrawn.by})` };
   } else if (sources.length) return { error: `${d.ref} has a submitted answer; name the exact answer to withdraw its ruling` };
   const e = await withdrawDecisionEvent(b.cfg.path, b.cfg.universe, b.actor,
-    { decision: d.id, ...(input.answer ? { answer: input.answer } : {}), reason: input.reason.trim(), knownAnswers: sources.map((a) => a.id) });
+    { decision: d.id, ...(input.answer ? { answer: input.answer } : {}), reason: input.reason.trim(),
+      knownAnswers: sources.map((a) => a.id), scope: withdrawalScope(d),
+      ...(input.approval ? { approval: input.approval } : {}) });
   if ("error" in e) return e;
   const after = (await decisionsView(root)).s.decisions.find((x) => x.id === d.id);
   const accepted = input.answer ? after?.answers.find((a) => a.id === input.answer)?.withdrawn?.by === e.id : after?.withdrawn?.id === e.id;
   if (!accepted) return { error: "the fold did not accept this withdrawal; its event remains available for inspection", withdrawal: e.id };
   return { ok: true as const, withdrawal: e.id, decision: d.id, ...(input.answer ? { answer: input.answer } : {}) };
+}
+
+/** Record the person's approval of one exact withdrawal; an agent may cite this act later. */
+export async function approveDecisionWithdrawal(root: string,
+  input: { decision: string; answer?: string; reason: string }, via: Via = {}) {
+  const b = bindDecisions(root, via);
+  if ("error" in b) return b;
+  if (isAgentActor(b.actor)) return { error: "withdrawal approval needs the principal's own act" };
+  const w = await writable(root);
+  if ("error" in w) return w;
+  const d = w.s.decisions.find((x) => x.id === input.decision);
+  if (!d || !input.reason?.trim()) return { error: "approval needs an exact decision and reason" };
+  const sources = d.answers.filter((a) => a.verified && !a.sourceAnswer);
+  const e = await approveDecisionWithdrawalEvent(b.cfg.path, b.cfg.universe, b.actor, {
+    decision: d.id, ...(input.answer ? { answer: input.answer } : {}), reason: input.reason.trim(),
+    scope: withdrawalScope(d), knownAnswers: sources.map((a) => a.id), sourceReceipt: randomUUID(),
+  });
+  if ("error" in e) return e;
+  return { ok: true as const, approval: e.id, decision: d.id, scope: withdrawalScope(d) };
+}
+
+/** Freeze exactly which earlier source and action this principal saw before revising it. */
+export async function presentDecisionRevision(root: string,
+  input: { decision: string; revises: string[]; findings: string[]; issues?: CanonicalIssueReference[] }, via: Via = {}) {
+  const b = bindDecisions(root, via);
+  if ("error" in b) return b;
+  if (isAgentActor(b.actor)) return { error: "revision presentation needs the principal's own act" };
+  const w = await writable(root);
+  if ("error" in w) return w;
+  const d = w.s.decisions.find((x) => x.id === input.decision);
+  if (!d) return { error: `no decision ${input.decision}` };
+  const e = await presentDecisionRevisionEvent(b.cfg.path, b.cfg.universe, b.actor, {
+    decision: d.id, revises: input.revises, scope: { findings: input.findings, ...(input.issues?.length ? { issues: input.issues } : {}) },
+    sourceReceipt: randomUUID(),
+  });
+  if ("error" in e) return e;
+  return { ok: true as const, presentation: e.id,
+    contextHash: (e.data as any).contextHash as string, displayed: e.data };
+}
+
+/** Give an agent the exact question that a later transcript must prove was shown. */
+export async function revisionRelayBrief(root: string,
+  input: { decision: string; revises: string[]; findings: string[]; issues?: CanonicalIssueReference[] }, via: Via = {}) {
+  const b = bindDecisions(root, via);
+  if ("error" in b) return b;
+  if (!isAgentActor(b.actor)) return { error: "relay revision brief is for the verifying agent" };
+  const view = await decisionsView(root);
+  const d = view.s.decisions.find((x) => x.id === input.decision);
+  if (!d || d.withdrawn || d.answers.some((a) => a.withdrawn))
+    return { error: "no current decision for this relay" };
+  const sources = input.revises?.map((id) => d.answers.find((a) => a.id === id));
+  if (!sources?.length || sources.some((a) => !a?.verified || a.sourceAnswer || a.cancelled))
+    return { error: "relay revision needs exact current verified source answers" };
+  const scope = { findings: input.findings ?? [], ...(input.issues?.length ? { issues: input.issues } : {}) };
+  return { ok: true as const, decision: d.id, revises: input.revises, scope,
+    question: revisionRelayQuestion(d, sources as FoldedDecision["answers"], b.actor.principal, scope) };
+}
+
+/** Record a human's correction from the exact AskUserQuestion transcript, even if the
+ * recording machine pulled other events after the person answered. */
+export async function reviseDecisionRelayed(root: string,
+  input: { decision: string; revises: string[]; findings: string[]; issues?: CanonicalIssueReference[];
+    session: string; toolUseId: string }, via: Via = {}, dir: string = transcriptDir()) {
+  const b = bindDecisions(root, via);
+  if ("error" in b) return b;
+  if (!isAgentActor(b.actor)) return { error: "a relay revision is recorded by the verifying agent" };
+  const w = await writable(root);
+  if ("error" in w) return w;
+  const d = w.s.decisions.find((x) => x.id === input.decision);
+  if (!d || d.withdrawn) return { error: "no current decision for this relay" };
+  const sources = input.revises?.map((id) => d.answers.find((a) => a.id === id));
+  if (!sources?.length || sources.some((a) => !a?.verified || a.sourceAnswer || a.cancelled))
+    return { error: "relay revision needs exact current verified source answers" };
+  const scope = { findings: input.findings ?? [], ...(input.issues?.length ? { issues: input.issues } : {}) };
+  const expected = revisionRelayQuestion(d, sources as NonNullable<typeof sources[number]>[], b.actor.principal, scope);
+  const call = readCall(input.session, input.toolUseId, dir);
+  if (isUnverified(call)) return { error: call.unverified };
+  if (call.questions.length !== 1 || !sameQuestion(call.questions[0]!, expected))
+    return { error: "human was not shown the exact predecessor, affected scope and new action" };
+  const answer = call.answers[expected.question];
+  if (typeof answer !== "string" || !answer.trim()) return { error: "revision needs one exact human response" };
+  const proof = { session: call.session, toolUseId: call.toolUseId, entryId: call.entryId,
+    answeredAt: call.at, question: call.questions[0]!, answer };
+  const event = await reviseAnswerEvent(b.cfg.path, b.cfg.universe, b.actor, {
+    decision: d.id, hash: d.hash, via: { kind: "revision-relay", proof },
+    revision: { of: input.revises, findings: scope.findings,
+      ...(input.issues?.length ? { issues: input.issues } : {}) },
+  });
+  if ("error" in event) return event;
+  const result = await outcome(root, d, event.id);
+  const after = (await decisionsView(root)).s.decisions.find((x) => x.id === d.id);
+  const accepted = after?.answers.find((a) => a.id === event.id);
+  if (!result.recorded || accepted?.revisionInvalid)
+    return { error: accepted?.revisionInvalid ?? result.why, revision: event.id };
+  return { ok: true as const, revision: event.id, givenAt: call.at,
+    sourceReceipt: call.entryId, standing: scope.findings.every((f) => standingForFinding(after!, f)?.id === event.id)
+      && (input.issues ?? []).every((issue) => standingForIssue(after!, issue)?.id === event.id) };
+}
+
+/** Explicitly correct named source answers for named findings; untouched findings keep
+ * their earlier answer. Other principals' answers require a conflict resolution act. */
+export async function reviseDecision(root: string, input: { decision: string; revises: string[];
+  findings: string[]; issues?: CanonicalIssueReference[];
+  seen?: { presentation: string; contextHash: string };
+  resolves?: { answers: [string, string]; priorResolution: string; shownHash: string };
+  option?: string; words?: string }, via: Via = {}) {
+  const b = bindDecisions(root, via);
+  if ("error" in b) return b;
+  if (isAgentActor(b.actor)) return { error: "revision needs the principal's own act" };
+  const w = await writable(root);
+  if ("error" in w) return w;
+  const d = w.s.decisions.find((x) => x.id === input?.decision);
+  if (!d) return { error: `no decision ${String(input?.decision)}` };
+  if (d.withdrawn || d.answers.some((a) => a.withdrawn)) return { error: `${d.ref} was withdrawn; ask a fresh question` };
+  const issues = input.issues ?? [];
+  if (!Array.isArray(input.revises) || !input.revises.length || new Set(input.revises).size !== input.revises.length
+    || !Array.isArray(input.findings) || new Set(input.findings).size !== input.findings.length
+    || !Array.isArray(issues) || new Set(issues.map(canonicalIssueKey)).size !== issues.length
+    || !input.findings.every((f) => named(d).length ? named(d).includes(f) : d.kind === "words" && f === d.id)
+    || !issues.every((issue) => namedIssues(d).some((named) => canonicalIssueKey(named) === canonicalIssueKey(issue)))
+    || (!input.resolves && !input.findings.length && !issues.length))
+    return { error: "revision needs exact source answer ids and named canonical scope" };
+  const sources = input.revises.map((id) => d.answers.find((a) => a.id === id));
+  if (sources.some((a) => !a?.verified || a.sourceAnswer || (a.via !== "direct" && a.via !== "questionnaire") || a.cancelled))
+    return { error: "revision sources must be current verified direct or questionnaire answers" };
+  if (sources.some((a) => a!.by.principal !== b.actor.principal) && !input.seen)
+    return { error: "cross-principal revision needs the exact presented source receipt" };
+  if (!!input.option === !!input.words) return { error: "revision needs exactly one option or new words" };
+  if (input.option && !d.options.some((o) => o.label === input.option)) return { error: `${input.option} is not an option of ${d.ref}` };
+  if (input.words !== undefined && !input.words.trim()) return { error: "revision words must be nonempty" };
+  const viaAnswer = input.option ? { kind: "direct" as const, option: input.option } : { kind: "direct" as const, words: input.words! };
+  const event = await reviseAnswerEvent(b.cfg.path, b.cfg.universe, b.actor,
+    { decision: d.id, hash: d.hash, via: viaAnswer,
+      revision: { of: input.revises, findings: input.findings,
+        ...(issues.length ? { issues } : {}), ...(input.seen ? { seen: input.seen } : {}),
+        ...(input.resolves ? { resolves: input.resolves } : {}) } });
+  if ("error" in event) return event;
+  const result = await outcome(root, d, event.id);
+  if (!result.recorded) return { error: result.why, revision: event.id };
+  const after = (await decisionsView(root)).s.decisions.find((x) => x.id === d.id);
+  const scopedStanding = after && (input.resolves ? standing(after)?.id === event.id : [
+    ...input.findings.map((finding) => standingForFinding(after, finding)?.id === event.id),
+    ...issues.map((issue) => standingForIssue(after, issue)?.id === event.id),
+  ].every(Boolean));
+  return { ok: true as const, revision: event.id, ...result, standing: !!scopedStanding };
 }

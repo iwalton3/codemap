@@ -877,7 +877,20 @@ function migrate(d: DatabaseSync): void {
       PRIMARY KEY (scope, id)
     );
     CREATE INDEX IF NOT EXISTS ix_decision_records_round ON decision_records(round);
+    -- Executed ruling applications are projected by their target scope. Decision reads
+    -- join this index instead of scanning every finding and bug shard.
+    CREATE TABLE IF NOT EXISTS ruling_applications (
+      source_scope TEXT NOT NULL, event_id TEXT NOT NULL, application_key TEXT NOT NULL,
+      answer_id TEXT NOT NULL, issue_kind TEXT NOT NULL, issue_id TEXT NOT NULL,
+      body TEXT NOT NULL,
+      PRIMARY KEY (source_scope, event_id)
+    );
+    CREATE INDEX IF NOT EXISTS ix_ruling_applications_answer ON ruling_applications(answer_id);
     CREATE TABLE IF NOT EXISTS logged_questions (
+      scope TEXT NOT NULL, id TEXT NOT NULL, body TEXT NOT NULL,
+      PRIMARY KEY (scope, id)
+    );
+    CREATE TABLE IF NOT EXISTS decision_comparisons (
       scope TEXT NOT NULL, id TEXT NOT NULL, body TEXT NOT NULL,
       PRIMARY KEY (scope, id)
     );

@@ -3004,3 +3004,34 @@ export async function writeLocalProblem(root: string, p: Problem): Promise<void>
   ).run(p.id, p.requirementId, p.auditId, p.disposition ?? null, p.raisedAt, p.adjudicatedAt ?? null,
         p.origin ?? null, null, JSON.stringify(p));
 }
+
+/** Executed applications joined from target-scope projections, not from sidecar shards. */
+export function rulingApplicationsForAnswer(root: string, answerId: string): import("./ruling-application.js").ApplicationAttempt[] {
+  const rows = db(root).prepare("SELECT body FROM ruling_applications WHERE answer_id = ? ORDER BY source_scope, event_id")
+    .all(answerId) as unknown as { body: string }[];
+  return rows.map(({ body }) => JSON.parse(body) as import("./ruling-application.js").ApplicationAttempt);
+}
+
+/** Decision eligibility reads from the local projections, kept behind the store seam. */
+export function decisionScopeHasEvents(root: string, scope?: string): boolean {
+  try {
+    const row = scope
+      ? db(root).prepare("SELECT 1 AS y FROM shared_scope WHERE scope = ? AND events > 0").get(scope)
+      : db(root).prepare("SELECT 1 AS y FROM shared_scope WHERE scope LIKE 'decisions/%' AND events > 0").get();
+    return !!row;
+  } catch { return false; }
+}
+
+export function decisionFindingStates(root: string): { id: string; state: string; pr: string; source_scope: string | null }[] {
+  try {
+    return db(root).prepare("SELECT id, state, pr, source_scope FROM findings").all() as unknown as
+      { id: string; state: string; pr: string; source_scope: string | null }[];
+  } catch { return []; }
+}
+
+export function decisionBugStates(root: string): { id: string; state: string; source_scope: string | null }[] {
+  try {
+    return db(root).prepare("SELECT id, state, source_scope FROM bugs").all() as unknown as
+      { id: string; state: string; source_scope: string | null }[];
+  } catch { return []; }
+}

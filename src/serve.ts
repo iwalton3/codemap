@@ -2,8 +2,8 @@
  * codemap web server — zero dependencies (node:http).
  *
  * Serves the vendored web UI plus a small JSON API that mirrors the ops/multi
- * layer (the same source of truth the MCP server exposes). Read-only: the web
- * UI browses; documenting happens through the agent/MCP.
+ * layer (the same source of truth the MCP server exposes). The web UI reads
+ * the map and carries the explicitly attested human acts below.
  *
  * Launch: `node dist/serve.js <workspace> [port]`
  */
@@ -21,6 +21,8 @@ import { loadWorkspace, type Workspace } from "./workspace.js";
 import { METHODOLOGY } from "./guide.js";
 import { markReviewed, unmarkReviewed } from "./reviews.js";
 import { withLock } from "./lock.js";
+import { resolveActor } from "./identity.js";
+import { comparisonDetail, comparisonResolutionBrief, resolveComparison } from "./ops/comparisons.js";
 
 const WEB_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "web");
 
@@ -250,6 +252,18 @@ async function api(path: string, q: URLSearchParams): Promise<unknown> {
       return ops.decisionRound(root, q.get("id") ?? "");
     case "/api/decisions/status":
       return ops.decisionStatus(root, q.get("id") ?? "", q.get("cursor") || undefined);
+    case "/api/decisions/questionnaires": {
+      const currentPrincipal = resolveActor(root)?.principal ?? null;
+      return { ...await ops.questionnaireList(root, currentPrincipal ?? undefined), currentPrincipal };
+    }
+    case "/api/decisions/questionnaire": {
+      const currentPrincipal = resolveActor(root)?.principal ?? null;
+      return { ...await ops.questionnaireDetail(root, q.get("id") ?? "", currentPrincipal ?? undefined), currentPrincipal };
+    }
+    case "/api/decisions/comparison":
+      return comparisonDetail(root, q.get("id") ?? "");
+    case "/api/decisions/comparison/resolution":
+      return comparisonResolutionBrief(root, q.get("id") ?? "");
     case "/api/shared/triage":
       return shared.sharedTriage(root, (q.get("kind") as "node" | "anchor") || undefined, q.get("target") || undefined);
     case "/api/shared/contested":
@@ -383,6 +397,62 @@ const server = createServer(async (req, res) => {
       res.end(JSON.stringify(out));
       return;
     }
+    if (req.method === "POST" && url.pathname === "/api/decisions/questionnaire/submit") {
+      const chunks: Buffer[] = [];
+      for await (const c of req) chunks.push(c as Buffer);
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+      if (!attested(body, "submit questionnaire")) return;
+      const root = rootFor(body.u ?? null);
+      const out = await withLock<unknown>(root, () => ops.submitQuestionnaire(root, {
+        round: String(body.round ?? ""), submission: body.submission,
+      }));
+      res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify(out));
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/api/decisions/comparison/resolve") {
+      const chunks: Buffer[] = [];
+      for await (const c of req) chunks.push(c as Buffer);
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+      if (!attested(body, "resolve comparison")) return;
+      const root = rootFor(body.u ?? null);
+      const out = await withLock<unknown>(root, () => resolveComparison(root, {
+        request: String(body.request ?? ""), preserve: String(body.preserve ?? ""),
+        rationale: String(body.rationale ?? ""), shownHash: String(body.shownHash ?? ""),
+        executionsHash: String(body.executionsHash ?? ""),
+        ...(body.revises ? { revises: String(body.revises), shownResolution: body.shownResolution } : {}),
+        source: "web",
+      }));
+      res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify(out));
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/api/decisions/withdraw/approve") {
+      const chunks: Buffer[] = [];
+      for await (const c of req) chunks.push(c as Buffer);
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+      if (!attested(body, "approve decision withdrawal")) return;
+      const root = rootFor(body.u ?? null);
+      const out = await withLock<unknown>(root, () => ops.approveDecisionWithdrawal(root, {
+        decision: String(body.decision ?? ""), answer: body.answer, reason: String(body.reason ?? ""),
+      }));
+      res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify(out));
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/api/decisions/revise/present") {
+      const chunks: Buffer[] = [];
+      for await (const c of req) chunks.push(c as Buffer);
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+      if (!attested(body, "present decision revision")) return;
+      const root = rootFor(body.u ?? null);
+      const out = await withLock<unknown>(root, () => ops.presentDecisionRevision(root, {
+        decision: String(body.decision ?? ""), revises: body.revises, findings: body.findings, issues: body.issues,
+      }));
+      res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify(out));
+      return;
+    }
     if (req.method === "POST" && url.pathname === "/api/decisions/withdraw") {
       const chunks: Buffer[] = [];
       for await (const c of req) chunks.push(c as Buffer);
@@ -391,6 +461,20 @@ const server = createServer(async (req, res) => {
       const root = rootFor(body.u ?? null);
       const out = await withLock<unknown>(root, () => ops.withdrawDecision(root, {
         decision: String(body.decision ?? ""), answer: body.answer, reason: String(body.reason ?? ""),
+      }));
+      res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify(out));
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/api/decisions/revise") {
+      const chunks: Buffer[] = [];
+      for await (const c of req) chunks.push(c as Buffer);
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+      if (!attested(body, "revise decision")) return;
+      const root = rootFor(body.u ?? null);
+      const out = await withLock<unknown>(root, () => ops.reviseDecision(root, {
+        decision: String(body.decision ?? ""), revises: body.revises, findings: body.findings, issues: body.issues,
+        seen: body.seen, resolves: body.resolves, option: body.option, words: body.words,
       }));
       res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
       res.end(JSON.stringify(out));

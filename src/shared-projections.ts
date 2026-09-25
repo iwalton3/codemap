@@ -75,10 +75,22 @@ import type { Actor, NodeVersion } from "./schema.js";
  * an unpublished edit made between publishing and the first fold, and for that the log
  * is authoritative by the architecture's first rule.
  */
+function indexApplications(d: DatabaseSync, scope: string, issues: Iterable<SharedFinding | SharedBug>): void {
+  d.prepare("DELETE FROM ruling_applications WHERE source_scope = ?").run(scope);
+  const insert = d.prepare("INSERT INTO ruling_applications(source_scope,event_id,application_key,answer_id,issue_kind,issue_id,body) VALUES(?,?,?,?,?,?,?)");
+  for (const issue of issues) for (const attempt of issue.applications ?? []) {
+    if (attempt.status !== "executed" || !attempt.capsule) continue;
+    const capsule = attempt.capsule;
+    insert.run(scope, attempt.eventId, capsule.key, capsule.ruling.answerId,
+      capsule.issue.ref.kind, capsule.issue.ref.id, JSON.stringify(attempt));
+  }
+}
+
 export const findingsProjection: Projection<Map<string, SharedFinding>> = {
   write(d: DatabaseSync, scope: string, value: Map<string, SharedFinding>): void {
     const scopePr = prOfScope(scope);
     d.prepare("DELETE FROM findings WHERE source_scope = ?").run(scope);
+    indexApplications(d, scope, value.values());
     const ins = d.prepare(
       "INSERT INTO findings(id,pr,target_kind,target_id,state,severity,category,line,"
       + "author,created_at,needs_ack,contested,origin,source_scope,ord,body) "
@@ -165,6 +177,7 @@ export const findingsProjection: Projection<Map<string, SharedFinding>> = {
 export const bugsProjection: Projection<Map<string, SharedBug>> = {
   write(d: DatabaseSync, scope: string, value: Map<string, SharedBug>): void {
     d.prepare("DELETE FROM bugs WHERE source_scope = ?").run(scope);
+    indexApplications(d, scope, value.values());
     const ins = d.prepare(
       "INSERT INTO bugs(id,title,state,severity,author,created_at,needs_ack,contested,tracked,"
       + "origin,source_scope,ord,body) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -390,13 +403,15 @@ export const reviewLinksProjection: Projection<ReviewLink[]> = {
 /** Decision rounds (`decisions/<universe>`). See shared-decisions.ts. */
 export const decisionsProjection: Projection<SharedDecisions> = {
   write(d: DatabaseSync, scope: string, value: SharedDecisions): void {
-    for (const t of ["decision_rounds", "decision_records", "logged_questions"]) d.prepare(`DELETE FROM ${t} WHERE scope = ?`).run(scope);
+    for (const t of ["decision_rounds", "decision_records", "logged_questions", "decision_comparisons"]) d.prepare(`DELETE FROM ${t} WHERE scope = ?`).run(scope);
     const round = d.prepare("INSERT INTO decision_rounds(scope,id,body) VALUES(?,?,?)");
     for (const r of value.rounds) round.run(scope, r.id, JSON.stringify(r));
     const dec = d.prepare("INSERT INTO decision_records(scope,id,round,body) VALUES(?,?,?,?)");
     for (const x of value.decisions) dec.run(scope, x.id, x.round, JSON.stringify(x));
     const q = d.prepare("INSERT INTO logged_questions(scope,id,body) VALUES(?,?,?)");
     for (const x of value.questions) q.run(scope, x.id, JSON.stringify(x));
+    const comparison = d.prepare("INSERT INTO decision_comparisons(scope,id,body) VALUES(?,?,?)");
+    for (const x of value.comparisons) comparison.run(scope, x.request.id, JSON.stringify(x));
   },
   read(d: DatabaseSync, scope: string): SharedDecisions {
     const all = <T>(table: string): T[] =>
@@ -404,7 +419,7 @@ export const decisionsProjection: Projection<SharedDecisions> = {
         .map((r) => {
           try { return JSON.parse(r.body) as T; } catch { throw new CorruptProjection(`${table} ${scope} holds an unreadable row`); }
         });
-    return { rounds: all("decision_rounds"), decisions: all("decision_records"), questions: all("logged_questions") };
+    return { rounds: all("decision_rounds"), decisions: all("decision_records"), questions: all("logged_questions"), comparisons: all("decision_comparisons") };
   },
 };
 

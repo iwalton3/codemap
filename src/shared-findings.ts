@@ -33,6 +33,7 @@ import { ISO_DATE, type Actor, type BugSeverity, type BugWitness } from "./schem
 import { isAgentActor, isIndependent, isErrorIndependent, reviewerKey } from "./identity.js";
 import { emitEvent, mintId, readScope, causality, type LogEvent } from "./eventlog.js";
 import { applyRevision, newContestState, type Contested } from "./contest.js";
+import { issueClaimHash, validateApplicationCapsule, type ApplicationAttempt } from "./ruling-application.js";
 
 /**
  * Lifecycle. `issued` is an agent's proposal; `created` is a claim somebody stands
@@ -353,6 +354,9 @@ export interface SharedFinding {
    * so "why is this resolved" is answerable from the record without reading the log,
    * and the agent that did the work keeps its attribution.
    */
+  applications?: ApplicationAttempt[];
+  /** Last accepted opening act; captured by a ruling application. */
+  openEpoch?: string;
   closed?: {
     /** Event whose closure is currently in force; a reopen must name this exact act. */
     eventId?: string;
@@ -651,7 +655,13 @@ const CONTESTABLE = ["text", "comment", "severity", "category", "line"] as const
  * refuses to load — or that lets one bad client rewrite everyone's state — is
  * worse than one that ignores a record.
  */
-export function foldFindings(events: LogEvent[]): Map<string, SharedFinding> {
+interface ApplicationReplay {
+  all: LogEvent[];
+  causal: ReturnType<typeof causality>;
+  snapshots: Map<string, Map<string, SharedFinding>>;
+}
+
+function foldFindingsInternal(events: LogEvent[], replay: ApplicationReplay): Map<string, SharedFinding> {
   const out = new Map<string, SharedFinding>();
   // Who currently holds each contestable scalar, and which two writes each open
   // contest is between. Bookkeeping for the fold, not state anyone reads, so it
@@ -661,6 +671,15 @@ export function foldFindings(events: LogEvent[]): Map<string, SharedFinding> {
   // What each writer had folded when they wrote — the log's own notion of
   // causality, so the fold and `causalHeads` cannot drift apart on it.
   const causal = causality(events);
+  const spent = new Set<string>();
+  const atAct = (e: LogEvent): SharedFinding | undefined => {
+    let snapshot = replay.snapshots.get(e.id);
+    if (!snapshot) {
+      snapshot = foldFindingsInternal(replay.all.filter((prior) => replay.causal.saw(e.id, prior.id)), replay);
+      replay.snapshots.set(e.id, snapshot);
+    }
+    return snapshot.get(e.subject);
+  };
 
   for (let at = 0; at < events.length; at++) {
     const e = events[at]!;
@@ -692,6 +711,7 @@ export function foldFindings(events: LogEvent[]): Map<string, SharedFinding> {
         // Authorship decides the opening state, exactly as the old disposition
         // default did — but from `via`, not from a prefix on a name.
         state: isAgentActor(e.actor) ? "issued" : "created",
+        openEpoch: e.id,
         corroboration: [],
         outcomes: [],
         asks: [],
@@ -949,7 +969,7 @@ export function foldFindings(events: LogEvent[]): Map<string, SharedFinding> {
             reason: str(d, "reason") ?? open?.rationale ?? next,
             ...(open ? { grantedAsk: { ask: open.ask, by: open.by, at: open.at, rationale: open.rationale } } : {}),
           };
-        } else f.closed = undefined;
+        } else { f.closed = undefined; f.openEpoch = e.id; }
         f.pending = undefined;
         break;
       }
@@ -959,8 +979,40 @@ export function foldFindings(events: LogEvent[]): Map<string, SharedFinding> {
         if (next !== "created" && next !== "issued") break;
         if (!isClosed(f.state) || !f.closed?.eventId || str(d, "observedClosure") !== f.closed.eventId) break;
         f.state = next;
+        f.openEpoch = e.id;
         f.closed = undefined;
         f.pending = undefined;
+        break;
+      }
+
+      case "finding.rulingApplied": {
+        const attempts = (f.applications ??= []);
+        const checked = validateApplicationCapsule(d?.capsule, "finding", e.subject);
+        if ("error" in checked) {
+          attempts.push({ eventId: e.id, at: e.at, by: e.actor, status: "refused", reason: checked.error });
+          break;
+        }
+        const capsule = checked.capsule;
+        if (spent.has(capsule.key)) {
+          attempts.push({ eventId: e.id, at: e.at, by: e.actor, status: "duplicate", key: capsule.key, capsule });
+          break;
+        }
+        const act = atAct(e);
+        if (!act || isClosed(act.state) || act.state !== capsule.issue.openState
+          || act.openEpoch !== capsule.issue.openEpoch
+          || issueClaimHash("finding", act) !== capsule.issue.claimHash) {
+          attempts.push({ eventId: e.id, at: e.at, by: e.actor, status: "refused",
+            key: capsule.key, capsule, reason: "issue was not open with this claim in the act-time view" });
+          break;
+        }
+        spent.add(capsule.key);
+        attempts.push({ eventId: e.id, at: e.at, by: e.actor, status: "executed", key: capsule.key, capsule });
+        if (!isClosed(f.state) && f.openEpoch === capsule.issue.openEpoch
+          && issueClaimHash("finding", f) === capsule.issue.claimHash) {
+          f.state = "invalid";
+          f.closed = { eventId: e.id, at: e.at, by: e.actor, reason: capsule.reason };
+          f.pending = undefined;
+        }
         break;
       }
 
@@ -1004,6 +1056,10 @@ export function foldFindings(events: LogEvent[]): Map<string, SharedFinding> {
     }
   }
   return out;
+}
+
+export function foldFindings(events: LogEvent[]): Map<string, SharedFinding> {
+  return foldFindingsInternal(events, { all: events, causal: causality(events), snapshots: new Map() });
 }
 
 // ---------------------------------------------------------------------------

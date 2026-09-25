@@ -234,7 +234,10 @@ import { readScopeChecked, sortEvents, SHARD_EXT, type LogEvent, type ScopeDiagn
 // 33 -> 34: changed responses cancel pending readings and confirmations on existing shards.
 // 34 -> 35: explicit comparison nominations add holds from a new decision event.
 // 35 → 36 refolds decision withdrawal authority and finding/bug reopen events.
-export const MATERIALIZER_VERSION = 36;
+// 37 → 38: questionnaire submissions are one new decision event; old cached folds would hide them.
+// 38 → 39: comparison requests, judgments and resolutions change decision authority and add a projection table.
+// 39 → 40: explicit withdrawal approval and revision presentation are new decision events.
+export const MATERIALIZER_VERSION = 40;
 
 /**
  * What the events in a scope are, cheaply.

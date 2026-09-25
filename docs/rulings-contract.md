@@ -1,10 +1,10 @@
 # Rulings contract
 
-> **Kind: active design draft** — agreed direction and proposed behavioral contract for
-> round five, 2026-09-24. Not an as-built description or an implementation plan.
-> The owner agreements and case rulings below are settled; the contract wording and
-> remaining design details are distinguished from those rulings. This document is
-> still being developed and is not an implementation plan.
+> **Kind: active behavioral contract** — owner-approved direction for round five,
+> 2026-09-24. It is not an as-built description. The historical quotes below remain
+> evidence; the current design details appear under *Current design resolutions*.
+> Implementation status is stated separately and must be verified before claiming
+> the workflow is complete.
 
 ## Purpose and owner agreements
 
@@ -165,10 +165,13 @@ such as a logged question or approval in codemap. Withdrawal does not erase the
 question or decide its findings. Conflicts involving withdrawal use the same answer
 conflict rules as other questions, rather than a separate winner policy.
 
-The visibility rule in C1 also refers to withdrawing a ruling. Precisely distinguish
-that act from withdrawing an unanswered question in the operation design; the owner
-has not specified the effect of withdrawing an already answered ruling on authority
-or holds. Do not silently equate withdrawal with revising an answer.
+An answered-ruling withdrawal retires only that answer’s pending authority, readings
+and holds within its exact scope. It preserves source history and completed closures;
+it does not revive an older answer or close or reopen an issue. An unanswered-question
+withdrawal ends only its own request and ordinary holds. An independently given
+answer, including a delayed relay, remains visible and is judged by what the person
+knew when answering, not by the recorder’s later pull. An agent may execute a
+withdrawal only against a recorded human approval of that exact act and scope.
 
 ### C6. Revise explicitly and within scope
 
@@ -201,10 +204,20 @@ a second set of conflict, reading, revision, or closure rules. Preserve the asso
 between questionnaire, question, list item, respondent, and answer. Another team
 member answering the batch uses the same human provenance and conflict rules.
 
-## Acceptance cases and remaining design details
+A stakeholder may save a local draft and submit selected complete questions. Saving
+or leaving a form grants no authority. A reviewed list submits as one unit: the
+submit action says that unmarked items are approved, and each marked item needs its
+own correction text. Other complete questions may be submitted while that list is
+incomplete. The selected batch is validated atomically and identified by an attempt
+ID and exact payload, so an identical retry returns its receipt. Submission makes
+only those answers durable; unanswered questions remain pending. Completion is
+derived per person and separate from readings, conflicts and closure authority.
 
-The behavior column records settled direction. The final column identifies concrete
-details to resolve during design, not reasons to re-ask settled owner decisions.
+## Acceptance cases and former design details
+
+The behavior column records settled direction. The final column preserves the
+questions open when this table was written. The round-five plan resolved them as
+recorded below; they are not outstanding owner decisions.
 
 | Case | Required behavior | Remaining detail |
 |---|---|---|
@@ -224,6 +237,60 @@ details to resolve during design, not reasons to re-ask settled owner decisions.
 
 No legacy-rulings migration case remains: the owner confirms the branch was never
 merged or used and no actual rulings were logged.
+
+## Current design resolutions — round five
+
+These are the working contract for implementation, from the approved cases and
+round-five plan at `.git/plan/2026-09-24-rulings-round5/plan.md`. The local
+plan is implementation evidence and does not travel with a pushed documentation
+branch. This section does not assert that every operation or surface now passes.
+
+- **Identity and context.** A canonical issue reference includes universe, kind,
+  owning scope/review and exact ID. D1-like display refs never select an issue or
+  ruling by iteration order. Publication freezes the exact displayed question,
+  option descriptions/effects, list items and visible action. A new question may
+  link context but neither withdraws nor revises an older answer.
+- **Human act time.** Answers, revisions, withdrawals, reader judgments and
+  applications enter the log when they occur. A relay carries given time and
+  verifiable human source context. Append-time causality alone cannot prove the
+  human saw a later answer or withdrawal. A cross-principal revision needs its
+  named predecessor and verified context shown to that person at the act; an
+  independently given answer remains a possible conflict. Same-principal
+  corrections retain given-time ranking and deterministic log order for ties.
+- **Authority and comparison.** Preserve source answers separately from current
+  authority. Compare independently authoritative answer versions with complete
+  question and response context. An independent reader records equivalent,
+  incompatible or unclear with rationale and scope. Equivalent releases only its
+  comparison restriction; incompatible requires a logged human resolution; unclear
+  remains pending. Contradictory reader judgments remain disputed. Assignment does
+  not bypass pending comparison or arbitration. A changed answer invalidates its
+  previous comparison and reading evidence. Correcting a resolution derives a new
+  authority frontier without erasing historical choices or resolving an unseen
+  third answer.
+- **Reading and application.** The reader receives the frozen full brief, not only
+  labels or hashes. A direct issue mention must be an exact shown ID/link whose
+  target is unambiguous; indirect application needs two independent sound readers
+  and arbitration on disagreement. Confirmation must match the complete approved
+  action. Applying invalidity is a separate guarded, one-shot act for a finding or
+  bug, with source and reading evidence in the target scope. An already-closed
+  no-op spends nothing. An executed application remains history after revision,
+  withdrawal or conflict; reopening is separate and never renews that ruling/issue
+  pair.
+- **Retrieval.** Web drafts are local to principal and exact questionnaire version.
+  MCP and CLI reads use the same projected records. Requesting agents retrieve by
+  stable questionnaire ID after explicit sync; status and bounded wait observe local
+  projection changes and cannot wake a terminated session or silently pull a remote.
+  Pending, cancelled, conflicting and withdrawn history stays discoverable.
+
+**Implementation status, 2026-09-25:** the round-five workflow is implemented.
+Focused real-operation tests pass for exact agent-withdrawal approval, informed
+revision with act-time source proof, corrected resolution, and bug-scoped revision.
+Two-clone oracles cover answer preservation, conflict frontiers, withdrawal races,
+consumer restrictions, retrieval after sync, and one-shot finding/bug application.
+The browser suite passes for questionnaire submission and human decision acts.
+The final `npm test` run passed 1,982 unit tests and 165 e2e tests with no failures
+or skips. The historical table and diagnosis below remain evidence of earlier
+behavior, not current policy.
 
 ## Round-four findings integrated into round five
 
@@ -304,7 +371,9 @@ its account of why the loop happened. They are not met by this contract:
 
 Thus the diagnosis is **not falsified** by the new direction. The contract responds
 to its mechanism; that does not demonstrate the implementation is repaired. The
-report's narrower “this goes away if” conditions and recovery obligations are:
+following table preserves the 2026-09-24 design-stage assessment and its then-open
+evidence obligations; the implementation status above records subsequent checks.
+The report's narrower “this goes away if” conditions and recovery obligations are:
 
 | Recovery obligation | Design status | Evidence still required |
 |---|---|---|

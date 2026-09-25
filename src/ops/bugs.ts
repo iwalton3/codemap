@@ -30,6 +30,9 @@ import {
   type Ask, type BugState, type SharedBug, type Verdict,
 } from "../shared-bugs.js";
 import { genId, liveIndex, liveAnchors, anchorFiles, resolveRefs, rejected } from "./shared.js";
+import { decisionsView, type DecisionsView } from "./decision-holds.js";
+import type { CanonicalIssueReference } from "../decision-issues.js";
+import { universeKey } from "../sidecar-config.js";
 
 // ---------------------------------------------------------------------------
 // Filing
@@ -114,6 +117,16 @@ export async function reportBug(
 // ---------------------------------------------------------------------------
 // Reading
 // ---------------------------------------------------------------------------
+
+function bugDecisionRef(root: string, bug: SharedBug): CanonicalIssueReference | undefined {
+  if (!bug.origin) return undefined;
+  return { kind: "bug", universe: universeKey(root), scope: bug.origin.scope, id: bug.id };
+}
+
+function bugDecisionWork(root: string, bug: SharedBug, view: DecisionsView) {
+  const ref = bugDecisionRef(root, bug);
+  return ref ? view.issueWork(ref, bug.assignment) : { allowed: true as const, restrictions: [] };
+}
 
 /** Everything a read wants to know about one bug's code, computed HERE and never stored. */
 async function drift(root: string, bugs: SharedBug[]) {
@@ -232,6 +245,9 @@ export async function listBugs(
 ) {
   await refreshBugRows(root);
   const all = (await readBugs(root)).bugs;
+  const decisions = await decisionsView(root);
+  const eligibility = new Map(all.map((b) => [b.id, bugDecisionWork(root, b, decisions)]));
+  const work = (b: SharedBug) => eligibility.get(b.id)!;
   const { idx } = await drift(root, all);
   const changedFor = (b: SharedBug) => realDrift(witnessDrift(witnessesOf(b), idx)).map((c) => c.anchorId);
   const asOf = dayOf(opts.asOf);
@@ -249,7 +265,7 @@ export async function listBugs(
 
   let bugs = all;
   if (opts.state) bugs = bugs.filter((b) => b.state === opts.state);
-  if (opts.open) bugs = bugs.filter((b) => !isClosed(b.state));
+  if (opts.open) bugs = bugs.filter((b) => !isClosed(b.state) && work(b).allowed);
   // The deferral register — its own list, not a bucket, because bugs already have a
   // queue people read and the point is that the main one means "what we are doing".
   //
@@ -268,7 +284,7 @@ export async function listBugs(
   if (opts.backlog) bugs = bugs.filter((b) => !!b.backlogged);
   else if (workingView) bugs = bugs.filter((b) => !asleep(b));
 
-  let rows = bugs.map((b) => ({ ...publicView(b, changedFor(b)), backlogged: backloggedRow(b, backlogState(b)) }));
+  let rows = bugs.map((b) => ({ ...publicView(b, changedFor(b)), backlogged: backloggedRow(b, backlogState(b)), decisionWork: work(b) }));
   // The queue is the whole point of sharing them: what needs a PERSON here. Drift is in
   // it and is not in the log's own `bugAckQueue`, which cannot see this machine's index.
   // Narrower than the queue, and the difference is the point: "somebody is asking you to
@@ -291,7 +307,7 @@ export async function listBugs(
   // finding backlog's `attention`. `backlogged` and `sleeping` below are the other half,
   // so nothing is uncounted.
   const awake = all.filter((b) => !asleep(b));
-  const everyRow = awake.map((b) => ({ ...publicView(b, changedFor(b)), backlogged: backloggedRow(b, backlogState(b)) }));
+  const everyRow = awake.map((b) => ({ ...publicView(b, changedFor(b)), backlogged: backloggedRow(b, backlogState(b)), decisionWork: work(b) }));
   const queueAll = everyRow.filter((r) => r.waitingOnYou || r.possiblyFixed);
   const askedAll = everyRow.filter(isAsk);
   if (opts.queue) rows = rows.filter((r) => r.waitingOnYou || r.possiblyFixed);
@@ -310,7 +326,8 @@ export async function listBugs(
     // Per-STATE counts are over everything, because the per-state lists are. Only the
     // queue counts below narrow, and they narrow to exactly what their own list shows.
     counts: all.reduce((m, b) => ((m[b.state] = (m[b.state] ?? 0) + 1), m), {} as Record<string, number>),
-    open: awake.filter((b) => !isClosed(b.state)).length,
+    open: awake.filter((b) => !isClosed(b.state) && work(b).allowed).length,
+    paused: all.filter((b) => !isClosed(b.state) && !work(b).allowed).length,
     shared: all.filter((b) => b.origin).length,
     waitingOnYou: queueAll.length,
     /** How many are somebody asking you to close, or reported fixed. Of ALL of them. */
@@ -338,6 +355,8 @@ export async function bugDetail(root: string, id: string) {
   await refreshBugRows(root);
   const bug = await readBug(root, id);
   if (!bug) return { error: `no bug "${id}"` };
+  const decisions = await decisionsView(root);
+  const decisionWork = bugDecisionWork(root, bug, decisions);
   const { store, live, idx } = await drift(root, [bug]);
   const byId = new Map(store.anchors.map((a) => [a.id, a]));
 
@@ -368,6 +387,7 @@ export async function bugDetail(root: string, id: string) {
 
   return {
     ...publicView(bug, changed),
+    decisionWork,
     backlogged: backloggedRow(bug, bugBacklogState(bug, idx, dayOf())),
     text: bug.text,
     createdCommit: bug.createdCommit,
@@ -443,6 +463,11 @@ export async function updateBug(
 ) {
   const r = await routeWrite(root, input.id);
   if ("error" in r) return r;
+  const existing = "bug" in r ? r.bug : r.local;
+  if (input.state && isClosed(input.state) && input.state !== existing.state) {
+    const work = bugDecisionWork(root, existing, await decisionsView(root));
+    if (!work.allowed) return { error: work.reason ?? "bug work is restricted by a decision" };
+  }
   const rejects: string[] = [];
   const done: string[] = [];
 
@@ -599,6 +624,8 @@ export async function releaseBugBacklogOp(root: string, id: string, reason: stri
   if (!reason?.trim()) return { error: "say why it is coming back — it is the other half of the record" };
   const bug = "bug" in r ? r.bug : r.local;
   if (!bug.backlogged) return { error: `${id} is not backlogged` };
+  const work = bugDecisionWork(root, bug, await decisionsView(root));
+  if (!work.allowed) return { error: work.reason ?? "bug work is restricted by a decision" };
 
   if ("local" in r) {
     // The reason is RECORDED, not merely demanded. The finding path shipped

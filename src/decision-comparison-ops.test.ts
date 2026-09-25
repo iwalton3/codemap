@@ -1,0 +1,175 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { indexBlob } from "./repo.js";
+import { writeStore } from "./store.js";
+import { shareFinding } from "./ops-shared.js";
+import { postRound, answerDirect, reviseDecision, decisionRounds } from "./ops/decisions.js";
+import { requestComparison, comparisonBrief, submitComparisonJudgment, recordComparisonJudgment,
+  comparisonDetail, comparisonResolutionBrief, resolveComparison } from "./ops/comparisons.js";
+import { decisionsView } from "./ops/decision-holds.js";
+import { resolveDecisionIssue } from "./decision-issues.js";
+import { universeKey } from "./sidecar-config.js";
+import { discard } from "./test-tmp.js";
+import type { State } from "./schema.js";
+
+const SRC = "export function example(x) { return x + 1; }\n";
+const SESSION = "5e55a0a0-0000-0000-0000-000000000011";
+const env = async (principal: string, agent: boolean, fn: () => Promise<void>) => {
+  const oldPrincipal = process.env.CODEMAP_PRINCIPAL, oldModel = process.env.CODEMAP_AGENT_MODEL;
+  process.env.CODEMAP_PRINCIPAL = principal;
+  if (agent) process.env.CODEMAP_AGENT_MODEL = "test-reader"; else delete process.env.CODEMAP_AGENT_MODEL;
+  try { await fn(); } finally {
+    if (oldPrincipal === undefined) delete process.env.CODEMAP_PRINCIPAL; else process.env.CODEMAP_PRINCIPAL = oldPrincipal;
+    if (oldModel === undefined) delete process.env.CODEMAP_AGENT_MODEL; else process.env.CODEMAP_AGENT_MODEL = oldModel;
+  }
+};
+async function fixture(twoFindings = false) {
+  const root = mkdtempSync(join(tmpdir(), "codemap-comparison-op-"));
+  const side = mkdtempSync(join(tmpdir(), "codemap-comparison-side-"));
+  const transcripts = mkdtempSync(join(tmpdir(), "codemap-comparison-tx-"));
+  const git = (...args: string[]) => spawnSync("git", args, { cwd: root });
+  git("init", "-q", "-b", "main"); git("config", "user.email", "alice@x.com"); git("config", "user.name", "alice");
+  mkdirSync(join(root, ".codemap"), { recursive: true });
+  mkdirSync(join(root, "src"), { recursive: true });
+  writeFileSync(join(root, ".codemap", "sidecar"), side);
+  writeFileSync(join(root, "src", "example.js"), SRC);
+  const anchors = await indexBlob(SRC, "src/example.js");
+  await writeStore(root, anchors, { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State);
+  let finding = "", secondFinding = "";
+  await env("author", true, async () => {
+    finding = (await shareFinding(root, 7, { targetKind: "anchor", targetId: anchors[0]!.id, text: "example returns wrong value" }) as any).id;
+    if (twoFindings) secondFinding = (await shareFinding(root, 7,
+      { targetKind: "anchor", targetId: anchors[0]!.id, text: "example also mishandles another case" }) as any).id;
+  });
+  const findings = secondFinding ? [finding, secondFinding] : [finding];
+  const decision = { id: "d1", round: "R1", ref: "D1", kind: "options" as const,
+    payload: { question: `D1: are ${findings.join(" and ")} invalid?`, options: [
+      { label: "Reject", description: "Reject claim" }, { label: "Fix", description: "Keep as work" }] },
+    options: [
+      { label: "Reject", effects: [{ findings, on: "settle" as const, as: "refuted" as const }] },
+      { label: "Fix", effects: [{ findings, on: "unblock" as const }] },
+    ] };
+  await env("author", true, async () => {
+    assert.equal((await postRound(root, { round: { id: "R1", source: "comparison-test" }, decisions: [decision] }) as any).ok, true);
+  });
+  let alice = "", bob = "";
+  await env("alice", false, async () => { alice = (await answerDirect(root, { decision: "d1", option: "Reject" }) as any).answer; });
+  await env("bob", false, async () => { bob = (await answerDirect(root, { decision: "d1", option: "Fix" }) as any).answer; });
+  return { root, side, transcripts, finding, secondFinding, alice, bob, cleanup: () => {
+    discard(root); discard(side); discard(transcripts);
+  } };
+}
+
+function readerTranscript(dir: string, prompt: string, request: string, verdict: string, rationale: string, receipt: string) {
+  const agentId = "aCOMPARED12345678", launch = "toolu_launch", call = "toolu_submit";
+  const sub = join(dir, SESSION, "subagents"); mkdirSync(sub, { recursive: true });
+  writeFileSync(join(sub, `agent-${agentId}.meta.json`), JSON.stringify({ agentType: "general-purpose", toolUseId: launch }));
+  const own = [
+    { type: "user", uuid: "s1", isSidechain: true, agentId, sessionId: SESSION, message: { role: "user", content: prompt } },
+    { type: "assistant", uuid: "s2", isSidechain: true, agentId, sessionId: SESSION, timestamp: new Date().toISOString(),
+      message: { content: [{ type: "tool_use", id: call, name: "mcp__codemap__submit_comparison_judgment",
+        input: { request, verdict, rationale } }] } },
+    { type: "user", uuid: "s3", isSidechain: true, agentId, sessionId: SESSION,
+      message: { content: [{ type: "tool_result", tool_use_id: call,
+        content: JSON.stringify({ ok: true, held: true, receipt }) }] } },
+  ];
+  writeFileSync(join(sub, `agent-${agentId}.jsonl`), own.map((x) => JSON.stringify(x)).join("\n") + "\n");
+  const parent = [
+    { type: "assistant", uuid: "p1", isSidechain: false, timestamp: new Date().toISOString(),
+      message: { content: [{ type: "tool_use", id: launch, name: "Agent",
+        input: { description: "compare", prompt, subagent_type: "general-purpose" } }] } },
+    { type: "user", uuid: "p2", isSidechain: false,
+      message: { content: [{ type: "tool_result", tool_use_id: launch, content: "launched" }] },
+      toolUseResult: { agentId } },
+  ];
+  writeFileSync(join(dir, `${SESSION}.jsonl`), parent.map((x) => JSON.stringify(x)).join("\n") + "\n");
+}
+
+async function requestAndJudge(u: Awaited<ReturnType<typeof fixture>>, verdict: "equivalent" | "incompatible", issues?: any[]) {
+  let id = "", prompt = "";
+  await env("reader", true, async () => {
+    const requested = await requestComparison(u.root, { answers: [u.alice, u.bob], ...(issues ? { issues } : {}) }) as any;
+    assert.equal(requested.ok, true, JSON.stringify(requested)); id = requested.id;
+    const brief = await comparisonBrief(u.root, id) as any;
+    assert.equal(brief.ok, true, JSON.stringify(brief)); prompt = brief.prompt;
+    const held = await submitComparisonJudgment(u.root,
+      { request: id, verdict, rationale: "I read both complete questions and instructions." }) as any;
+    assert.equal(held.held, true, JSON.stringify(held));
+    readerTranscript(u.transcripts, prompt, id, verdict,
+      "I read both complete questions and instructions.", held.receipt);
+    const recorded = await recordComparisonJudgment(u.root, { request: id }, {}, u.transcripts) as any;
+    assert.equal(recorded.recorded, true, JSON.stringify(recorded));
+  });
+  return id;
+}
+
+test("real comparison request and independent transcript equivalence release only the pair restriction", async () => {
+  const u = await fixture();
+  try {
+    const before = await decisionsView(u.root);
+    assert.equal((Array.isArray(before.mark(u.finding).held) && (before.mark(u.finding).held as any[]).some((h: any) => h.why === "comparison")), true);
+    assert.equal(before.work(u.finding).allowed, false);
+    assert.equal((await decisionRounds(u.root)).intentCandidates.length, 1);
+    const id = await requestAndJudge(u, "equivalent");
+    const after = await decisionsView(u.root);
+    assert.equal(after.s.comparisons.find((x) => x.request.id === id)?.projection.state, "equivalent");
+    const canonical = after.s.comparisons.find((x) => x.request.id === id)!.request.issues[0] as any;
+    assert.equal((Array.isArray(after.issueMark(canonical).held) ? (after.issueMark(canonical).held as any[]).some((h: any) => h.why === "comparison") : undefined), false);
+    assert.equal((Array.isArray(after.issueMark(canonical).held) && (after.issueMark(canonical).held as any[]).some((h: any) => h.why === "ruled")), true,
+      "Alice's ordinary settle hold survives equivalent intent");
+    assert.equal((await comparisonDetail(u.root, id) as any).comparison.projection.restrictsWork, false);
+    assert.ok((await decisionRounds(u.root)).comparisons.some((x) => x.id === id));
+  } finally { u.cleanup(); }
+});
+
+test("incompatible real judgment requires shown human resolution; third answer and stale revision remain restricted", async () => {
+  const u = await fixture();
+  try {
+    const id = await requestAndJudge(u, "incompatible");
+    const brief = await comparisonResolutionBrief(u.root, id) as any;
+    assert.equal(brief.ok, true);
+    assert.equal((await comparisonDetail(u.root, id) as any).comparison.projection.state, "incompatible");
+    await env("resolver", false, async () => {
+      const resolved = await resolveComparison(u.root, { request: id, preserve: u.alice,
+        rationale: "Keep Alice's exact ruling after reviewing both sources and execution history.",
+        shownHash: brief.shownHash, executionsHash: brief.executionsHash, source: "web" }) as any;
+      assert.equal(resolved.ok, true, JSON.stringify(resolved));
+    });
+    const after = await decisionsView(u.root);
+    assert.equal(after.s.comparisons.find((x) => x.request.id === id)?.projection.preservedAnswer, u.alice);
+    assert.ok(!after.s.decisions[0]!.answers.find((a) => a.id === u.alice)?.comparisonLostOn);
+    assert.ok(after.s.decisions[0]!.answers.find((a) => a.id === u.bob)?.comparisonLostOn?.length);
+    assert.equal(after.s.decisions[0]!.answers.find((a) => a.id === u.alice)?.id, u.alice);
+    await env("third", false, async () => { assert.equal((await answerDirect(u.root, { decision: "d1", option: "Fix" }) as any).ok, true); });
+    assert.ok((await decisionRounds(u.root)).intentCandidates.some((c) => c.answers.includes(u.alice) && !c.answers.includes(u.bob)));
+    await env("alice", false, async () => {
+      const revised = await reviseDecision(u.root, { decision: "d1", revises: [u.alice], findings: [u.finding], option: "Fix" }) as any;
+      assert.equal(revised.ok, true, JSON.stringify(revised));
+    });
+    assert.equal((await comparisonDetail(u.root, id) as any).comparison.projection.restrictsWork, true);
+  } finally { u.cleanup(); }
+});
+
+
+test("revising F1 does not stale an F2-only comparison", async () => {
+  const u = await fixture(true);
+  try {
+    const resolved = await resolveDecisionIssue(u.root,
+      { kind: "finding", universe: universeKey(u.root), id: u.secondFinding });
+    assert.equal(resolved.ok, true);
+    const f2 = resolved.ref;
+    const id = await requestAndJudge(u, "equivalent", [f2]);
+    await env("alice", false, async () => {
+      const revised = await reviseDecision(u.root,
+        { decision: "d1", revises: [u.alice], findings: [u.finding], option: "Fix" }) as any;
+      assert.equal(revised.ok, true, JSON.stringify(revised));
+    });
+    const comparison = (await comparisonDetail(u.root, id) as any).comparison;
+    assert.equal(comparison.projection.state, "equivalent");
+    assert.equal(comparison.projection.restrictsWork, false);
+  } finally { u.cleanup(); }
+});
