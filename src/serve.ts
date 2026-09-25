@@ -248,6 +248,8 @@ async function api(path: string, q: URLSearchParams): Promise<unknown> {
       return ops.decisionRounds(root);
     case "/api/decisions/round":
       return ops.decisionRound(root, q.get("id") ?? "");
+    case "/api/decisions/status":
+      return ops.decisionStatus(root, q.get("id") ?? "", q.get("cursor") || undefined);
     case "/api/shared/triage":
       return shared.sharedTriage(root, (q.get("kind") as "node" | "anchor") || undefined, q.get("target") || undefined);
     case "/api/shared/contested":

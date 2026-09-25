@@ -1040,7 +1040,7 @@ const tools: Tool[] = [
   },
   {
     name: "decision_rounds",
-    description: "Every posted round, and the three things the person reads: what waits on them (unanswered, or answers that need them again), rulings not yet carried out (a settle waits for the verifier; an unblock is fix work), readings in dispute, and what they parked (until its date; the day after, it waits on them again). `possiblySuperseded`: rulings the person's own later words may overturn, not yet bound — do not act on those rulings until `confirm_reading` settles them. Also free text still waiting for a reader — an agent's job, not theirs. `intentCandidates` contains mechanically detectable concurrent human rulings, including relayed human words: compare their exact intent even across different questions, and ask the person which to preserve before dependent action. Candidate detection is incomplete, and writer causality does not prove what the human knew when speaking. `status: \"blocked\"` means the log could not be read and these lists may be wrong.",
+    description: "Every posted round, and the three things the person reads: what waits on them (unanswered, or answers that need them again), rulings not yet carried out (a settle waits for the verifier; an unblock is fix work), readings in dispute, and what they parked (until its date; the day after, it waits on them again). `possiblySuperseded`: rulings the person's own later words may overturn, not yet bound — do not act on those rulings until `confirm_reading` settles them. Also free text still waiting for a reader — an agent's job, not theirs. `intentCandidates` contains mechanically detectable independent human rulings, including relayed human words: compare their exact intent even across different questions, and ask the person which to preserve before dependent action. Candidate detection is incomplete, and writer causality does not prove what the human knew when speaking. `status: \"blocked\"` means the log could not be read and these lists may be wrong.",
     inputSchema: obj({}),
     mutates: false,
     handler: (a, c) => ops.decisionRounds(c.universe.path),
@@ -1051,6 +1051,20 @@ const tools: Tool[] = [
     inputSchema: obj({ id: { type: "string" } }, ["id"]),
     mutates: false,
     handler: (a, c) => ops.decisionRound(c.universe.path, String(a.id)),
+  },
+  {
+    name: "decision_status",
+    description: "Read one posted round by stable id, including its exact questions, answer history, pending readings/conflicts, local log status, last successful local sync, and an opaque content cursor. Run `codemap sync` explicitly to receive remote answers. A matching cursor returns `changed: false`; the full record is still included, so a later session can resume from id without transcription.",
+    inputSchema: obj({ id: { type: "string" }, cursor: { type: "string", description: "Optional cursor from the prior status response." } }, ["id"]),
+    mutates: false,
+    handler: (a, c) => ops.decisionStatus(c.universe.path, String(a.id), typeof a.cursor === "string" ? a.cursor : undefined),
+  },
+  {
+    name: "decision_wait",
+    description: "Wait up to 60 seconds for the LOCAL projected round to change from a prior content cursor. This does not fetch or push: another process must run `codemap sync` for remote answers to arrive. Returns the full changed record or a clean `timedOut: true`; blocked status returns immediately.",
+    inputSchema: obj({ id: { type: "string" }, cursor: { type: "string" }, timeoutMs: { type: "integer", description: "Finite local wait, 0 to 60000 milliseconds." } }, ["id", "cursor", "timeoutMs"]),
+    mutates: false,
+    handler: (a, c) => ops.waitDecisionStatus(c.universe.path, String(a.id), String(a.cursor), Number(a.timeoutMs)),
   },
   {
     name: "revise_finding",

@@ -252,7 +252,9 @@ export async function sharedPull(root: string) {
   const r = await sidecarReceive(b.cfg.path, b.actor, `codemap: ${b.cfg.universe}`);
   if ("error" in r) return r;
   rememberSidecar(root, b.cfg);
-  return { ...(await settleArrivals(root, b.cfg)), ok: true, universe: b.cfg.universe, sidecar: b.cfg.path, ...r };
+  const arrived = await settleArrivals(root, b.cfg);
+  writeStoreMeta(root, `sidecar_sync:${b.cfg.universe}`, { at: new Date().toISOString(), lineage: sidecarLineage(b.cfg.path), mode: "pull", blocked: arrived.materialized.blocked });
+  return { ...arrived, ok: true, universe: b.cfg.universe, sidecar: b.cfg.path, ...r };
 }
 
 export async function sharedSync(root: string) {
@@ -261,7 +263,9 @@ export async function sharedSync(root: string) {
   const r = await sidecarSync(b.cfg.path, b.actor, `codemap: ${b.cfg.universe}`);
   if ("error" in r) return r;
   rememberSidecar(root, b.cfg);
-  return { ...(await settleArrivals(root, b.cfg)), ok: true, universe: b.cfg.universe, sidecar: b.cfg.path, ...r };
+  const arrived = await settleArrivals(root, b.cfg);
+  writeStoreMeta(root, `sidecar_sync:${b.cfg.universe}`, { at: new Date().toISOString(), lineage: sidecarLineage(b.cfg.path), mode: "sync", blocked: arrived.materialized.blocked });
+  return { ...arrived, ok: true, universe: b.cfg.universe, sidecar: b.cfg.path, ...r };
 }
 
 export interface HealResult {

@@ -112,6 +112,7 @@ export async function apiPost(path, body) {
  *   '/api/findings/backlog':    Awaited<ReturnType<Shared['findingBacklog']>>,
  *   '/api/decisions':           Awaited<ReturnType<Ops['decisionRounds']>>,
  *   '/api/decisions/round':     Awaited<ReturnType<Ops['decisionRound']>>,
+ *   '/api/decisions/status':    Awaited<ReturnType<Ops['decisionStatus']>>,
  *   '/api/shared/triage':       Awaited<ReturnType<Shared['sharedTriage']>>,
  *   '/api/shared/contested':    Awaited<ReturnType<Shared['contestedTriage']>>,
  *   '/api/shared/graph':        Awaited<ReturnType<Shared['sharedGraph']>>,
