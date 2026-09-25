@@ -1199,6 +1199,29 @@ test("Q2 human conflict: concurrent proven rulings hold work until a shown human
 });
 
 
+test("Round five: a causally later independent answer still needs comparison", () => {
+  const base: any = { ...round, id: "later-base", writer: "later-base-writer", writerPrev: "GENESIS", after: [] };
+  const alice: any = { id: "later-alice", kind: "decision.answer.recorded", subject: "d1",
+    actor: { principal: "alice" }, at: at(20), writer: "later-alice-writer", writerPrev: "GENESIS", after: [base.id],
+    data: { decision: "d1", hash: h(d1), via: { kind: "direct", option: "Settle" } } };
+  const bob: any = { id: "later-bob", kind: "decision.answer.recorded", subject: "d1",
+    actor: { principal: "bob" }, at: at(21), writer: "later-bob-writer", writerPrev: "GENESIS", after: [alice.id],
+    data: { decision: "d1", hash: h(d1), via: { kind: "direct", option: "Settle" } } };
+  const before = foldDecisions([base, alice, bob]);
+  const pair = intentCandidates(before);
+  assert.equal(pair.length, 1);
+  assert.deepEqual(pair[0]!.answers, [alice.id, bob.id]);
+  assert.equal(pair[0]!.evidence, "independent-principals");
+  assert.ok(heldFindings(before, () => true).get("F3")?.some((x) => x.why === "comparison"));
+
+  const correction: any = { ...alice, id: "later-alice-correction", at: at(22), writerPrev: alice.id,
+    after: [bob.id], data: { ...alice.data, via: { kind: "direct", option: "No" } } };
+  const after = intentCandidates(foldDecisions([base, alice, bob, correction]));
+  assert.equal(after.length, 1);
+  assert.ok(after[0]!.answers.includes(correction.id));
+  assert.ok(!after[0]!.answers.includes(alice.id), "the earlier same-principal answer is history");
+});
+
 test("Round five: completed reading is cancelled by changed words, with its evidence preserved", () => {
   n = 1;
   const W = msg(d1, "not a defect"), R = reading(W, [{ decision: "d1", option: "Settle" }]);

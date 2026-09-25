@@ -1116,20 +1116,31 @@ const stillHeld = (byId: Map<string, FoldedDecision>, d: FoldedDecision): Ruled[
 export interface IntentCandidate {
   answers: [string, string]; decisions: [string, string]; findings: string[];
   sources: [{ principal: string; via: string; words: string; options: string[] }, { principal: string; via: string; words: string; options: string[] }];
-  evidence: "concurrent-writers";
+  evidence: "concurrent-writers" | "independent-principals";
   humanKnowledge: "not established";
 }
 
-/** Mechanical candidates only. Semantic conflict and original human knowledge still need review. */
+/** Mechanical candidates only. A later log event does not prove the later human knew the
+ * earlier ruling when they answered; the reader still has to compare their full intent. */
 export function intentCandidates(s: SharedDecisions): IntentCandidate[] {
-  const all = s.decisions.flatMap((d) => d.answers.filter((a) => a.verified && !a.resolvedOutBy && !a.cancelled && !d.resolves && !d.confirms?.invalid).map((a) => ({ d, a })));
+  const current = new Map<string, { d: FoldedDecision; a: FoldedAnswer }>();
+  for (const d of s.decisions) {
+    if (d.resolves || d.confirms?.invalid) continue;
+    for (const a of d.answers) {
+      if (!a.verified || a.resolvedOutBy || a.cancelled) continue;
+      const key = `${d.id}\0${a.by.principal}`;
+      const prev = current.get(key);
+      if (!prev || outranksByTime(a, prev.a)) current.set(key, { d, a });
+    }
+  }
+  const all = [...current.values()];
   const out: IntentCandidate[] = [];
   const seenPairs = new Set<string>();
   for (let i = 0; i < all.length; i++) for (let j = i + 1; j < all.length; j++) {
     const x = all[i]!, y = all[j]!;
     const sx = x.a.sourceAnswer ?? x.a.id, sy = y.a.sourceAnswer ?? y.a.id;
     const key = [sx, sy].sort().join("\0");
-    if (seenPairs.has(key) || sx === sy || x.a.by.principal === y.a.by.principal || !x.a.concurrentWith?.includes(sy)) continue;
+    if (seenPairs.has(key) || sx === sy || x.a.by.principal === y.a.by.principal) continue;
     const sameQuestion = x.d.id === y.d.id;
     const xf = new Set(named(x.d)), yf = new Set(named(y.d));
     const overlap = [...xf].filter((f) => yf.has(f));
@@ -1138,7 +1149,9 @@ export function intentCandidates(s: SharedDecisions): IntentCandidate[] {
     seenPairs.add(key);
     out.push({ answers: [sx, sy], decisions: [x.d.id, y.d.id], findings,
       sources: [{ principal: x.a.by.principal, via: x.a.via, words: x.a.words, options: x.a.options },
-        { principal: y.a.by.principal, via: y.a.via, words: y.a.words, options: y.a.options }], evidence: "concurrent-writers", humanKnowledge: "not established" });
+        { principal: y.a.by.principal, via: y.a.via, words: y.a.words, options: y.a.options }],
+      evidence: x.a.concurrentWith?.includes(sy) ? "concurrent-writers" : "independent-principals",
+      humanKnowledge: "not established" });
   }
   return out;
 }
