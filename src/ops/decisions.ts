@@ -17,13 +17,16 @@ import { resolveSidecar } from "../sidecar-config.js";
 import { canonicalIssueKey, resolveDecisionIssue, type CanonicalIssueReference } from "../decision-issues.js";
 import {
   CONFIRM_NO, CONFIRM_YES, NONE, canonicalMaps, briefManifest, briefListing, briefRefusal, readingRefusal, readerBrief as briefFor, bindRefusal, checkDecision, checkQuestionnaireDecisions, confirmPayload, confirmState, confirmedWords, decisionHash, logQuestionEvent,
-  mapsKey, named, namedIssues, possiblySuperseded, postConfirmEvent, postRoundEvent, validMaps,
+  mapsKey, named, namedIssues, possiblySuperseded, postConfirmEvent, postRoundEvent, validMaps, loggedQuestionOnce,
   approveDecisionWithdrawalEvent, presentDecisionRevisionEvent, revisionRelayQuestion, withdrawalScope, standingForIssue, checkListRevision, listRevisionItemIds, parseListRelayAnswer, type ListRevision,
   readingsInDispute, intentCandidates, nominateComparisonEvent, recordAnswerEvent, submitQuestionnaireEvent, recordReadingEvent, ruledNotCarriedOut, standing, standingForFinding, waitingOnMe, awaitingReading, parked, withdrawDecisionEvent, reviseAnswerEvent,
   type AnswerVia, type BriefEntry, type FoldedDecision, type Mapping, type SharedDecisions,
 } from "../shared-decisions.js";
 import { decisionsView } from "./decision-holds.js";
 import { findVerdictCalls, isUnverified, readCall, readMessage, readReader, sameQuestion, sessionHolding, transcriptDir } from "../transcript.js";
+import { codexSessionHolding, readCodexQuestion, CODEX_READER_UNSUPPORTED } from "../codex-transcript.js";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { saveReaderRequest, readerRequests, holdReaderReceipt, readerReceipts, settleReaderReceipt,
   legacyReaderRequest, legacyReaderVerdicts, holdLegacyReaderVerdict, pendingLegacyReaderAnswers,
   settleLegacyReaderVerdict, noteLegacyReaderVerdict, type LegacyReaderVerdict } from "../reader-local.js";
@@ -105,10 +108,10 @@ export async function checkRound(root: string, r: NewRound): Promise<string | nu
     if (ids.has(d.id)) return `two decisions in one round share the id ${d.id}`;
     ids.add(d.id);
     // A decision names findings by codemap id, and only ones codemap holds (owner, 2026-09-23:
-    // "Yes, refuse unrecorded"). Findings a round's own sort produced come in by import.
+    // "Yes, refuse unrecorded"). Record findings before posting the round.
     for (const o of d.options) for (const e of o.effects) for (const f of e.findings) {
       const found = lookupFinding(root, f);
-      if (!found) return `decision ${d.ref} names ${f}, which is not a finding this store holds — record it first (a skill round's findings come in through import_round)`;
+      if (!found) return `decision ${d.ref} names ${f}, which is not a finding this store holds — record it first with report_finding, then post the decision round`;
       if ("ambiguous" in found) return `decision ${d.ref} names ${f}, which is a finding under more than one review (${found.ambiguous.join(", ")}), so a ruling on it could reach the wrong one`;
       // On this map only, the team's clones could not carry a ruling on it out (bulk 10).
       if (!found.finding.origin) return `decision ${d.ref} names ${f}, which is on this map only — publish it first (\`codemap unify-findings\`)`;
@@ -132,7 +135,7 @@ export async function postRound(root: string, r: NewRound, via: Via = {}, dir: s
   const b = bindDecisions(root, via);
   if ("error" in b) return b;
   await recordHeld(root, b, dir);
-  if ((r?.round as any)?.prevalidated !== undefined) return { error: "only import_round marks a round pre-validated — it comes from a skill's sort of two sorters and an arbitrator" };
+  if ((r?.round as any)?.prevalidated !== undefined) return { error: "prevalidated is historical provenance only — record findings and repair sorts separately before posting the round" };
   const bad = await checkRound(root, r);
   if (bad) return { error: bad };
   const before = (await decisionsView(root)).s;
@@ -152,19 +155,6 @@ export async function postRound(root: string, r: NewRound, via: Via = {}, dir: s
     ask: r.decisions.map((d) => ({ decision: `${event.id}:${d.id}`, label: d.id, ref: d.ref,
       payload: s.decisions.find((x) => x.id === `${event.id}:${d.id}`)?.payload ?? d.payload })),
   };
-}
-
-/** Post a round the import built. Not exported to any surface: see `import_round`. The mark
- *  is provenance only — it closes nothing (owner, 2026-09-23). */
-export async function postPrevalidated(root: string, b: Bound, r: NewRound, prevalidated: DecisionRound["prevalidated"]) {
-  const bad = await checkRound(root, r);
-  if (bad) return { error: bad };
-  const before = (await decisionsView(root)).s;
-  const decisions = r.decisions.map((d) => d.follows
-    ? { ...d, follows: decisionMatches(before, d.follows)[0]!.id } : d);
-  const event = await postRoundEvent(b.cfg.path, b.cfg.universe, b.actor, { ...r.round, universe: b.cfg.universe, ...(prevalidated ? { prevalidated } : {}) }, decisions);
-  return { ok: true as const, round: event.id, label: r.round.id,
-    ask: r.decisions.map((d) => ({ decision: `${event.id}:${d.id}`, label: d.id, ref: d.ref, payload: d.payload })) };
 }
 
 const comparisonSummaries = (s: SharedDecisions) => s.comparisons.map((comparison) => ({
@@ -476,7 +466,12 @@ function confirmOutcome(s: SharedDecisions, c: FoldedDecision, a: FoldedDecision
  * path for relaying the person's answers (owner, R13). An unverifiable call writes nothing and
  * says why. A confirm is a posted decision like any other, so it is answered here too.
  */
-export async function logQuestion(root: string, input: { session?: string; toolUseId: string; round: string | string[] }, via: Via = {}, dir: string = transcriptDir()) {
+export async function logQuestion(root: string, input: { session?: string; toolUseId: string; round: string | string[];
+  harness?: "claude-code" | "codex"; entryId?: string }, via: Via = {}, dir?: string) {
+  if (input.harness !== undefined && input.harness !== "codex" && input.harness !== "claude-code") return { error: "unsupported transcript harness" };
+  if (input.entryId && input.harness !== "codex") return { error: "entryId selection requires the Codex transcript adapter" };
+  const native = input.harness === "codex";
+  dir ??= native ? process.env.CODEMAP_CODEX_TRANSCRIPT_DIR ?? join(homedir(), ".codex", "sessions") : transcriptDir();
   const b = bindDecisions(root, via);
   if ("error" in b) return b;
   await recordHeld(root, b, dir);
@@ -484,9 +479,9 @@ export async function logQuestion(root: string, input: { session?: string; toolU
   // an identical question in another round must not take the answer (owner, B1.4; P2.4).
   const named = [...new Set((Array.isArray(input.round) ? input.round : [input.round]).filter((r) => typeof r === "string" && r.trim()))];
   if (!named.length) return { error: "log_question needs the round (or rounds) the call was asked for" };
-  const session = input.session ?? sessionHolding(input.toolUseId, dir);
+  const session = input.session ?? (native ? codexSessionHolding(input.toolUseId, dir) : sessionHolding(input.toolUseId, dir));
   if (isUnverified(session)) return { ok: false, unverified: session.unverified, note: "nothing was written" };
-  const call = readCall(session, input.toolUseId, dir);
+  const call = native ? readCodexQuestion(session, input.toolUseId, dir, input.entryId) : readCall(session, input.toolUseId, dir);
   if (isUnverified(call)) return { ok: false, unverified: call.unverified, note: "nothing was written; relay_answer can still record the words as an unverified answer, which only unblocks" };
   const w = await writable(root);
   if ("error" in w) return w;
@@ -504,7 +499,7 @@ export async function logQuestion(root: string, input: { session?: string; toolU
   }
   // A retry of a call already logged records whichever of its answers are missing — a crash
   // between logging and recording must not strand them (H6.1). Its bindings were decided then.
-  const prior = before.questions.find((q) => q.toolUseId === input.toolUseId && q.session === session);
+  const prior = before.questions.find((q) => loggedQuestionOnce(q) === loggedQuestionOnce(call));
   if (prior && rounds.some((r) => !prior.rounds.some((id) => id === r.id || id === r.label)))
     return { error: `call ${input.toolUseId} is already logged for ${prior.rounds.join(", ")}` };
   const bound: Record<string, string> = {};
@@ -517,9 +512,10 @@ export async function logQuestion(root: string, input: { session?: string; toolU
   const logged = prior?.id ?? (await logQuestionEvent(b.cfg.path, b.cfg.universe, b.actor, {
     session: call.session, toolUseId: call.toolUseId, questions: call.questions, answers: call.answers, transcript: session,
     rounds: rounds.map((r) => r.id), bound, answeredAt: call.at,
+    ...(call.receipt ? { receipt: call.receipt } : {}),
   })).id;
   const binding = prior?.bound ?? bound;
-  const once = `q:${call.session}\0${call.toolUseId}`;
+  const once = loggedQuestionOnce(call);
   const answered = [];
   for (const d of before.decisions) {
     // A replaced question is answered too: the fold keeps an answer given before the
@@ -537,6 +533,7 @@ export async function logQuestion(root: string, input: { session?: string; toolU
   }
   return {
     ok: true, logged, ...(prior ? { retried: true } : {}), answered,
+    ...(native ? { sourceReceipt: call.receipt, readerSupport: { supported: false, reason: CODEX_READER_UNSUPPORTED } } : {}),
     ...(refused.length ? { refused } : {}),
     ...(answered.length ? {} : { note: `logged; no decision in ${named.join(", ")} carries these questions, so nothing was answered` }),
   };

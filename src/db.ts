@@ -923,6 +923,20 @@ function migrate(d: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS ix_reader_work_receipts_request
       ON reader_work_receipts(purpose, request_id, seq);
 
+    CREATE TABLE IF NOT EXISTS repair_records (
+      scope TEXT PRIMARY KEY, body TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS repair_verifications (
+      scope TEXT PRIMARY KEY, body TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS verifier_session_activity (
+      identity_key TEXT PRIMARY KEY,
+      connection_id TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK(kind IN ('domain', 'claimed', 'tainted')),
+      first_action TEXT
+    );
+
     -- Requirements (COD-29). A separate table from nodes/node_versions on purpose,
     -- not a new LogicalNodeType: the two kinds have inverted truthmakers, and sharing
     -- storage is what would let a requirement reach the staleness path. See schema.ts.

@@ -21,6 +21,7 @@ import { discard } from "../test-tmp.js";
 import { emitEvent, readScope } from "../eventlog.js";
 import { comparisonBriefText, decisionScope, foldDecisions } from "../shared-decisions.js";
 import { resolveSidecar } from "../sidecar-config.js";
+import { CODEX_CALL, CODEX_SESSION, codexReply, codexRows, codexTranscript } from "../test-codex-transcript.js";
 
 const pw = resolvePlaywright();
 
@@ -424,4 +425,32 @@ describe("the decisions UI", { skip: pw ? false : "playwright not resolvable (se
     await page.close();
   });
 
+  test("native human source receipts are visible in answer history", async () => {
+    const tx = codexTranscript([]);
+    try {
+      const question = `D40: Should ${finding} be repaired?`;
+      assert.equal((await asAgent(() => ops.postRound(root, { round: { id: "R-native", source: "native e2e" }, decisions: [{
+        id: "native-d", round: "R-native", ref: "D40", kind: "options", payload: { question, options: [{ label: "Repair" }] },
+        options: [{ label: "Repair", effects: [{ findings: [finding], on: "unblock" }] }],
+      }] })) as any).ok, true);
+      const questions = [{ title: question, options: ["Repair"] }], now = Date.now();
+      const all = codexRows(questions, ["Repair"]) as any[];
+      all[2].timestamp = new Date(now + 1000).toISOString();
+      all[3].timestamp = new Date(now + 1500).toISOString();
+      all[4] = codexReply(questions, ["Repair"], new Date(now + 2000).toISOString());
+      tx.write(all);
+      const logged = await asAgent(() => ops.logQuestion(root, { harness: "codex", session: CODEX_SESSION, toolUseId: CODEX_CALL, round: "R-native" }, {}, tx.dir)) as any;
+      assert.equal(logged.answered[0].recorded, true, JSON.stringify(logged));
+      const { page, errors } = await open(`/u/${universe}/decisions/R-native/`);
+      try {
+        await page.getByText("answer history (1)", { exact: true }).click();
+        await page.locator(".native-source").waitFor({ state: "visible" });
+        const text = await page.locator(".native-source").textContent();
+        assert.match(text!, /codex 0\.158\.0-alpha\.2\.1/);
+        assert.match(text!, /source user user_synthetic/);
+        assert.match(text!, /message msg_probe/);
+        assert.deepEqual(errors, []);
+      } finally { await page.close(); }
+    } finally { tx.cleanup(); }
+  });
 });

@@ -95,9 +95,8 @@ const MCP_FORBIDDEN = [
   // refactor that calls the bug ops directly.
   "backlogBugOp", "releaseBugBacklogOp",
   // An agent answers nothing on a person's behalf: it asks, and logs what they said. And
-  // no surface may mark its own round pre-validated — that door waits for the skill work
-  // (owner, 2026-09-23: leave the skill untouched until this branch is stable).
-  "answerDirect", "postPrevalidated",
+  // no surface may mark its own round pre-validated; historical provenance only replays.
+  "answerDirect",
   // The person's own acts on a question; an agent's way in is the relayed variant, whose
   // proof the fold checks. The folds refuse an agent actor here too.
   "submitQuestionnaire", "approveDecisionWithdrawal", "presentDecisionRevision", "reviseDecision",

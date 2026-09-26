@@ -25,6 +25,27 @@ const NEW = { targetKind: "anchor" as const, targetId: "a_1", text: "evidence", 
 
 const one = async (root: string, pr = 264) => [...(await readFindings(root, pr)).values()][0]!;
 
+test("remaining work P0: a passing-suite prose report preserves claims without resolving siblings", async () => {
+  const root = tmp();
+  try {
+    const ids = [await createFinding(root, 264, izzie, { ...NEW, comment: "negative credits are accepted" }),
+      await createFinding(root, 264, izzie, { ...NEW, comment: "duplicate credits are accepted" })];
+    await recordOutcome(root, 264, opus, ids[0]!, "fixed", "npm test passed; fixed at abc123", ["src/credit.js"]);
+    const findings = await readFindings(root, 264);
+    assert.equal(findings.size, 2);
+    assert.equal(findings.get(ids[0]!)!.outcome?.result, "fixed", "the report really reached the fold");
+    assert.equal(findings.get(ids[0]!)!.outcomes?.length, 1);
+    assert.equal(findings.get(ids[1]!)!.outcome, undefined);
+    for (const id of ids) {
+      const finding = findings.get(id)!;
+      assert.equal(finding.state, "created");
+      assert.equal(finding.closed, undefined);
+    }
+    assert.equal(findings.get(ids[0]!)!.comment, "negative credits are accepted");
+    assert.equal(findings.get(ids[1]!)!.comment, "duplicate credits are accepted");
+  } finally { discard(root); }
+});
+
 // --- opening state follows authorship, from `via` ------------------------------
 
 test("a person's finding opens as `created` — writing it IS the assertion", async () => {

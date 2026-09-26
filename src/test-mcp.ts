@@ -4,9 +4,10 @@
  */
 import { spawn } from "node:child_process";
 
-export function rpc(root: string, calls: { name: string; arguments: Record<string, unknown> }[]) {
+export function rpc(root: string, calls: { name: string; arguments: Record<string, unknown>; _meta?: Record<string, unknown> }[],
+  options: { clientInfo?: { name: string; version: string }; env?: Record<string, string> } = {}) {
   return new Promise<string[]>((resolve, reject) => {
-    const p = spawn("node", ["dist/mcp.js", root], { stdio: ["pipe", "pipe", "ignore"] });
+    const p = spawn("node", ["dist/mcp.js", root], { stdio: ["pipe", "pipe", "ignore"], env: { ...process.env, ...options.env } });
     const out: string[] = []; let buf = ""; let i = 0; let asked = false;
     const timer = setTimeout(() => { p.kill(); reject(new Error("mcp did not answer")); }, 20000);
     // Resolve on the child's EXIT, not on `kill()` returning. The server holds
@@ -36,7 +37,7 @@ export function rpc(root: string, calls: { name: string; arguments: Record<strin
     p.on("error", reject);
     p.stdin.write(JSON.stringify({
       jsonrpc: "2.0", id: 1, method: "initialize",
-      params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "surface-test", version: "1" } },
+      params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: options.clientInfo ?? { name: "surface-test", version: "1" } },
     }) + "\n");
   });
 }

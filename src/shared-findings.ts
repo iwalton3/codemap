@@ -1,3 +1,5 @@
+import { foldRepairRecords, type RepairFindingMap } from "./repair-records.js";
+import { foldRepairVerification, type RepairVerificationApplication } from "./repair-verification.js";
 /**
  * Findings on the event log — the payload the sidecar exists for.
  *
@@ -355,6 +357,7 @@ export interface SharedFinding {
    * and the agent that did the work keeps its attribution.
    */
   applications?: ApplicationAttempt[];
+  repairClosure?: { requestId: string; applicationId: string; outcome: "fixed" | "factually-refuted"; attention: string[] };
   /** Last accepted opening act; captured by a ruling application. */
   openEpoch?: string;
   closed?: {
@@ -985,6 +988,25 @@ function foldFindingsInternal(events: LogEvent[], replay: ApplicationReplay): Ma
         break;
       }
 
+      case "finding.repairApplied": {
+        const application = d as unknown as RepairVerificationApplication;
+        const prior = replay.all.filter(p => replay.causal.saw(e.id, p.id));
+        const participants = foldRepairRecords(prior).participants.filter(p => p.input.trust === "native-session").map(p => p.input);
+        const verification = foldRepairVerification([...prior, e], { participants });
+        if (!verification.applications.some(a => a.id === application?.id)) break;
+        const act = atAct(e);
+        if (!act || isClosed(act.state) || act.contested?.length || act.openEpoch !== application.openEpoch
+          || issueClaimHash("finding", act) !== application.claimHash) break;
+        if (!isClosed(f.state) && !f.contested?.length && f.openEpoch === application.openEpoch
+          && issueClaimHash("finding", f) === application.claimHash) {
+          f.state = application.outcome === "fixed" ? "resolved" : "refuted";
+          f.closed = { eventId: e.id, at: e.at, by: e.actor, reason: application.reason };
+          f.repairClosure = { requestId: application.requestId, applicationId: application.id, outcome: application.outcome, attention: [] };
+          f.pending = undefined;
+        }
+        break;
+      }
+
       case "finding.rulingApplied": {
         const attempts = (f.applications ??= []);
         const checked = validateApplicationCapsule(d?.capsule, "finding", e.subject);
@@ -1064,8 +1086,17 @@ function foldFindingsInternal(events: LogEvent[], replay: ApplicationReplay): Ma
   return out;
 }
 
-export function foldFindings(events: LogEvent[]): Map<string, SharedFinding> {
-  return foldFindingsInternal(events, { all: events, causal: causality(events), snapshots: new Map() });
+export function foldFindings(events: LogEvent[]): RepairFindingMap<SharedFinding> {
+  const out: RepairFindingMap<SharedFinding> = foldFindingsInternal(events, { all: events, causal: causality(events), snapshots: new Map() });
+  out.repairRecords = foldRepairRecords(events);
+  const verification = foldRepairVerification(events, { participants: out.repairRecords.participants.filter(p => p.input.trust === "native-session").map(p => p.input) });
+  out.repairVerification = verification;
+  for (const finding of out.values()) {
+    if (finding.repairClosure && !verification.applications.some(a => a.id === finding.repairClosure!.applicationId)) {
+      finding.repairClosure.attention = ["Later verification provenance or conflicting records require attention; the historical closure is retained."];
+    }
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------

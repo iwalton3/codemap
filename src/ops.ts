@@ -22,6 +22,8 @@
  */
 
 export { type Trust } from "./ops/shared.js";
+export { repairRecords, postRepairSort, recordRepairEvidence, recordRepairParticipant, recordRepairClaims } from "./ops/repairs.js";
+export { requestRepairVerification, repairVerificationBrief, submitRepairVerification, arbitrateRepairVerification, applyRepairVerification, repairVerificationRecords } from "./ops/repair-verification.js";
 
 export { availableViews, status, dashboard, lintSummaries, findGaps, cover, coverageRules, uncover } from "./ops/overview.js";
 
@@ -682,3 +684,5 @@ export async function deferFinding(
 
 
 export { requestComparison, comparisonDetail, comparisonBrief, submitComparisonJudgment, recordComparisonJudgment, comparisonResolutionBrief, resolveComparison } from "./ops/comparisons.js";
+
+export { repairSortBrief, submitRepairSortAssessment, arbitrateRepairSort } from "./ops/repair-sort.js";

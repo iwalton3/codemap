@@ -27,6 +27,7 @@ import { enableRouting } from './vendor/vdx/router.js';
 import './shared.js';
 import { standardUrl, rulesUrl, branchUrl, auditUrl, conformanceUrl, servedNote } from './standard.js';
 import { decisionsUrl } from './decisions.js';
+import { repairsUrl } from './repairs.js';
 
 import {
   errText, hitTarget, apiPost, api, loaded, taskError, isErr, pageShell, nav, go, href, setRouter, postSeen,
@@ -4599,6 +4600,7 @@ class PrStoryPage extends Component {
         ${when(this.state.markNote, () => html`<div class="warn marknote">${this.state.markNote}</div>`)}
         <div class="prderive prpush">
           <button class="${this.state.showFindings ? 'on' : ''}" on-click="${() => this.toggleFindings()}" title="every finding on this PR in one list — raise or resolve without opening each symbol">${this.state.showFindings ? 'hide findings' : `findings (${this.allFindings().filter(e => !e.f.resolved).length + this.sharedOpenCount()})`}</button>
+          <a href="${href(repairsUrl(u, this.props.params.pr))}">repair records</a>
           <button on-click="${() => this.openPush('comments')}" title="${this.hasSidecar() ? 'post your verdict and summary to the pull request. Findings are NOT posted as comments — they live on the team\'s sidecar. Shows you exactly what would be sent first.' : 'post your findings to the pull request as review comments. Yours go out; an agent\'s only if you raised it. Shows you exactly what would be sent first.'}">${this.hasSidecar() ? 'push review verdict to GitHub' : 'push comments to GitHub'}</button>
           <button on-click="${() => this.openPush('viewed')}" title="tick the per-file viewed boxes on GitHub for files you have fully signed off here, so both tools agree about what has been read.">push viewed state to GitHub</button>
           <button on-click="${() => this.openResolveSync()}" title="compare which of your posted findings are settled here against which conversations are resolved on the pull request — for when the submitter fixed it and left the comment open.">sync resolved state</button>
@@ -4973,6 +4975,7 @@ setRouter(enableRouting(document.querySelector('router-outlet'), {
   '/u/:universe/backlog/': { component: 'backlog-page' },
   '/u/:universe/decisions/': { component: 'decisions-page' },
   '/u/:universe/decisions/:round/': { component: 'decisions-page' },
+  '/u/:universe/repairs/:review/': { component: 'repairs-page' },
   '/u/:universe/pr/:pr/': { component: 'pr-story-page' },
   '/u/:universe/search/': { component: 'search-page' },
   '/u/:universe/shared/:pr/': { component: 'shared-page' },

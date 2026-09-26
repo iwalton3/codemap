@@ -21,10 +21,12 @@ import { readerReceipts, readerRequests } from "./reader-local.js";
 import type { State } from "./schema.js";
 import { shareFinding, closeFinding, bindDecisions, reassignFinding, sharedFindings, sharedSync } from "./ops-shared.js";
 import { reviewQueue } from "./ops/annotations.js";
-import { postRound, postPrevalidated, logQuestion, relayAnswer, answerDirect, decisionRounds, decisionRound, decisionStatus, waitDecisionStatus, nominateComparison, readerBrief, recordReading, submitVerdict as submitVerdictOp, confirmReading, parseVerdict, confirmId, withdrawDecision, reviseDecision, revisionRelayBrief, reviseDecisionRelayed, interpretationRequestId } from "./ops/decisions.js";
+import { postRound, logQuestion, relayAnswer, answerDirect, decisionRounds, decisionRound, decisionStatus, waitDecisionStatus, nominateComparison, readerBrief, recordReading, submitVerdict as submitVerdictOp, confirmReading, parseVerdict, confirmId, withdrawDecision, reviseDecision, revisionRelayBrief, reviseDecisionRelayed, interpretationRequestId } from "./ops/decisions.js";
 import { discard } from "./test-tmp.js";
+import { readScope } from "./eventlog.js";
 import { decisionsView, holdBuilds } from "./ops/decision-holds.js";
-import { decisionScope, foldDecisions, logQuestionEvent, postConfirmEvent, recordReadingEvent } from "./shared-decisions.js";
+import { CODEX_CALL, CODEX_ENTRY, CODEX_SESSION, codexReply, codexRows, codexTranscript } from "./test-codex-transcript.js";
+import { decisionScope, foldDecisions, postRoundEvent, logQuestionEvent, postConfirmEvent, recordReadingEvent } from "./shared-decisions.js";
 
 const state: State = { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State;
 const SRC = "export function creditLine(cents) {\n  return cents * 2;\n}\n";
@@ -98,6 +100,96 @@ const decision = (id: string, f: string, extra: Record<string, unknown> = {}, re
 });
 /** `s` seconds from now: the person answers after the round was posted. */
 const later = (s = 1) => new Date(Date.now() + s * 1000).toISOString();
+
+test("remaining work P0: answering every decision authorizes work without completing findings", async () => {
+  const u = await universe();
+  try {
+    const findings = [await withFinding(u), await withFinding(u)];
+    await asAgent(async () => {
+      const posted = await postRound(u.root, { round: { id: "R1", source: "P0 baseline" },
+        decisions: findings.map((f, i) => decision(`d${i + 1}`, f, {}, `D${i + 1}`)) }) as any;
+      assert.equal(posted.ok, true, JSON.stringify(posted));
+    });
+    const before = await decisionRound(u.root, "R1") as any;
+    assert.ok(before.decisions.every((d: any) => d.answers.length === 0));
+    await asPerson(async () => {
+      for (let i = 0; i < findings.length; i++) {
+        const answered = await answerDirect(u.root, { decision: `d${i + 1}`, option: "Real, fix it" }) as any;
+        assert.equal(answered.recorded, true, JSON.stringify(answered));
+      }
+    });
+    const after = await decisionRound(u.root, "R1") as any;
+    assert.equal(after.decisions.length, 2);
+    for (const d of after.decisions) {
+      assert.equal(d.answers.length, 1);
+      assert.ok(d.standing.ruled.some((r: any) => r.on === "unblock"));
+    }
+    for (const id of findings) {
+      const finding = (await readFinding(u.root, id))!;
+      assert.ok(finding);
+      assert.equal(finding.state, "issued");
+      assert.equal(finding.closed, undefined);
+      assert.equal(finding.outcome, undefined);
+    }
+  } finally { u.cleanup(); }
+});
+
+test("P1 native Codex: partial answers, correction, retry and source receipts survive real operations and replay", async () => {
+  const u = await universe();
+  const tx = codexTranscript([]);
+  try {
+    const ids = [await withFinding(u), await withFinding(u)];
+    const decisions = ids.map((id, i) => {
+      const d = decision(`d${i + 1}`, id, {}, `D${i + 1}`);
+      return { ...d, payload: { question: d.payload.question, options: d.payload.options.map(({ label }) => ({ label })) } };
+    });
+    await asAgent(async () => {
+      assert.equal((await postRound(u.root, { round: { id: "R1", source: "native probe" }, decisions }) as any).ok, true);
+      const questions = decisions.map((d) => ({ title: d.payload.question, options: d.payload.options.map((o) => o.label) }));
+      const all = codexRows(questions, ["Real, fix it"]) as any[];
+      all[2].timestamp = later(1);
+      all[3].timestamp = later(1.5);
+      all[4] = codexReply(questions, ["Real, fix it"], later(2));
+      tx.write(all.slice(0, 4));
+      const input = { session: CODEX_SESSION, toolUseId: CODEX_CALL, round: "R1", harness: "codex" as const };
+      const ack = await logQuestion(u.root, input, {}, tx.dir) as any;
+      assert.equal(ack.ok, false);
+      assert.match(ack.unverified, /acknowledgment/);
+      assert.equal((await decisionsView(u.root)).s.questions.length, 0);
+      tx.write(all);
+      const first = await logQuestion(u.root, input, {}, tx.dir) as any;
+      assert.equal(first.ok, true, JSON.stringify(first));
+      assert.equal(first.answered.length, 1);
+      assert.equal(first.answered[0].recorded, true);
+      const view = await decisionRound(u.root, "R1") as any;
+      assert.equal(view.decisions[0].answers.length, 1);
+      assert.equal(view.decisions[1].answers.length, 0, "unanswered sibling stays pending");
+      assert.equal(view.decisions[0].answers[0].sourceReceipt.entryId, CODEX_ENTRY);
+      assert.equal(view.decisions[0].answers[0].sourceReceipt.creatorUserId, "user_synthetic");
+      assert.equal((await logQuestion(u.root, input, {}, tx.dir) as any).answered[0].recorded, false);
+      all.push(codexReply(questions, ["Not a defect", "Real, fix it"], later(3), "msg_correction"));
+      tx.write(all);
+      assert.equal((await logQuestion(u.root, input, {}, tx.dir) as any).ok, false, "multiple replies cannot select their own authority");
+      const second = await logQuestion(u.root, { ...input, entryId: "msg_correction" }, {}, tx.dir) as any;
+      assert.equal(second.ok, true, JSON.stringify(second));
+      assert.equal(second.answered.length, 2);
+      assert.ok(second.answered.every((a: any) => a.recorded));
+      const after = await decisionsView(u.root);
+      assert.equal(after.s.questions.length, 2);
+      assert.equal(after.s.decisions[0]!.answers.length, 2);
+      assert.equal(after.s.decisions[1]!.answers.length, 1);
+      const binding = bindDecisions(u.root) as any;
+      const log = await readScope(binding.cfg.path, decisionScope(binding.cfg.universe));
+      const replay = foldDecisions(log);
+      assert.deepEqual(replay.questions.map((q) => q.receipt), after.s.questions.map((q) => q.receipt));
+      assert.equal(replay.decisions[0]!.answers.length, 2);
+      const bad = structuredClone(log);
+      for (const e of bad) if (e.kind === "decision.question.logged") (e.data as any).receipt.version = "unknown";
+      assert.equal(foldDecisions(bad).decisions[0]!.answers.length, 0, "replayed malformed native proof is not legacy proof");
+      for (const id of ids) assert.equal((await readFinding(u.root, id))!.closed, undefined);
+    });
+  } finally { tx.cleanup(); u.cleanup(); }
+});
 
 /**
  * The asking session's transcript, appended to as the session goes — the shape measured
@@ -217,7 +309,7 @@ test("posting refuses a finding this store does not hold, closesOnAnswer, and an
     const f = await withFinding(u);
     await asAgent(async () => {
       assert.match(String(err(await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", "f_unrecorded")] }))), /not a finding this store holds/);
-      assert.match(String(err(await postRound(u.root, { round: { id: "R1", source: "x", prevalidated: { record: "r", sortedBy: "s" } } as any, decisions: [decision("d1", f)] }))), /only import_round/);
+      assert.match(String(err(await postRound(u.root, { round: { id: "R1", source: "x", prevalidated: { record: "r", sortedBy: "s" } } as any, decisions: [decision("d1", f)] }))), /historical provenance only/);
       assert.match(String(err(await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f, { closesOnAnswer: true })] }))), /closesOnAnswer is gone/);
       const arrow = decision("d1", f);
       arrow.payload.options[1]!.label = "Real -> fix it"; (arrow.options[1] as any).label = "Real -> fix it";
@@ -271,13 +363,17 @@ test("GATE (closed unseen): a logged answer is a ruling, never a close — the f
   } finally { u.cleanup(); }
 });
 
-test("prevalidated is provenance only: a pre-validated round's answer closes nothing", async () => {
+test("historical prevalidated replay retains provenance and its answer closes nothing", async () => {
   const u = await universe();
   try {
     const f = await withFinding(u);
     await asAgent(async () => {
-      const r = await postPrevalidated(u.root, bindDecisions(u.root) as any, { round: { id: "R1", source: "triage" }, decisions: [decision("d1", f)] }, { record: "rec", sortedBy: "two sorters and an arbitrator" });
-      assert.equal((r as any).ok, true, JSON.stringify(r));
+      const binding = bindDecisions(u.root);
+      assert.ok(!("error" in binding));
+      const r = await postRoundEvent(binding.cfg.path, binding.cfg.universe, binding.actor,
+        { id: "R1", source: "triage", universe: binding.cfg.universe, prevalidated: { record: "rec", sortedBy: "two sorters and an arbitrator" } },
+        [decision("d1", f)]);
+      assert.ok(r.id);
       transcript(u.transcripts).ask("toolu_1", [payloadFor(f)], { [payloadFor(f).question]: "Not a defect" });
       assert.equal(((await logQuestion(u.root, { toolUseId: "toolu_1", round: "R1" }, {}, u.transcripts)) as any).ok, true);
       assert.equal((await readFinding(u.root, f))?.state, "issued");

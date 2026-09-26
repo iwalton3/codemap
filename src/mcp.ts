@@ -15,7 +15,9 @@
 import * as ops from "./ops.js";
 import * as shared from "./ops-shared.js";
 import { branchKeyFor } from "./review-target.js";
-import { markAgentSession, markObservedClient } from "./identity.js";
+import { markAgentSession, markObservedClient, resolvePrincipal } from "./identity.js";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import * as multi from "./multi.js";
 import { loadWorkspace, type Workspace, type Universe } from "./workspace.js";
 import { METHODOLOGY } from "./guide.js";
@@ -27,6 +29,12 @@ import { SIGN_OFF_AXES, EVIDENCE_KINDS } from "./schema.js";
 import { applicationReaderBrief, submitApplicationVerdict, recordApplicationVerdict, applyRuling } from "./ops/ruling-application.js";
 import { questionnaireStatus, waitQuestionnaireStatus } from "./ops/questionnaire-status.js";
 import { comparisonDetail, requestComparison, comparisonBrief, submitComparisonJudgment, recordComparisonJudgment, comparisonResolutionBrief, resolveComparison } from "./ops/comparisons.js";
+import { RepairVerifierBoundary, type TrustedVerifierContext } from "./verifier-boundary.js";
+import { resolveCodexVerifierContext, recheckCodexVerifierContext, observedCodexVerifierIdentity } from "./codex-verifier-context.js";
+import { claimVerifierSession, recordVerifierDomain, taintVerifierSession, verifierSessionActivity } from "./store.js";
+import { trustedRepairParticipants } from "./store.js";
+import { issueRepairParticipation, type RepairParticipationCapability } from "./repair-participation.js";
+import { CODEX_ROLLOUT_VERSION } from "./codex-harness.js";
 
 /**
  * Tools that write to a universe's `.codemap/` are held under the write lock, so a
@@ -63,9 +71,52 @@ try {
   process.exit(1);
 }
 
+const connectionPrincipal = resolvePrincipal(ws.primary.path);
+const verifierTranscriptDir = process.env.CODEMAP_CODEX_TRANSCRIPT_DIR ?? join(homedir(), ".codex", "sessions");
+let initializedClient: { name: string; version: string } | undefined;
+let verifierBoundary: RepairVerifierBoundary | undefined;
+let verifierContext: TrustedVerifierContext | undefined;
+let claimedConnection = false;
+
+const isRepairRoleClaim = (name: unknown) => name === "claim_verifier" || name === "claim_repair_sorter";
+
+function prepareVerifierBoundary(meta: unknown, claiming: boolean): RepairVerifierBoundary {
+  if (verifierBoundary) return verifierBoundary;
+  const boundRequestMeta = structuredClone(meta);
+  verifierContext = claiming ? resolveCodexVerifierContext({ principal: connectionPrincipal,
+    clientInfo: initializedClient, requestMeta: meta, transcriptDir: verifierTranscriptDir })
+    : { supported: false, reason: "a verifier must claim before any domain action" };
+  const context = verifierContext;
+  verifierBoundary = new RepairVerifierBoundary({ context, participants: () =>
+    [...ws.byId.values()].flatMap((u) => trustedRepairParticipants(u.path)), revalidate: () => {
+    if (!context.supported) return { ok: false, error: context.reason };
+    const current = recheckCodexVerifierContext(context, { principal: connectionPrincipal,
+      clientInfo: initializedClient, requestMeta: boundRequestMeta, transcriptDir: verifierTranscriptDir });
+    if (!current.ok) return current;
+    const activity = verifierSessionActivity(ws.primary.path, context.identity);
+    if (claimedConnection)
+      return activity?.kind === "claimed" && activity.connectionId === verifierBoundary!.connectionId
+        ? { ok: true } : { ok: false, error: "verifier session no longer owns an eligible claim" };
+    return activity ? { ok: false, error: "verifier session already performed domain work or claimed a role" } : { ok: true };
+  } });
+  return verifierBoundary;
+}
+
+function claimVerifier(role: "repair-verifier" | "repair-sorter" = "repair-verifier"): unknown {
+  const boundary = verifierBoundary!;
+  const claimed = boundary.claim(role);
+  if (!claimed.ok || !verifierContext?.supported) return claimed;
+  const admission = claimVerifierSession(ws.primary.path, verifierContext.identity, boundary.connectionId);
+  if (!admission.ok) { boundary.invalidate(admission.error); return admission; }
+  claimedConnection = true;
+  return { ok: true, role, connectionId: boundary.connectionId, identity: verifierContext.identity,
+    limits: "version-pinned direct native children; bounded repair verification role, with separate application checks" };
+}
+
 interface Ctx {
   ws: Workspace;
   universe: Universe;
+  repairParticipation?: RepairParticipationCapability;
 }
 
 interface Tool {
@@ -233,7 +284,141 @@ const APPLICATION_RECEIPT_REF = {
   }, required: ["requestId", "receipt", "agentId", "callId"], additionalProperties: false,
 };
 
+const repairString = { type: "string" };
+const repairStrings = { type: "array", items: repairString };
+const repairIdentity = obj({ principal: repairString, harness: repairString, session: repairString, child: repairString, model: repairString }, ["principal", "harness", "session"], false);
+const reportedSortReceipt = obj({ id: repairString, source: repairString, content: repairString, scope: repairString, seal: { type: "object" } }, ["id", "source", "content"], false);
+const repairCoverage = { findingId: repairString, claimIds: repairStrings };
+const repairResult = { type: "string", enum: ["complete", "partial", "unknown"] };
+const repairRun = obj({ id: repairString, command: repairString, commit: repairString, environment: repairString,
+  phase: { type: "string", enum: ["witness", "fix", "reversal", "mutation", "regression"] },
+  mutation: repairString, reversedHunks: repairStrings, outcome: { type: "string", enum: ["passed", "failed", "unknown"] },
+  exitCode: { type: "integer" }, stdout: repairString, stderr: repairString, reason: repairString },
+  ["id", "command", "commit", "environment", "phase", "outcome"], false);
+const repairSortSchema = obj({ id: repairString, prior: repairString, reason: repairString, classification: repairString,
+  kind: { type: "string", enum: ["isolated", "pattern"] }, coverage: { type: "array", items: obj(repairCoverage, ["findingId", "claimIds"], false) },
+  predicate: repairString, sites: repairStrings, refutationSubtype: { type: "string", enum: ["factual", "scope"] },
+  restsOn: repairStrings, source: repairString, provenance: { type: "string", enum: ["owner-reviewed", "dual-sorted"] },
+  assessments: { type: "array", items: obj({ identity: repairIdentity, classification: repairString, reason: repairString, receipt: reportedSortReceipt }, ["identity", "classification", "reason"], false) },
+  disagreements: { type: "array", items: obj({ id: repairString, text: repairString }, ["id", "text"], false) },
+  arbitration: obj({ addresses: repairStrings, reason: repairString, identity: repairIdentity, receipt: reportedSortReceipt }, ["addresses", "reason", "identity"], false) },
+  ["id", "classification", "kind", "coverage", "restsOn", "source", "provenance", "assessments", "disagreements"], false);
+const repairEvidenceSchema = obj({ id: repairString, sortId: repairString, witnessCommit: repairString, baseCommit: repairString, fixCommit: repairString,
+  coverage: { type: "array", items: obj({ ...repairCoverage, result: repairResult, reason: repairString,
+    claimResults: { type: "array", items: obj({ claimId: repairString, result: repairResult, reason: repairString }, ["claimId", "result", "reason"], false) } },
+    ["findingId", "claimIds", "result", "reason", "claimResults"], false) },
+  reproducer: { type: "array", items: repairRun }, changeFalsifier: { type: "array", items: repairRun }, regression: { type: "array", items: repairRun },
+  patternEnumeration: obj({ expected: repairStrings, actual: repairStrings, method: repairString }, ["expected", "actual", "method"], false),
+  inspected: { type: "array", items: obj({ source: repairString, commit: repairString, reasoning: repairString }, ["source", "commit", "reasoning"], false) },
+  noCheckReason: repairString, rulingIds: repairStrings,
+  attribution: { type: "array", items: obj({ file: repairString, hunk: repairString, claimIds: repairStrings }, ["file", "hunk", "claimIds"], false) } },
+  ["id", "sortId", "witnessCommit", "baseCommit", "fixCommit", "coverage", "reproducer", "changeFalsifier", "regression", "inspected", "rulingIds", "attribution"], false);
+
 const tools: Tool[] = [
+  {
+    name: "claim_repair_sorter",
+    description: "Claim a constrained repair sorter role before any codemap domain action. Requires native session and fresh connection provenance. Cannot fix, relay, verify or apply repairs.",
+    inputSchema: obj({}, [], false),
+    handler: async () => claimVerifier("repair-sorter"),
+  },
+  {
+    name: "repair_sort_brief",
+    description: "Bind a fresh claimed sorter to exact immutable claims and a proposed sort, or an arbitrator to two independently sealed assessments. Reported identity labels grant no authority.",
+    inputSchema: obj({ review: repairString, sort: repairSortSchema, role: { type: "string", enum: ["sorter", "arbitrator"] } }, ["review", "sort", "role"]),
+    handler: async (a, c) => verifierBoundary ? ops.repairSortBrief(c.universe.path, a.review, a, { boundary: verifierBoundary }) : { error: "claim repair sorter role first" },
+  },
+  {
+    name: "repair_sort_assess",
+    description: "Seal this assigned sorter's exact classification and substantive reason for the bounded proposal. Identity comes from the admitted native session.",
+    inputSchema: obj({ review: repairString, classification: repairString, reason: repairString }, ["review", "classification", "reason"]),
+    mutates: true,
+    handler: async (a, c) => verifierBoundary ? ops.submitRepairSortAssessment(c.universe.path, a.review, a, { boundary: verifierBoundary }) : { error: "claim repair sorter role first" },
+  },
+  {
+    name: "repair_sort_arbitrate",
+    description: "Seal substantive arbitration addressing the bounded sort disagreements after two distinct admitted sorter assessments.",
+    inputSchema: obj({ review: repairString, addresses: repairStrings, reason: repairString }, ["review", "addresses", "reason"]),
+    mutates: true,
+    handler: async (a, c) => verifierBoundary ? ops.arbitrateRepairSort(c.universe.path, a.review, a, { boundary: verifierBoundary }) : { error: "claim repair sorter role first" },
+  },
+  {
+    name: "repair_request",
+    description: "A fresh claimed orchestrator creates an immutable repair verification request from an eligible sort and evidence record. Commands remain evidence data.",
+    inputSchema: obj({ review: { type: "string" }, sortId: { type: "string" }, evidenceId: { type: "string" } }, ["review", "sortId", "evidenceId"]),
+    mutates: true,
+    handler: async (a, c) => verifierBoundary ? ops.requestRepairVerification(c.universe.path, a.review, a, { boundary: verifierBoundary }) : { error: "claim verifier role first" },
+  },
+  {
+    name: "repair_brief",
+    description: "Bind a fresh claimed session to one verifier slot or arbitration job and read its bounded brief. Verifier briefs exclude other verdicts; arbitration requires a real disagreement.",
+    inputSchema: obj({ review: { type: "string" }, requestId: { type: "string" }, role: { type: "string", enum: ["verifier", "arbitrator"] }, slot: { type: "integer", enum: [1, 2] } }, ["review", "requestId", "role"]),
+    mutates: true,
+    handler: async (a, c) => verifierBoundary ? ops.repairVerificationBrief(c.universe.path, a.review, a, { boundary: verifierBoundary }) : { error: "claim verifier role first" },
+  },
+  {
+    name: "repair_verification",
+    description: "Seal actual per-claim executions or independent inspections for the assigned blind verifier slot. Partial and unknown outcomes remain open.",
+    inputSchema: obj({ review: { type: "string" }, requestId: { type: "string" }, slot: { type: "integer", enum: [1, 2] }, results: { type: "array", items: { type: "object" } } }, ["review", "requestId", "slot", "results"]),
+    mutates: true,
+    handler: async (a, c) => verifierBoundary ? ops.submitRepairVerification(c.universe.path, a.review, a, { boundary: verifierBoundary }) : { error: "claim verifier role first" },
+  },
+  {
+    name: "repair_arbitration",
+    description: "A separate fresh arbitrator seals reasons addressing each genuine disagreement between two independent runs.",
+    inputSchema: obj({ review: { type: "string" }, requestId: { type: "string" }, runIds: { type: "array", items: { type: "string" } }, addresses: { type: "array", items: { type: "object" } } }, ["review", "requestId", "runIds", "addresses"]),
+    mutates: true,
+    handler: async (a, c) => verifierBoundary ? ops.arbitrateRepairVerification(c.universe.path, a.review, a, { boundary: verifierBoundary }) : { error: "claim verifier role first" },
+  },
+  {
+    name: "repair_apply_verification",
+    description: "The original orchestrator separately applies a complete sealed verdict after rechecking the current claim, epoch, sort, evidence and ruling context. Stale requests refuse.",
+    inputSchema: obj({ review: { type: "string" }, requestId: { type: "string" }, findingId: { type: "string" }, reason: { type: "string" } }, ["review", "requestId", "findingId", "reason"]),
+    mutates: true,
+    handler: async (a, c) => verifierBoundary ? ops.applyRepairVerification(c.universe.path, a.review, a, { boundary: verifierBoundary }) : { error: "claim verifier role first" },
+  },
+  {
+    name: "record_repair_claims",
+    description: "Append an immutable decomposition of an original finding claim, with provenance and reason. Original text and all prior claims remain coverage obligations; this cannot remove scope or close a finding.",
+    inputSchema: obj({ review: repairString, findingId: repairString, parentId: repairString, reason: repairString, claims: { type: "array", items: obj({ id: repairString, text: repairString }, ["id", "text"], false) } }, ["review", "findingId", "parentId", "reason", "claims"]),
+    mutates: true,
+    handler: (a, c) => ops.recordRepairClaims(c.universe.path, a.review,
+      { findingId: a.findingId, parentId: a.parentId, reason: a.reason, claims: a.claims }),
+  },
+  {
+    name: "repair_records",
+    description: "Read immutable as-filed claim coverage, original and corrected sorts, participants and structured repair evidence. Records do not authorize closure.",
+    inputSchema: obj({ review: { type: "string" } }, ["review"]),
+    handler: (a, c) => ops.repairRecords(c.universe.path, a.review),
+  },
+  {
+    name: "post_repair_sort",
+    description: "Persist a versioned classification and bounded original claim coverage. Corrections name their prior version and reason. Reported sorter identity labels stay unverified. Server-issued sealed assessments are checked against exact scope, proposal and immutable claims. Repair closure requires its separate verification protocol.",
+    inputSchema: obj({ review: repairString, sort: repairSortSchema }, ["review", "sort"]),
+    mutates: true,
+    handler: (a, c) => ops.postRepairSort(c.universe.path, a.review, a.sort),
+  },
+  {
+    name: "record_repair_evidence",
+    description: "Record separate reproducer, change-falsifier, regression, enumeration and inspection evidence with exact code and execution results. Commands are evidence data and are never executed by this tool. No repair closure authority.",
+    inputSchema: obj({ review: repairString, evidence: repairEvidenceSchema }, ["review", "evidence"]),
+    mutates: true,
+    handler: (a, c) => ops.recordRepairEvidence(c.universe.path, a.review, a.evidence),
+  },
+  {
+    name: "record_repair_participant",
+    description: "Record this native session as a fixer or relayer in a repair. Identity comes from host request metadata; caller labels cannot establish identity or improve verifier eligibility.",
+    inputSchema: obj({ review: { type: "string" }, repairId: { type: "string" }, role: { type: "string", enum: ["fixer", "relayer"] } }, ["review", "repairId", "role"]),
+    mutates: () => initializedClient?.name === "codex-mcp-client" && initializedClient.version === CODEX_ROLLOUT_VERSION,
+    handler: async (a, c) => c.repairParticipation
+      ? ops.recordRepairParticipant(c.universe.path, a.review, { repairId: a.repairId, role: a.role }, c.repairParticipation)
+      : { error: "repair participation requires native host session metadata" },
+  },
+  {
+    name: "claim_verifier",
+    description: "Claim the constrained repair-verifier role before any codemap domain call. Requires server-observed session/connection provenance; caller identity strings cannot provide it. Unsupported harnesses return the precise evidence gap. This claim does not authorize human-ruling application or finding closure.",
+    inputSchema: obj({}, [], false),
+    handler: async () => claimVerifier(),
+  },
   {
     name: "list_universes",
     description: "List the universes (repos) this server serves, which is primary, and per-universe counts. Use to see what projects and cross-links are available.",
@@ -998,9 +1183,11 @@ const tools: Tool[] = [
   },
   {
     name: "log_question",
-    description: "After EVERY `AskUserQuestion` you put to the person, call this with its `toolUseId` and the `round` (or rounds) you asked it for. Codemap reads the call and the person's answer from this session's own transcript — never from your summary — and records it as the answer to each decision in those rounds whose exact question it carries, posted before the person answered. A question that is the posted question of two rounds you named is refused on its own; the rest record. Calling it again for the same call records only what is missing, so retry freely after a failure. A confirm from `confirm_reading` is a posted question like any other: log it with its round. Yes (or Reading n) binds that reading as of when the words were typed, \"No — ask me again\" records the rejection (re-ask the original question), and their own words under Other are a typed reply for a reader, which never carries the confirm's meaning. Returns what each answer ruled and what waits on the person. Nothing closes a finding: a settle waits for the verifier. `session` is optional: codemap finds the transcript holding the call.",
+    description: "After EVERY native question you put to the person, call this with its `toolUseId` and the `round` (or rounds) you asked it for. Use `harness: codex` for a measured request_user_input_async call after its delayed human reply; the display acknowledgment is not an answer. The default reads Claude AskUserQuestion. Codemap reads the call and the person's answer from this session's own transcript — never from your summary — and records it as the answer to each decision in those rounds whose exact question it carries, posted before the person answered. A question that is the posted question of two rounds you named is refused on its own; the rest record. Calling it again for the same source reply records only what is missing, so retry freely after a failure. A confirm from `confirm_reading` is a posted question like any other: log it with its round. Yes (or Reading n) binds that reading as of when the words were typed, \"No — ask me again\" records the rejection (re-ask the original question), and their own words under Other are a typed reply for a reader, which never carries the confirm's meaning. Returns what each answer ruled and what waits on the person. Nothing closes a finding: a settle waits for the verifier. `session` is optional: codemap finds the transcript holding the call.",
     inputSchema: obj({
-      toolUseId: { type: "string", description: "The AskUserQuestion call's tool_use id." },
+      toolUseId: { type: "string", description: "The native question call ID: Claude tool_use id or Codex async call_id." },
+      harness: { type: "string", enum: ["claude-code", "codex"], description: "Transcript format to inspect, not an actor identity. Defaults to Claude. Codex supports measured request_user_input_async replies; acknowledgment alone is not an answer. Put all operative text in the exact question title, because native options have no descriptions." },
+      entryId: { type: "string", description: "For Codex, the exact human reply message ID. Required if the call has multiple replies; each partial reply retains its own identity." },
       round: { description: "The round you asked it for, or a list when one call asked questions from several. Required: an identical question in another round must not take this answer.", oneOf: [{ type: "string" }, { type: "array", items: { type: "string" } }] },
       session: { type: "string", description: "This session's id, if you know it." },
     }, ["toolUseId", "round"]),
@@ -2120,6 +2307,12 @@ async function handle(msg: any): Promise<void> {
 
   switch (method) {
     case "initialize":
+      if (initializedClient) {
+        verifierBoundary?.invalidate("connection was reinitialized");
+        send({ jsonrpc: "2.0", id, error: { code: -32600, message: "connection is already initialized" } });
+        return;
+      }
+      initializedClient = { name: params?.clientInfo?.name, version: params?.clientInfo?.version };
       // Who is on the other end, as the transport saw it — the host sends this
       // before the model has any say, so it is the one piece of agent identity a
       // model cannot spell for itself. Everything else about `via` is self-report.
@@ -2143,31 +2336,75 @@ async function handle(msg: any): Promise<void> {
       send({ jsonrpc: "2.0", id, result: { tools: tools.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })) } });
       return;
     case "tools/call": {
-      const tool = tools.find((t) => t.name === params?.name);
-      if (!tool) {
-        send({ jsonrpc: "2.0", id, error: { code: -32602, message: `unknown tool: ${params?.name}` } });
-        return;
-      }
-      const args = params.arguments ?? {};
-      const bad = violates(tool.inputSchema, args);
-      if (bad) {
-        send({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: `Error: ${bad}` }], isError: true } });
-        return;
-      }
-      const universe = args.universe ? ws.byId.get(args.universe) : ws.primary;
-      if (!universe) {
-        send({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: `Error: unknown universe "${args.universe}"` }], isError: true } });
-        return;
-      }
       try {
-        const run = () => tool.handler(args, { ws, universe });
-        const locked = typeof tool.mutates === "function" ? tool.mutates(args) : tool.mutates;
-        const out = locked ? await withLock(universe.path, run) : await run();
-        send({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(out, null, 2) }] } });
+        const boundary = prepareVerifierBoundary(params?._meta, isRepairRoleClaim(params?.name));
+        if (claimedConnection && verifierContext?.supported) {
+          const native = recheckCodexVerifierContext(verifierContext, { principal: connectionPrincipal,
+            clientInfo: initializedClient, requestMeta: params?._meta, transcriptDir: verifierTranscriptDir });
+          const provenance = native.ok ? boundary.checkProvenance() : native;
+          if (!provenance.ok) {
+            boundary.invalidate(provenance.error);
+            if (verifierContext?.supported) taintVerifierSession(ws.primary.path, verifierContext.identity, boundary.connectionId);
+            send({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(provenance) }], isError: true } });
+            return;
+          }
+        }
+        if (!isRepairRoleClaim(params?.name)) {
+          const admission = boundary.enterDomainAction(params?.name);
+          const identity = observedCodexVerifierIdentity({ principal: connectionPrincipal,
+            clientInfo: initializedClient, requestMeta: params?._meta });
+          if (initializedClient?.name === "codex-mcp-client" && !identity) {
+            send({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: "Error: missing resolved principal or native request identity metadata" }], isError: true } });
+            return;
+          }
+          const local = !claimedConnection && identity
+            ? recordVerifierDomain(ws.primary.path, identity, boundary.connectionId, params?.name) : { ok: true };
+          if (claimedConnection && (!admission.ok || (verifierContext?.supported && identity
+            && (identity.session !== verifierContext.identity.session || identity.child !== verifierContext.identity.child)))) {
+            boundary.invalidate(admission.ok ? "verifier identity changed on this connection" : admission.error);
+            if (verifierContext?.supported) taintVerifierSession(ws.primary.path, verifierContext.identity, boundary.connectionId);
+          }
+          if (!admission.ok || !local.ok) {
+            send({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(!admission.ok ? admission : local) }], isError: true } });
+            return;
+          }
+        }
+        const tool = tools.find((t) => t.name === params?.name);
+        if (!tool) {
+          send({ jsonrpc: "2.0", id, error: { code: -32602, message: `unknown tool: ${params?.name}` } });
+          return;
+        }
+        const args = params.arguments ?? {};
+        const bad = violates(tool.inputSchema, args);
+        if (bad) {
+          send({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: `Error: ${bad}` }], isError: true } });
+          return;
+        }
+        const universe = args.universe ? ws.byId.get(args.universe) : ws.primary;
+        if (!universe) {
+          send({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: `Error: unknown universe "${args.universe}"` }], isError: true } });
+          return;
+        }
+        try {
+          const participantIdentity = observedCodexVerifierIdentity({ principal: resolvePrincipal(universe.path),
+            clientInfo: initializedClient, requestMeta: params?._meta });
+          const repairParticipation = participantIdentity && initializedClient?.version === CODEX_ROLLOUT_VERSION
+            ? issueRepairParticipation(participantIdentity) : undefined;
+          const run = () => tool.handler(args, { ws, universe, repairParticipation });
+          const locked = typeof tool.mutates === "function" ? tool.mutates(args) : tool.mutates;
+          const out = locked ? await withLock(universe.path, run) : await run();
+          send({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(out, null, 2) }] } });
+        } catch (e: any) {
+          const claiming = isRepairRoleClaim(params?.name);
+          if (claiming) boundary.invalidate("verifier admission failed");
+          send({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: (claiming ? "Error: verifier admission failed: " : "Error: ") + (e?.message ?? String(e)) }], isError: true } });
+        }
+        return;
       } catch (e: any) {
-        send({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: "Error: " + (e?.message ?? String(e)) }], isError: true } });
+        verifierBoundary?.invalidate("verifier admission failed");
+        send({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: "Error: verifier admission failed: " + (e?.message ?? String(e)) }], isError: true } });
+        return;
       }
-      return;
     }
     default:
       if (isRequest) send({ jsonrpc: "2.0", id, error: { code: -32601, message: `method not found: ${method}` } });

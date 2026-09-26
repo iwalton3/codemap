@@ -93,6 +93,7 @@ export async function apiPost(path, body) {
  *   '/api/bugs':                Awaited<ReturnType<Ops['listBugs']>>,
  *   '/api/bug':                 Awaited<ReturnType<Ops['bugDetail']>>,
  *   '/api/queue':               Awaited<ReturnType<Ops['reviewQueue']>>,
+ *   '/api/repairs':             Awaited<ReturnType<Ops['repairRecords']>>,
  *   '/api/orphans':             Awaited<ReturnType<Ops['orphanedWork']>>,
  *   '/api/questions':           Awaited<ReturnType<Ops['listQuestions']>>,
  *   '/api/stale':               Awaited<ReturnType<Ops['checkStale']>>,

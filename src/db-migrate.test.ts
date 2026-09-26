@@ -140,7 +140,7 @@ test("the standard projection's table set is pinned to a materializer version", 
   // 37: scoped ruling revision and explicit finding/bug application change existing projections.
   // 29: both again — ranking from the set, readings from the reader's own hand-back, and the
   // stamped-close path removed from the findings fold. No new event kind, no new table.
-  assert.equal(MATERIALIZER_VERSION, 44, "and record the new number here");
+  assert.equal(MATERIALIZER_VERSION, 47, "and record the new number here");
 });
 
 /**
@@ -172,7 +172,7 @@ test("the findings fold's event vocabulary is pinned to a materializer version",
     "finding.askDeclined", "finding.assigned", "finding.backlogReleased", "finding.backlogged",
     "finding.commented", "finding.corroborated", "finding.created", "finding.outcome",
     "finding.posted", "finding.promoted", "finding.promotedToBug", "finding.relocation",
-    "finding.remediated", "finding.reopened", "finding.requested", "finding.revised", "finding.rewitnessed", "finding.rulingApplied",
+    "finding.remediated", "finding.reopened", "finding.repairApplied", "finding.requested", "finding.revised", "finding.rewitnessed", "finding.rulingApplied",
     "finding.stateChanged", "finding.upstreamed",
   ], "the findings fold learned or forgot an event — bump MATERIALIZER_VERSION with it");
   // A witness FIELD is the same hazard: `deleted` changes what `landed` says for a row an
@@ -180,7 +180,7 @@ test("the findings fold's event vocabulary is pinned to a materializer version",
   const wo = src.slice(src.indexOf("const witnessOf"), src.indexOf("};", src.indexOf("const witnessOf")));
   assert.deepEqual([...new Set([...wo.matchAll(/str\(w, "(\w+)"\)|w!\.(\w+)/g)].map((m) => m[1] ?? m[2]!))].sort(),
     ["anchorId", "bodyHash", "deleted"], "the fold reads a new witness field — bump MATERIALIZER_VERSION with it");
-  assert.equal(MATERIALIZER_VERSION, 44, "and record the new number here");
+  assert.equal(MATERIALIZER_VERSION, 47, "and record the new number here");
 });
 
 /**
@@ -201,7 +201,7 @@ test("the decisions fold's event vocabulary is pinned to a materializer version"
   const block = proj.slice(proj.indexOf("export const decisionsProjection"), proj.indexOf("/** Shared notes"));
   assert.deepEqual([...new Set([...block.matchAll(/INSERT INTO (\w+)/g)].map((m) => m[1]!))].sort(),
     ["decision_comparisons", "decision_records", "decision_rounds", "decision_skipped", "logged_questions"], "the decisions projection's tables changed — bump MATERIALIZER_VERSION with them");
-  assert.equal(MATERIALIZER_VERSION, 44, "and record the new number here");
+  assert.equal(MATERIALIZER_VERSION, 47, "and record the new number here");
 });
 
 /**
@@ -228,7 +228,7 @@ test("the bugs fold's event vocabulary is pinned to a materializer version", asy
     "bug.corroborated", "bug.filed", "bug.outcome", "bug.promoted", "bug.reopened", "bug.requested", "bug.revised",
     "bug.rulingApplied", "bug.stateChanged", "bug.tracked", "bug.unanchored",
   ], "the bugs fold learned or forgot an event — bump MATERIALIZER_VERSION with it");
-  assert.equal(MATERIALIZER_VERSION, 44, "and record the new number here");
+  assert.equal(MATERIALIZER_VERSION, 47, "and record the new number here");
 });
 
 /**
@@ -273,4 +273,24 @@ test("legacy held verdicts gain nullable receipt columns without losing their pe
     assert.equal(row.known_replacements, null);
     assert.ok(readdirSync(join(root, ".codemap", "backups")).length > 0, "the upgrade kept a pre-migration backup");
   } finally { discard(root); }
+});
+
+
+test("repair fold event vocabulary and projection are pinned to the materializer", async () => {
+  const { MATERIALIZER_VERSION } = await import("./materialize.js");
+  const src = readFileSync("src/repair-records.ts", "utf8");
+  const kinds = [...new Set([...src.matchAll(/kind === "(repair\.[a-z-]+)"/g)].map(m => m[1]))].sort();
+  assert.deepEqual(kinds, ["repair.claims-recorded", "repair.evidence-recorded", "repair.participant-recorded", "repair.sort-recorded"]);
+  assert.match(readFileSync("src/shared-projections.ts", "utf8"), /INSERT OR REPLACE INTO repair_records/);
+  assert.equal(MATERIALIZER_VERSION, 47);
+});
+
+test("repair verification event vocabulary and projection are pinned to the materializer", async () => {
+  const { MATERIALIZER_VERSION } = await import("./materialize.js");
+  const src = readFileSync("src/repair-verification.ts", "utf8");
+  const kinds = [...new Set([...src.matchAll(/"(repair\.verification-[a-z-]+)"/g)].map(m => m[1]))].sort();
+  assert.deepEqual(kinds, ["repair.verification-arbitrated", "repair.verification-producer", "repair.verification-requested", "repair.verification-sealed"]);
+  assert.match(readFileSync("src/shared-projections.ts", "utf8"), /INSERT OR REPLACE INTO repair_verifications/);
+  assert.match(readFileSync("src/db.ts", "utf8"), /CREATE TABLE IF NOT EXISTS repair_verifications/);
+  assert.equal(MATERIALIZER_VERSION, 47);
 });

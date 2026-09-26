@@ -1,3 +1,6 @@
+import { isRepairRecords } from "./repair-records.js";
+import { isRepairVerificationState, type RepairVerificationState } from "./repair-verification.js";
+import type { RepairSigningKey } from "./repair-seals.js";
 import type { PrWalkthrough } from "./walkthrough.js";
 /**
  * The codemap store — now backed by a per-universe SQLite DB (`src/db.ts`)
@@ -54,6 +57,23 @@ function getMeta<T>(d: DatabaseSync, key: string): T | undefined {
 function setMeta(d: DatabaseSync, key: string, val: unknown): void {
   d.prepare("INSERT INTO meta(k, v) VALUES(?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v")
     .run(key, JSON.stringify(val));
+}
+
+/** Local producer secret, never projected or included in an operation response. */
+export function readRepairSigningKey(root: string): RepairSigningKey | undefined {
+  const value = getMeta<unknown>(db(root), "repair-verification-producer-key");
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || !("publicKey" in value) || !("privateKey" in value)
+    || typeof value.publicKey !== "string" || !value.publicKey.trim()
+    || typeof value.privateKey !== "string" || !value.privateKey.trim()) throw new Error("repair verification producer key is malformed");
+  return { publicKey: value.publicKey, privateKey: value.privateKey };
+}
+
+export function saveRepairSigningKey(root: string, key: RepairSigningKey): void {
+  if (!key || typeof key.publicKey !== "string" || !key.publicKey.trim() || typeof key.privateKey !== "string" || !key.privateKey.trim()) throw new Error("repair verification producer key is required");
+  const existing = readRepairSigningKey(root);
+  if (existing !== undefined && (existing.publicKey !== key.publicKey || existing.privateKey !== key.privateKey)) throw new Error("repair verification producer key cannot be replaced");
+  setMeta(db(root), "repair-verification-producer-key", key);
 }
 
 /**
@@ -3034,4 +3054,33 @@ export function decisionBugStates(root: string): { id: string; state: string; so
     return db(root).prepare("SELECT id, state, source_scope FROM bugs").all() as unknown as
       { id: string; state: string; source_scope: string | null }[];
   } catch { return []; }
+}
+export { claimVerifierSession, recordVerifierDomain, taintVerifierSession, verifierSessionActivity } from "./verifier-local.js";
+
+// Repair records share the canonical findings scope and its materialization transaction.
+export function readRepairRecords(root: string, scope: string): import("./repair-records.js").RepairRecords {
+  const row = db(root).prepare("SELECT body FROM repair_records WHERE scope = ?").get(scope) as { body: string } | undefined;
+  if (!row) return { claims: [], sorts: [], evidence: [], participants: [], rejected: [] };
+  const records: unknown = JSON.parse(row.body);
+  if (!isRepairRecords(records)) throw new Error(`repair records ${scope} have a malformed shape`);
+  return records;
+}
+
+export function readRepairVerification(root: string, scope: string): RepairVerificationState {
+  const row = db(root).prepare("SELECT body FROM repair_verifications WHERE scope = ?").get(scope) as { body: string } | undefined;
+  if (!row) throw new Error(`repair verifications ${scope} are missing`);
+  const value: unknown = JSON.parse(row.body);
+  if (!isRepairVerificationState(value)) throw new Error(`repair verifications ${scope} have a malformed shape`);
+  return value;
+}
+
+export function trustedRepairParticipants(root: string): import("./verifier-boundary.js").RepairParticipant[] {
+  const d = db(root);
+  const rows = d.prepare("SELECT r.scope, r.body, s.status FROM repair_records r LEFT JOIN shared_scope s ON s.scope = r.scope").all() as { scope: string; body: string; status: string | null }[];
+  return rows.flatMap(row => {
+    if (row.status !== "complete") throw new Error(`repair participant scope ${row.scope} is not authoritative`);
+    const records: unknown = JSON.parse(row.body);
+    if (!isRepairRecords(records)) throw new Error(`repair records ${row.scope} have a malformed shape`);
+    return records.participants.filter(p => p.input.trust === "native-session").map(p => ({ identity: p.input.identity, role: p.input.role }));
+  });
 }

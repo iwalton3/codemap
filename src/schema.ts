@@ -2329,7 +2329,15 @@ export interface DecisionRound {
   at: string;
 }
 
-/** An `AskUserQuestion` call copied from the asking machine's transcript. */
+export interface CodexQuestionReceipt {
+  harness: "codex";
+  version: string;
+  entryId: string;
+  turnId: string;
+  creatorUserId: string;
+}
+
+/** A native question call copied from the asking machine's transcript. */
 export interface LoggedQuestion {
   id: string;
   session: string;
@@ -2339,6 +2347,7 @@ export interface LoggedQuestion {
   answers: Record<string, string | string[]>;
   /** Transcript id of the session that logged it. */
   transcript?: string;
+  receipt?: CodexQuestionReceipt;
   /** The rounds the call was asked for, from the caller: the transcript cannot say which
    *  round a call belonged to, and an identical question in another round must not bind. */
   rounds: string[];

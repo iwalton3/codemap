@@ -1,3 +1,5 @@
+import { emptyRepairRecords, isRepairRecords, type RepairFindingMap, type RepairRecords } from "./repair-records.js";
+import { emptyRepairVerificationState, isRepairVerificationState, type RepairVerificationState } from "./repair-verification.js";
 /**
  * How each shared entity is stored in, and rebuilt from, the materialized tables.
  *
@@ -88,6 +90,10 @@ function indexApplications(d: DatabaseSync, scope: string, issues: Iterable<Shar
 
 export const findingsProjection: Projection<Map<string, SharedFinding>> = {
   write(d: DatabaseSync, scope: string, value: Map<string, SharedFinding>): void {
+    const repairs = (value as RepairFindingMap<SharedFinding>).repairRecords ?? emptyRepairRecords();
+    d.prepare("INSERT OR REPLACE INTO repair_records(scope,body) VALUES(?,?)").run(scope, JSON.stringify(repairs));
+    const verification = (value as Map<string, SharedFinding> & { repairVerification?: RepairVerificationState }).repairVerification ?? emptyRepairVerificationState();
+    d.prepare("INSERT OR REPLACE INTO repair_verifications(scope,body) VALUES(?,?)").run(scope, JSON.stringify(verification));
     const scopePr = prOfScope(scope);
     d.prepare("DELETE FROM findings WHERE source_scope = ?").run(scope);
     indexApplications(d, scope, value.values());
@@ -145,6 +151,21 @@ export const findingsProjection: Projection<Map<string, SharedFinding>> = {
         throw new CorruptProjection(`findings ${scope}/${r.id} is unreadable`);
       }
     }
+    const row = d.prepare("SELECT body FROM repair_records WHERE scope = ?").get(scope) as { body: string } | undefined;
+    if (!row) throw new CorruptProjection(`repair records ${scope} are missing`);
+    try {
+      const records: unknown = JSON.parse(row.body);
+      if (!isRepairRecords(records)) throw new CorruptProjection(`repair records ${scope} have a malformed shape`);
+      (out as RepairFindingMap<SharedFinding>).repairRecords = records;
+    }
+    catch { throw new CorruptProjection(`repair records ${scope} are unreadable`); }
+    const verificationRow = d.prepare("SELECT body FROM repair_verifications WHERE scope = ?").get(scope) as { body: string } | undefined;
+    if (!verificationRow) throw new CorruptProjection(`repair verifications ${scope} are missing`);
+    try {
+      const verification: unknown = JSON.parse(verificationRow.body);
+      if (!isRepairVerificationState(verification)) throw new CorruptProjection(`repair verifications ${scope} have a malformed shape`);
+      (out as Map<string, SharedFinding> & { repairVerification?: RepairVerificationState }).repairVerification = verification;
+    } catch { throw new CorruptProjection(`repair verifications ${scope} are unreadable`); }
     return out;
   },
 };

@@ -14,7 +14,8 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { AskedQuestion } from "./schema.js";
+import type { AskedQuestion, CodexQuestionReceipt } from "./schema.js";
+import { CODEX_READER_UNSUPPORTED } from "./codex-harness.js";
 
 export interface Unverified { unverified: string }
 export const isUnverified = (v: unknown): v is Unverified =>
@@ -33,6 +34,7 @@ export interface TranscriptCall {
   /** Keyed by question text; a multi-select answer is a list, and typed "Other" text is one
    *  more element of it (measured 2026-09-23). */
   answers: Record<string, string | string[]>;
+  receipt?: CodexQuestionReceipt;
 }
 
 export interface PersonMessage { session: string; entryId: string; text: string; /** The entry's timestamp: when they typed it. */ at: string }
@@ -231,6 +233,7 @@ const callsTool = (e: Record<string, any>, id: string): boolean =>
  * reader has given its verdict cannot have shaped it.
  */
 export function readReader(agentId: string, callId: string, dir: string = transcriptDir()): ReaderAgent | Unverified {
+  if (/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(agentId)) return { unverified: CODEX_READER_UNSUPPORTED };
   if (!AGENT.test(agentId)) return { unverified: `not a subagent id: ${JSON.stringify(agentId)}` };
   let sessions: string[];
   try { sessions = readdirSync(dir).filter((s) => SESSION.test(s)); } catch { return { unverified: `no transcripts in ${dir}` }; }
