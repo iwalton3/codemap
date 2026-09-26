@@ -724,3 +724,39 @@ outside-sandbox retry succeeded. The staged whitespace check then flagged
 unified-diff context lines in the retained comparison artifacts. These are
 encoded losslessly as JSON line arrays, rather than changing their comparison
 content; joining `lines` recovers each exact diff. The final staged check is clean.
+
+## Authorized skill installation: absent-codemap check (2026-09-26)
+
+The owner approved installation, contingent on checking that the codemap
+integration is inert when codemap is absent. Independent review found no
+executable codemap import, launch or provisioning path: the four shipped Python
+helpers use stdlib and their subprocesses launch only git. A forward evaluation
+selected markdown-only, non-verified mode, exercised both record resolvers and
+cross-skill resume, and produced no codemap calls, .codemap or sidecar. This was
+a bounded entry/routing evaluation, not a complete dual-sort or human-answer run.
+
+Review identified applicability ambiguities in resume, native-capability stop
+conditions and repair closure. Seven files now state that native operations and
+outages apply only to shared runs; discovery may not bootstrap codemap; ordinary
+markdown landing/handover remains available. Ordinary independent participants
+are still required. The independent recheck found no remaining contradiction or
+ordering change. Source commit bf8c248 records these clarifications. All 96
+skill tests passed in 2.786 seconds, with the existing unclosed-read
+ResourceWarnings still visible. No backend/browser code changed, so the passing
+2,167 unit and 171 e2e integration result remains applicable.
+
+Installed triage-review (25 files) and ez-plan (10 files) exactly match source
+commit bf8c248. The installer checked the complete existing baselines before
+replacement, retained the previous trees at
+a local backup directory and verified every installed
+file hash. Post-install new/resume smoke checks for both helpers passed with a
+PATH containing git only, no codemap executable/database/sidecar and no .codemap
+creation. No provisioning, server start or account configuration occurred.
+
+Evidence: skill-integration-evaluation/absent-codemap-forward.json,
+installed-absent-codemap-smoke.json and deployment.json. The updated manifest
+retains original baseline hashes and records exact deployed source hashes.
+P6 skill installation is complete. Production native/verdict and synchronous
+human-answer measurements remain outstanding; installation does not certify
+those capabilities. Nothing was pushed or merged; no private live repository
+was written.
