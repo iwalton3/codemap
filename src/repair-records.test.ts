@@ -141,7 +141,7 @@ test("unchanged shards replay old materializer cache and atomically persist trus
     const result = await readCached(root, log, scope, "identity", foldFindings, findingsProjection);
     assert.equal((result.value as import("./repair-records.js").RepairFindingMap<import("./shared-findings.js").SharedFinding>).repairRecords!.evidence.length, 1);
     assert.equal(readRepairRecords(root, scope).claims[0]!.text, created.data.text);
-    assert.equal(MATERIALIZER_VERSION, 47);
+    assert.equal(MATERIALIZER_VERSION, 49);
     assert.equal((d.prepare("SELECT fingerprint FROM shared_scope WHERE scope=?").get(scope) as {fingerprint:string}).fingerprint, await scopeFingerprint(log, scope, "identity"));
     d.prepare("UPDATE repair_records SET body='{}' WHERE scope=?").run(scope);
     assert.throws(() => trustedRepairParticipants(root), /malformed shape/);

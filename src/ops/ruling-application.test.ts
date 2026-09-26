@@ -31,7 +31,7 @@ const asPerson = async (fn: () => Promise<void>) => {
 };
 const error = (v: any) => String(v?.error ?? v?.reason ?? "");
 
-async function fixture(direct: boolean | "link" | "unselected" = true) {
+async function fixture(direct: boolean | "link" | "unselected" = true, acceptance = false) {
   const root = mkdtempSync(join(tmpdir(), "codemap-apply-"));
   const side = mkdtempSync(join(tmpdir(), "codemap-apply-side-"));
   const tx = mkdtempSync(join(tmpdir(), "codemap-apply-tx-"));
@@ -49,12 +49,12 @@ async function fixture(direct: boolean | "link" | "unselected" = true) {
     const filed = await shareFinding(root, 7, { targetKind: "anchor", targetId: anchors[0]!.id, text: "creditLine doubles" }) as any;
     assert.equal(filed.error, undefined, JSON.stringify(filed));
     id = filed.id;
-    const question = direct === "link"
+    const question = acceptance ? `D1: explicitly accept ${id} as real and deliberately not being fixed?` : direct === "link"
       ? `D1: does /#/u/${encodeURIComponent(universeKey(root))}/shared/7/findings?f=${id} remain a defect?`
       : direct === true ? `D1: does ${id} remain a defect?` : "D1: does this doubling remain a defect?";
     const posted = await postRound(root, { round: { id: "R1", source: "x" }, decisions: [{ id: "d1", round: "R1", ref: "D1", kind: "options",
-      payload: { question, header: "F", options: [{ label: "Not a defect", description: "close as refuted" }, { label: "Real, fix it", description: direct === "unselected" ? `fix ${id}` : "fix work" }] },
-      options: [{ label: "Not a defect", effects: (direct === true || direct === "link") ? [{ findings: [id], on: "settle", as: "refuted" }] : [] }, { label: "Real, fix it", effects: (direct === true || direct === "link") ? [{ findings: [id], on: "unblock" }] : [] }],
+      payload: { question, header: "F", options: [{ label: "Not a defect", description: acceptance ? "Real, deliberately not being fixed permanently" : "close as refuted" }, { label: "Real, fix it", description: direct === "unselected" ? `fix ${id}` : "fix work" }] },
+      options: [{ label: "Not a defect", effects: (direct === true || direct === "link") ? [{ findings: [id], on: "settle", as: acceptance ? "accepted" : "refuted" }] : [] }, { label: "Real, fix it", effects: (direct === true || direct === "link") ? [{ findings: [id], on: "unblock" }] : [] }],
     }] }) as any;
     assert.equal(posted.ok, true, JSON.stringify(posted));
   });
@@ -263,4 +263,37 @@ test("disagreeing indirect readers need an authentic arbitrator who sees both ra
       assert.equal((await readFinding(u.root, u.id))?.state, "invalid");
     });
   } finally { u.cleanup(); }
+});
+
+
+test("explicit human acceptance is credited to the answerer, never reported as fixed or refuted", async () => {
+  const u = await fixture(true, true);
+  const oldPrincipal = process.env.CODEMAP_PRINCIPAL;
+  try {
+    process.env.CODEMAP_PRINCIPAL = "bob@x.com";
+    await asAgent(async () => {
+      const brief = await applicationReaderBrief(u.root, { issue: u.issue, answerId: u.answer, slot: 1 }, u.tx) as any;
+      assert.equal(brief.ok, true, JSON.stringify(brief));
+      assert.match(brief.prompt, /deliberately not being fixed/);
+      assert.match(error(await applyRuling(u.root, { issue: u.issue, answerId: u.answer, readers: [] }, u.tx)), /one independent sound reader/);
+      const rationale = "The exact shown human choice accepts the complete real claim permanently; it does not authorize a repair.";
+      const held = submitApplicationVerdict(u.root, { requestId: brief.requestId, verdict: "sound", rationale }) as any;
+      const ref = transcript(u.tx, brief.prompt, brief.requestId, "sound", rationale, held.receipt);
+      assert.equal((recordApplicationVerdict(u.root, ref, u.tx) as any).recorded, true);
+      const applied = await applyRuling(u.root, { issue: u.issue, answerId: u.answer, readers: [ref] }, u.tx) as any;
+      assert.equal(applied.ok, true, JSON.stringify(applied));
+      const finding = await readFinding(u.root, u.id);
+      assert.equal(finding?.state, "accepted");
+      assert.equal(finding?.closed?.by.principal, "alice@x.com");
+      assert.equal(finding?.closed?.by.via, undefined);
+      assert.equal(finding?.applications?.[0]?.by.principal, "bob@x.com");
+      assert.equal(finding?.repairClosure, undefined);
+      await asPerson(async () => {
+        const reopened = await setFindingState(u.root, { id: u.id, state: "issued", reason: "follow-up" }) as any;
+        assert.equal(reopened.error, undefined, JSON.stringify(reopened));
+      });
+      await applyRuling(u.root, { issue: u.issue, answerId: u.answer, readers: [ref] }, u.tx);
+      assert.equal((await readFinding(u.root, u.id))?.state, "issued", "same human ruling is spent after reopening");
+    });
+  } finally { if (oldPrincipal === undefined) delete process.env.CODEMAP_PRINCIPAL; else process.env.CODEMAP_PRINCIPAL = oldPrincipal; u.cleanup(); }
 });

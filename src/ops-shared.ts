@@ -1,3 +1,4 @@
+import { findingRepairPresentations, repairPresentationKey } from "./ops/repair-presentation.js";
 /**
  * The shared-review operations, protocol-free — what the CLI, MCP and HTTP all
  * call. Same rule as `ops.ts`: the logic lives here, the front-ends are thin.
@@ -1423,7 +1424,9 @@ export const findingRecord = homed(async function findingRecord(root: string, pr
     const nodes = await loadNodes(root);
     nodeAnchors = nodes.find((n) => n.id === f.target.id)?.anchors;
   }
-  return { ...f, nodeAnchors };
+  const presentationFinding = { ...f, pr: String(pr) };
+  const repairs = await findingRepairPresentations(root, [presentationFinding]);
+  return { ...f, nodeAnchors, repair: repairs.get(repairPresentationKey(presentationFinding)) };
 });
 
 export const findingToBug = homed(async function findingToBug(root: string, pr: number | string, id: string, bug: string) {
@@ -1872,6 +1875,7 @@ export async function sharedFindings(
   // used to render them identically. Refusing the read instead would put the fix behind
   // the surface that reports the problem.
   const unmigrated = cfg ? all.filter((f) => !f.origin) : [];
+  const repairs = await findingRepairPresentations(root, page.rows);
   return {
     scope: nonAuthoritative(scope as ScopeStatus) ?? (behind.length
       ? {
@@ -1904,7 +1908,7 @@ export async function sharedFindings(
       ? { shown: page.rows.length, offset: page.offset, more: page.remaining, nextOffset: page.offset + page.rows.length }
       : {}),
     findings: page.rows.map((f) => {
-      const row = { ...view(f), tier: findingTier(f), target: { ...f.target, where: place(f).state, at: place(f).at, lastFile: place(f).file }, ...findingMark(holds, f, universe) };
+      const row = { ...view(f), repair: repairs.get(repairPresentationKey(f)), tier: findingTier(f), target: { ...f.target, where: place(f).state, at: place(f).at, lastFile: place(f).file }, ...findingMark(holds, f, universe) };
       if (!opts.terse) return row;
       const light = { ...row } as Record<string, unknown>;
       for (const k of HEAVY) light[k] = undefined;

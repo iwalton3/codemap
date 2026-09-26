@@ -1,3 +1,4 @@
+import { findingRepairPresentations } from "./repair-presentation.js";
 /**
  * Decision rounds: posting questions, recording what the person answered, and reading their
  * typed words onto options. The fold and the rulings are in `shared-decisions.ts`; the rulings
@@ -298,15 +299,23 @@ export async function decisionRound(root: string, id: string) {
   const mine = (x: { round: string }) => x.round === id;
   const findings = [...new Set(s.decisions.filter(mine).flatMap(named))];
   const cfg = resolveSidecar(root);
+  const repairFindings: import("../shared-findings.js").SharedFinding[] = [];
   const heldMarks = await Promise.all(findings.map(async (finding) => {
     const issue = cfg ? await resolveDecisionIssue(root, { kind: "finding", universe: cfg.universe, id: finding }) : null;
-    if (issue?.ok) return { finding, ...v.issueMark(issue.ref) };
+    if (issue?.ok) { if (issue.ref.kind === "finding") repairFindings.push(issue.issue as import("../shared-findings.js").SharedFinding); return { finding, ...v.issueMark(issue.ref) }; }
     return { finding, ...v.mark(finding), ...(issue && issue.reason === "ambiguous"
       ? { ambiguity: issue.error } : {}) };
   }));
+  for (const ref of s.decisions.filter(mine).flatMap(namedIssues)) {
+    if (ref.kind !== "finding") continue;
+    const issue = await resolveDecisionIssue(root, ref);
+    if (issue.ok && issue.ref.kind === "finding" && !repairFindings.some(f => f.id === issue.issue.id && f.pr === (issue.issue as import("../shared-findings.js").SharedFinding).pr))
+      repairFindings.push(issue.issue as import("../shared-findings.js").SharedFinding);
+  }
   return {
     ...v.status,
     round,
+    repairs: [...(await findingRepairPresentations(root, repairFindings)).entries()].map(([key, repair]) => ({ key, ...repair })),
     comparisons: comparisonSummaries(s).filter((comparison) => comparison.decisions.some((decision) =>
       s.decisions.find((d) => d.id === decision)?.round === id)),
     decisions: s.decisions.filter(mine).map((d) => ({

@@ -1,3 +1,4 @@
+import { validateOperationSignoff, operationSignoffProducerId } from "./operation-signoff.js";
 /**
  * The standard as shared state: what enters the log, and how it folds back.
  *
@@ -355,6 +356,7 @@ export function foldStandard(
   // and not `witnesses` because `spec.ratified` already binds that word to the CODE
   // hashes it carries, which are a different observation entirely.
   const reviews = new Map<string, ProposalWitness>();
+  const operationSignoffProducers = new Map<string, {publicKey:string;principal:string}>();
   const requirements = new Map<string, Requirement>();
   const criteria = new Map<string, AcceptanceCriterion>();
   const vacuityChecks = new Map<string, VacuityCheck>();
@@ -478,6 +480,30 @@ export function foldStandard(
         // `ord`, `specId` and `removed` are the fold's, never the writer's: a revision that
         // moved an operation's position would re-order a proposal a ratifier already read.
         operations.set(cur.id, { ...next, specId: cur.specId, ord: cur.ord, removed: undefined, origin: "sync" });
+        break;
+      }
+      case "spec.operation-signoff-producer": {
+        const key = e.data?.publicKey;
+        if (typeof key !== "string" || operationSignoffProducerId(key) !== e.subject) break;
+        const prior = operationSignoffProducers.get(e.subject);
+        if (prior && (prior.publicKey !== key || prior.principal !== e.actor.principal)) break;
+        operationSignoffProducers.set(e.subject, {publicKey:key, principal:e.actor.principal});
+        break;
+      }
+      case "spec.operation-signoff-applied": {
+        const value = e.data?.capsule as any;
+        const op = operations.get(e.subject);
+        const sp = op ? specs.get(op.specId) : undefined;
+        if (!op || !sp) break;
+        const producer = operationSignoffProducers.get(value?.seal?.producerKeyId);
+        if (!producer || producer.principal !== e.actor.principal) break;
+        const checked = validateOperationSignoff(value, op, sp, e.actor, producer.publicKey);
+        if ("error" in checked) break;
+        const c = checked.capsule;
+        reviews.set(`${sp.id}|${op.id}|${c.ruling.principal}`, {
+          id: c.key, specId: sp.id, operationId: op.id, content: c.content,
+          reviewer: { principal: c.ruling.principal }, at: e.at, application: c, origin: "sync",
+        });
         break;
       }
       case "spec.reviewed": {

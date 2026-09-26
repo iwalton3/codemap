@@ -1,3 +1,4 @@
+import { repairPresentation } from './repair-presentation.js';
 /**
  * The shared-review page — everyone's findings for a pull request.
  *
@@ -343,6 +344,7 @@ class SharedPage extends Component {
   detailEl(f) {
     return html`
       <div class="fdetail">
+        ${repairPresentation(f.repair)}
         <div class="row factions">
           <button title="Surface this to the whole team — it is worth their attention. Does not close it and does not file anything." on-click="${() => this.act('promote', { id: f.id })}">escalate</button>
           <button title="It is a real defect somebody intends to fix, so track it as one. Creates a bug and cross-links; the finding survives." disabled="${this.state.busy === 'accept'}" on-click="${() => this.acceptAsBug(f.id)}">file bug</button>

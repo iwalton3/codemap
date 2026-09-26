@@ -245,3 +245,28 @@ The decisions browser suite passed **10 tests, no failures or skips**, including
 native source details in answer history. Source and web typechecking passed.
 Reading the benign live delayed reply returned `Probe answer` with a Codex
 receipt. It was not used as a product ruling or stored in a product sidecar.
+
+## Claude Code fresh-reader diagnostic (2026-09-26)
+
+Two live, restricted Claude Code 2.1.283 runs used the configured default model,
+only the built-in Agent tool and one explicit diagnostic STDIO MCP server. Each
+parent launched one fresh probe-reader. Each child recorded twelve own-sidechain
+rows, a non-fork metadata record, one diagnostic submit and one paired result.
+The existing `readReader` validator accepted both actual launch/call records.
+The second run also checked the exact parent brief. Its host-provided
+`claudecode/toolUseId` matched the child's native tool-use ID, and the returned
+diagnostic receipt matched the paired native result. The two runs had different
+session and child identities. Sanitized structure and identity digests are
+retained in `skill-integration-evaluation/claude-reader-probe-{first,second}.json`;
+private transcripts and raw identities are not copied.
+
+This checks the current Claude fresh-child transcript seam and diagnostic native
+call correlation. It does not certify a production repair role, production
+application/sign-off verdict or synchronous human answer. The probe returned
+`diagnostic: true, authority: false`, and production verdict discovery correctly
+returned no calls. Purpose-specific production receipt admission remains to be
+measured with the actual tools and current brief. No codemap store was accessed.
+
+A preliminary tool-free safe-mode launch stalled with no output inside the
+sandbox and was interrupted. Its bounded outside-sandbox retry succeeded; that
+launch alone established only executable availability.

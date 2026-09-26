@@ -41,10 +41,10 @@ import { issueClaimHash, validateApplicationCapsule, type ApplicationAttempt } f
  * Lifecycle. `issued` is an agent's proposal; `created` is a claim somebody stands
  * behind. `created` is the RATCHET FLOOR for agents — past it, only a person closes.
  */
-export type FindingState = "issued" | "created" | "invalid" | "refuted" | "resolved" | "withdrawn";
+export type FindingState = "issued" | "created" | "invalid" | "refuted" | "resolved" | "withdrawn" | "accepted";
 
 /** Terminal states — a finding here is done, and shows struck through. */
-export const CLOSED_STATES: readonly FindingState[] = ["invalid", "refuted", "resolved", "withdrawn"];
+export const CLOSED_STATES: readonly FindingState[] = ["invalid", "refuted", "resolved", "withdrawn", "accepted"];
 export const isClosed = (s: FindingState): boolean => CLOSED_STATES.includes(s);
 
 /**
@@ -486,7 +486,7 @@ export type FindingTier = "confirmed" | "unconfirmed" | "doubted" | "settled";
 const TIER_ORDER: Record<FindingTier, number> = { confirmed: 0, unconfirmed: 1, doubted: 2, settled: 3 };
 
 export function findingTier(f: Pick<SharedFinding, "state" | "corroboration"> & { promotion?: unknown }): FindingTier {
-  if (f.state === "resolved" || f.state === "invalid") return "settled";
+  if (f.state === "resolved" || f.state === "invalid" || f.state === "accepted") return "settled";
   if (f.state === "refuted" || f.state === "withdrawn") return "doubted";
   // PROMOTION IS WEIGHING IN, and it outranks a verdict because a person did it. It
   // means "this is real, the team should know" — so a promoted finding reading
@@ -951,7 +951,7 @@ function foldFindingsInternal(events: LogEvent[], replay: ApplicationReplay): Ma
 
       case "finding.stateChanged": {
         const next = str(d, "state") as FindingState | undefined;
-        if (!next || !["issued", "created", "invalid", "refuted", "resolved", "withdrawn"].includes(next)) break;
+        if (!next || !["issued", "created", "invalid", "refuted", "resolved", "withdrawn", "accepted"].includes(next)) break;
         // The ordinary closure gate still applies; an agent reopen needs a
         // separate event with the closure it observed.
         // Legacy human reopens remain valid; agents use an observed-closure act.
@@ -1038,8 +1038,8 @@ function foldFindingsInternal(events: LogEvent[], replay: ApplicationReplay): Ma
         }
         spent.add(capsule.key);
         attempts.push({ eventId: e.id, at: e.at, by: e.actor, status: "executed", key: capsule.key, capsule });
-        f.state = "invalid";
-        f.closed = { eventId: e.id, at: e.at, by: e.actor, reason: capsule.reason };
+        f.state = capsule.acceptance ? "accepted" : "invalid";
+        f.closed = { eventId: e.id, at: e.at, by: capsule.acceptance?.by ?? e.actor, reason: capsule.reason };
         f.pending = undefined;
         break;
       }

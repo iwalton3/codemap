@@ -1,3 +1,4 @@
+import { findingRepairPresentations, repairPresentationKey } from "./repair-presentation.js";
 import { readFile } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import { type Anchor, type LogicalNode, type CoverageState, type Annotation } from "../schema.js";
@@ -250,15 +251,17 @@ async function searchFindings(root: string, q: string, limit: number) {
     // and a thread is the half of a finding that says what people concluded about it.
     || f.thread.some((c) => c.body.toLowerCase().includes(q));
 
-  return (await readFindings(root, {})).findings
+  const matched = (await readFindings(root, {})).findings
     .filter(hit)
     // Open first — a refuted finding matching the same word is history, not the answer —
     // then newest. The same order `bugs` uses, for the same reason.
     .sort((a, b) =>
       Number(isFindingClosed(a.state)) - Number(isFindingClosed(b.state))
       || (b.createdAt ?? "").localeCompare(a.createdAt ?? ""))
-    .slice(0, limit)
-    .map((f) => ({
+    .slice(0, limit);
+  const repairs = await findingRepairPresentations(root, matched);
+  return matched.map((f) => ({
+      repair: repairs.get(repairPresentationKey(f)),
       id: f.id,
       pr: f.pr,
       /** What the defect IS. See the note above about which field that is. */

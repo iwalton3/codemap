@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -8,6 +8,7 @@ import { repairCodeLifecycle } from "./repair-lifecycle.js";
 import type { RepairEvidenceInput } from "./repair-records.js";
 import type { SharedFinding } from "./shared-findings.js";
 import { discard } from "./test-tmp.js";
+import { writeLocalLink } from "./store.js";
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), "codemap-repair-life-"));
   const git = (...args: string[]) => {
@@ -106,4 +107,37 @@ test("negative ancestry in shallow history is unknown, and deepening supplies th
     const proven = await repairCodeLifecycle(clone, f.finding, f.evidence, "fixed");
     assert.equal(proven.landing, "landed"); assert.equal(proven.defaultSource, "moved");
   } finally { discard(clone); discard(f.root); }
+});
+
+test("linked PR fallback proves the exact repair and default ancestry, never an older or stacked merge", async () => {
+  const f = fixture(); const bin = mkdtempSync(join(tmpdir(), "codemap-repair-gh-")); const oldPath = process.env.PATH;
+  try {
+    f.git("remote", "add", "origin", "https://github.com/test/repair-lifecycle.git");
+    writeLocalLink(f.root, "12", "repair");
+    const finding = { ...f.finding, pr: "branch:repair", branch: "repair" };
+    const metadata = join(bin, "meta.json");
+    writeFileSync(join(bin, "gh"), `#!/bin/sh\ncat '${metadata}'\n`); chmodSync(join(bin, "gh"), 0o755);
+    process.env.PATH = `${bin}:${oldPath}`;
+    const meta = (head: string, merge: string) => writeFileSync(metadata, JSON.stringify({ state: "MERGED", headRefOid: head, mergeCommit: { oid: merge } }));
+    meta(f.base, f.base);
+    assert.equal((await repairCodeLifecycle(f.root, finding, f.evidence, "fixed")).landing, "open", "a merge predating the repair proves nothing");
+    f.git("checkout", "main");
+    writeFileSync(join(f.root, "unrelated.txt"), "advance default\n"); f.git("add", "."); f.git("commit", "-m", "advance default");
+    meta(f.fix, f.fix);
+    assert.equal((await repairCodeLifecycle(f.root, finding, f.evidence, "fixed")).landing, "open", "MERGED into a feature branch is not default landing");
+    f.git("merge", "--squash", "repair"); f.git("commit", "-m", "squash repair"); const merged = f.git("rev-parse", "HEAD");
+    writeFileSync(join(f.root, "guard.js"), "export const guard = x => x;\n"); f.git("add", "."); f.git("commit", "-m", "later regression");
+    meta(f.fix, merged);
+    const landed = await repairCodeLifecycle(f.root, finding, f.evidence, "fixed");
+    assert.equal(landed.landing, "landed"); assert.equal(landed.defaultSource, "moved"); assert.equal(landed.checkedCommit, f.fix);
+    f.git("checkout", "repair"); writeFileSync(join(f.root, "guard.js"), "export const guard = x => Math.max(1,x);\n");
+    f.git("add", "."); f.git("commit", "-m", "later unmerged repair");
+    assert.equal((await repairCodeLifecycle(f.root, finding, { ...f.evidence, fixCommit: f.git("rev-parse", "HEAD") }, "fixed")).landing, "open", "the same branch link cannot close a newer repair");
+    const changedHead = f.git("rev-parse", "HEAD");
+    f.git("checkout", "main"); writeFileSync(join(f.root, "unrelated.txt"), "another default tip\n");
+    f.git("add", "."); f.git("commit", "-m", "advance again"); meta(changedHead, merged);
+    assert.equal((await repairCodeLifecycle(f.root, finding, f.evidence, "fixed")).landing, "open", "changed PR head source cannot inherit verification of its earlier commit");
+    writeLocalLink(f.root, "13", "missing"); writeFileSync(metadata, "unavailable metadata");
+    assert.equal((await repairCodeLifecycle(f.root, { ...finding, pr: "branch:missing" }, f.evidence, "fixed")).landing, "open", "failed lookup keeps negative ancestry");
+  } finally { process.env.PATH = oldPath; discard(bin); discard(f.root); }
 });

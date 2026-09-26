@@ -34,6 +34,7 @@ interface Context {
   claimHash: string;
   directMention?: string;
   decisionFingerprint: string;
+  acceptance?: ApplicationCapsuleV1["acceptance"];
 }
 
 const shownExactLink = (shown: string, ref: Extract<ResolvedIssue, { ref: { kind: "finding" } }>["ref"]): string | undefined => {
@@ -101,8 +102,15 @@ async function context(root: string, input: { issue: IssueReference; answerId: s
       || (!issueOverlaps && decisionOverlaps && comparisonRestricts(decisions, c, authorityScope));
   })) return { error: "ruling awaits independent comparison or human resolution" };
   const selected = d.payload.options.filter((option) => a.options.includes(option.label));
+  const acceptanceOptions = d.options.filter(o => a.options.includes(o.label) && o.effects.some(e => e.on === "settle" && e.as === "accepted"
+    && (e.findings.includes(resolved.ref.id) || e.issues?.some(i => canonicalIssueKey(i) === resolved.key))));
+  const conflictingDisposition = d.options.some(o => a.options.includes(o.label) && o.effects.some(e => e.as === "refuted"
+    && (e.findings.includes(resolved.ref.id) || e.issues?.some(i => canonicalIssueKey(i) === resolved.key))));
+  if (acceptanceOptions.length && (resolved.ref.kind !== "finding" || acceptanceOptions.length !== 1 || conflictingDisposition))
+    return { error: "acceptance must select one unambiguous finding disposition" };
+  const acceptance = acceptanceOptions.length ? { by: { principal: a.by.principal }, option: acceptanceOptions[0]!.label, findingId: resolved.ref.id } : undefined;
   const display = { question: d.payload.question, answer: [a.words, ...selected.map((option) => option.description ?? "")].filter(Boolean).join("\n"),
-    context: JSON.stringify({ payload: d.payload, options: d.options }) };
+    context: JSON.stringify({ payload: d.payload, options: d.options, ...(acceptance ? { selected: a.options, answerer: a.by.principal } : {}) }) };
   const claimHash = issueClaimHash(resolved.ref.kind, issue);
   const questionOrAnswer = `${display.question}\n${display.answer}`;
   const findingLookup = resolved.ref.kind === "finding" ? lookupFinding(root, resolved.ref.id) : undefined;
@@ -111,7 +119,7 @@ async function context(root: string, input: { issue: IssueReference; answerId: s
     ? shownExactLink(questionOrAnswer, resolved.ref) ?? (unambiguous && shownExactId(questionOrAnswer, resolved.ref.id) ? resolved.ref.id : undefined)
     : shownExactId(questionOrAnswer, resolved.ref.id) ? resolved.ref.id : undefined;
   return { target: resolved, issue, decision: d, answer: a, display, displayHash: applicationDisplayHash(display),
-    claimHash, directMention, decisionFingerprint: digest(source.events.map((e) => [e.id, e.kind, e.data])) };
+    claimHash, directMention, acceptance, decisionFingerprint: digest(source.events.map((e) => [e.id, e.kind, e.data])) };
 }
 
 export interface ApplicationReceiptRef { requestId: string; receipt: string; agentId: string; callId: string }
@@ -171,7 +179,10 @@ export async function applicationReaderBrief(root: string, input: { issue: Issue
     ruling: { round: c.decision.round, question: c.decision.payload, options: c.decision.options,
       answerId: c.answer.id, words: c.answer.words, displayed: c.display },
     rationales, readerReceipts: role === "arbitrator" ? input.readers?.map((r) => r.receipt) : undefined,
-    task: role === "reader"
+    disposition: c.acceptance ? { kind: "human-accepted", ...c.acceptance } : { kind: "invalidity" },
+    task: c.acceptance
+      ? "Independently judge whether the exact shown human answer explicitly accepts this finding as real and deliberately not being fixed. A suggestion adopted for implementation is work, not acceptance; postponement requires dated backlog. Call submit_application_verdict with sound or unsound and explain the full claim coverage."
+      : role === "reader"
       ? "Independently judge whether this human ruling defeats the issue's premise. Call submit_application_verdict with this requestId, verdict sound or unsound, and your rationale."
       : "Read both independent reader rationales supplied with the request. Decide whether the ruling soundly defeats this issue; call submit_application_verdict.",
   });
@@ -315,13 +326,13 @@ export async function applyRuling(root: string, input: { issue: IssueReference; 
     const readers = receipts(verified.slice(0, input.readers.length));
     const arbitrator = input.arbitrator ? receipts(verified.slice(-1))[0] : undefined;
     const capsule: ApplicationCapsuleV1 = {
-      version: 1, key,
+      version: c.acceptance ? 2 : 1, key, ...(c.acceptance ? { acceptance: c.acceptance } : {}),
       issue: { ref: c.target.ref, key: c.target.key, openEpoch: target.openEpoch!, openState: target.state as "issued" | "created", claimHash: c.claimHash },
-      ruling: { key: c.answer.id, answerId: c.answer.id, answerEvent: c.answer.id, roundId: c.decision.round, questionId: c.decision.id,
+      ruling: { key: c.answer.id, answerId: c.answer.id, answerEvent: c.answer.id, ...(c.acceptance ? { answerer: { principal: c.answer.by.principal } } : {}), roundId: c.decision.round, questionId: c.decision.id,
         display: c.display, displayHash: c.displayHash,
         authority: { checkedAt: new Date().toISOString(), sourceFingerprint: c.decisionFingerprint, status: "current", comparison: "clear" } },
       evidence: { ...(c.directMention ? { directMention: c.directMention } : {}), readers, ...(arbitrator ? { arbitrator } : {}) },
-      reason: `The ruling ${c.answer.id} defeats this issue's premise: ${[...readers, ...(arbitrator ? [arbitrator] : [])].map((x) => x.rationale).join("; ")}`,
+      reason: `The ruling ${c.answer.id} ${c.acceptance ? "explicitly accepts this finding" : "defeats this issue's premise"}: ${[...readers, ...(arbitrator ? [arbitrator] : [])].map((x) => x.rationale).join("; ")}`,
     };
     const checked = validateApplicationCapsule(capsule, resolved.ref.kind, resolved.ref.id);
     if ("error" in checked) return { error: checked.error };

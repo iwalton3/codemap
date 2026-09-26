@@ -72,8 +72,8 @@ Unverified reported dual-sort/arbitration receipts and requirement dependencies 
 P2 eligibility. Independently admitted sorter receipts can establish mechanical eligibility. An original principal-authored owner-approved worklist survives
 later fixer participation by that principal; fixer reclassification corrections
 remain held. Ruling-context invalidation currently uses the whole local decision
-scope conservatively. The derived lifecycle slice below implements landing/drift attention on repair history; broader queue presentation
-remains P4 work; operation sign-off and skill integration remain later phases.
+scope conservatively. The derived lifecycle slice below implements landing/drift attention on repair history; queue and detail presentation now share that lifecycle contract. Exact operation
+sign-off is described in operation-signoff.md; skill deployment remains separate.
 
 ## Derived lifecycle slice
 
@@ -87,6 +87,37 @@ checks are keyed on both the checked and resolved default commits.
 Workspace and default-branch source movement raise attention while retaining
 closure history. Drift is deliberately conservative at file granularity;
 opaque inspection descriptions without an exact file or cached anchor boundary
-remain unknown. Commands stay data. This slice adds the repair history page's
-landing/drift presentation; broader queue/detail integration and explicit human
-acceptance remain unfinished P4 work.
+remain unknown. Commands stay data. The repair history page and the canonical read surfaces below carry landing/drift
+presentation; explicit human acceptance remains separate from repair adequacy.
+
+## Canonical read surfaces and human acceptance
+
+Queue, search, finding detail and decision-round detail now carry the same
+review-qualified repair presentation. Canonical closed findings leave the active
+queue immediately; search and explicit history reads retain them. These reads
+show original claim scope, exact checked commit, landing, evidence grade,
+verifiers, ruling references and prior applications. The canonical current state
+is shown alongside historical verification, so reopening cannot read as a new
+closure. Blocked or unavailable repair history remains explicitly unknown.
+
+Branch-linked PR fallback requires the checked commit to be an ancestor of the
+PR head, unchanged repair files at that head, and the PR's merge commit to be an
+ancestor of the resolved default tip. A merged status alone cannot establish
+landing. Older merges, changed source, stacked merges outside the default line
+and failed metadata remain insufficient.
+
+Explicit permanent acceptance is a separate human disposition. A verified
+selected decision effect names `as: "accepted"`; adoption for implementation is
+an unblock, and postponement uses dated backlog. The existing independent ruling
+reader checks the complete acceptance scope. A version-2 application capsule
+binds the selected effect and credited answerer into the hashed displayed
+context, rejects contradictory dispositions, and applies canonical `accepted`.
+It retains executor attribution separately and consumes the ruling–issue pair
+once. Legacy version-1 applications retain invalidity semantics. Acceptance is
+not repair proof and never closes a linked bug.
+
+Materializer 48 introduced acceptance semantics; 49 additionally introduces the
+operation sign-off event. Neither later answer revision nor source drift erases
+an applied historical closure. The source-principal attribution remains the
+existing local answer model; native account identity is not a proven mapping to
+a repository principal.

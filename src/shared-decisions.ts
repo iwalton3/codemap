@@ -56,7 +56,7 @@ export type AnswerVia =
 export interface Mapping { decision: string; option: string | null }
 
 /** One effect an answer ruled, finding by finding. */
-export interface Ruled { finding: string; on: "settle" | "unblock"; as?: "refuted" }
+export interface Ruled { finding: string; on: "settle" | "unblock"; as?: "refuted" | "accepted" }
 
 export interface FoldedAnswer {
   id: string;
@@ -292,7 +292,8 @@ export function checkDecision(d: Decision): string | null {
         || (!x.findings.length && !x.issues?.length)) return "an effect needs findings or exact issues and on: settle | unblock";
       // Refused rather than defaulted: a default would record "accepted, won't fix" as "the
       // finding was wrong" (owner, 2026-09-23).
-      if (x.on === "settle" && x.as !== "refuted") return `a settle must say how it closes — as: "refuted" is the only state until finding states can say "accepted"`;
+      if (x.on === "settle" && x.as !== "refuted" && x.as !== "accepted") return `a settle must say how it closes — as: "refuted" or "accepted"`;
+      if (x.as === "accepted" && x.issues?.some(i => i.kind === "bug")) return "human acceptance here applies only to findings; bugs retain their typed lifecycle";
       if (x.on === "unblock" && x.as !== undefined) return "an unblock closes nothing, so it takes no `as`";
     }
     if (o.park !== undefined) {

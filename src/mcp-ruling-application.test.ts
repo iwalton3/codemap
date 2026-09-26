@@ -75,3 +75,29 @@ test("MCP routes all four verbs to refusals and rejects undeclared authority fla
     assert.match(out[4]!, /unknown parameter.*agent/);
   } finally { t.dispose(); }
 });
+
+
+test("MCP operation sign-off surface preserves narrow receipt inputs and refuses authority impersonation", async () => {
+  const t = await team(["ana@acme.test"]);
+  try {
+    const root = t.all[0]!.repo;
+    const listed = await listTools(root);
+    const names = ["operation_signoff_question", "operation_signoff_reader_brief", "submit_operation_signoff_verdict", "record_operation_signoff_verdict", "apply_operation_signoff"];
+    for (const name of names) assert.equal(listed.filter(x => x.name === name).length, 1, name);
+    const apply = listed.find(x => x.name === "apply_operation_signoff")!;
+    assert.deepEqual(apply.inputSchema.required, ["operationId", "answerId", "reader"]);
+    assert.deepEqual(apply.inputSchema.properties.reader.required, ["requestId", "receipt", "agentId", "callId"]);
+    assert.equal(apply.inputSchema.properties.principal, undefined);
+    assert.match(apply.description, /never approves framing/);
+    const out = await rpc(root, [
+      { name: "operation_signoff_question", arguments: { operationId: "missing" } },
+      { name: "operation_signoff_reader_brief", arguments: { operationId: "missing", answerId: "missing" } },
+      { name: "submit_operation_signoff_verdict", arguments: { requestId: "missing", verdict: "sound", rationale: "read" } },
+      { name: "record_operation_signoff_verdict", arguments: { requestId: "missing", receipt: "r", agentId: "a12345678", callId: "c" } },
+      { name: "apply_operation_signoff", arguments: { operationId: "missing", answerId: "missing", reader: { requestId: "missing", receipt: "r", agentId: "a12345678", callId: "c" }, principal: "alice@other.test" } },
+    ]);
+    assert.equal(out.length, 5);
+    assert.match(out[0] ?? "", /draft operation|configured sidecar/);
+    assert.match(JSON.stringify(out[4]), /principal|unknown|undeclared|unexpected/);
+  } finally { t.dispose(); }
+});

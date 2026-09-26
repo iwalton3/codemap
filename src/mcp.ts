@@ -1239,6 +1239,40 @@ const tools: Tool[] = [
     handler: (a, c) => ops.recordReading(c.universe.path, a as never),
   },
   {
+    name: "operation_signoff_question",
+    description: "Prepare the complete exact draft operation and framing context for an explicit human choice: plan only or sign off this operation. Post the returned payload as a decision before asking it verbatim. Preparation, drafting and plan-only answers sign nothing; framing and ratification remain separate.",
+    inputSchema: obj({ operationId: { type: "string" }, ref: { type: "string", description: "Decision reference shown in the exact question; defaults to D1." } }, ["operationId"]),
+    handler: (a, c) => ops.operationSignoffQuestion(c.universe.path, a as never),
+  },
+  {
+    name: "operation_signoff_reader_brief",
+    description: "Issue the exact operation, shown human answer and context for one independently launched application reader. Launch a fresh supported reader with this prompt exactly; native formats without verified reader receipts remain unsupported. The reader submits its own verdict, then the coordinator records its successful call receipt. A brief never signs anything.",
+    inputSchema: obj({ operationId: { type: "string" }, answerId: { type: "string" } }, ["operationId", "answerId"]),
+    mutates: true,
+    handler: (a, c) => ops.operationSignoffReaderBrief(c.universe.path, a as never),
+  },
+  {
+    name: "submit_operation_signoff_verdict",
+    description: "Independent reader submits sound or unsound for the exact shown operation-signing human answer. Matching labels, partial approval and contradictory text are insufficient. This holds a receipt and grants no sign-off authority.",
+    inputSchema: obj({ requestId: { type: "string" }, verdict: { type: "string", enum: ["sound", "unsound"] }, rationale: { type: "string" } }, ["requestId", "verdict", "rationale"]),
+    mutates: true,
+    handler: async (a, c) => ops.submitOperationSignoffVerdict(c.universe.path, a as never),
+  },
+  {
+    name: "record_operation_signoff_verdict",
+    description: "Authenticate the independently launched reader's exact brief, submitted call and successful result receipt. Unsupported or missing provenance stays pending and cannot sign an operation.",
+    inputSchema: APPLICATION_RECEIPT_REF,
+    mutates: true,
+    handler: async (a, c) => ops.recordOperationSignoffVerdict(c.universe.path, a as never),
+  },
+  {
+    name: "apply_operation_signoff",
+    description: "Apply an exact verified human operation-signing answer after independent reader validation. Pull and recheck current draft operation text, framing context and human authority; changed, unavailable or conflicting inputs refuse. Credit the human answerer, retain the agent executor, and sign only this operation. This never approves framing, other operations or ratification.",
+    inputSchema: obj({ operationId: { type: "string" }, answerId: { type: "string" }, reader: APPLICATION_RECEIPT_REF }, ["operationId", "answerId", "reader"]),
+    mutates: true,
+    handler: (a, c) => ops.applyOperationSignoff(c.universe.path, a as never),
+  },
+  {
     name: "application_reader_brief",
     description: "Issue an immutable, full claim-and-ruling brief for an independent application reader. Name the exact shared finding or bug and verified human answer. Reader slots 1 and 2 use role reader; when two readers disagree, role arbitrator in slot 3 requires their two recorded, independently launched receipts and includes both rationales. Launch a NEW general-purpose subagent (not a fork) with the returned prompt exactly, send it no message before its verdict, then have that subagent call `submit_application_verdict`. A brief alone does not close the issue.",
     inputSchema: obj({
@@ -1257,7 +1291,7 @@ const tools: Tool[] = [
     inputSchema: obj({
       requestId: { type: "string", description: "Exact requestId returned by application_reader_brief." },
       verdict: { type: "string", enum: ["sound", "unsound"] },
-      rationale: { type: "string", description: "Why the ruling does or does not defeat this issue's premise." },
+      rationale: { type: "string", description: "Why the ruling defeats the premise or explicitly accepts the complete finding as real and deliberately not being fixed." },
     }, ["requestId", "verdict", "rationale"]),
     mutates: true,
     handler: async (a, c) => submitApplicationVerdict(c.universe.path, a as never),

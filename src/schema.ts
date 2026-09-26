@@ -1724,7 +1724,55 @@ export function requirementIdFor(operationId: string): string {
  * these per member; there is no section-shaped row, because the thing a ratification has
  * to check is an operation.
  */
+export interface OperationSignoffCapsule {
+    version: 1;
+    key: string;
+    operationId: string;
+    specId: string;
+    content: Record<string, string>;
+    framing: Record<string, string>;
+    ruling: {
+        answerId: string;
+        decisionId: string;
+        ref: string;
+        universe: string;
+        sourceScope: string;
+        via: string;
+        sourceReceipt?: CodexQuestionReceipt;
+        questionnaire?: Record<string, unknown>;
+        principal: string;
+        responseHash: string;
+        display: AskedQuestion;
+        selected: string[];
+        words: string;
+        verified: true;
+        status: 'current';
+        comparison: 'clear';
+        sourceFingerprint: string;
+        checkedAt: string;
+    };
+    reader: {
+        id: string;
+        requestId: string;
+        session: string;
+        launch: string;
+        callId: string;
+        prompt: string;
+        displayHash: string;
+        verdict: 'sound';
+        rationale: string;
+    };
+    executor: Actor;
+    seal: {
+        producerKeyId: string;
+        publicKey: string;
+        signature: string;
+    };
+}
+
 export interface ProposalWitness {
+  /** Validated human authority and the separate agent executor, when applied by receipt. */
+  application?: OperationSignoffCapsule;
   id: string;
   specId: string;
   /**
@@ -2263,9 +2311,8 @@ export interface DecisionEffect {
   issues?: CanonicalIssueReference[];
   /** `settle` closes the findings when carried out; `unblock` releases them as fix work. */
   on: "settle" | "unblock";
-  /** How a settle closes them — required on a settle and refused on an unblock. Only
-   *  `refuted` until finding states gain a place for "accepted" (owner, 2026-09-23). */
-  as?: "refuted";
+  /** How a settle closes them — required on a settle and refused on an unblock. Acceptance is a human disposition distinct from factual refutation. */
+  as?: "refuted" | "accepted";
 }
 
 export interface DecisionOption {

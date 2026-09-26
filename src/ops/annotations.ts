@@ -1,3 +1,4 @@
+import { findingRepairPresentations, repairPresentationKey } from "./repair-presentation.js";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { type Actor, type Anchor, type LogicalNode, type BugSeverity, type BugWitness, type Annotation, type Disposition, DISPOSITIONS, COMMENT_MAX } from "../schema.js";
@@ -628,6 +629,7 @@ export interface QueueItem {
    */
   tier?: FindingTier;
   /** What HAPPENED about it — the axis `tier` and `disposition` do not carry. */
+  repair?: Awaited<ReturnType<typeof findingRepairPresentations>> extends Map<string, infer P> ? P : never;
   remediation?: Remediation;
   publishState?: PublishState;
   /**
@@ -816,6 +818,7 @@ export async function reviewQueue(
   let pending = everything.filter((a) => assignedOnly
     ? a.assignment && !a.resolved && (opts.includeAnswered || !a.outcome)
     : (a.kind === "finding" || a.kind === "question") && (opts.includeResolved || !a.resolved));
+  if (!opts.includeResolved) pending = pending.filter(a => !rowOf.get(a) || !isClosed(rowOf.get(a)!.state));
   if (opts.ids) { const want = new Set(opts.ids); pending = pending.filter((a) => want.has(a.id)); }
   if (opts.pr !== undefined) {
     // A pull request's findings include its linked branches' (`branch:<name>` keys).
@@ -877,10 +880,12 @@ export async function reviewQueue(
     return { targetResolved: false, ...(at ? { targetAt: at } : {}) };
   };
 
+  const repairs = await findingRepairPresentations(root, page.flatMap(a => rowOf.get(a) ? [rowOf.get(a)!] : []));
+  const repairFor = (a: Annotation) => rowOf.get(a) ? repairs.get(repairPresentationKey(rowOf.get(a)!)) : undefined;
   const heldNote = withheld ? { withheld: { count: withheld, why: "a person's ruling holds these for the verifier, or they are still undecided — see `decision_rounds`" } } : {};
   if (opts.brief !== false) {
     const brief: QueueItem[] = page.map((a) => ({
-      id: a.id, kind: a.kind, severity: a.severity, category: a.category,
+      repair: repairFor(a), id: a.id, kind: a.kind, severity: a.severity, category: a.category,
       disposition: a.disposition ?? "open", tier: tierOf.get(a.id) ?? tierOfAnnotation(a),
       remediation: remediationOf.get(a.id) ?? "outstanding",
       publishState: publishStateOf(a, pushedIds),
@@ -934,7 +939,7 @@ export async function reviewQueue(
       } catch { /* file gone — the finding still stands, the agent will see it missing */ }
     }
     queue.push({
-      id: a.id, kind: a.kind, severity: a.severity, category: a.category, text: a.text,
+      repair: repairFor(a), id: a.id, kind: a.kind, severity: a.severity, category: a.category, text: a.text,
       line: a.line, author: a.author, assignment: a.assignment, target: a.target,
       file: anc?.file, symbol: anc?.symbolPath.join(" › "), startLine: anc?.loc?.startLine, code,
       // Where the source came from, when it is not the working tree — an agent asked

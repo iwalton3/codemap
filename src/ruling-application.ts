@@ -21,7 +21,9 @@ export interface ApplicationReaderReceipt {
 }
 
 export interface ApplicationCapsuleV1 {
-  version: 1;
+  version: 1 | 2;
+  /** Version 2 binds explicit acceptance to the verified human choice. */
+  acceptance?: { by: Actor; option: string; findingId: string };
   key: string;
   issue: {
     ref: ApplicationIssueRef;
@@ -35,6 +37,7 @@ export interface ApplicationCapsuleV1 {
     key: string;
     answerId: string;
     answerEvent: string;
+    answerer?: { principal: string };
     roundId: string;
     questionId: string;
     display: { question: string; answer: string; context: string };
@@ -137,10 +140,30 @@ const receipt = (v: unknown, issueHash: string, rulingHash: string): v is Applic
 export function validateApplicationCapsule(
   raw: unknown, kind: "finding" | "bug", subject: string,
 ): { capsule: ApplicationCapsuleV1 } | { error: string } {
-  if (!obj(raw) || raw.version !== 1) return { error: "unsupported or missing application capsule version" };
+  if (!obj(raw) || raw.version !== 1 && raw.version !== 2) return { error: "unsupported or missing application capsule version" };
   const c = raw as unknown as ApplicationCapsuleV1;
   if (!obj(c.issue) || !obj(c.issue.ref) || !obj(c.ruling) || !obj(c.evidence)) return { error: "incomplete application capsule" };
   const ref = c.issue.ref;
+  if (c.version === 1 && c.acceptance !== undefined) return { error: "legacy application cannot carry acceptance" };
+  if (c.version === 2) {
+    const a = c.acceptance;
+    if (kind !== "finding" || !obj(a) || !obj(a.by) || !str(a.by.principal) || a.by.via !== undefined
+      || !str(a.option) || a.findingId !== subject) return { error: "acceptance requires a human principal and exact finding" };
+    let shown: any;
+    try { shown = JSON.parse(c.ruling.display.context); } catch { return { error: "acceptance context is not comparable" }; }
+    if (!obj(c.ruling.answerer) || !str(c.ruling.answerer.principal) || c.ruling.answerer.principal !== a.by.principal
+      || !obj(shown) || shown.answerer !== a.by.principal || !Array.isArray(shown.options) || !Array.isArray(shown.selected)
+      || !shown.selected.every(str) || !shown.options.every((o: any) => obj(o) && str(o.label) && Array.isArray(o.effects)
+        && o.effects.every((e: any) => obj(e) && Array.isArray(e.findings) && e.findings.every(str)
+          && (e.issues === undefined || Array.isArray(e.issues) && e.issues.every((i: any) => obj(i))))))
+      return { error: "acceptance context or answering principal is invalid" };
+    const targets = (e: any) => e.findings.includes(subject) || e.issues?.some((i: any) => i.kind === "finding" && canonicalIssueKey(i) === c.issue.key);
+    const selected = shown.options.filter((o: any) => shown.selected.includes(o.label));
+    const accepting = selected.filter((o: any) => o.effects.some((e: any) => e.on === "settle" && e.as === "accepted" && targets(e)));
+    if (accepting.length !== 1 || accepting[0].label !== a.option
+      || selected.some((o: any) => o.effects.some((e: any) => targets(e) && (e.on !== "settle" || e.as !== "accepted"))))
+      return { error: "acceptance is not the selected exact finding disposition" };
+  }
   if (ref.kind !== kind || ref.id !== subject || !str(ref.universe) || !str(ref.scope)
     || (kind === "finding" && (!str((ref as { review?: string }).review)
       || expectedFindingScope(ref as Extract<ApplicationIssueRef, { kind: "finding" }>) !== ref.scope))

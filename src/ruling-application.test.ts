@@ -165,3 +165,75 @@ test("capsule checks correspondence and independent reader receipts", () => {
   indirect.evidence.readers.push({ ...indirect.evidence.readers[0]!, id: "receipt_2" });
   assert.match((validateApplicationCapsule(indirect, "finding", f.id) as { error: string }).error, /independently launched/);
 });
+
+
+test("acceptance capsule requires exact selected human disposition and preserves the consumed act", () => {
+  const f = fixture("finding");
+  const cap = f.make();
+  cap.version = 2;
+  cap.ruling.answerer = { principal: human.principal };
+  cap.acceptance = { by: human, option: "Accept permanently", findingId: f.id };
+  cap.ruling.display = { question: `Accept ${f.id} as real and deliberately not being fixed?`, answer: "Accept permanently",
+    context: JSON.stringify({ answerer: human.principal, selected: ["Accept permanently"], options: [{ label: "Accept permanently", effects: [{ findings: [f.id], on: "settle", as: "accepted" }] }] }) };
+  cap.ruling.displayHash = applicationDisplayHash(cap.ruling.display);
+  cap.evidence.readers[0]!.rulingHash = cap.ruling.displayHash;
+  assert.ok("capsule" in validateApplicationCapsule(cap, "finding", f.id));
+  const accepted = f.fold([f.created, f.app("02", cap)]).get(f.id)!;
+  assert.equal(accepted.state, "accepted");
+  assert.deepEqual(accepted.closed?.by, human);
+  assert.equal(f.fold([f.created, f.app("02", cap), f.reopen("03", "02"), f.app("04", cap)]).get(f.id)!.state, "created");
+  for (const mutate of [
+    (c: any) => c.version = 1,
+    (c: any) => c.acceptance.by = agent,
+    (c: any) => c.acceptance.findingId = "other",
+    (c: any) => c.ruling.display.context = JSON.stringify({ selected: ["Plan only"], options: [{ label: "Accept permanently", effects: [{ findings: [f.id], on: "settle", as: "accepted" }] }] }),
+    (c: any) => c.ruling.display.context = JSON.stringify({ selected: ["Accept permanently"], options: [{ label: "Accept permanently", effects: [{ findings: [f.id], on: "unblock" }] }] }),
+  ]) {
+    const bad = structuredClone(cap); mutate(bad);
+    bad.ruling.displayHash = applicationDisplayHash(bad.ruling.display);
+    bad.evidence.readers[0]!.rulingHash = bad.ruling.displayHash;
+    assert.ok("error" in validateApplicationCapsule(bad, "finding", f.id));
+    assert.equal(f.fold([f.created, f.app("02", bad)]).get(f.id)!.state, "issued");
+  }
+});
+
+test("acceptance replay refuses malformed context and contradictory selected effects without crashing", () => {
+  const f = fixture("finding");
+  const make = (context: unknown) => {
+    const c = f.make(); c.version = 2;
+    c.acceptance = { by: human, option: "Accept", findingId: f.id };
+    c.ruling.answerer = { principal: human.principal };
+    c.ruling.display = { question: `Accept ${f.id}?`, answer: "Accept", context: JSON.stringify(context && typeof context === "object" ? { ...context, answerer: human.principal } : context) };
+    c.ruling.displayHash = applicationDisplayHash(c.ruling.display);
+    c.evidence.readers[0]!.rulingHash = c.ruling.displayHash;
+    return c;
+  };
+  const effect = { findings: [f.id], on: "settle", as: "accepted" };
+  const accept = { label: "Accept", effects: [effect] };
+  const good = make({ selected: ["Accept"], options: [accept] });
+  assert.equal(f.fold([f.created, f.app("02", good)]).get(f.id)!.state, "accepted");
+  const malformed: unknown[] = [
+    null, { selected: ["Accept"], options: {} }, { selected: ["Accept"], options: [null] },
+    { selected: ["Accept"], options: [{ label: "Accept", effects: {} }] },
+    { selected: ["Accept"], options: [{ label: "Accept", effects: [null] }] },
+    { selected: ["Accept"], options: [{ label: "Accept", effects: [{ ...effect, findings: {} }] }] },
+    { selected: ["Accept"], options: [{ label: "Accept", effects: [{ ...effect, issues: [null] }] }] },
+    ...[{ label: "Refute", effects: [{ ...effect, as: "refuted" }] },
+      { label: "Work", effects: [{ findings: [f.id], on: "unblock" }] },
+      { label: "Also accept", effects: [effect] }].map(other => ({ selected: ["Accept", other.label], options: [accept, other] })),
+  ];
+  for (const context of malformed) {
+    const bad = make(context);
+    assert.ok("error" in validateApplicationCapsule(bad, "finding", f.id));
+    const result = f.fold([f.created, f.app("02", bad)]).get(f.id)!;
+    assert.equal(result.state, "issued");
+    assert.equal(result.applications?.[0]?.status, "refused");
+  }
+  const stranger = structuredClone(good);
+  stranger.acceptance!.by = { principal: "stranger@example.test" };
+  assert.ok("error" in validateApplicationCapsule(stranger, "finding", f.id));
+  assert.equal(f.fold([f.created, f.app("02", stranger)]).get(f.id)!.state, "issued");
+  stranger.ruling.answerer = { principal: "stranger@example.test" };
+  assert.ok("error" in validateApplicationCapsule(stranger, "finding", f.id), "answerer remains bound to the reader's hashed shown context");
+  assert.equal(f.fold([f.created, f.app("02", stranger)]).get(f.id)!.state, "issued");
+});

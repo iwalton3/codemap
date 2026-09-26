@@ -246,7 +246,7 @@ import { readScopeChecked, sortEvents, SHARD_EXT, type LogEvent, type ScopeDiagn
 // projected with findings. Unchanged shards must replay after this upgrade.
 // 45 -> 46: sealed repair verification records join the findings projection.
 // 46 -> 47: independently sealed sorter receipts now affect repair eligibility.
-export const MATERIALIZER_VERSION = 47;
+export const MATERIALIZER_VERSION = 49;
 
 /**
  * What the events in a scope are, cheaply.

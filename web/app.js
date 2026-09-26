@@ -1,3 +1,4 @@
+import { repairPresentation } from './repair-presentation.js';
 /**
  * codemap web UI — router-driven pages over the JSON API (src/serve.ts).
  * Read-only exploration; documenting happens through the agent/MCP.
@@ -1643,7 +1644,7 @@ class SearchPage extends Component {
     // INSIDE the middle cell.
     return html`<a class="sym ${f.closed ? 'shut' : ''}" href="${href(sharedUrl(u, f.pr), { f: f.id })}">
       <span class="k">${f.state}</span>
-      <span>${f.summary}${when(f.backlogged, () => html` <span class="pill" title="${f.backlogged.reason}">backlogged until ${f.backlogged.until}</span>`)}</span>
+      <span>${f.summary}${repairPresentation(f.repair)}${when(f.backlogged, () => html` <span class="pill" title="${f.backlogged.reason}">backlogged until ${f.backlogged.until}</span>`)}</span>
       <span class="muted">#${f.pr}</span>
     </a>`;
   }

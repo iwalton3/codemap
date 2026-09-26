@@ -792,7 +792,7 @@ test("posting refuses what the rulings forbid, and accepts the same decision wit
   const refused = (d: any) => checkDecision(d);
   assert.equal(refused(good), null, "the positive every refusal below varies");
   assert.match(refused({ ...good, options: [{ label: "A", effects: [{ findings: ["F1"], on: "settle" }] }, good.options[1]] })!, /must say how it closes/);
-  assert.match(refused({ ...good, options: [{ label: "A", effects: [{ findings: ["F1"], on: "settle", as: "accepted" }] }, good.options[1]] })!, /must say how it closes/);
+  assert.match(refused({ ...good, options: [{ label: "A", effects: [{ findings: ["F1"], on: "settle", as: "unsupported" }] }, good.options[1]] })!, /must say how it closes/);
   assert.match(refused({ ...good, options: [{ label: "A", effects: [{ findings: ["F1"], on: "unblock", as: "refuted" }] }, good.options[1]] })!, /takes no `as`/);
   assert.match(refused({ ...good, options: [{ label: "A", effects: [settle()] }, good.options[1]] })!, /needs findings/);
   const multiPark = D("dp", "D8", q("D8: park?", ["Park until 2026-10-15", "Now"], true), [{ label: "Park until 2026-10-15", effects: [], park: "2026-10-15" }, { label: "Now", effects: [] }]);

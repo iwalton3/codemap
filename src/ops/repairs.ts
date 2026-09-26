@@ -35,7 +35,7 @@ export async function repairRecords(root: string, review: number | string) {
     const sort = records.sorts.find(s => s.input.id === request.capsule.sort.id);
     const evidence = records.evidence.find(e => e.input.id === request.capsule.evidence.id);
     const ids = request.capsule.targets.map(t => t.findingId);
-    const staleReasons: string[] = [];
+    const staleReasons: string[] = cached.status === "blocked" ? ["repair scope is blocked; current proof is unknown"] : [];
     if (decisions) {
       try {
         const context = JSON.parse(request.capsule.rulingContext);

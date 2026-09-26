@@ -1778,6 +1778,7 @@ export async function getSpec(
   spec: Spec; operations: RenderedOperation[]; adoptable: boolean; silenced: number;
   removed: Operation[]; review?: ReviewGap; signedOff: boolean;
   reviewers: { principal: string; signed: number }[];
+  operationSignoffs: ProposalWitness[];
 } | Err> {
   const sp = await readSpec(root, specId);
   if (!sp) return { error: `no spec "${specId}"` };
@@ -1852,6 +1853,7 @@ export async function getSpec(
 
   return {
     spec: sp, operations,
+    operationSignoffs: allWitnesses.filter(w => w.application),
     ...(review ? { review } : {}),
     reviewers: [...byReviewer].map(([p, subjects]) => ({ principal: p, signed: subjects.size })),
     // Served apart from `operations`, never mixed in. What the ratifier reads is what the

@@ -45,7 +45,7 @@ function version45Fingerprint(path: string, scope: string, identity: string): st
 test("repair verification replays unchanged version45 shards and retains rejected unsigned attempts", async () => {
   const t = await team(["alice@acme.test", "bob@acme.test"]);
   try {
-    assert.equal(MATERIALIZER_VERSION, 47);
+    assert.equal(MATERIALIZER_VERSION, 49);
     const root = t.all[0]!.repo, peer = t.all[1]!.repo, cfg = resolveSidecar(root)!;
     const finding = await shareFinding(root, 7, { targetKind: "anchor", targetId: "src/pay.ts#transfer", text: "negative credit accepted" }) as { id: string };
     assert.ok(finding.id);

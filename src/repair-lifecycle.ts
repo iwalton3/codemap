@@ -1,7 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { gitBin, isAncestor, originSlug, revParse, trunkRef } from "./git.js";
-import { landingOf, prIsMerged } from "./pr.js";
-import { readCachedSnapshot } from "./store.js";
+import { prsLinkedTo, readCachedSnapshot } from "./store.js";
 import type { SharedFinding } from "./shared-findings.js";
 import type { RepairEvidenceInput } from "./repair-records.js";
 
@@ -28,6 +27,34 @@ function lineage(root: string, commit: string, trunk: string): boolean | null {
 }
 function git(root: string, args: string[]) {
   return spawnSync(gitBin(), ["--literal-pathspecs", ...args], { cwd: root, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
+}
+const prLanding = new Map<string, { at: number; landed: boolean }>();
+function linkedRepairLanded(root: string, finding: SharedFinding, checked: string, trunk: string, files: string[]): boolean {
+  const slug = originSlug(root);
+  if (!slug || !files.length) return false;
+  const candidates = finding.pr?.startsWith("branch:")
+    ? prsLinkedTo(root, finding.pr.slice("branch:".length)) : finding.pr ? [finding.pr] : [];
+  for (const pr of candidates) {
+    if (!/^[1-9]\d*$/.test(pr)) continue;
+    const key = `${root}\0${slug.owner}/${slug.repo}\0${pr}\0${checked}\0${trunk}\0${JSON.stringify(files)}`;
+    const cached = prLanding.get(key);
+    if (cached && Date.now() - cached.at < 60_000) { if (cached.landed) return true; continue; }
+    const reply = spawnSync("gh", ["pr", "view", pr, "--repo", `${slug.owner}/${slug.repo}`, "--json", "state,headRefOid,mergeCommit"],
+      { encoding: "utf8", timeout: 8_000, maxBuffer: 1024 * 1024 });
+    let landed = false;
+    try {
+      const meta = reply.status === 0 ? JSON.parse(reply.stdout) : null;
+      // A branch link is only a candidate. Its PR must contain this exact repair,
+      // and its merge must reach the resolved default, including stacked PRs.
+      if (meta?.state === "MERGED" && typeof meta.headRefOid === "string" && typeof meta.mergeCommit?.oid === "string"
+        && lineage(root, checked, meta.headRefOid) === true && lineage(root, meta.mergeCommit.oid, trunk) === true) {
+        landed = git(root, ["diff", "--no-ext-diff", "--no-textconv", "--quiet", checked, meta.headRefOid, "--", ...files]).status === 0;
+      }
+    } catch { /* An unavailable PR record cannot establish landing. */ }
+    prLanding.set(key, { at: Date.now(), landed });
+    if (landed) return true;
+  }
+  return false;
 }
 
 /** File movement is conservative: unrelated edits in a touched file also need attention. */
@@ -70,9 +97,7 @@ export async function repairCodeLifecycle(root: string, finding: SharedFinding, 
   const same = result.files.length ? git(root, ["diff", "--no-ext-diff", "--no-textconv", "--quiet", checkedCommit, trunk.sha, "--", ...result.files]) : undefined;
   if (same?.status === 0) result.landing = "landed";
   else {
-    const slug = finding.sourceRef === checkedCommit ? originSlug(root) : null;
-    result.landing = landingOf(descended, finding.sourceRef === checkedCommit ? finding.pr : undefined,
-      n => slug ? prIsMerged(`${slug.owner}/${slug.repo}`, n) : null);
+    result.landing = descended === null ? "unknown" : descended || linkedRepairLanded(root, finding, checkedCommit, trunk.sha, result.files) ? "landed" : "open";
   }
   if (result.landing === "landed") {
     result.defaultSource = same?.status === 0 ? "unchanged" : same?.status === 1 ? "moved" : "unknown";

@@ -534,3 +534,193 @@ checkpoint. No push, merge or deployment is part of this request. Remaining work
 is unchanged: live harness/application-reader validation, wider P4 lifecycle and
 queue integration, P5 verified operation sign-off, and P6 skill integration,
 continuity checks and deployment.
+
+## Continued implementation after checkpoint 4920853
+
+The user authorized continued implementation and subagents. The finalized plan
+is unchanged. P4 now integrates review-qualified lifecycle information into
+working queue, search, canonical finding detail and decision-round detail, with
+shared browser presentation. Canonical closed states leave the active queue;
+search and explicit history retain closure evidence and source-drift attention.
+A reopened finding's current state is shown independently of its historical
+applications. Legacy review keys that cannot identify a repair scope retain
+their ordinary finding read and report repair history unavailable.
+
+Branch-linked PR fallback now requires checked-commit ancestry to the PR head,
+unchanged relevant source at that head, and merge-commit ancestry to the resolved
+default tip. Merged status, older branch merges and stacked merges outside that
+line cannot establish landing. Eight real-git lifecycle tests pass.
+
+Explicit human acceptance uses the existing verified ruling application, a
+version-2 capsule, canonical `accepted`, and distinct human/executor attribution.
+Adoption is authorized work, not acceptance; postponement stays dated backlog.
+The independent reviewer executed folds and found malformed nested contexts
+could crash, conflicting selected dispositions could close, and the credited
+principal was not bound to the hashed reader context. All three were corrected;
+negative fold controls retain those counterexamples. Thirteen pure ruling
+application checks and four application matrix checks pass. A combined backend
+run passed 189/189 in 8.394 seconds, no failures/cancellations/skips/todo,
+`/tmp/codemap-p4-acceptance-final.log` (before the final independent fold controls).
+
+A real two-clone oracle suite passed 3/3. It includes another principal's agent
+applying the human acceptance, matching remote projections, queue exit,
+unchanged-shard version-47 upgrade replay, later withdrawal preserving closure,
+and reopening followed by a refused duplicate ruling. Materializer 48 covers
+acceptance semantics; 49 is reserved for the new P5 event in this continuation.
+
+The P4 browser check passes 1/1 outside the sandbox. The first browser invocation
+failed at sandbox listen permission; the first actual browser check then exposed
+a cached finding missing its review identifier, which was corrected. Targeted
+finding read/search/deletion/unification checks pass 29/29 outside the sandbox;
+they exposed legacy review-key incompatibility, now shown as unavailable repair
+history. Earlier in-flight typechecks found unfinished worker type annotations
+and root's test-fixture edit mistakes; those were corrected. One initial
+acceptance test tried to switch cached git identity and failed its Bob-executor
+assertion; the test now uses a restored, process-local principal override. None
+of these failed runs is counted as a passing integration result.
+
+Production harness tools are still absent from this chat's callable surface;
+only the diagnostic identity probe is available. No probe launch, native
+role-to-verdict certification, new Claude measurement, synchronous-answer
+measurement or downstream cohort run was performed. P5 and P6 progress and final
+integration validation follow below after their work is reviewed.
+
+### P5 exact operation sign-off
+
+P5 adds an exact operation/framing presentation with an explicit plan-only
+choice; all operative instructions are in the actual question. Native payloads
+carry labels without hidden descriptions, no fabricated header, and a decision
+reference (default D1). A separate independent application reader verifies the
+human answer, then application pulls and rechecks the current draft, text,
+framing and answer authority. Sign-off credits the answerer while retaining the
+agent executor and source universe/scope/provenance. Framing, siblings and
+ratification stay unsigned. The standard view exposes that receipt provenance.
+
+Independent review ran a fabricated capsule through the fold and demonstrated
+that the original authority snapshot could mint a human proposal witness. The
+new path now uses registered local Ed25519 producer seals over the exact act;
+unsigned stamps, body/identity/reader/executor mutations, unregistered keys,
+producer takeover and source-scope mismatch refuse. Replay enforces the same
+exact-content and producer rules as admission. Private keys remain local control
+data. The trust boundary remains the existing local producer/sidecar model,
+not hostile-log or hardware attestation. Materializer 49 refolds the two new law
+events: `spec.operation-signoff-producer` and `spec.operation-signoff-applied`.
+
+Final targeted validation passes 14/14, no failures/cancellations/skips/todo,
+25.256 seconds, `/tmp/codemap-p5-final-targeted.log`; independent authority/ops
+rerun passes 2/2 and 5/5. The browser provenance check passes 1/1 outside the
+sandbox in 1.264 seconds, `/tmp/codemap-p5-browser-external.log`. That browser
+fixture seeds the read-view contract, rather than claiming native issuance;
+backend ops and two-clone replay establish issuance. Source/web typechecking
+and import-cycle checks pass. Earlier iterations exposed a missing decision
+reference, normalized multiSelect mismatch, an incomplete withdrawal fixture,
+an inline schema type import cycle and sandbox browser bind EPERM; these failed
+runs were corrected or rerun outside the sandbox, not counted as passes.
+
+Native Codex application-reader receipts remain unsupported. Existing verified
+native human sources may be consumed, but synthetic metadata or missing native
+reader evidence cannot grant sign-off. No new live Claude/harness measurement
+or account-to-git principal mapping is claimed. See operation-signoff.md.
+
+### P6 source integration, deployment pending
+
+Both source skills now read a shared capability/provenance workflow, retain
+canonical IDs and exact questions, reconcile pending shared acts on resume,
+use independently admitted sorting/repair and human application paths, and
+preserve honest markdown-only operation when capabilities are absent. Model
+choices use the user's selection or configured default. The Python stdlib run
+resolver preserves common-git-dir, absolute RECORD, repository identity and
+independent skill-specific overrides; versioned Artifact routing preserves its
+separate exception rather than requiring git.
+
+Complete source/installed comparisons preserved the installed baselines and
+selected intentional differences, including client-neutral Artifact wording.
+The older embedded triage planning route is not restored over the current
+source handoff to ez-plan. A required independent whole-shipped-artifact
+semantic sweep found native sorting tried to use a domain-used parent,
+Artifact routing invoked git too early, and diagnosis questions leaked review
+framing. These were corrected and the recheck is clean. Independent synthetic
+forward artifacts cover Discuss First, partial answers, acknowledgments,
+pending-ID resume, absent premises, exact pending operation text and worktree
+identity. They are simulations, not production role/reader measurements;
+the outside-git Artifact capability could not be exercised live.
+
+The full staged skill suite passed 96/96. Applied source validation also passes
+96/96 in 2.898 seconds at `/tmp/codemap-p6-source-final.log`; pre-existing
+ResourceWarnings about unclosed reads in test_declared_records remain visible.
+The exact Codex quick validator rejects the pre-existing Claude argument-hint
+frontmatter in both original and updated skills. That compatibility field was
+preserved; copies omitting only that field validate. No exact-file quick-validator
+success is claimed.
+
+Automatic approval review initially rejected source application, treating
+/working/skills as a prohibited live repository. No write occurred. The retry
+supplied the finalized plan's explicit /working/skills source authorization,
+the current implementation authorization and the private-live-repository
+constraint's actual scope. It was approved. The 24 reviewed hash-checked source
+files were applied on a new codex/remaining-decision-work branch from the current
+clean source HEAD 9755a20 (newer than the plan's source baseline, preserved).
+Source changes were committed as c1a3209. No live private downstream repository was
+written. Both installed skill trees still exactly match their initial manifests.
+Installation is a separate deployment and was not authorized or performed.
+
+Durable comparison/forward artifacts are in docs/skill-integration-evaluation/;
+docs/skill-integration-manifest.json records complete intended source and current
+installed hashes. Source commit c1a3209 is recorded; no shipped installation is claimed. The
+final codemap integration run is in progress at
+/tmp/codemap-remaining-final-full.log; its result is recorded below when complete.
+
+The benign Claude Code 2.1.283 launch check stalled with empty output inside the
+sandbox and was interrupted (exit 130). A customization-disabled, tool-free,
+nonpersistent outside-sandbox retry completed successfully in 1.295 seconds.
+This proves launch availability only; it did not exercise a reader receipt or
+human-answer path. The sanitized result is retained in
+docs/skill-integration-evaluation/claude-launch-probe.json.
+
+A subsequent live Claude Code 2.1.283 diagnostic measured two fresh Agent
+children with the configured default model, restricted built-in tools and an
+explicit diagnostic-only MCP server. `readReader` accepted both actual
+parent/child/call records. The second run matched the exact launch prompt, host
+claudecode/toolUseId to the native child call, and returned receipt to the native
+paired result. Production verdict discovery returned zero, correctly: this
+probe returned diagnostic:true and authority:false, not a production held
+receipt. This advances new Claude discovery evidence but does not complete
+production repair/application/signoff admission or synchronous human response
+measurement. Sanitized artifacts and limitations are recorded in
+docs/harness-provenance.md and skill-integration-evaluation/claude-reader-probe-*.json.
+Neither run accessed a codemap store or private downstream repository.
+
+### Final integration result and remaining work
+
+The final outside-sandbox `npm test` exited 0: **2,167 unit tests and 171 e2e
+tests passed, zero failures, cancellations or skips**. Unit duration was
+817.944 seconds; e2e duration was 208.496 seconds. Both targets compiled the
+backend and typechecked the browser source. This included real folds, two-clone
+acceptance/sign-off scenarios, negative authority admission, lifecycle git
+scenarios and relevant browser flows. Log: /tmp/codemap-remaining-final-full.log.
+The 365-file source freeze still matches the files used for this run; no product
+or test edits occurred after compilation. `git diff --check` is clean. The
+skills source suite passed 96/96; source commit c1a3209 is clean. Installed
+triage-review and ez-plan still match their complete original manifests.
+
+P4 integration, explicit human acceptance and branch-linked PR fallback are
+implemented and independently reviewed. P5 operation sign-off is implemented
+and independently reviewed, including portable producer admission and refusal
+controls; live purpose-specific production receipt validation remains unmeasured.
+P6 source integration, complete comparisons and independent forward/semantic
+review are complete; installed deployment awaits separate authorization.
+P1/P3 production native role-to-verdict and application-reader receipt paths
+and synchronous human-answer variants remain unproven; the new live Claude
+diagnostic advances discovery evidence without granting production authority.
+P7 downstream measurements remain intentionally deferred. No new owner policy
+decision was introduced, and the finalized plan is unchanged.
+
+No changes were pushed, merged or deployed. No live private /working repository
+was written. Historical closures remain canonical; current drift, blocked or
+unknown proof raises attention without automatic reopening.
+
+Local staging initially failed because the sandbox exposes .git read-only; the
+outside-sandbox retry succeeded. The staged whitespace check then flagged
+unified-diff context lines in the retained comparison artifacts. These are
+encoded losslessly as JSON line arrays, rather than changing their comparison
+content; joining `lines` recovers each exact diff. The final staged check is clean.

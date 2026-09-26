@@ -1,3 +1,4 @@
+import { repairPresentation } from './repair-presentation.js';
 /**
  * Decision rounds — the questions put to a person, what they ruled, and what is still owed.
  *
@@ -513,6 +514,7 @@ class DecisionsPage extends Component {
           <div class="sec">submitted rulings and revisions</div>
           ${each(one.decisions, (x) => this.decision(x, one.status === 'blocked' || !questionnaire.currentPrincipal, true), (x) => x.id)}`)}
         ${when(!questionnaire, () => html`${each(one.decisions, (x) => this.decision(x, one.status === 'blocked'), (x) => x.id)}`)}
+        ${each(one.repairs || [], (repair) => repairPresentation(repair), (repair) => repair.key)}
         ${this.views(one)}`)}
       ${when(!one && !!list, () => html`
         ${this.views(list)}

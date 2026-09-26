@@ -511,3 +511,13 @@ This is a partial implementation checkpoint, not completion of C1–C7. Explicit
 revision/withdrawal, questionnaire submission, semantic comparison, typed bug
 eligibility and one-shot issue application remain separate outstanding work. Existing
 automatic question supersession also remains to be removed.
+
+### Explicit acceptance (remaining-work Q5)
+
+A human may explicitly accept a complete finding as real and deliberately not
+being fixed. This disposition is `accepted`, distinct from fixed, refuted,
+adopted implementation work and dated backlog. An agent applies a verified
+human acceptance through the independent ruling-application reader path; it
+cannot choose acceptance as a repair verifier. The receipt binds the exact
+selected disposition and human answerer, retains the executor separately, and
+has the same one-shot ruling–issue consumption as invalidity application.
