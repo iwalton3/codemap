@@ -1188,6 +1188,7 @@ function migrate(d: DatabaseSync): void {
     try { d.exec(`ALTER TABLE reader_verdicts ADD COLUMN ${col}`); } catch { /* already present */ }
   }
   d.exec("CREATE UNIQUE INDEX IF NOT EXISTS ix_reader_verdicts_receipt ON reader_verdicts(receipt)");
+  try { d.exec("ALTER TABLE reader_work_receipts ADD COLUMN native_host TEXT"); } catch { /* already present */ }
   // anchors.derivation — NULL on rows indexed before provenance existed, which is
   // `legacy_live_derivation`: this machine cannot say how its own index was made.
   try { d.exec("ALTER TABLE anchors ADD COLUMN derivation INTEGER"); } catch { /* already present */ }

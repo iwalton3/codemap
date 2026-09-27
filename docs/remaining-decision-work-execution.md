@@ -760,3 +760,381 @@ P6 skill installation is complete. Production native/verdict and synchronous
 human-answer measurements remain outstanding; installation does not certify
 those capabilities. Nothing was pushed or merged; no private live repository
 was written.
+
+## Production capability continuation from 55a177a (2026-09-26)
+
+The authorized remaining scope was investigated with three subagents owning
+native admission tests, live Claude scratch validation and independent capability
+review. The source/installed skills checkpoint remains bf8c248; no skill edit or
+deployment was made. The finalized plan was not changed.
+
+Only the diagnostic identity probe is callable in this Desktop chat. Actual
+production claim/repair/reader tools remain absent. Shell Codex is 0.156.1, which
+cannot certify the 0.158.0-alpha.2.1 Desktop adapter. Default mode exposes no
+synchronous human-question path. No persistent configuration or existing probe
+runtime was changed. Exact nested MCP host-call correlation remains unmeasured:
+the old diagnostic retained only callId's type. Aggregate sanitized inspection
+shows plaintext nested exec source exists; that is not call identity evidence.
+See production-capabilities-2026-09-26.json and
+native-reader-source-shapes-2026-09-26.json in skill-integration-evaluation/.
+
+A new hermetic P3 negative obtains an actual held receipt and echoes it in a
+synthetic native outer exec call/result. Recording stays pending, application
+refuses, and the finding remains issued. Independent review found no actionable
+defect and confirmed its bounded claim: the current unsupported UUID guard
+refuses before parsing, so this is not a passing nested-call parser test. No
+product admission, event, fold or schema changed; native reader authority remains
+unsupported rather than admitting an unmeasured format.
+
+Build passed; the worker's application suite passed 9/9 in 6.020 seconds. The
+combined provenance/context/application/sign-off run passed **55/55**, zero
+failures, cancellations or skips, in 10.313 seconds at
+/tmp/codemap-production-boundaries-targeted.log. Browser typechecking and
+git diff --check passed. The previous 2,167 unit + 171 e2e full integration result
+remains the product-code checkpoint; it was not rerun for this test/document-only
+addition and is not presented as a new run.
+
+Real operations prepared a temporary two-clone fixture and posted LIVE-R1. The
+exact operation presentation and the explicit scratch-finding refutation question
+were displayed through the actual native async question tool. Its accepted:true
+output proves display only. A genuine reply is required before logging an answer,
+issuing either independent application brief or applying any disposition.
+No answer was fabricated and no receipt was substituted. The exact pending
+fixture is retained in production-validation-fixture-2026-09-26.json; working
+repos and resumable scripts remain under /tmp/codemap-oracle-pY6cne and
+/tmp/codemap-claude-production. Successful purpose-specific reader/application
+validation remains pending the actual human source. Rechecking through
+readCodexQuestion/logQuestion returned pending with no linked human reply; no
+answer act was written.
+
+The bounded live Claude Code 2.1.283 run exited 0 using the actual production
+dispatcher against the scratch executor clone. The bridge filtered the displayed
+tool inventory and recorded sanitized metadata; it did not replace handlers or
+results. A fresh Agent child called submit_application_verdict and
+submit_operation_signoff_verdict with absent request IDs. Both refused for missing
+briefs and issued no held receipt. readReader accepted the actual child for both
+calls, and each host claudecode/toolUseId digest and paired error result matched
+its native transcript. Evidence: claude-production-refusal-2026-09-26.json.
+This measures real purpose-specific production refusal and exact Claude call
+correlation, not successful receipt issuance/application and not the separate
+Codex-only repair role. The run used the bounded outside-sandbox path because
+the earlier sandbox launch stall was already measured; no new failed launch is
+claimed. No private /working repository was accessed or written.
+Independent review rechecked the actual dispatcher pass-through, unique native
+tool-use/host identity, same-connection response, matching refusal errors and
+absence of receipts. Result correlation compares the refusal error, not complete
+response bytes; no full-response hash attestation is claimed.
+
+Remaining limits are unchanged where no new evidence exists: live native
+role-to-verdict, native application-reader receipts, synchronous human answers,
+and successful purpose-specific P3/P5 production application remain unproven.
+Historical closures are untouched. Nothing was pushed, merged or deployed.
+
+### Human text reply and questionnaire fallback (2026-09-27)
+
+The owner reported that the async questions were not visible; a second display
+attempt also returned accepted:true. After receiving a textual explanation of
+both scratch decisions, the owner explicitly answered “Sign off this exact
+operation” and “Refute scratch finding” in ordinary chat. These are genuine human
+choices, but neither of the two original calls has the linked question-reply
+envelope required by the measured native adapter. A read-only check of both calls
+returned pending, “no linked human reply”; no answer act or receipt was written.
+The persistent scratch web questionnaire was published through postRound as
+LIVE-WEB-R1 (`00muk30acm-05219c09ee`), preserving the original round and exact
+questions/choice labels. The scratch server serves it at
+http://127.0.0.1:45259/#/u/acme-api/decisions/00muk30acm-05219c09ee/;
+metadata and publication remain in /tmp/codemap-claude-production/web-server.json
+and web-publication.json. GET readiness returned 200; the app panel open request
+returned queued. No answer POST or human attestation was performed by an agent.
+The browser attributes a human submission to the explicitly synthetic local git
+principal live-fixture@acme.test, not to a measured native account mapping.
+The text reply is not transformed into a native receipt. Successful production
+application still awaits the separate human browser submission.
+
+### Live browser source and Claude P3/P5 application (2026-09-27)
+
+The owner personally submitted the scratch questionnaire. D1 was submitted
+individually and then again with D2; both entries remain in history. The current
+answers from submission `00muk32gil-c41fd243d9` select exact-operation sign-off
+and scratch-finding refutation. An initial scratch script selected the first
+verified D1 history entry; the real operationSignoffReaderBrief refused that
+stale source. The script was corrected to use answerHasCurrentAuthority before
+issuing the sign-off brief. No admission rule was lowered.
+
+Two fresh Claude Code 2.1.283 readers in separate parent sessions received the
+exact real purpose-specific issued briefs and submitted sound verdicts through
+the actual production dispatcher. The host tool-use identities and native paired
+receipts matched. Real recordOperationSignoffVerdict/recordApplicationVerdict
+recorded the receipts; applyOperationSignoff returned folded:true and applyRuling
+returned materialized:true. Two real sharedSync passes left both scratch clones
+with one exact-operation proposal witness, one ruling application and the finding
+canonically invalid. The operation remains a draft; no framing approval or
+ratification is claimed. Evidence is retained in
+skill-integration-evaluation/claude-production-success-2026-09-27.json.
+This establishes the existing Claude P3 human-ruling application and P5
+exact-operation sign-off paths from genuine browser authority. It does not
+measure Codex-only dual repair-verifier closure or native Codex readers.
+
+Independent review passed these bounded claims after checking the actual exact
+issued prompts, fresh native launches, unique host identity and correlated RPC
+response. hostReceiptMatches means equality of the actual receipt-string digest,
+not full-response bytes. Fresh canonical reads confirmed both current browser
+sources and both clones' result. Substituting the two actual receipts across
+purposes refused in both directions; retrying each valid application returned
+the same application ID and retained one witness/one closure. These controls are
+retained in claude-production-controls-2026-09-27.json.
+Direct folds of the actual authoritative logs on both clones also confirmed
+complete scopes, draft spec, one exact-operation witness, zero framing witnesses,
+one sign-off application/producer registration and one finding application with
+state invalid (claude-production-folds-2026-09-27.json). A scratch reporting script
+initially inspected a nonexistent finding application id and printed null; the
+retained proof uses the actual application count. No fold defect was found.
+
+The prior real claim_verifier refusal is separately retained in
+claude-production-role-refusal-2026-09-26.json. Independent review confirmed its
+unsupported MCP client/version result and absence of held authority; matching
+the error field is not full-response attestation.
+
+The reported questionnaire layout defect was reproduced in the in-app panel.
+The fix preserves exact prompt text and line breaks, renders prompts as normal
+body text, and contains cards, long IDs and controls at narrow widths. At the
+actual 319px viewport, form/card/prompt scroll widths equal client widths;
+the 19-line D1 prompt remains pre-wrap with font weight 400. Existing questionnaire
+browser checks passed 3/3 outside the sandbox and web typechecking passed. Two
+focused sandbox browser launches stalled without output and were interrupted
+(130). The full sandbox npm test also stopped producing output during subprocess
+checks and was interrupted (130); these incomplete runs are not reported as
+passing or product regressions. Full npm test was restarted outside the sandbox.
+Full unrestricted npm test exited 0: the unit stage passed 2,168/2,168 in
+749.044 seconds and the end-to-end stage passed 171/171 in 207.656 seconds,
+with zero failures, cancellations or skips. Log:
+/tmp/codemap-production-continuation-full-test-unsandboxed.log.
+Screenshot: /tmp/codemap-questionnaire-wrapping-fixed.png.
+
+The owner's suggestion to present pending questions as a Codemap-window overlay
+is recorded as a follow-up design suggestion. No overlay delivery, new question
+format or transcript admission change was implemented. Skills remain unchanged;
+nothing was pushed, merged or deployed. Native production identity/role-to-verdict,
+exact nested Codex call correlation and native application-reader success remain
+unsupported where the production harness lacks the measured capabilities.
+
+### Native continuation and prepared production bridge (2026-09-27)
+
+Current discovery again lists only the diagnostic identity probe in this Desktop
+chat. Its actual call reports codex-mcp-client 0.158.0-alpha.2.1 and authority:false;
+the shell CLI remains 0.156.1. The installed probe still retains only callId's
+type. Production repair/reader tools and a synchronous Default-mode question
+path are unavailable. Independent source investigation confirmed that parsing
+plaintext outer exec source cannot supply the missing exact nested call identity.
+No admission checks were relaxed and no native reader support was claimed.
+
+A fresh oracle team was prepared at /tmp/codemap-oracle-O5sgtn, with synthetic
+native-source@acme.test and native-executor@acme.test principals. Its two local
+code/sidecar clones were initialized and synced through real operations. The
+bridge and exact proposed MCP configuration are retained under
+/tmp/codemap-native-production-2026-09-27/. Startup checks both the executor
+realpath and its sibling sidecar binding. It forwards the unchanged current
+production dispatcher and records hashed host metadata, typed RPC identities,
+arguments, receipt strings and response lines. It does not create authority.
+The fixture has no new human decisions or applied dispositions.
+
+Initial transport checks failed: early EOF raced pending bridge requests; a
+bulk direct-dispatcher EOF also truncated the large inventory output. The bridge
+now drains outstanding responses, and the smoke awaits each response. A
+sequential sandbox run timed out and was cleaned up by captured process ID; the
+same smoke outside the sandbox passed. Independent review additionally found
+child-exit/fatal-input cleanup defects and numeric/string RPC digest collision;
+these were repaired before preparing installation. Unrestricted checks confirm
+exact response-line equality against the direct dispatcher, production inventory,
+missing-metadata claim refusal, bridge exit after dispatcher death with host input
+still open, duplicate outstanding identity refusal, and distinct typed RPC digests.
+These are synthetic transport/lifecycle checks, not live native role admission,
+reader receipts, complete response attestation or repair closure.
+Independent re-review found no remaining blocking issue in this preparation;
+path confinement is a startup check for a controlled scratch fixture.
+
+Sanitized evidence is production-capabilities-2026-09-27.json in
+docs/skill-integration-evaluation/. Existing intentional edits and historical
+Claude successes remain intact. Product, event, fold and skill code were not
+changed; the earlier full 2,168 unit + 171 e2e result remains historical and was
+not rerun for scratch transport preparation and documentation. No configuration
+was installed, and nothing was committed, pushed, merged or deployed. The
+attachment's separate-deployment boundary leaves the prepared Desktop MCP entry
+awaiting authorization; actual native measurement requires its installation and
+an app restart before fresh direct children can use it.
+
+The owner subsequently authorized installation (“Yes go ahead”). The reviewed
+codemap_native_production_measurement MCP entry was appended to the Desktop
+configuration with all existing bytes preserved, a pre-write digest guard and
+TOML validation. The exact installed entry was reread and verified; a private
+configuration backup remains in the scratch directory. No app restart was
+performed by the agent. Production capability measurement remains pending the
+owner’s restart; installation alone grants no reader receipt or repair authority.
+
+### CLI continuation: actual production refusal and nested correlation
+
+On continuation the installed scratch production tools became callable. The
+actual initialized MCP client and shell CLI are now 0.157.1. A newly launched
+direct child with fork_turns:none called the unchanged real claim_verifier
+handler before any domain use. It refused with “unsupported verifier context:
+Codex: unsupported MCP client/version” and issued no role or held authority.
+The owner clarified that they switched to Codex CLI because Desktop was crashing.
+The child header still says Codex Desktop, and the parent header retains the old
+0.158.0-alpha.2.1/vscode source. These historical labels therefore do not prove
+the current frontend. The production version pin was not broadened.
+
+This run closes one discovery gap: an actual event_msg/item_completed/McpToolCall
+item has an ID whose digest exactly matches the nested host callId. The outer
+exec call_id differs. The native item also matches the actual server/tool,
+thread/turn, argument digest and serialized result-object digest. Its result is
+the actual unsupported-version refusal. This does not attest the complete JSON-RPC
+response line, admit a role, issue a reader receipt or establish Desktop support.
+Independent private-record inspection confirmed both this correlation and all
+existing freshness checks apart from version admission. No raw account/session
+identities were copied to the repository. Sanitized evidence is
+skill-integration-evaluation/native-production-cli-refusal-2026-09-27.json.
+
+The changed native format supports a diagnostic-only correlation extractor and
+adversarial tests; production CLI authority requires its own provenance contract.
+Native reader admission and supported Desktop live role-to-verdict measurement
+remain outstanding. No human policy question or further app restart was requested
+while the owner is using CLI.
+
+Implemented src/codex-mcp-observation.ts as a pure version-specific diagnostic
+extractor, with no production admission/reader/producer references. Every outcome
+explicitly carries diagnostic:true and authority:false. It checks the exact
+observed host identities and native completed item, tool/server, arguments,
+result serialization, completion interval and uniqueness; torn or ambiguous
+records refuse. The synthetic adversarial suite passed 26/26, backend build and
+web typecheck passed, and independent review found no blocking issue. The reviewer
+also reran all 26 checks. Its exact JSON serialization comparison is deliberately
+order-sensitive; it does not canonicalize away byte-shape differences.
+
+The extractor was then run on the actual CLI refusal record. Expectations were
+reconstructed from the native record only after comparison with the retained
+actual host identity/argument/result digests. It returned matched:true with
+authority:false. This is diagnostic correlation of the refusal, not independent
+reader validation. The durable CLI evidence includes the sanitized observation
+and precise limitations. No product authority integration occurred, so the full
+suite was not rerun; the preceding 2,168 unit + 171 e2e result remains historical.
+git diff --check passed. No new dependency, skill change, disposition, commit,
+push, merge or further deployment occurred. Supported Desktop live production
+validation and an authoritative CLI provenance contract remain outstanding.
+
+### Native CLI authority integration and live repair validation
+
+Implemented a separate CLI continuation contract, leaving the measured Desktop
+and human-answer adapters intact. Admission pins MCP client/child 0.157.1,
+historical parent 0.158.0-alpha.2.1, direct fork_turns:none lineage and server alias
+codemap_native_production_measurement. Active host thread/session/parent/turn
+metadata must agree with the unique initial task. The dispatcher replays actual
+completed request arguments and results against unique native McpToolCall items.
+Outer exec identities cannot substitute. Existing durable freshness, participant,
+role and independence gates remain in force. No version/alias wildcard was added.
+
+Independent review found a real chronology defect: a completed native item moved
+before task_started could pass. Completions now must follow both startup and the
+initial agent task, with their execution interval beginning after startup and
+child creation. Regression controls also cover outer custom-call collisions.
+The first two live sorter attempts then refused because the implementation had
+assumed the unmeasured child-kind enum agent. A fresh literal-retaining probe
+showed thread_spawn; its digest matched the original real claim and both refused
+sorters. The exact enum was corrected, agent gained a negative control, and an
+independent reviewer confirmed no other admission checks changed. The initial
+full-suite run was interrupted with 130 for that correction; it is incomplete.
+
+The corrected contract then completed an actual native production workflow in
+the isolated oracle fixture. Two fresh independent sorter children inspected
+the as-filed synthetic claim that identity(value) doubles numeric input and
+submitted sealed factual-refutation assessments. A separate native refuter ran
+the actual numeric check and recorded protocol fixer participation. The sort and
+execution evidence were recorded through operations, with no invented principal
+approval. A fresh claimed orchestrator issued the immutable request, and two
+new same-model blind verifiers obtained their bounded briefs and reran useful
+as-filed evidence. One initial submission was refused because it had not rerun
+the exact supplied useful check; its real rerun passed and the retry sealed.
+The original uninterrupted orchestrator applied the two sealed results. A repeat
+application refused as one-shot per finding epoch, leaving exactly one closure.
+
+After two passes of sharedSync on both scratch clones, independent direct
+foldRepairRecords/foldRepairVerification/foldFindings execution agrees with the
+projections: one eligible dual sort, one distinct fixer, two distinct child
+verifiers separate from fixer/orchestrator, executable factually-refuted results,
+one application and finding state refuted, no rejected fold events. The reviewer
+also independently executed the pinned source. Actual native completed verifier
+calls match bridge host call identity, arguments and result-object serialization
+digests: two successes and the initial refusal. Same-model status is checked from
+both actual native turn contexts. This is a synthetic scratch factual refutation,
+not downstream production improvement or a live Desktop/all-CLI certification.
+
+### Native purpose-specific readers: held receipts, exact-brief refusal
+
+Added an opaque in-process submission capability, minted only from actual
+initialized client and host metadata by the production dispatcher. It binds the
+tool, request, verdict and rationale to an immutable machine-local native_host
+column on the held receipt. Recording/application re-read the unique native
+successful call/result, fresh lineage and exact issued launch prompt; native
+failures cannot fall back to Claude verification. Native reader identity uses the
+actual child session, retaining parent provenance locally, so independent siblings
+remain distinct. The local nullable-column upgrade uses existing backup behavior
+and preserves legacy rows. No shared event vocabulary or materializer meaning
+changed. Cleartext positive and adversarial checks are hermetic fixtures.
+
+For live measurement, two new isolated code/sidecar clones preserve the original
+history at 02f29b45298e92c439a6373c0099a044bc0d2bda: genuine browser D1/D2 answers,
+before the earlier Claude applications. Original historical closures were not
+reopened or edited. Fresh DBs and real sharedSync yielded current authority,
+draft spec, zero witnesses/applications and a created finding. Two initial scratch
+setup attempts incorrectly expected the state name open and stopped; the final
+baseline checks created. The coordinator launched both fresh purpose-specific
+readers using the issued plaintext as its tool input; the native sources cannot
+attest that exact text. Each submitted its own sound verdict through real MCP,
+which held receipts. Host/native call, arguments, successful
+result and receipt-string digests match.
+
+Recording refused both receipts: current native sources store matching ciphertext
+in the parent launch message and child encrypted_content field. The source proves
+same-token delivery and fresh lineage, but cannot map that token to the issued
+plaintext brief. The attempted record/apply script stopped at the first recording
+refusal; no application was attempted by it. Subsequent separate checks confirm
+both pending refusals and zero sign-offs/finding applications on both historical
+replay clones. Independent review agrees the accepted opaque-role risk does not
+waive purpose-specific exact-brief authentication. Native reader application
+remains unfinished pending a trusted launch/token-to-issued-request delivery
+binding or verified decryption. No receipt, human answer or metadata was fabricated.
+
+The scratch bridge manifest was restored to its original native repair fixture
+after measurement. No further persistent configuration change was made. Sandbox
+Git/subprocess EPERM occurred in live source checks and a fold-proof run;
+appropriate direct extraction or approved external reruns succeeded. A private
+result-envelope assertion and a scratch Python typo delayed the verifier-ready
+marker; it was written only after both actual successful sealed runs were checked.
+Raw native identifiers were inadvertently displayed in private tool output during
+inspection, but were not copied into repository evidence. Durable evidence uses
+only sanitized identity/call digests.
+
+Evidence: skill-integration-evaluation/native-cli-role-kind-refusal-2026-09-27.json,
+native-production-repair-folds-2026-09-27.json and
+native-production-readers-refusal-2026-09-27.json. Authority code received independent
+review before live positive admission. Focused integration checks passed 129/129
+before the additional chronology/enum controls; final provenance checks passed
+78/78 and native reader checks 24/24. The required corrected full npm test run
+exited 0: 2,265 unit checks and 171 e2e checks passed, zero failures,
+cancellations or skips, 681.837s unit and 203.953s e2e. Log:
+/tmp/codemap-native-integration-full-test-2026-09-27-final.log.
+
+After that full run, the legacy/unbound native-reader error was clarified to name
+the missing purpose-specific host binding instead of saying all native receipt
+recording was unimplemented. Two focused attempts each passed 47/48: the same
+test had two successive assertions expecting obsolete message phrases. Both
+expectations were updated; no admission behavior changed. The final build and
+focused transcript/native-reader/application checks passed 48/48, zero failures,
+cancellations or skips (6.387s), and git diff --check passed. Final focused log:
+/tmp/codemap-native-reader-diagnostic-final-check-success.log.
+
+Remaining limits are precise: current opaque native reader launches cannot
+authorize P3/P5 record/application; synchronous human-question variants are
+unmeasured and no new policy question is needed; Claude repair-role admission
+remains unsupported; native account-to-git-principal mapping and complete RPC-line
+attestation remain unproven. Existing genuine Claude/browser P3/P5 successes stand.
+No new dependency, skill edit, commit, push, merge or further deployment occurred.

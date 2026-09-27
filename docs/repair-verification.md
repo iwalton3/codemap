@@ -61,12 +61,18 @@ capability from the admitted boundary is required to issue a seal. This proves
 local producer issuance within the existing trusted-machine/sidecar model; it
 is not remote hardware attestation or a defence against a hostile log writer.
 
-Support remains pinned to measured direct native Codex children on Desktop
-0.158.0-alpha.2.1. The production role-to-verdict workflow has not been measured
-live. Domain freshness and recorded participants cannot prove a session never
-fixed code through shell tools. Opaque initial prompts remain the owner's
-accepted limitation. New Claude measurements, native application-reader verdict
-recording and synchronous variants remain unfinished.
+Support includes the pinned Desktop 0.158.0-alpha.2.1 profile and a separate
+measured CLI continuation (client/child 0.157.1, historical parent
+0.158.0-alpha.2.1, exact measurement server alias). The latter completed a live
+dual-sort, participant, fresh orchestrator and two blind executable-verifier
+factual-refutation application in an isolated fixture. It does not establish a
+live Desktop workflow or other versions/aliases. Domain freshness and recorded
+participants cannot prove a session never fixed code through shell tools.
+Opaque initial prompts remain the owner's accepted role-admission limitation.
+Purpose-specific native application readers still refuse current opaque launch
+records because those cannot prove the exact issued brief. Claude human-ruling
+and operation sign-off reader successes are recorded separately; Claude repair
+role admission and synchronous human-answer variants remain unproven.
 
 Unverified reported dual-sort/arbitration receipts and requirement dependencies still hold
 P2 eligibility. Independently admitted sorter receipts can establish mechanical eligibility. An original principal-authored owner-approved worklist survives

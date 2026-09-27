@@ -94,6 +94,6 @@ test("partial native replies stay separate and multiple replies require exact se
 test("a Codex child identity does not masquerade as supported reader provenance", () => {
   const got = readReader(CODEX_SESSION, "call_verdict");
   assert.ok(isUnverified(got));
-  assert.match(got.unverified, /unsupported.*native verdict receipt recording/);
-  assert.match(got.unverified, /opaque launch prompts are an accepted risk/);
+  assert.match(got.unverified, /unsupported.*purpose-specific host binding/);
+  assert.match(got.unverified, /bare native ID or outer exec receipt/);
 });

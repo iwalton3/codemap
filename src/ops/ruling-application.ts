@@ -13,6 +13,7 @@ import { foldBugs, type SharedBug } from "../shared-bugs.js";
 import { decisionScope, foldDecisions, intentCandidates, comparisonRestricts, namedIssues, answerHasCurrentAuthority, type FoldedAnswer, type FoldedDecision } from "../shared-decisions.js";
 import { saveReaderRequest, readerRequest, holdReaderReceipt, readerReceipts, settleReaderReceipt } from "../reader-local.js";
 import { readReader, isUnverified, transcriptDir } from "../transcript.js";
+import { verifyCodexReaderReceipt, type CodexReaderSubmission } from "../codex-reader.js";
 import {
   applicationDisplayHash, applicationKey, issueClaimHash, validateApplicationCapsule,
   type ApplicationCapsuleV1, type ApplicationReaderReceipt,
@@ -143,7 +144,7 @@ const parsedBrief = (root: string, requestId: string): Brief | undefined => {
 };
 
 /** The full frozen claim and ruling. Each independent launch has its own slot and request ID. */
-export async function applicationReaderBrief(root: string, input: { issue: IssueReference; answerId: string; role?: "reader" | "arbitrator"; slot: number; readers?: ApplicationReceiptRef[] }, dir = transcriptDir()) {
+export async function applicationReaderBrief(root: string, input: { issue: IssueReference; answerId: string; role?: "reader" | "arbitrator"; slot: number; readers?: ApplicationReceiptRef[] }, dir?: string) {
   const c = await context(root, input);
   if ("error" in c) return c;
   const role = input.role ?? "reader";
@@ -196,14 +197,14 @@ export async function applicationReaderBrief(root: string, input: { issue: Issue
 }
 
 /** The reader submits its own verdict; it is only held until its successful tool call is verified. */
-export function submitApplicationVerdict(root: string, input: { requestId: string; verdict: "sound" | "unsound"; rationale: string }) {
+export function submitApplicationVerdict(root: string, input: { requestId: string; verdict: "sound" | "unsound"; rationale: string }, nativeSubmission?: CodexReaderSubmission) {
   const brief = parsedBrief(root, input.requestId);
   if (!brief) return { error: "no application reader brief with that request ID" };
   if (input.verdict !== "sound" && input.verdict !== "unsound") return { error: "verdict must be sound or unsound" };
   if (!word(input.rationale)) return { error: "the reader must explain its verdict" };
   const receipt = randomUUID();
   const held = holdReaderReceipt(root, { purpose: PURPOSE, requestId: input.requestId }, receipt,
-    JSON.stringify({ verdict: input.verdict, rationale: input.rationale }));
+    JSON.stringify({ verdict: input.verdict, rationale: input.rationale }), undefined, nativeSubmission);
   if ("error" in held) return held;
   return { ok: true as const, held: true as const, receipt };
 }
@@ -218,7 +219,10 @@ const resultObject = (v: unknown): any => {
   if (typeof v === "string") { try { return resultObject(JSON.parse(v)); } catch { return undefined; } }
   return undefined;
 };
-function verifyCall(brief: Brief, receipt: string, body: { verdict: string; rationale: string }, agentId: string, callId: string, dir: string): VerifiedCall | { error: string } {
+function verifyCall(brief: Brief, receipt: string, body: { verdict: string; rationale: string }, agentId: string, callId: string, dir: string | undefined, nativeHost?: string): VerifiedCall | { error: string } {
+  if (nativeHost) return verifyCodexReaderReceipt({ nativeHost, purpose: PURPOSE, requestId: brief.requestId,
+    prompt: brief.prompt, body, receipt, agentId, callId, dir });
+  dir ??= transcriptDir();
   const reader = readReader(agentId, callId, dir);
   if (isUnverified(reader)) return { error: reader.unverified };
   if (reader.prompt !== brief.prompt) return { error: "reader launch did not use the exact issued application brief" };
@@ -243,7 +247,7 @@ function verifyCall(brief: Brief, receipt: string, body: { verdict: string; rati
   return { agentId, callId, session: reader.session, launch: reader.toolUseId, launchedAt: reader.launchedAt };
 }
 
-function verifiedReceipt(root: string, ref: ApplicationReceiptRef, dir: string):
+function verifiedReceipt(root: string, ref: ApplicationReceiptRef, dir: string | undefined):
   | { brief: Brief; body: { verdict: "sound" | "unsound"; rationale: string }; call: VerifiedCall; ref: ApplicationReceiptRef }
   | { error: string } {
   const brief = parsedBrief(root, ref.requestId);
@@ -254,22 +258,22 @@ function verifiedReceipt(root: string, ref: ApplicationReceiptRef, dir: string):
   try { body = JSON.parse(held.body); } catch { return { error: "application reader receipt is malformed" }; }
   if ((body.verdict !== "sound" && body.verdict !== "unsound") || !word(body.rationale))
     return { error: "application reader receipt has no valid verdict" };
-  const call = verifyCall(brief, held.receipt, body, ref.agentId, ref.callId, dir);
+  const call = verifyCall(brief, held.receipt, body, ref.agentId, ref.callId, dir, held.nativeHost);
   if ("error" in call) return call;
   return { brief, body, call, ref };
 }
 
 /** Verify the held call/result and launch, then mark this machine-local receipt recorded. */
-export function recordApplicationVerdict(root: string, input: { requestId: string; receipt: string; agentId: string; callId: string }, dir = transcriptDir()) {
+export function recordApplicationVerdict(root: string, input: { requestId: string; receipt: string; agentId: string; callId: string }, dir?: string) {
   const brief = parsedBrief(root, input.requestId);
   if (!brief) return { error: "no application reader brief with that request ID" };
   const held = readerReceipts(root, { purpose: PURPOSE, requestId: input.requestId }).find((x) => x.receipt === input.receipt);
   if (!held) return { error: "no held application reader receipt" };
-  if (held.state === "recorded") return held.call === input.callId ? { ok: true as const, recorded: true as const, existing: true as const } : { error: "receipt was recorded from another call" };
-  if (held.state !== "pending") return { error: `reader receipt is ${held.state}: ${held.why ?? "not actionable"}` };
+  if (held.state === "recorded" && !held.nativeHost) return held.call === input.callId ? { ok: true as const, recorded: true as const, existing: true as const } : { error: "receipt was recorded from another call" };
+  if (held.state !== "pending" && held.state !== "recorded") return { error: `reader receipt is ${held.state}: ${held.why ?? "not actionable"}` };
   let body: { verdict: string; rationale: string };
   try { body = JSON.parse(held.body); } catch { return { error: "application reader receipt is malformed" }; }
-  const verified = verifyCall(brief, held.receipt, body, input.agentId, input.callId, dir);
+  const verified = verifyCall(brief, held.receipt, body, input.agentId, input.callId, dir, held.nativeHost);
   if ("error" in verified) return { pending: true as const, reason: verified.error };
   const settled = settleReaderReceipt(root, { purpose: PURPOSE, requestId: input.requestId }, input.receipt, "recorded", undefined, input.callId);
   if ("error" in settled) return settled;
@@ -277,7 +281,7 @@ export function recordApplicationVerdict(root: string, input: { requestId: strin
 }
 
 /** One target-scope act is both closure and permanent consumption receipt. */
-export async function applyRuling(root: string, input: { issue: IssueReference; answerId: string; readers: ApplicationReceiptRef[]; arbitrator?: ApplicationReceiptRef }, dir = transcriptDir()) {
+export async function applyRuling(root: string, input: { issue: IssueReference; answerId: string; readers: ApplicationReceiptRef[]; arbitrator?: ApplicationReceiptRef }, dir?: string) {
   const door = sidecarWriteDoor(root);
   if (!door.cfg) return { error: door.error ?? "a shared sidecar is required for ruling application" };
   const actor = requireActor(root, { agent: true });

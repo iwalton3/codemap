@@ -2,10 +2,40 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { team } from "./oracle.js";
 import { rpc } from "./test-mcp.js";
-import { codexVerifierFixture } from "./test-codex-verifier.js";
+import { codexVerifierFixture, codexCliVerifierFixture, codexVerifierRow } from "./test-codex-verifier.js";
+import { CODEX_CLI_ROLE_SERVER } from "./codex-harness.js";
 import { verifierSessionActivity } from "./store.js";
 import { db } from "./db.js";
 import { shareFinding } from "./ops-shared.js";
+
+for (const replay of ["exact", "missing", "altered"] as const) test(`CLI dispatcher requires ${replay} completed host-call replay`, async () => {
+  const t = await team(["alice@acme.test"]), f = codexCliVerifierFixture();
+  try {
+    const root = t.all[0]!.repo;
+    const replies = await rpc(root, [
+      { name: "claim_verifier", arguments: {}, _meta: f.options.requestMeta },
+      { name: "repair_brief", arguments: { review: "1", requestId: "absent", role: "verifier", slot: 1 },
+        _meta: { ...f.options.requestMeta, callId: "brief-call" } },
+    ], { clientInfo: f.options.clientInfo, env: { CODEMAP_CODEX_TRANSCRIPT_DIR: f.options.transcriptDir },
+      onReply(call, result) {
+        if (call.name !== "claim_verifier" || replay === "missing") return;
+        f.child.push(codexVerifierRow("event_msg", { type: "item_completed", thread_id: "child", turn_id: "initial-turn",
+          started_at_ms: 1790449496000, completed_at_ms: 1790449496001,
+          item: { type: "McpToolCall", id: call._meta!.callId, server: CODEX_CLI_ROLE_SERVER,
+            tool: call.name, arguments: call.arguments, status: "completed",
+            result: replay === "altered" ? { content: [] } : result } }));
+        f.save();
+      } });
+    assert.equal(JSON.parse(replies[0]!).ok, true, replies[0]!);
+    if (replay === "exact") {
+      assert.match(replies[1]!, /verification request|request.*missing|request.*found/i);
+      assert.doesNotMatch(replies[1]!, /provenance|Codex:|role forbids/);
+    } else {
+      assert.match(replies[1]!, /Codex:.*(?:provenance|record|changed)/i);
+      assert.equal(verifierSessionActivity(root, JSON.parse(replies[0]!).identity)?.kind, "tainted");
+    }
+  } finally { f.clean(); t.dispose(); }
+});
 
 test("MCP verifier claims expose unsupported provenance and cannot accept caller identity", async () => {
   const t = await team(["alice@acme.test"]);

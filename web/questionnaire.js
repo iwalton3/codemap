@@ -106,7 +106,19 @@ export function mountQuestionnaire(host, options) {
   let busy = false;
   const persist = () => saveQuestionnaireDraft(storage, principal, publicationId, version, draft);
   const root = node('div', 'questionnaire-form');
-  const style = node('style', '', `.questionnaire-form{display:grid;gap:1rem}.questionnaire-form .q-section{border-top:1px solid #465064;padding-top:1rem}.questionnaire-form .q-question{border:1px solid #465064;border-radius:.5rem;padding:1rem;margin:.75rem 0}.questionnaire-form .q-items{display:grid;gap:.5rem}.questionnaire-form textarea{display:block;width:100%;min-height:4rem}.questionnaire-form .q-error{color:#f27b7b}.questionnaire-form .q-nav{display:flex;flex-wrap:wrap;gap:.5rem}.questionnaire-form .q-actions{display:flex;flex-wrap:wrap;gap:.5rem}`);
+  const style = node('style', '', `
+    .questionnaire-form{display:grid;grid-template-columns:minmax(0,1fr);gap:1rem;min-width:0;max-width:100%;overflow-wrap:anywhere}
+    .questionnaire-form *{box-sizing:border-box;min-width:0;max-width:100%}
+    .questionnaire-form .q-section{border-top:1px solid #465064;padding-top:1rem}
+    .questionnaire-form .q-question{border:1px solid #465064;border-radius:.5rem;padding:1rem;margin:.75rem 0}
+    .questionnaire-form .q-prompt{white-space:pre-wrap;line-height:1.5;margin:0 0 1rem}
+    .questionnaire-form label{display:block;margin:.5rem 0}
+    .questionnaire-form .q-items{display:grid;grid-template-columns:minmax(0,1fr);gap:.5rem}
+    .questionnaire-form textarea{display:block;width:100%;min-height:4rem;resize:vertical}
+    .questionnaire-form button{white-space:normal;overflow-wrap:anywhere}
+    .questionnaire-form .q-error{color:#f27b7b}
+    .questionnaire-form .q-nav,.questionnaire-form .q-actions{display:flex;flex-wrap:wrap;gap:.5rem}
+  `);
   append(root, style);
   append(root, node('h2', '', q.title));
   if (q.context) append(root, node('p', '', q.context));
@@ -186,8 +198,7 @@ export function mountQuestionnaire(host, options) {
       const card = node('article', 'q-question');
       card.id = anchorId(question.id, version);
       card.dataset.questionId = question.id;
-      const heading = node('h4', '', question.prompt);
-      append(card, heading);
+      append(card, node('p', 'q-prompt', question.prompt));
       if (question.context) append(card, node('p', 'dim', question.context));
       if (question.action) append(card, node('p', 'dim', `Action meaning: ${question.action}`));
       const picked = node('input'); picked.type = 'checkbox'; picked.dataset.selectQuestion = 'true';

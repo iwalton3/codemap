@@ -5,6 +5,53 @@ version-specific local transcript adapter, not a claim that every Codex client
 or future rollout format has the same provenance. Fixtures use synthetic
 identities; private rollout files and account identifiers are not copied here.
 
+## CLI continuation profile (2026-09-27)
+
+Roles and held application-reader submissions have a separate CLI contract. It pins
+client/child `0.157.1`, the historical parent `0.158.0-alpha.2.1`, direct
+`fork_turns:none` launches and MCP server name
+`codemap_native_production_measurement`. It does not admit an ordinary all-CLI
+parent/child pair, arbitrary aliases or other versions. Historical Desktop
+labels in rollout headers do not identify the owner's current frontend.
+Human-question parsing retains its existing contract.
+
+Active host thread, session, parent and turn metadata must agree with the unique
+initial child task and launch. The measured child kind is `thread_spawn`.
+An earlier implementation assumed `agent`; two actual sorter calls and a fresh
+probe refused without issuing roles. Literal capture and the original claim's
+digest established the correction; `agent` now has a negative control. Completed
+MCP items must follow startup and the initial task, with a consistent execution
+interval. Known followups, inherited history, duplicate or parent-owned calls,
+torn records, different tools/servers and changed arguments/results refuse.
+
+For roles, the dispatcher retains the actual completed request arguments and
+result for replay at later calls; native `McpToolCall` IDs bind host `callId`.
+Outer exec IDs never substitute. Existing durable freshness/participation
+ledgers and independence checks remain in force.
+
+For the two purpose-specific reader submissions, the dispatcher mints an opaque
+in-process capability from its actual initialized client and host request. Only
+that capability can store immutable machine-local `native_host` metadata beside
+a held receipt. Recording and application re-read the exact native successful
+submission/result and exact issued launch prompt. Native reader identity uses
+the child's thread, so independent siblings remain distinct. Unbound receipts
+and serialized capability lookalikes do not gain this path. The nullable local
+column upgrades with the existing backup mechanism; no shared event vocabulary
+or materializer meaning changed. Cleartext exact-brief admission and its negative
+controls pass hermetic fixtures; current live reader recording remains unsupported.
+
+The native `agent_message` task token must match the parent's launch token
+exactly. Current live reader records put ciphertext in both the launch message
+and `encrypted_content`; neither equals the issued plaintext brief. Actual reader
+submissions held receipts, but recording refused, so no native P3/P5 application
+occurred. The accepted opaque-initial-task risk for role admission does not waive
+the purpose-specific exact-brief check. A trusted delivery binding from native
+launch/token to issued request, or verified decryption, is still needed.
+Host/native result-object serialization is correlated; complete JSON-RPC
+response-line bytes are not attested. Local git principals are not a proven
+mapping from native account identity. The production measurements and remaining
+limits are recorded in `remaining-decision-work-execution.md`.
+
 ## Native delayed question answers
 
 The measured top-level rollout has a `session_meta` header naming the session,
@@ -270,3 +317,85 @@ measured with the actual tools and current brief. No codemap store was accessed.
 A preliminary tool-free safe-mode launch stalled with no output inside the
 sandbox and was interrupted. Its bounded outside-sandbox retry succeeded; that
 launch alone established only executable availability.
+
+## Continued production discovery (2026-09-26, checkpoint 55a177a)
+
+After the authorized scratch MCP installation, the owner continued in Codex CLI
+because Desktop was crashing. The current actual MCP client and child header
+are 0.157.1; the parent's source/header remain historical Desktop/vscode
+0.158.0-alpha.2.1. Those labels do not establish the active frontend. A fresh
+real production claim correctly refused the unsupported version, granting no
+role. The new native event_msg/item_completed/McpToolCall record matches the
+nested host callId through item.id, with exact arguments and serialized result
+digest. The outer exec call_id is different. This is measured CLI correlation
+of a refusal, not Desktop compatibility, complete RPC-byte attestation or
+reader authority. See native-production-cli-refusal-2026-09-27.json in the
+evaluation directory and the latest execution-record section. Admission stays
+pinned while diagnostic format support is added separately.
+
+`src/codex-mcp-observation.ts` now extracts this version-specific completed-call
+correlation without granting authority. Its 26 adversarial tests and actual CLI
+refusal observation pass; independent review confirms no production references.
+Every return explicitly states diagnostic:true and authority:false. It checks
+exact identity/tool/argument/result shape and rejects ambiguity/torn input; it
+does not establish reader freshness, an active frontend or full RPC-line bytes.
+
+Rechecked on 2026-09-27: the actual Desktop probe still reports
+0.158.0-alpha.2.1; CLI is still 0.156.1. Only the diagnostic probe is callable,
+and its callId observation still contains a type rather than exact identity.
+Independent investigation found no basis for admitting native reader receipts.
+A scratch-only bridge to the unchanged production dispatcher is prepared under
+/tmp/codemap-native-production-2026-09-27/, with digest capture for host metadata,
+arguments and paired response lines. Direct-versus-bridge transport and process
+lifecycle checks passed outside the sandbox; a sandbox smoke timed out. The
+prepared MCP entry has not been installed. These checks grant no native authority
+and do not establish host/native correlation. See
+skill-integration-evaluation/production-capabilities-2026-09-27.json and the
+latest execution-record section for failures, repairs and remaining limits.
+
+The continued Desktop chat still exposes only
+`mcp__codemap_identity_probe__observe_connection`. Production role claims,
+repair verification and application-reader submissions are absent. The installed
+shell Codex CLI is 0.156.1; invoking it with temporary MCP configuration would
+not validate the adapter pinned to Desktop 0.158.0-alpha.2.1 and a native
+`vscode` parent. No client/version check was relaxed and no persistent MCP
+configuration or diagnostic server was changed.
+
+Native nested `functions.exec` source can be plaintext JavaScript. That does
+not establish the identity of a nested MCP request: its outer
+`custom_tool_call` ID is not measured as the host's nested `callId`. The existing
+diagnostic retains only that metadata field's type. Even an outer output
+containing a real held receipt cannot establish the exact purpose-specific
+submission. Native application readers therefore remain unsupported; this is
+an exact-correlation gap, not a blanket claim that exec source is encrypted.
+
+The synchronous question tool remains unavailable in Default mode. A displayed
+async questionnaire is only pending until the actual later human reply passes
+the existing adapter. Neither elapsed time nor `{accepted:true}` grants
+authority. Current capability evidence is retained in
+`skill-integration-evaluation/production-capabilities-2026-09-26.json`.
+
+A fresh live Claude Code 2.1.283 child also reached the actual production
+`submit_application_verdict` and `submit_operation_signoff_verdict` handlers
+against an isolated two-clone fixture. Missing request IDs refused for missing
+briefs; neither issued a receipt. For both calls, the host tool-use ID digest
+matched the child's native call and the production error matched its paired
+result. `readReader` accepted the actual launch/call records. The bridge filtered
+inventory only, leaving handlers and responses intact. Sanitized evidence is
+`skill-integration-evaluation/claude-production-refusal-2026-09-26.json`.
+This establishes production refusal/correlation, not successful production
+receipt issuance, human authority, application or native repair-role admission.
+The owner subsequently answered both scratch choices in ordinary chat. That
+genuine human reply lacks the linked question-item envelope required by the
+native adapter; both original calls still read pending. Text consent is not
+converted into a native receipt. The persistent web questionnaire provides the
+supported fallback for a separately attributable human submission.
+
+On 2026-09-27 the owner used that browser fallback. Current verified questionnaire
+answers then supported two real fresh Claude readers with exact purpose-specific
+briefs, production held receipts and successful application. Both scratch clones
+converged on the operation witness and refuted finding. See
+`skill-integration-evaluation/claude-production-success-2026-09-27.json`.
+This validates the existing Claude human-ruling application and exact-operation
+sign-off paths. It does not certify native Codex readers, synchronous answers,
+native account-to-git-principal mapping or Codex-only repair-verifier closure.

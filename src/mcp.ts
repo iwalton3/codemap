@@ -30,11 +30,12 @@ import { applicationReaderBrief, submitApplicationVerdict, recordApplicationVerd
 import { questionnaireStatus, waitQuestionnaireStatus } from "./ops/questionnaire-status.js";
 import { comparisonDetail, requestComparison, comparisonBrief, submitComparisonJudgment, recordComparisonJudgment, comparisonResolutionBrief, resolveComparison } from "./ops/comparisons.js";
 import { RepairVerifierBoundary, type TrustedVerifierContext } from "./verifier-boundary.js";
-import { resolveCodexVerifierContext, recheckCodexVerifierContext, observedCodexVerifierIdentity } from "./codex-verifier-context.js";
+import { resolveCodexVerifierContext, recheckCodexVerifierContext, observedCodexVerifierIdentity, supportsCodexRepairHost, type CodexCompletedVerifierRequest } from "./codex-verifier-context.js";
 import { claimVerifierSession, recordVerifierDomain, taintVerifierSession, verifierSessionActivity } from "./store.js";
 import { trustedRepairParticipants } from "./store.js";
 import { issueRepairParticipation, type RepairParticipationCapability } from "./repair-participation.js";
-import { CODEX_ROLLOUT_VERSION } from "./codex-harness.js";
+import { CODEX_ROLLOUT_VERSION, CODEX_CLI_ROLE_VERSION } from "./codex-harness.js";
+import { mintCodexReaderSubmission, type CodexReaderSubmission } from "./codex-reader.js";
 
 /**
  * Tools that write to a universe's `.codemap/` are held under the write lock, so a
@@ -77,21 +78,26 @@ let initializedClient: { name: string; version: string } | undefined;
 let verifierBoundary: RepairVerifierBoundary | undefined;
 let verifierContext: TrustedVerifierContext | undefined;
 let claimedConnection = false;
+const completedNativeRequests: CodexCompletedVerifierRequest[] = [];
+const pendingNativeRequests = new Map<unknown, Omit<CodexCompletedVerifierRequest, "result">>();
 
 const isRepairRoleClaim = (name: unknown) => name === "claim_verifier" || name === "claim_repair_sorter";
 
-function prepareVerifierBoundary(meta: unknown, claiming: boolean): RepairVerifierBoundary {
+function prepareVerifierBoundary(meta: unknown, claiming: boolean, tool: unknown): RepairVerifierBoundary {
   if (verifierBoundary) return verifierBoundary;
   const boundRequestMeta = structuredClone(meta);
+  const boundTool = typeof tool === "string" ? tool : undefined;
   verifierContext = claiming ? resolveCodexVerifierContext({ principal: connectionPrincipal,
-    clientInfo: initializedClient, requestMeta: meta, transcriptDir: verifierTranscriptDir })
+    clientInfo: initializedClient, requestMeta: meta, requestTool: boundTool,
+    completedRequests: completedNativeRequests, transcriptDir: verifierTranscriptDir })
     : { supported: false, reason: "a verifier must claim before any domain action" };
   const context = verifierContext;
   verifierBoundary = new RepairVerifierBoundary({ context, participants: () =>
     [...ws.byId.values()].flatMap((u) => trustedRepairParticipants(u.path)), revalidate: () => {
     if (!context.supported) return { ok: false, error: context.reason };
     const current = recheckCodexVerifierContext(context, { principal: connectionPrincipal,
-      clientInfo: initializedClient, requestMeta: boundRequestMeta, transcriptDir: verifierTranscriptDir });
+      clientInfo: initializedClient, requestMeta: boundRequestMeta, requestTool: boundTool,
+      completedRequests: completedNativeRequests, transcriptDir: verifierTranscriptDir });
     if (!current.ok) return current;
     const activity = verifierSessionActivity(ws.primary.path, context.identity);
     if (claimedConnection)
@@ -117,6 +123,7 @@ interface Ctx {
   ws: Workspace;
   universe: Universe;
   repairParticipation?: RepairParticipationCapability;
+  nativeReaderSubmission?: CodexReaderSubmission;
 }
 
 interface Tool {
@@ -408,7 +415,8 @@ const tools: Tool[] = [
     name: "record_repair_participant",
     description: "Record this native session as a fixer or relayer in a repair. Identity comes from host request metadata; caller labels cannot establish identity or improve verifier eligibility.",
     inputSchema: obj({ review: { type: "string" }, repairId: { type: "string" }, role: { type: "string", enum: ["fixer", "relayer"] } }, ["review", "repairId", "role"]),
-    mutates: () => initializedClient?.name === "codex-mcp-client" && initializedClient.version === CODEX_ROLLOUT_VERSION,
+    mutates: () => initializedClient?.name === "codex-mcp-client"
+      && [CODEX_ROLLOUT_VERSION, CODEX_CLI_ROLE_VERSION].includes(initializedClient.version),
     handler: async (a, c) => c.repairParticipation
       ? ops.recordRepairParticipant(c.universe.path, a.review, { repairId: a.repairId, role: a.role }, c.repairParticipation)
       : { error: "repair participation requires native host session metadata" },
@@ -1256,7 +1264,7 @@ const tools: Tool[] = [
     description: "Independent reader submits sound or unsound for the exact shown operation-signing human answer. Matching labels, partial approval and contradictory text are insufficient. This holds a receipt and grants no sign-off authority.",
     inputSchema: obj({ requestId: { type: "string" }, verdict: { type: "string", enum: ["sound", "unsound"] }, rationale: { type: "string" } }, ["requestId", "verdict", "rationale"]),
     mutates: true,
-    handler: async (a, c) => ops.submitOperationSignoffVerdict(c.universe.path, a as never),
+    handler: async (a, c) => ops.submitOperationSignoffVerdict(c.universe.path, a as never, c.nativeReaderSubmission),
   },
   {
     name: "record_operation_signoff_verdict",
@@ -1294,7 +1302,7 @@ const tools: Tool[] = [
       rationale: { type: "string", description: "Why the ruling defeats the premise or explicitly accepts the complete finding as real and deliberately not being fixed." },
     }, ["requestId", "verdict", "rationale"]),
     mutates: true,
-    handler: async (a, c) => submitApplicationVerdict(c.universe.path, a as never),
+    handler: async (a, c) => submitApplicationVerdict(c.universe.path, a as never, c.nativeReaderSubmission),
   },
   {
     name: "record_application_verdict",
@@ -2302,7 +2310,15 @@ const tools: Tool[] = [
   },
 ];
 
-function send(msg: unknown): void {
+function send(msg: unknown, trackNative = true): void {
+  if (trackNative && msg && typeof msg === "object") {
+    const response = msg as { id?: unknown; result?: unknown };
+    const request = pendingNativeRequests.get(response.id);
+    if (request) {
+      pendingNativeRequests.delete(response.id);
+      completedNativeRequests.push({ ...request, result: structuredClone(response.result) });
+    }
+  }
   process.stdout.write(JSON.stringify(msg) + "\n");
 }
 
@@ -2371,10 +2387,20 @@ async function handle(msg: any): Promise<void> {
       return;
     case "tools/call": {
       try {
-        const boundary = prepareVerifierBoundary(params?._meta, isRepairRoleClaim(params?.name));
+        if (isRequest && initializedClient?.version === CODEX_CLI_ROLE_VERSION) {
+          if (pendingNativeRequests.has(id)) {
+            verifierBoundary?.invalidate("duplicate outstanding native request identity");
+            send({ jsonrpc: "2.0", id, error: { code: -32600, message: "duplicate outstanding native request identity" } }, false);
+            return;
+          }
+          pendingNativeRequests.set(id, { requestMeta: structuredClone(params?._meta),
+            tool: params?.name, arguments: structuredClone(params?.arguments ?? {}) });
+        }
+        const boundary = prepareVerifierBoundary(params?._meta, isRepairRoleClaim(params?.name), params?.name);
         if (claimedConnection && verifierContext?.supported) {
           const native = recheckCodexVerifierContext(verifierContext, { principal: connectionPrincipal,
-            clientInfo: initializedClient, requestMeta: params?._meta, transcriptDir: verifierTranscriptDir });
+            clientInfo: initializedClient, requestMeta: params?._meta, requestTool: params?.name,
+            completedRequests: completedNativeRequests, transcriptDir: verifierTranscriptDir });
           const provenance = native.ok ? boundary.checkProvenance() : native;
           if (!provenance.ok) {
             boundary.invalidate(provenance.error);
@@ -2422,9 +2448,20 @@ async function handle(msg: any): Promise<void> {
         try {
           const participantIdentity = observedCodexVerifierIdentity({ principal: resolvePrincipal(universe.path),
             clientInfo: initializedClient, requestMeta: params?._meta });
-          const repairParticipation = participantIdentity && initializedClient?.version === CODEX_ROLLOUT_VERSION
+          const repairParticipation = participantIdentity && supportsCodexRepairHost({ clientInfo: initializedClient, requestMeta: params?._meta })
             ? issueRepairParticipation(participantIdentity) : undefined;
-          const run = () => tool.handler(args, { ws, universe, repairParticipation });
+          let nativeReaderSubmission: CodexReaderSubmission | undefined;
+          if (initializedClient?.name === "codex-mcp-client" && initializedClient.version === CODEX_CLI_ROLE_VERSION
+            && ["submit_application_verdict", "submit_operation_signoff_verdict"].includes(params?.name)) {
+            const minted = mintCodexReaderSubmission({ principal: resolvePrincipal(universe.path),
+              clientInfo: initializedClient, requestMeta: params?._meta, tool: params.name, arguments: args }, verifierTranscriptDir);
+            if ("error" in minted) {
+              send({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(minted, null, 2) }] } });
+              return;
+            }
+            nativeReaderSubmission = minted;
+          }
+          const run = () => tool.handler(args, { ws, universe, repairParticipation, nativeReaderSubmission });
           const locked = typeof tool.mutates === "function" ? tool.mutates(args) : tool.mutates;
           const out = locked ? await withLock(universe.path, run) : await run();
           send({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(out, null, 2) }] } });

@@ -1,13 +1,13 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { CODEX_ROLLOUT_VERSION } from "./codex-harness.js";
+import { CODEX_ROLLOUT_VERSION, CODEX_CLI_ROLE_VERSION, CODEX_CLI_ROLE_SERVER } from "./codex-harness.js";
 import { verifierIdentityKey, type BoundaryResult, type TrustedVerifierContext, type VerifierIdentity } from "./verifier-boundary.js";
 
 type Row = Record<string, any>;
 const ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const object = (value: unknown): value is Row => !!value && typeof value === "object" && !Array.isArray(value);
 const id = (value: unknown): value is string => typeof value === "string" && ID.test(value);
-const refuse = (reason: string): TrustedVerifierContext => ({ supported: false, reason: `Codex: ${reason}` });
+const refuse = (reason: string): { supported: false; reason: string } => ({ supported: false, reason: `Codex: ${reason}` });
 
 export interface CodexVerifierContextOptions {
   principal: string | null;
@@ -15,6 +15,66 @@ export interface CodexVerifierContextOptions {
   /** Host tools/call params._meta; never params.arguments. */
   requestMeta: unknown;
   transcriptDir: string;
+  /** Actual tools/call name, supplied by the dispatcher rather than tool arguments. */
+  requestTool?: string;
+  /** Prior completed dispatcher requests and their actual emitted MCP results. */
+  completedRequests?: readonly CodexCompletedVerifierRequest[];
+}
+
+export interface CodexCompletedVerifierRequest {
+  requestMeta: unknown;
+  tool: string;
+  arguments: unknown;
+  result: unknown;
+}
+
+function cliMetadata(meta: unknown, child: string, parent: string, turn: string): meta is Row {
+  if (!object(meta) || meta.threadId !== child || meta.sessionId !== parent || !id(meta.callId)) return false;
+  const active = meta["x-codex-turn-metadata"];
+  return object(active) && active.codex_version === CODEX_CLI_ROLE_VERSION
+    && active.thread_id === child && active.session_id === parent && active.parent_thread_id === parent
+    && active.turn_id === turn && active.thread_source === "subagent" && active.subagent_kind === "thread_spawn";
+}
+
+/** Active host format gate for participation; this alone never grants a verifier role. */
+export function supportsCodexRepairHost(options: Pick<CodexVerifierContextOptions, "clientInfo" | "requestMeta">): boolean {
+  const { clientInfo, requestMeta } = options;
+  if (!object(clientInfo) || clientInfo.name !== "codex-mcp-client") return false;
+  if (clientInfo.version === CODEX_ROLLOUT_VERSION) return true;
+  if (clientInfo.version !== CODEX_CLI_ROLE_VERSION || !object(requestMeta)
+    || !id(requestMeta.threadId) || !id(requestMeta.sessionId) || !id(requestMeta.callId)) return false;
+  const active = requestMeta["x-codex-turn-metadata"];
+  if (!object(active) || !id(active.turn_id) || active.codex_version !== CODEX_CLI_ROLE_VERSION
+    || active.thread_id !== requestMeta.threadId || active.session_id !== requestMeta.sessionId) return false;
+  return requestMeta.threadId === requestMeta.sessionId
+    ? active.parent_thread_id === undefined && active.subagent_kind === undefined && active.thread_source === "user"
+    : cliMetadata(requestMeta, requestMeta.threadId, requestMeta.sessionId, active.turn_id);
+}
+
+function cliItem(parentRows: Row[], childRows: Row[], meta: Row, tool: string, turn: string, required: boolean): Row | undefined {
+  const matches = (rows: Row[]) => rows.filter((r) => r.payload?.item?.id === meta.callId
+    || (r.type === "response_item" && r.payload?.call_id === meta.callId));
+  const parentMatches = matches(parentRows);
+  const childMatches = matches(childRows);
+  if (parentMatches.length || childMatches.length > 1 || (required && childMatches.length !== 1))
+    throw new Error("missing, duplicate or parent-owned CLI request item");
+  if (!childMatches.length) return undefined;
+  const r = childMatches[0]!;
+  const p = r.payload;
+  const item = p?.item;
+  const initialRows = childRows.filter((row) => (row.type === "event_msg" && row.payload?.type === "task_started")
+    || (row.type === "response_item" && row.payload?.type === "agent_message"));
+  const initialTimes = initialRows.map((row) => Date.parse(row.timestamp));
+  if (r.type !== "event_msg" || p.type !== "item_completed" || !object(item) || item.type !== "McpToolCall"
+    || item.status !== "completed" || item.server !== CODEX_CLI_ROLE_SERVER || item.tool !== tool
+    || p.thread_id !== meta.threadId || p.turn_id !== turn || !object(item.arguments) || !object(item.result)
+    || !Number.isSafeInteger(p.started_at_ms) || !Number.isSafeInteger(p.completed_at_ms)
+    || p.started_at_ms < 0 || p.completed_at_ms < p.started_at_ms
+    || initialRows.length !== 2 || initialTimes.some((time) => !Number.isFinite(time))
+    || initialRows.some((row) => childRows.indexOf(row) >= childRows.indexOf(r))
+    || p.started_at_ms < Math.max(Date.parse(childRows[0]!.payload.timestamp), ...initialTimes))
+    throw new Error("CLI request item does not match active host request");
+  return item;
 }
 
 /** Restrictive ledger lookup only; granting a role still requires the pinned client version. */
@@ -44,11 +104,11 @@ function selected(allFiles: string[], session: string): Row[] {
   return rows;
 }
 
-function header(rows: Row[], session: string, rootSession = session): Row {
+function header(rows: Row[], session: string, rootSession = session, version = CODEX_ROLLOUT_VERSION): Row {
   const p = rows[0]?.payload;
   if (rows.filter((r) => r.type === "session_meta").length !== 1 || rows[0]?.type !== "session_meta" || !object(p) || p.id !== session || p.session_id !== rootSession)
     throw new Error("session header does not match request identity");
-  if (p.cli_version !== CODEX_ROLLOUT_VERSION || p.originator !== "Codex Desktop" || !id(p.creator_user_id)
+  if (p.cli_version !== version || p.originator !== "Codex Desktop" || !id(p.creator_user_id)
     || !Number.isFinite(Date.parse(p.timestamp))) throw new Error("unsupported rollout header/version");
   return p;
 }
@@ -59,12 +119,29 @@ function args(row: Row): Row {
   return parsed;
 }
 
+export type FreshCodexCliContext = { supported: true; identity: VerifierIdentity; prompt: string; launchedAt: string; launch: string }
+  | { supported: false; reason: string };
+
+/** Shares provenance checks with roles, but does not issue a role or a receipt. */
+export function resolveFreshCodexCliContext(options: CodexVerifierContextOptions): FreshCodexCliContext {
+  if (!object(options.clientInfo) || options.clientInfo.version !== CODEX_CLI_ROLE_VERSION)
+    return { supported: false, reason: "Codex: fresh CLI context requires the measured CLI profile" };
+  return resolveCodexProvenance(options);
+}
+
 /** Version-specific local provenance; opaque initial prompt contents remain an accepted risk. */
 export function resolveCodexVerifierContext(options: CodexVerifierContextOptions): TrustedVerifierContext {
+  const resolved = resolveCodexProvenance(options);
+  return resolved.supported ? { supported: true, identity: resolved.identity } : resolved;
+}
+
+function resolveCodexProvenance(options: CodexVerifierContextOptions): FreshCodexCliContext {
   const { principal, clientInfo, requestMeta, transcriptDir } = options;
   if (typeof principal !== "string" || !principal.trim()) return refuse("missing resolved principal");
-  if (!object(clientInfo) || clientInfo.name !== "codex-mcp-client" || clientInfo.version !== CODEX_ROLLOUT_VERSION)
+  if (!object(clientInfo) || clientInfo.name !== "codex-mcp-client"
+    || ![CODEX_ROLLOUT_VERSION, CODEX_CLI_ROLE_VERSION].includes(clientInfo.version))
     return refuse("unsupported MCP client/version");
+  const cli = clientInfo.version === CODEX_CLI_ROLE_VERSION;
   if (!object(requestMeta) || !id(requestMeta.threadId) || !id(requestMeta.sessionId) || !id(requestMeta.callId))
     return refuse("missing or invalid host request metadata");
   const childId = requestMeta.threadId;
@@ -74,7 +151,7 @@ export function resolveCodexVerifierContext(options: CodexVerifierContextOptions
     const allFiles = files(transcriptDir);
     const childRows = selected(allFiles, childId);
     const parentRows = selected(allFiles, parentId);
-    const child = header(childRows, childId, parentId);
+    const child = header(childRows, childId, parentId, cli ? CODEX_CLI_ROLE_VERSION : CODEX_ROLLOUT_VERSION);
     const parent = header(parentRows, parentId);
     const spawn = child.source?.subagent?.thread_spawn;
     if (parent.source !== "vscode" || parent.thread_source !== "user" || parent.parent_thread_id !== undefined)
@@ -93,6 +170,9 @@ export function resolveCodexVerifierContext(options: CodexVerifierContextOptions
     const initialTurn = starts[0]!.payload.turn_id;
     if (!id(initialTurn) || inputs[0]!.payload.internal_chat_message_metadata_passthrough?.turn_id !== initialTurn)
       return refuse("initial child input does not bind its task turn");
+    if (cli && (!cliMetadata(requestMeta, childId, parentId, initialTurn)
+      || typeof options.requestTool !== "string" || !options.requestTool.trim()))
+      return refuse("CLI active host metadata does not bind the measured version and initial task");
     const calls = parentRows.filter((r) => r.type === "response_item" && r.payload?.type === "function_call");
     const launches = calls.filter((r) => {
       if (r.payload.name !== "spawn_agent") return false;
@@ -103,6 +183,18 @@ export function resolveCodexVerifierContext(options: CodexVerifierContextOptions
     const launch = launches[0]!;
     if (args(launch).fork_turns !== "none") return refuse("child launch did not explicitly exclude inherited turns");
     if (!id(launch.payload.call_id)) return refuse("invalid child launch call identity");
+    const launchPrompt = args(launch).message;
+    if (cli) {
+      const tasks = childRows.filter((r) => r.type === "response_item" && r.payload?.type === "agent_message");
+      const task = tasks[0]?.payload;
+      if (tasks.length !== 1 || !object(task) || task.author !== "/root" || task.recipient !== spawn.agent_path
+        || task.internal_chat_message_metadata_passthrough?.turn_id !== initialTurn
+        || !Array.isArray(task.content) || task.content.length !== 2
+        || task.content[0]?.type !== "input_text" || typeof task.content[0].text !== "string"
+        || task.content[1]?.type !== "encrypted_content" || typeof launchPrompt !== "string"
+        || task.content[1].encrypted_content !== launchPrompt)
+        return refuse("CLI initial agent task does not bind its unique launch and turn");
+    }
     const outputs = parentRows.filter((r) => r.type === "response_item" && r.payload?.type === "function_call_output"
       && r.payload.call_id === launch.payload.call_id);
     const output = outputs.length === 1 ? JSON.parse(outputs[0]!.payload.output) : undefined;
@@ -126,7 +218,24 @@ export function resolveCodexVerifierContext(options: CodexVerifierContextOptions
         && r.payload.call_id === requestMeta.callId);
       if (matching.length > 1 || (rows === parentRows && matching.length)) return refuse("request call identity is ambiguous or belongs to parent");
     }
-    return { supported: true, identity: { principal, harness: "codex", session: parentId, child: childId } };
+    if (cli) {
+      cliItem(parentRows, childRows, requestMeta, options.requestTool!, initialTurn, false);
+      const seen = new Set<string>();
+      for (const completed of options.completedRequests ?? []) {
+        if (!cliMetadata(completed.requestMeta, childId, parentId, initialTurn)
+          || typeof completed.tool !== "string" || !completed.tool.trim()
+          || !object(completed.arguments) || !object(completed.result))
+          return refuse("invalid trusted completed CLI request");
+        if (seen.has(completed.requestMeta.callId)) return refuse("duplicate trusted completed CLI request");
+        seen.add(completed.requestMeta.callId);
+        const item = cliItem(parentRows, childRows, completed.requestMeta, completed.tool, initialTurn, true)!;
+        if (JSON.stringify(item.arguments) !== JSON.stringify(completed.arguments)
+          || JSON.stringify(item.result) !== JSON.stringify(completed.result))
+          return refuse("completed CLI request arguments or result changed");
+      }
+    }
+    return { supported: true, identity: { principal, harness: "codex", session: parentId, child: childId },
+      prompt: typeof launchPrompt === "string" ? launchPrompt : "", launchedAt: launch.timestamp, launch: launch.payload.call_id };
   } catch { return refuse("missing, unreadable, torn or unknown provenance record"); }
 }
 

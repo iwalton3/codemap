@@ -11,6 +11,7 @@ import { materializeStandard } from '../standard-publish.js';
 import { decisionScope, foldDecisions, answerHasCurrentAuthority, intentCandidates, comparisonRestricts } from '../shared-decisions.js';
 import { operationContent, framingContent, contentDiff } from '../schema.js';
 import { readReader, isUnverified, transcriptDir } from '../transcript.js';
+import { verifyCodexReaderReceipt, type CodexReaderSubmission } from '../codex-reader.js';
 import { saveReaderRequest, readerRequest, holdReaderReceipt, readerReceipts, settleReaderReceipt } from '../reader-local.js';
 import { readRepairSigningKey, saveRepairSigningKey, readProposalWitnesses } from '../store.js';
 import { operationSignoffProducerId, operationSignoffSignedBytes, operationSignoffDisplay, operationSignoffReaderPrompt, operationSignoffKey, signoffHash, validateOperationSignoff, SIGN_OPERATION, type OperationSignoffCapsule } from '../operation-signoff.js';
@@ -117,13 +118,13 @@ export function submitOperationSignoffVerdict(root: string, input: {
   requestId: string;
   verdict: 'sound' | 'unsound';
   rationale: string;
-}) {
+}, nativeSubmission?: CodexReaderSubmission) {
   if (!parsedBrief(root, input.requestId))
     return { error: 'no operation sign-off reader brief' };
   if (!['sound', 'unsound'].includes(input.verdict) || !input.rationale?.trim())
     return { error: 'reader verdict and rationale are required' };
   const receipt = randomUUID();
-  const held = holdReaderReceipt(root, { purpose: PURPOSE, requestId: input.requestId }, receipt, JSON.stringify({ verdict: input.verdict, rationale: input.rationale }));
+  const held = holdReaderReceipt(root, { purpose: PURPOSE, requestId: input.requestId }, receipt, JSON.stringify({ verdict: input.verdict, rationale: input.rationale }), undefined, nativeSubmission);
   return 'error' in held ? held : { ok: true as const, held: true as const, receipt };
 }
 interface VerifiedCall {
@@ -154,9 +155,12 @@ const resultObject = (v: unknown): any => {
 function verifyCall(brief: Brief, receipt: string, body: {
   verdict: string;
   rationale: string;
-}, agentId: string, callId: string, dir: string): VerifiedCall | {
+}, agentId: string, callId: string, dir: string | undefined, nativeHost?: string): VerifiedCall | {
   error: string;
 } {
+  if (nativeHost) return verifyCodexReaderReceipt({ nativeHost, purpose: PURPOSE, requestId: brief.requestId,
+    prompt: brief.prompt, body, receipt, agentId, callId, dir });
+  dir ??= transcriptDir();
   const reader = readReader(agentId, callId, dir);
   if (isUnverified(reader))
     return { error: reader.unverified };
@@ -189,7 +193,7 @@ function verifyCall(brief: Brief, receipt: string, body: {
     return { error: "reader's successful submit receipt was not found" };
   return { agentId, callId, session: reader.session, launch: reader.toolUseId, launchedAt: reader.launchedAt };
 }
-function verifiedReceipt(root: string, ref: OperationSignoffReceiptRef, dir: string, recorded = true) {
+function verifiedReceipt(root: string, ref: OperationSignoffReceiptRef, dir: string | undefined, recorded = true) {
   const brief = parsedBrief(root, ref?.requestId);
   if (!brief)
     return { error: 'operation reader brief is missing' };
@@ -209,12 +213,12 @@ function verifiedReceipt(root: string, ref: OperationSignoffReceiptRef, dir: str
   catch {
     return { error: 'malformed reader verdict' };
   }
-  const call = verifyCall(brief, ref.receipt, body, ref.agentId, ref.callId, dir);
+  const call = verifyCall(brief, ref.receipt, body, ref.agentId, ref.callId, dir, held.nativeHost);
   if ('error' in call)
     return call;
   return { brief, body, call };
 }
-export function recordOperationSignoffVerdict(root: string, input: OperationSignoffReceiptRef, dir = transcriptDir()) {
+export function recordOperationSignoffVerdict(root: string, input: OperationSignoffReceiptRef, dir?: string) {
   const checked = verifiedReceipt(root, input, dir, false);
   if ('error' in checked)
     return { pending: true as const, reason: checked.error };
@@ -225,7 +229,7 @@ export async function applyOperationSignoff(root: string, input: {
   operationId: string;
   answerId: string;
   reader: OperationSignoffReceiptRef;
-}, dir = transcriptDir()) {
+}, dir?: string) {
   const initial = await context(root, input);
   if ('error' in initial)
     return initial;

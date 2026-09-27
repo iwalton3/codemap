@@ -5,7 +5,8 @@
 import { spawn } from "node:child_process";
 
 export function rpc(root: string, calls: { name: string; arguments: Record<string, unknown>; _meta?: Record<string, unknown> }[],
-  options: { clientInfo?: { name: string; version: string }; env?: Record<string, string> } = {}) {
+  options: { clientInfo?: { name: string; version: string }; env?: Record<string, string>;
+    onReply?: (call: typeof calls[number], result: unknown) => void } = {}) {
   return new Promise<string[]>((resolve, reject) => {
     const p = spawn("node", ["dist/mcp.js", root], { stdio: ["pipe", "pipe", "ignore"], env: { ...process.env, ...options.env } });
     const out: string[] = []; let buf = ""; let i = 0; let asked = false;
@@ -31,6 +32,8 @@ export function rpc(root: string, calls: { name: string; arguments: Record<strin
         const r = JSON.parse(l) as { id: number; result?: { content?: { text?: string }[] } };
         if (r.id === 1) { next(); continue; }
         out.push(r.result?.content?.[0]?.text ?? JSON.stringify(r));
+        try { options.onReply?.(calls[i - 1]!, r.result); }
+        catch (error) { p.kill(); reject(error); return; }
         next();
       }
     });
