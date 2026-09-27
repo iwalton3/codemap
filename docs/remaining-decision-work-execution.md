@@ -1138,3 +1138,52 @@ unmeasured and no new policy question is needed; Claude repair-role admission
 remains unsupported; native account-to-git-principal mapping and complete RPC-line
 attestation remain unproven. Existing genuine Claude/browser P3/P5 successes stand.
 No new dependency, skill edit, commit, push, merge or further deployment occurred.
+
+### Commit and remaining native-source investigation
+
+At the owner's explicit request, committed the validated implementation and
+preserved earlier evidence/UI changes as 58e712b. The sandbox initially refused
+writing .git/index.lock; the approved outside-sandbox retry succeeded. Nothing
+was pushed, merged or deployed.
+
+Continued P1/P3/P5 source discovery against the installed codex-cli 0.157.1.
+Official app-server documentation describes thread/read with includeTurns as a
+stored-history read that does not resume the thread or subscribe to it:
+https://learn.chatgpt.com/docs/app-server#read-a-stored-thread-without-resuming.
+Generated the installed experimental protocol schema under /tmp. Independent
+read-only inspection of scoped native logs, thread metadata and reader history
+found no issued plaintext or escaped equivalent. No private identity was copied
+into durable evidence.
+
+An existing-daemon proxy probe first refused with sandbox EPERM. Two approved
+outside-sandbox attempts timed out waiting for initialize, including one retry
+with unbuffered response handling. These do not establish a daemon capability
+failure. A temporary installed stdio app-server then successfully initialized and
+returned thread/read(includeTurns=true) for both readers and their parent. No
+thread was resumed and no model turn was started; the temporary processes exited
+and no persistent configuration changed.
+
+Both reader histories contain one completed MCP submission and an agent response,
+but no initial user message or exact issued brief. The parent's reader activity
+items retain child linkage but omit launch text. Issued plaintext occurs only in
+parent command inspection output, which cannot attest launch delivery. Thus this
+additional supported read interface does not provide the missing exact-purpose
+launch binding. No held receipt was recorded/applied and no historical closure
+changed. Sanitized observations are in
+skill-integration-evaluation/native-reader-appserver-source-check-2026-09-27.json;
+private responses remain under /tmp.
+
+Native P3/P5 remains pending a trusted exact-issued-brief delivery binding. A new
+server-delivered brief protocol would require a separately reviewed contract and
+fresh readers; it cannot authenticate the already-held receipts retrospectively.
+No genuine human question is currently needed, so synchronous-answer measurement
+was not manufactured. Downstream measurement remains deferred by the finalized
+plan. This continuation changes evidence/documentation only; the previous full
+2,265 unit + 171 e2e validation and final focused 48-check result remain the
+implementation validation, rather than a new test claim.
+
+Independent review verified all three retained-response file digests, history
+counts/types, missing launch prompts and command-output-only plaintext occurrences;
+a scan of 39 private identity literals found no matches in the changed durable
+files. The digest field explicitly names retained file bytes to distinguish these
+observations from exact native MCP result serialization. git diff --check passed.
