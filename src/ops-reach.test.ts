@@ -98,6 +98,9 @@ const MCP_FORBIDDEN = [
   // no surface may mark its own round pre-validated — that door waits for the skill work
   // (owner, 2026-09-23: leave the skill untouched until this branch is stable).
   "answerDirect", "postPrevalidated",
+  // The person's own acts on a question; an agent's way in is the relayed variant, whose
+  // proof the fold checks. The folds refuse an agent actor here too.
+  "submitQuestionnaire", "approveDecisionWithdrawal", "presentDecisionRevision", "reviseDecision",
 ];
 
 test("the join and recover flows are reachable from the web, not just a terminal", () => {
