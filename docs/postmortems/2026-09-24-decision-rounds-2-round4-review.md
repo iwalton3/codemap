@@ -149,7 +149,7 @@ Independent Codex arbitration at `arbitration-f5.md` ruled **valid**: Bob's losi
 
 # Deposition — decision-rounds-2 round 4
 
-The owner asked, “Let's implement the plan /home/izzie/Desktop/codemap/.git/triage/2026-09-24-decision-rounds-2-codex-round-review/plan.md,” then asked for three Codex review lenses: general application code, the fold, and assumptions. After those reviews they asked me to run triage-review with Codex agents in place of Claude agents. The written plan and the owner's rulings before it are the stated target. I chose the diagnosis route for this round because the fresh findings land on review fixes and keep exposing rules about historical evidence and human intent. That routing judgment is mine, not a new owner acceptance criterion.
+The owner asked, “Let's implement the plan .git/triage/2026-09-24-decision-rounds-2-codex-round-review/plan.md,” then asked for three Codex review lenses: general application code, the fold, and assumptions. After those reviews they asked me to run triage-review with Codex agents in place of Claude agents. The written plan and the owner's rulings before it are the stated target. I chose the diagnosis route for this round because the fresh findings land on review fixes and keep exposing rules about historical evidence and human intent. That routing judgment is mine, not a new owner acceptance criterion.
 
 The implementation is at `d763557` on `decision-rounds-2`. I understand this as a sequence of review-fix commits, including `88ff0cb`, `af773df`, `8673c16`, and `d763557`, rather than one original implementation. I do not have a reliable, complete memory of the edit-by-edit sequence across those rounds. The current review reports repairs that can change what a reader was shown, when a hold begins, and whether answers to related questions count as one human intent. My working guess is that several fixes encoded current folded state as evidence of past admission, and promoted a mechanical candidate into an operational hold before an authorized semantic decision exists. That is a guess, not a concluded root cause.
 
@@ -161,15 +161,15 @@ The call I may have kept making without a rule from the owner is that a derived 
 
 ### Commands behind numbers
 
-- cat /home/izzie/Desktop/codemap/.git/triage/2026-09-24-decision-rounds-2-round4-review/evidence/summary.md
-- cat /home/izzie/Desktop/codemap/.git/triage/2026-09-24-decision-rounds-2-round4-review/evidence/selffix.md
-- cat /home/izzie/Desktop/codemap/.git/triage/2026-09-24-decision-rounds-2-round4-review/evidence/commits.md
-- cat /home/izzie/Desktop/codemap/.git/triage/2026-09-24-decision-rounds-2-round4-review/sort.md
-- git -C /home/izzie/Desktop/codemap log --oneline 161d754497b7958a800afbaf1f41192727a4caab..d76355795a2e1a4f8e0640df585f4a4f611f2849
+- cat .git/triage/2026-09-24-decision-rounds-2-round4-review/evidence/summary.md
+- cat .git/triage/2026-09-24-decision-rounds-2-round4-review/evidence/selffix.md
+- cat .git/triage/2026-09-24-decision-rounds-2-round4-review/evidence/commits.md
+- cat .git/triage/2026-09-24-decision-rounds-2-round4-review/sort.md
+- git log --oneline 161d754497b7958a800afbaf1f41192727a4caab..d76355795a2e1a4f8e0640df585f4a4f611f2849
 
 ### Return to checkpoint
 
-git -C /home/izzie/Desktop/codemap switch --detach diagnose/20260924-185528-decision-rounds-2-round4-review. Only this report was edited.
+git switch --detach diagnose/20260924-185528-decision-rounds-2-round4-review. Only this report was edited.
 
 ## 11. Owner exchange after report
 

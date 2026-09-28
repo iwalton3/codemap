@@ -230,8 +230,8 @@ those it does, provided someone rules which record answers "was it carried out?"
   a carrying-out and a finding's state each are, and which record answers for each. After that,
   the fold's state handling is probably rewritten rather than patched.
 - If the owner rules that the answer itself closes its settled findings (proposal §4), the change
-  crosses two folds. That is a rearchitecture, and the frame is what wants handing over:
-  `/fable-bailout`.
+  crosses two folds. That is a rearchitecture, and the frame is what wants handing over,
+  to an uninvolved, stronger reader.
 
 **Evidence access, per rule.**
 - **What a decision's states mean:** unavailable in the repository, because no reader or writer
@@ -331,7 +331,7 @@ The candidates, if the answers move the model:
 - the stamp bypasses in two live folds, from `747f7fd` and `c745e30`. These are the only part
   that runs on real data today.
 
-**Checkpoint.** `git -C /home/izzie/Desktop/codemap log -1 diagnose/20260923-042851-2026-09-23-i8a-fix-round`
+**Checkpoint.** `git log -1 diagnose/20260923-042851-2026-09-23-i8a-fix-round`
 (→ `c745e30`). Things not to do first:
 - do not apply the session's queued flag-reset fix;
 - do not plan the sort's eight items;
@@ -687,10 +687,10 @@ was implemented as a local patch.
 ### B. Commands that produced a number or a confirmation
 
 All run at `c745e30`, clean tree, `dist/` built after the last source edit (23:51). The probes
-import `dist/` read-only from outside the repository.
+import `dist/` read-only from the repository root.
 
 1. Evidence pack: `.git/triage/2026-09-23-i8a-fix-round/evidence/` (self-fix, commits, surface).
-2. Commit times: `git -C /home/izzie/Desktop/codemap log --format='%h %ad %s' --date=iso 21cb228~9..c745e30`
+2. Commit times: `git log --format='%h %ad %s' --date=iso 21cb228~9..c745e30`
 3. Rulings absent from committed docs:
    `for p in "leave it closed" "awaits you" "just drop it" "R2[0-5]"; do grep -c -E "$p" docs/decision-rounds-worked-cases.md docs/PROPOSAL-decision-rounds.md; done` (all 0)
 4. `git ls-files | grep -c owner.md` (0)
@@ -699,12 +699,12 @@ import `dist/` read-only from outside the repository.
 6. No test joins the two folds: `grep -ln foldDecisions src/*.test.ts | xargs grep -ln "foldFindings\|foldStandard"` (only `db-migrate.test.ts`, which pins vocabulary)
 7. Unpushed: `git branch -r --contains 747f7fd` (empty); `git log -1 origin/main` (`161d754`, 2026-09-20)
 
-Probes 1–3 (`node --no-warnings probe.mjs` from any directory):
+Probes 1–3 (`node --no-warnings probe.mjs`, with `probe.mjs` saved at the repository root):
 
 ```js
-import { foldDecisions, blockedBy, decisionHash } from "/home/izzie/Desktop/codemap/dist/shared-decisions.js";
-const P = { principal: "izzie", actor: "izzie" };
-const A = { principal: "izzie", actor: "agent", via: "claude" };
+import { foldDecisions, blockedBy, decisionHash } from "./dist/shared-decisions.js";
+const P = { principal: "alice", actor: "alice" };
+const A = { principal: "alice", actor: "agent", via: "claude" };
 let n = 0;
 const ev = (kind, data, actor = A) => ({ id: `e${++n}`, kind, data, actor, at: `2026-09-23T00:00:0${n % 10}Z` });
 const mk = (id, round, ref, options, multi = false) => {
@@ -740,8 +740,8 @@ Expected: `1 as-less settle: answered [{"finding":"F10","on":"settle","answer":"
 Probe 4 (relayed park asymmetry):
 
 ```js
-import { foldDecisions, decisionHash } from "/home/izzie/Desktop/codemap/dist/shared-decisions.js";
-const A = { principal: "izzie", via: { kind: "agent", model: "m" } };
+import { foldDecisions, decisionHash } from "./dist/shared-decisions.js";
+const A = { principal: "alice", via: { kind: "agent", model: "m" } };
 let n = 0;
 const ev = (kind, data, actor = A) => ({ id: `e${++n}`, kind, data, actor, at: `2026-09-23T00:00:${String(n).padStart(2,"0")}Z` });
 const d3 = { id: "d3", round: "R1", ref: "D3", kind: "options",
@@ -763,7 +763,7 @@ Expected: `clear 'D3 A': open answers 0 awaitsYou undefined`, `vague words: open
 ### C. Checkpoint
 
 `diagnose/20260923-042851-2026-09-23-i8a-fix-round` → `c745e306c453`, the state at the time of
-writing. Return with `git -C /home/izzie/Desktop/codemap switch -c recovery diagnose/20260923-042851-2026-09-23-i8a-fix-round`.
+writing. Return with `git switch -c recovery diagnose/20260923-042851-2026-09-23-i8a-fix-round`.
 The last good point, owner-confirmed, is `21cb228`.
 
 ---

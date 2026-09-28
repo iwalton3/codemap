@@ -37,7 +37,7 @@ source, the same `indexSource`, the same `ANCHOR_SCHEME` 3:
 ```sh
 node --input-type=module -e 'import {Parser,Language} from "web-tree-sitter"; import {indexSource} from "./dist/indexer.js";
 await Parser.init(); const src="class C { void M(int x){} void M(ref string y){} }";
-for (const [label,path] of [["other","/home/izzie/.vscode/extensions/.c55bfd16-8b98-40ab-92e6-6ec562dec54e/dist/tree-sitter-c-sharp.wasm"],["vendored","grammars/tree-sitter-c_sharp.wasm"]]) {
+for (const [label,path] of [["other",process.env.OTHER_WASM /* another build of the C# grammar, e.g. a VS Code extension's */],["vendored","grammars/tree-sitter-c_sharp.wasm"]]) {
   const l=await Language.load(path), p=new Parser(); p.setLanguage(l);
   console.log(label, JSON.stringify(indexSource(src,"x.cs","c_sharp",p.parse(src).rootNode)
     .filter(a=>a.symbolPath.at(-1)==="M").map(a=>[a.id,a.disambiguator])));
