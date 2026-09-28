@@ -259,7 +259,7 @@ async function viaSubagent(f: Awaited<ReturnType<typeof fixture>>, launcher: Rep
   return recordRepairVerification(f.root, 7, { requestId: f.requestId, role: "verifier", slot, receipt: held.receipt, agentId, callId }, dir);
 }
 
-test("a subagent verifier's held run is recorded only from its own transcript: exact launch prompt, exact submission", async () => {
+test("a subagent verifier counts only from its own transcript, and the fixer's subagents verify at a weaker grade", async () => {
   const f = await fixture();
   const dir = mkdtempSync(join(tmpdir(), "codemap-repair-tx-"));
   try {
@@ -267,20 +267,13 @@ test("a subagent verifier's held run is recorded only from its own transcript: e
     assert.match((wrongPrompt as { error: string }).error, /exactly the issued prompt/);
     const changed = await viaSubagent(f, f.orchestrator, 1, "a2222222", dir, { results: f.results("factually-refuted") });
     assert.match((changed as { error: string }).error, /differs from what was held/);
+    // The launching session is the fixer: its subagents count, and the records say how.
+    ok(await recordRepairParticipant(f.root, 7, { repairId: "sort1", role: "fixer" }, f.orchestrator));
     const recorded = await viaSubagent(f, f.orchestrator, 1, "a3333333", dir);
     ok(recorded);
     assert.ok("run" in recorded && recorded.run);
     assert.deepEqual(recorded.run.identity, { principal: "owner@acme.test", harness: "claude-subagent", session: f.orchestrator.session, child: "a3333333" });
-  } finally { discard(dir); f.t.dispose(); }
-});
-
-test("subagents the fixer launched verify its repair at a weaker grade; the fixer's own connection cannot", async () => {
-  const f = await fixture();
-  const dir = mkdtempSync(join(tmpdir(), "codemap-repair-tx-"));
-  try {
-    ok(await recordRepairParticipant(f.root, 7, { repairId: "sort1", role: "fixer" }, f.orchestrator));
-    ok(await viaSubagent(f, f.orchestrator, 1, "a4444444", dir));
-    ok(await viaSubagent(f, f.orchestrator, 2, "a5555555", dir));
+    ok(await viaSubagent(f, f.orchestrator, 2, "a4444444", dir));
     const records = await repairRecords(f.root, 7);
     assert.ok("verificationResults" in records && records.verificationResults);
     const result = records.verificationResults.find((r) => r.findingId === f.ids[0]);
