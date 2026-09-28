@@ -47,7 +47,7 @@ lines we own beats another thing that can become a worm/rugpull vector.
 
 ```sh
 npm test         # EVERYTHING — unit then e2e. The default keyword runs the whole suite
-npm run unit     # dist/**/*.test.js — hermetic, ~60s. The fast loop
+npm run unit     # dist/**/*.test.js — hermetic; ~14 min under an agent shell (2026-09-28). The fast loop
 npm run e2e      # dist/e2e/**/*.e2e.js — needs a browser and a real repo; ~100s
 npm run build    # emit dist/
 node dist/serve.js <repo|workspace.json> [port]   # web UI (default :4310)

@@ -87,7 +87,7 @@ in an isolated clone.
 
 ## Baseline and implementation tracking
 
-The P0 execution record is [remaining-decision-work execution](remaining-decision-work-execution.md).
+What was built, and where each contract lives: [remaining-decision-work](remaining-decision-work-execution.md).
 It distinguishes existing tested behavior from new capabilities not yet present.
 Future slices must attach executable checks to these cases through operations,
 folds, two-clone sync and visible consumers. This document itself is not an
