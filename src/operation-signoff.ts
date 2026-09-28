@@ -1,7 +1,6 @@
 /** Exact operation approval carried into workspace law without delegating ratification. */
 import { createHash, createPublicKey, verify } from 'node:crypto';
 import { framingContent, operationContent, witnessHash, type Actor, type AskedQuestion, type Operation, type Spec, type OperationSignoffCapsule } from './schema.js';
-import { validCodexReceipt } from './codex-transcript.js';
 import { canonical } from './transcript.js';
 export const SIGN_OPERATION = 'Sign off this exact operation';
 export const PLAN_ONLY = 'Plan only';
@@ -38,7 +37,7 @@ export function validateOperationSignoff(value: unknown, op: Operation, spec: Sp
     const r = c.ruling;
     if (!r || ![r.answerId, r.decisionId, r.ref, r.universe, r.sourceScope, r.via, r.principal, r.responseHash, r.sourceFingerprint, r.checkedAt].every(word) || !Number.isFinite(Date.parse(r.checkedAt)) || typeof r.words !== 'string' || r.verified !== true || r.status !== 'current' || r.comparison !== 'clear')
       return { error: 'sign-off lacks current verified human authority' };
-    if (r.sourceScope !== `decisions/${r.universe}` || (r.sourceReceipt !== undefined && !validCodexReceipt(r.sourceReceipt))) return {error:'answer source scope or native receipt is invalid'};
+    if (r.sourceScope !== `decisions/${r.universe}`) return {error:'answer source scope is invalid'};
     if (canonical(r.display) !== canonical(operationSignoffDisplay(op.id, spec.id, c.content, c.framing, r.ref)) || !Array.isArray(r.selected) || r.selected.length !== 1 || r.selected[0] !== SIGN_OPERATION)
       return { error: 'the full human presentation does not explicitly sign this operation' };
     if (c.key !== operationSignoffKey(op.id, r.answerId) || !c.executor || !word(c.executor.principal) || (executor && canonical(executor) !== canonical(c.executor)))

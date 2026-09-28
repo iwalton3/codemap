@@ -427,7 +427,6 @@ class DecisionsPage extends Component {
           on-click="${() => this.revise(d)}">revise answer</button>
       </div>`)}
       ${when(d.answers.length > 0, () => html`<details><summary>answer history (${d.answers.length})</summary>
-        ${each(d.answers.filter((a) => a.sourceReceipt), (a) => html`<div class="fs dim native-source">${a.id}: ${a.sourceReceipt.harness} ${a.sourceReceipt.version} · source user ${a.sourceReceipt.creatorUserId} · message ${a.sourceReceipt.entryId} · turn ${a.sourceReceipt.turnId}</div>`, (a) => a.id)}
         ${each(d.answers, (a) => html`<div class="fs dim">${a.id}: ${a.words}${a.revision ? ' — revises ' + a.revision.of.join(', ') + ' for ' + [...a.revision.findings, ...(a.revision.issues || []).map((issue) => issue.id)].join(', ') : ''}${a.questionnaire?.approvals ? ' — approved: ' + a.questionnaire.approvals.join(', ') : ''}${a.questionnaire?.corrections?.length ? ' — corrections: ' + a.questionnaire.corrections.map((c) => c.itemId + ': ' + c.text + ' (' + c.verdict + ')').join('; ') : ''}${a.revisionInvalid ? ' — invalid: ' + a.revisionInvalid : ''}${a.withdrawn ? ' — withdrawn: ' + a.withdrawn.reason : ''}</div>`, (a) => a.id)}
       </details>`)}
       ${when(!replaced && !questionnaire && d.kind === 'options', () => html`<div class="op-actions">

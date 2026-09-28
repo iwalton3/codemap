@@ -25,9 +25,6 @@ import {
 } from "../shared-decisions.js";
 import { decisionsView } from "./decision-holds.js";
 import { findVerdictCalls, isUnverified, readCall, readMessage, readReader, sameQuestion, sessionHolding, transcriptDir } from "../transcript.js";
-import { codexSessionHolding, readCodexQuestion, CODEX_READER_UNSUPPORTED } from "../codex-transcript.js";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import { saveReaderRequest, readerRequests, holdReaderReceipt, readerReceipts, settleReaderReceipt,
   legacyReaderRequest, legacyReaderVerdicts, holdLegacyReaderVerdict, pendingLegacyReaderAnswers,
   settleLegacyReaderVerdict, noteLegacyReaderVerdict, type LegacyReaderVerdict } from "../reader-local.js";
@@ -475,12 +472,7 @@ function confirmOutcome(s: SharedDecisions, c: FoldedDecision, a: FoldedDecision
  * path for relaying the person's answers (owner, R13). An unverifiable call writes nothing and
  * says why. A confirm is a posted decision like any other, so it is answered here too.
  */
-export async function logQuestion(root: string, input: { session?: string; toolUseId: string; round: string | string[];
-  harness?: "claude-code" | "codex"; entryId?: string }, via: Via = {}, dir?: string) {
-  if (input.harness !== undefined && input.harness !== "codex" && input.harness !== "claude-code") return { error: "unsupported transcript harness" };
-  if (input.entryId && input.harness !== "codex") return { error: "entryId selection requires the Codex transcript adapter" };
-  const native = input.harness === "codex";
-  dir ??= native ? process.env.CODEMAP_CODEX_TRANSCRIPT_DIR ?? join(homedir(), ".codex", "sessions") : transcriptDir();
+export async function logQuestion(root: string, input: { session?: string; toolUseId: string; round: string | string[] }, via: Via = {}, dir: string = transcriptDir()) {
   const b = bindDecisions(root, via);
   if ("error" in b) return b;
   await recordHeld(root, b, dir);
@@ -488,9 +480,9 @@ export async function logQuestion(root: string, input: { session?: string; toolU
   // an identical question in another round must not take the answer (owner, B1.4; P2.4).
   const named = [...new Set((Array.isArray(input.round) ? input.round : [input.round]).filter((r) => typeof r === "string" && r.trim()))];
   if (!named.length) return { error: "log_question needs the round (or rounds) the call was asked for" };
-  const session = input.session ?? (native ? codexSessionHolding(input.toolUseId, dir) : sessionHolding(input.toolUseId, dir));
+  const session = input.session ?? sessionHolding(input.toolUseId, dir);
   if (isUnverified(session)) return { ok: false, unverified: session.unverified, note: "nothing was written" };
-  const call = native ? readCodexQuestion(session, input.toolUseId, dir, input.entryId) : readCall(session, input.toolUseId, dir);
+  const call = readCall(session, input.toolUseId, dir);
   if (isUnverified(call)) return { ok: false, unverified: call.unverified, note: "nothing was written; relay_answer can still record the words as an unverified answer, which only unblocks" };
   const w = await writable(root);
   if ("error" in w) return w;
@@ -521,7 +513,6 @@ export async function logQuestion(root: string, input: { session?: string; toolU
   const logged = prior?.id ?? (await logQuestionEvent(b.cfg.path, b.cfg.universe, b.actor, {
     session: call.session, toolUseId: call.toolUseId, questions: call.questions, answers: call.answers, transcript: session,
     rounds: rounds.map((r) => r.id), bound, answeredAt: call.at,
-    ...(call.receipt ? { receipt: call.receipt } : {}),
   })).id;
   const binding = prior?.bound ?? bound;
   const once = loggedQuestionOnce(call);
@@ -542,7 +533,6 @@ export async function logQuestion(root: string, input: { session?: string; toolU
   }
   return {
     ok: true, logged, ...(prior ? { retried: true } : {}), answered,
-    ...(native ? { sourceReceipt: call.receipt, readerSupport: { supported: false, reason: CODEX_READER_UNSUPPORTED } } : {}),
     ...(refused.length ? { refused } : {}),
     ...(answered.length ? {} : { note: `logged; no decision in ${named.join(", ")} carries these questions, so nothing was answered` }),
   };

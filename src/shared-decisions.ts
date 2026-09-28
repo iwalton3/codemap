@@ -29,13 +29,11 @@ import { isAgentActor } from "./identity.js";
 import { canonicalIssueKey, type CanonicalIssueReference } from "./decision-issues.js";
 import { questionnaireVersion, stageSubmission, validateQuestionnaire, type Questionnaire, type QuestionnaireAnswer, type StagedSubmission } from "./questionnaire.js";
 import { canonical, normalizeQuestion, sameQuestion } from "./transcript.js";
-import { validCodexReceipt } from "./codex-transcript.js";
-import { ISO_DATE, type Actor, type AskedQuestion, type CodexQuestionReceipt, type Decision, type DecisionEffect, type DecisionOption, type DecisionRound, type LoggedQuestion } from "./schema.js";
+import { ISO_DATE, type Actor, type AskedQuestion, type Decision, type DecisionEffect, type DecisionOption, type DecisionRound, type LoggedQuestion } from "./schema.js";
 
 export const decisionScope = (universe: string): string => `decisions/${universe}`;
 
-export const loggedQuestionOnce = (q: Pick<LoggedQuestion, "session" | "toolUseId" | "receipt">): string =>
-  q.receipt ? `q:codex:${q.session}\0${q.toolUseId}\0${q.receipt.entryId}` : `q:${q.session}\0${q.toolUseId}`;
+export const loggedQuestionOnce = (q: Pick<LoggedQuestion, "session" | "toolUseId">): string => `q:${q.session}\0${q.toolUseId}`;
 
 /** How an answer reached the log. */
 export type AnswerVia =
@@ -65,7 +63,6 @@ export interface FoldedAnswer {
   via: AnswerVia["kind"] | "questionnaire";
   /** The words are the person's (C8): an unverified answer's settles wait for them. */
   verified: boolean;
-  sourceReceipt?: CodexQuestionReceipt;
   /** When the person gave it — the transcript entry's time, or the page's — never when it
    *  was recorded: between two verified answers, the later GIVEN stands (H7.9). */
   givenAt: string;
@@ -548,7 +545,6 @@ export function briefRefusal(decisions: Map<string, FoldedDecision>, d: FoldedDe
 /** What an answer says, before it is applied. */
 interface Resolved {
   verified: boolean;
-  sourceReceipt?: CodexQuestionReceipt;
   words: string;
   /** Options picked (for a bulk decision: the items CHECKED, or the approve-all option). */
   picked: DecisionOption[];
@@ -791,7 +787,6 @@ function foldDecisionsOnce(events: LogEvent[]): SharedDecisions {
     // No round or no answer time: written by a build before either bound anything (H7.12).
     const asked = Array.isArray(q?.rounds) && q.rounds.length && q.rounds.every((r: unknown) => str(r)) ? q.rounds as string[] : str(q?.round) ? [q.round as string] : undefined;
     if (!str(q?.session) || !str(q?.toolUseId) || !asked || !str(q?.answeredAt) || !Array.isArray(q?.questions) || !q?.answers || typeof q.answers !== "object" || Array.isArray(q.answers)) continue;
-    if (q.receipt !== undefined && !validCodexReceipt(q.receipt)) continue;
     if (!q.questions.every((x: any) => x && typeof x === "object" && typeof x.question === "string" && Array.isArray(x.options)
       && x.options.every((o: any) => o && typeof o === "object" && typeof o.label === "string"))) continue;
     if (questions.has(e.id)) continue;
@@ -803,7 +798,6 @@ function foldDecisionsOnce(events: LogEvent[]): SharedDecisions {
       id: e.id, session: q.session, toolUseId: q.toolUseId,
       questions: q.questions.map(normalizeQuestion), answers: q.answers, rounds: asked, bound, answeredAt: q.answeredAt,
       ...(str(q.transcript) ? { transcript: q.transcript } : {}),
-      ...(q.receipt ? { receipt: q.receipt } : {}),
       loggedBy: e.actor, at: e.at,
     });
   }
@@ -826,7 +820,6 @@ function foldDecisionsOnce(events: LogEvent[]): SharedDecisions {
       id: answerId, by: e.actor, at: e.at,
       via: data.questionnaireMeta ? "questionnaire" : (data.via as AnswerVia).kind,
       verified: r.verified, givenAt, seq: pos, knownReplacements: [],
-      ...(r.sourceReceipt ? { sourceReceipt: r.sourceReceipt } : {}),
       ...(r.once ? { once: r.once } : {}),
       responseHash: createHash("sha256").update(canonical({ words: r.words, free: r.free, picked: r.picked.map((o) => o.label), park: r.park ?? null,
         ...(data.questionnaireMeta ? { submittedAnswer: data.questionnaireMeta.answer } : {}) })).digest("hex"),
@@ -1472,8 +1465,7 @@ function resolve(d: FoldedDecision, via: AnswerVia, actor: Actor, questions: Map
       // The call is kept whatever its time says — it is a fact about the transcript — but an
       // answer through it needs a time to rank by (P2.1 (5)).
       if (ms(q.answeredAt) === undefined) return null;
-      const call = { verified: true, givenAt: q.answeredAt, once: loggedQuestionOnce(q), words,
-        ...(q.receipt ? { sourceReceipt: q.receipt } : {}) };
+      const call = { verified: true, givenAt: q.answeredAt, once: loggedQuestionOnce(q), words };
       if (d.kind !== "words" && picked.every(Boolean) && (list.length === 1 || d.payload.multiSelect)) {
         return { ...call, picked: picked as DecisionOption[], free: false };
       }

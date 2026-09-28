@@ -1,7 +1,7 @@
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CODEX_ROLLOUT_VERSION } from "./codex-transcript.js";
+import { CODEX_ROLLOUT_VERSION } from "./codex-harness.js";
 import { CODEX_CLI_ROLE_VERSION, CODEX_CLI_ROLE_SERVER } from "./codex-harness.js";
 import type { CodexCompletedVerifierRequest } from "./codex-verifier-context.js";
 

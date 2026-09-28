@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, statSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { team, settle, type Member } from "./oracle.js";
+import { team, type Member } from "./oracle.js";
 import { discard } from "./test-tmp.js";
 import { db } from "./db.js";
 import { SHARD_EXT } from "./eventlog.js";
@@ -16,7 +16,6 @@ import { decisionScope } from "./shared-decisions.js";
 import { shareFinding, sharedFindings, shareDoc, sharedDocs, sharedSync, backlogFinding } from "./ops-shared.js";
 import { reportBug, listBugs, backlogBugOp } from "./ops/bugs.js";
 import { postRound, answerDirect, reviseDecision, decisionRound, logQuestion } from "./ops/decisions.js";
-import { CODEX_CALL, CODEX_SESSION, codexReply, codexRows, codexTranscript } from "./test-codex-transcript.js";
 import { applicationReaderBrief, submitApplicationVerdict, recordApplicationVerdict, applyRuling } from "./ops/ruling-application.js";
 import { readAnchorStore, readFinding, readBug } from "./store.js";
 import { ensureSidecar } from "./sidecar.js";
@@ -79,46 +78,6 @@ const decision = (id: string, target: string) => ({
     { label: "Yes", description: "Repair it" }] },
   options: [{ label: "No", effects: [{ findings: [target], on: "settle" as const, as: "refuted" as const }] },
     { label: "Yes", effects: [{ findings: [target], on: "unblock" as const }] }],
-});
-
-test("native source receipts survive two-clone sync and refold from an older unchanged-shard cache", async () => {
-  const t = await team([A, "bob@acme.test"]);
-  const tx = codexTranscript([]);
-  try {
-    const m = t.all[0]!, peer = t.all[1]!, root = m.repo, cfg = resolveSidecar(root)!;
-    const f = await as(true, () => shareFinding(root, 7, { targetKind: "anchor", targetId: "src/pay.ts#transfer", text: "negative transfer" })) as any;
-    ok(f);
-    const d = decision("target", f.id);
-    const payload = { question: d.payload.question, options: d.payload.options.map(({ label }) => ({ label })) };
-    ok(await as(true, () => postRound(root, { round: { id: "R1", source: "native upgrade" }, decisions: [{ ...d, payload }] })));
-    const questions = [{ title: payload.question, options: payload.options.map((o) => o.label) }];
-    const now = Date.now();
-    const all = codexRows(questions, ["Yes"]) as any[];
-    all[2].timestamp = new Date(now + 1000).toISOString();
-    all[3].timestamp = new Date(now + 1500).toISOString();
-    all[4] = codexReply(questions, ["Yes"], new Date(now + 2000).toISOString());
-    tx.write(all);
-    const result = await as(true, () => logQuestion(root, { harness: "codex", session: CODEX_SESSION, toolUseId: CODEX_CALL, round: "R1" }, {}, tx.dir)) as any;
-    assert.equal(result.answered[0].recorded, true, JSON.stringify(result));
-    await settle(t);
-    const ours = await decisionRound(root, "R1") as any;
-    const theirs = await decisionRound(peer.repo, "R1") as any;
-    const expected = ours.decisions[0].answers[0].sourceReceipt;
-    assert.equal(expected.harness, "codex");
-    assert.deepEqual(theirs.decisions[0].answers[0].sourceReceipt, expected);
-    const scope = decisionScope(cfg.universe), bytes = shardBytes(cfg.path, scope);
-    const database = db(root);
-    const exactDecision = ours.decisions[0].id;
-    database.prepare("UPDATE decision_records SET body = json_remove(body, '$.answers[0].sourceReceipt') WHERE id = ?").run(exactDecision);
-    database.prepare("UPDATE shared_scope SET fingerprint = ? WHERE scope = ?").run(oldFingerprint(cfg.path, scope, sidecarIdentity(cfg)), scope);
-    assert.equal(JSON.parse(row(root, "decision_records", exactDecision)!.body).answers[0].sourceReceipt, undefined);
-    const before = foldCount();
-    const refreshed = await decisionRound(root, "R1") as any;
-    assert.ok(foldCount() > before, "unchanged shards were refolded on upgrade");
-    assert.deepEqual(refreshed.decisions[0].answers[0].sourceReceipt, expected);
-    assert.equal(shardBytes(cfg.path, scope), bytes);
-    assert.equal((await readFinding(peer.repo, f.id))!.closed, undefined);
-  } finally { tx.cleanup(); t.dispose(); }
 });
 
 test("old cached decision and ruling projections re-fold unchanged shards without erasing other records", async () => {

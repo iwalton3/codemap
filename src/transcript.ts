@@ -14,7 +14,7 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { AskedQuestion, CodexQuestionReceipt } from "./schema.js";
+import type { AskedQuestion } from "./schema.js";
 import { CODEX_READER_UNSUPPORTED } from "./codex-harness.js";
 
 export interface Unverified { unverified: string }
@@ -34,7 +34,6 @@ export interface TranscriptCall {
   /** Keyed by question text; a multi-select answer is a list, and typed "Other" text is one
    *  more element of it (measured 2026-09-23). */
   answers: Record<string, string | string[]>;
-  receipt?: CodexQuestionReceipt;
 }
 
 export interface PersonMessage { session: string; entryId: string; text: string; /** The entry's timestamp: when they typed it. */ at: string }
