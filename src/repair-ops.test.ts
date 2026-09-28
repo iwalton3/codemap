@@ -11,8 +11,8 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const ok = (v: unknown) => assert.equal((v as { error?: string }).error, undefined, JSON.stringify(v));
-const sort = (findingId: string): RepairSortInput => ({ id: "sort1", classification: "implementation-defect", kind: "isolated",
-  source: "owner worklist: fix both independent obligations", coverage: [{ findingId, claimIds: [`${findingId}:original`, "c1", "c2"] }],
+const sort = (findingId: string, claims: string[]): Omit<RepairSortInput, "id"> => ({ classification: "implementation-defect", kind: "isolated",
+  source: "owner worklist: fix both independent obligations", coverage: [{ findingId, claimIds: [`${findingId}:original`, ...claims] }],
   restsOn: [], provenance: "owner-reviewed", assessments: [], disagreements: [] });
 const sha = "a".repeat(40);
 
@@ -22,42 +22,52 @@ test("repair ops preserve original scope, sync partial evidence, and take partic
     const root = t.all[0]!.repo, peer = t.all[1]!.repo;
     const f = await shareFinding(root, 7, { targetKind: "anchor", targetId: "src/pay.ts#transfer", text: "first and second obligations" }) as { id: string };
     ok(f);
-    ok(await recordRepairClaims(root, 7, { findingId: f.id, parentId: `${f.id}:original`, reason: "separate independent clauses",
-      claims: [{ id: "c1", text: "first obligation" }, { id: "c2", text: "second obligation" }] }));
-    ok(await postRepairSort(root, 7, sort(f.id)));
-    const evidence: RepairEvidenceInput = { id: "proof1", sortId: "sort1", witnessCommit: sha, baseCommit: sha, fixCommit: sha,
-      coverage: [{ findingId: f.id, claimIds: ["c1"], result: "complete", reason: "first checked",
-        claimResults: [{ claimId: "c1", result: "complete", reason: "specific first claim" }] }],
+    const claimed = await recordRepairClaims(root, 7, { findingId: f.id, parentId: `${f.id}:original`, reason: "separate independent clauses",
+      claims: [{ text: "first obligation" }, { text: "second obligation" }] });
+    ok(claimed);
+    const [c1, c2] = (claimed as { claims: { id: string }[] }).claims.map(c => c.id) as [string, string];
+    const posted = await postRepairSort(root, 7, sort(f.id, [c1, c2]));
+    ok(posted);
+    const sortId = (posted as { id: string }).id;
+    const evidence: Omit<RepairEvidenceInput, "id"> = { sortId, witnessCommit: sha, baseCommit: sha, fixCommit: sha,
+      coverage: [{ findingId: f.id, claimIds: [c1], result: "complete", reason: "first checked",
+        claimResults: [{ claimId: c1, result: "complete", reason: "specific first claim" }] }],
       reproducer: [], regression: [{ id: "suite", command: "echo regression-only", commit: sha,
         environment: "isolated fixture", phase: "regression", outcome: "passed", exitCode: 0 }],
       inspected: [], noCheckReason: "no useful original reproducer supplied", rulingIds: [], attribution: [] };
     const pendingEvidence = recordRepairEvidence(root, 7, evidence);
     evidence.regression[0]!.command = "changed caller alias";
-    ok(await pendingEvidence);
-    const invalid = await recordRepairParticipant(root, 7, { repairId: "sort1", role: "fixer" }, new RepairConnection("mallory@acme.test"));
+    const recorded = await pendingEvidence;
+    ok(recorded);
+    const evidenceId = (recorded as { id: string }).id;
+    const invalid = await recordRepairParticipant(root, 7, { repairId: sortId, role: "fixer" }, new RepairConnection("mallory@acme.test"));
     assert.match((invalid as { error: string }).error, /another principal/);
     await settle(t);
     const ours = await repairRecords(root, 7), theirs = await repairRecords(peer, 7);
     assert.ok("records" in ours && ours.records && "records" in theirs && theirs.records);
     assert.deepEqual(ours.records, theirs.records);
     assert.equal(theirs.records.evidence[0]!.input.regression[0]!.command, "echo regression-only");
-    assert.equal(repairFindingCompleteness(theirs.records, "proof1", f.id), "partial");
-    assert.equal(theirs.coverage!.proof1![0]!.completeness, "partial");
+    assert.equal(repairFindingCompleteness(theirs.records, evidenceId, f.id), "partial");
+    assert.equal(theirs.coverage![evidenceId]![0]!.completeness, "partial");
     assert.equal(theirs.records.claims[0]!.text, "first and second obligations");
     assert.notEqual((await readFinding(peer, f.id, { pr: 7 }))!.state, "resolved");
     const connection = new RepairConnection("alice@acme.test");
-    ok(await recordRepairParticipant(root, 7, { repairId: "sort1", role: "fixer" }, connection));
+    ok(await recordRepairParticipant(root, 7, { repairId: sortId, role: "fixer" }, connection));
     await settle(t);
     const after = await repairRecords(peer, 7);
     assert.ok("records" in after && after.records);
     assert.equal(after.records.participants[0]!.input.identity.session, connection.session);
     assert.equal(after.records.sorts[0]!.eligible, true);
-    const correction = await postRepairSort(root, 7, { ...sort(f.id), id: "fixer-correction", prior: "sort1", reason: "fixer proposes a new classification" });
-    assert.ok("records" in correction && correction.records);
-    assert.ok(correction.records.sorts.find(s => s.input.id === "fixer-correction")!.holds.some(h => h.includes("fixer")));
-    const duplicate = await postRepairSort(root, 7, sort(f.id));
-    assert.match((duplicate as { error: string }).error, /duplicate/);
-    const malformed = await recordRepairEvidence(root, 7, { ...evidence, id: "bad", regression: [{ ...evidence.regression[0]!, exitCode: undefined }] });
+    const correction = await postRepairSort(root, 7, { ...sort(f.id, [c1, c2]), prior: sortId, reason: "fixer proposes a new classification" });
+    assert.ok("records" in correction && correction.records && "id" in correction);
+    assert.ok(correction.records.sorts.find(s => s.input.id === correction.id)!.holds.some(h => h.includes("fixer")));
+    // A retry of the same record is the same record, not a second, competing sort.
+    const again = await postRepairSort(root, 7, sort(f.id, [c1, c2]));
+    assert.ok("alreadyRecorded" in again && again.alreadyRecorded && again.id === sortId, JSON.stringify(again));
+    assert.equal(again.records.sorts.length, 2);
+    const chosen = await postRepairSort(root, 7, { ...sort(f.id, [c1, c2]), id: "s1" } as Omit<RepairSortInput, "id">);
+    assert.match((chosen as { error: string }).error, /codemap assigns/);
+    const malformed = await recordRepairEvidence(root, 7, { ...evidence, regression: [{ ...evidence.regression[0]!, exitCode: undefined }] });
     assert.match((malformed as { error: string }).error, /execution/);
     const pointer = join(root, ".codemap", "sidecar"), original = readFileSync(pointer, "utf8");
     try {
@@ -66,7 +76,7 @@ test("repair ops preserve original scope, sync partial evidence, and take partic
       assert.ok("records" in unavailable && unavailable.records);
       assert.equal(unavailable.status, "blocked");
       assert.equal(unavailable.records.evidence.length, 1);
-      const refused = await postRepairSort(root, 7, { ...sort(f.id), id: "unavailable" });
+      const refused = await postRepairSort(root, 7, { ...sort(f.id, [c1]), source: "unavailable" });
       assert.ok("error" in refused);
     } finally { writeFileSync(pointer, original); }
   } finally { t.dispose(); }

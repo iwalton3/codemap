@@ -49,14 +49,14 @@ test("repair verification replays unchanged shards after an upgrade and retains 
     assert.ok(finding.id);
     const scope = findingScope(findingKeyScope(cfg, 7));
     const claimId = `${finding.id}:original`, sha = "a".repeat(40);
-    const sorted = await postRepairSort(root, 7, { id: "upgrade-sort", source: "exact owner input-2", provenance: "owner-reviewed",
+    const sorted = await postRepairSort(root, 7, { source: "exact owner input-2", provenance: "owner-reviewed",
       classification: "implementation-defect", kind: "isolated", coverage: [{ findingId: finding.id, claimIds: [claimId] }], restsOn: [], assessments: [], disagreements: [] });
     assert.ok("ok" in sorted && sorted.ok, JSON.stringify(sorted));
-    const evidence = await recordRepairEvidence(root, 7, { id: "upgrade-evidence", sortId: "upgrade-sort", witnessCommit: sha, baseCommit: sha, fixCommit: sha,
+    const evidence = await recordRepairEvidence(root, 7, { sortId: sorted.id, witnessCommit: sha, baseCommit: sha, fixCommit: sha,
       coverage: [{ findingId: finding.id, claimIds: [claimId], result: "unknown", reason: "commit unavailable", claimResults: [{ claimId, result: "unknown", reason: "commit unavailable" }] }],
       reproducer: [], regression: [], inspected: [], noCheckReason: "required commit unavailable", rulingIds: [], attribution: [] });
     assert.ok("ok" in evidence && evidence.ok, JSON.stringify(evidence));
-    const participant = await recordRepairParticipant(root, 7, { repairId: "upgrade-sort", role: "fixer" }, new RepairConnection("alice@acme.test"));
+    const participant = await recordRepairParticipant(root, 7, { repairId: sorted.id, role: "fixer" }, new RepairConnection("alice@acme.test"));
     assert.ok("ok" in participant && participant.ok, JSON.stringify(participant));
     const source = await repairRecords(root, 7);
     assert.ok("records" in source && source.records);

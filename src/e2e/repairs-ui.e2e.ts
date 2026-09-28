@@ -42,23 +42,24 @@ test("repair page retains original scope, separate evidence outcomes and the clo
     const initialState = (await readFinding(root, finding.id))?.state;
     const original = `${finding.id}:original`;
     const decomposition = await ops.recordRepairClaims(root, 7, { findingId: finding.id, parentId: original,
-      reason: "Separate the two claims without removing the original.", claims: [{ id: "negative", text: "Negative credits are accepted." }, { id: "duplicate", text: "Duplicate credits are accepted." }] });
+      reason: "Separate the two claims without removing the original.", claims: [{ text: "Negative credits are accepted." }, { text: "Duplicate credits are accepted." }] });
     assert.ok("ok" in decomposition && decomposition.ok, JSON.stringify(decomposition));
+    const [negative, duplicate] = decomposition.claims.map(c => c.id) as [string, string];
     const marker = join(root, "command-must-not-run");
-    const sort = await ops.postRepairSort(root, 7, { id: "sort-first", classification: "implementation-defect", kind: "isolated",
-      provenance: "owner-reviewed", source: "Owner-reviewed exact input-2 worklist", coverage: [{ findingId: finding.id, claimIds: [original, "negative", "duplicate"] }], restsOn: [], assessments: [], disagreements: [],
+    const sort = await ops.postRepairSort(root, 7, { classification: "implementation-defect", kind: "isolated",
+      provenance: "owner-reviewed", source: "Owner-reviewed exact input-2 worklist", coverage: [{ findingId: finding.id, claimIds: [original, negative, duplicate] }], restsOn: [], assessments: [], disagreements: [],
     });
     assert.ok("ok" in sort && sort.ok, JSON.stringify(sort));
-    const revised = await ops.postRepairSort(root, 7, { id: "sort-correction", prior: "sort-first", reason: "A requirement dependency was overlooked.",
+    const revised = await ops.postRepairSort(root, 7, { prior: sort.id, reason: "A requirement dependency was overlooked.",
       classification: "design", kind: "isolated", provenance: "owner-reviewed", source: "Owner-reviewed correction",
-      coverage: [{ findingId: finding.id, claimIds: [original, "negative", "duplicate"] }], restsOn: ["req-credit"], assessments: [],
+      coverage: [{ findingId: finding.id, claimIds: [original, negative, duplicate] }], restsOn: ["req-credit"], assessments: [],
       disagreements: [{ id: "conflict-scope", text: "The duplicate policy needs a ruling." }],
       arbitration: { addresses: ["conflict-scope"], reason: "Keep the dependency until the owner rules.", identity: { principal: "Alice", session: "arbitrator-source" } },
     });
     assert.ok("ok" in revised && revised.ok, JSON.stringify(revised));
-    const evidence = await ops.recordRepairEvidence(root, 7, { id: "partial-report", sortId: "sort-first",
+    const evidence = await ops.recordRepairEvidence(root, 7, { sortId: sort.id,
       witnessCommit: commit, baseCommit: commit, fixCommit: commit,
-      coverage: [{ findingId: finding.id, claimIds: [original, "negative"], result: "partial", reason: "Duplicate credits remain unchecked.", claimResults: [{ claimId: original, result: "partial", reason: "Duplicate credits remain unchecked." }, { claimId: "negative", result: "complete", reason: "The negative claim has a run." }] }],
+      coverage: [{ findingId: finding.id, claimIds: [original, negative], result: "partial", reason: "Duplicate credits remain unchecked.", claimResults: [{ claimId: original, result: "partial", reason: "Duplicate credits remain unchecked." }, { claimId: negative, result: "complete", reason: "The negative claim has a run." }] }],
       reproducer: [{ id: "repro", command: `touch ${marker}`, phase: "witness", commit, environment: "isolated scratch clone", outcome: "failed", exitCode: 1, stdout: "negative credit persists" }],
       regression: [{ id: "suite", command: "npm test", phase: "regression", commit, environment: "isolated scratch clone", outcome: "passed", exitCode: 0 }],
       inspected: [{ source: "src/credits.ts", commit, reasoning: "The source returns the input directly." }],
@@ -70,25 +71,29 @@ test("repair page retains original scope, separate evidence outcomes and the clo
     assert.ok("records" in beforeVerification && beforeVerification.records);
     const verificationFinding = await shareFinding(root, 7, { targetKind: "anchor", targetId: search.anchors[0].id, text: "Credit verification fixture requires an independent check." }) as { id: string };
     const verificationClaim = `${verificationFinding.id}:original`;
-    const independentSort = { ...beforeVerification.records.sorts[0]!.input, id: "verification-sort", coverage: [{ findingId: verificationFinding.id, claimIds: [verificationClaim] }] };
+    const { id: _sortId, ...firstSort } = beforeVerification.records.sorts[0]!.input;
+    const { id: _evidenceId, ...firstEvidence } = beforeVerification.records.evidence[0]!.input;
+    const independentSort = { ...firstSort, coverage: [{ findingId: verificationFinding.id, claimIds: [verificationClaim] }] };
     const independentSortResult = await ops.postRepairSort(root, 7, independentSort);
     assert.ok("ok" in independentSortResult && independentSortResult.ok, JSON.stringify(independentSortResult));
-    const independentEvidence = { ...beforeVerification.records.evidence[0]!.input, id: "verification-evidence", sortId: independentSort.id,
+    const independentSortId = independentSortResult.id;
+    const independentEvidence = { ...firstEvidence, sortId: independentSortId,
       coverage: [{ findingId: verificationFinding.id, claimIds: [verificationClaim], result: "unknown" as const, reason: "Environment unavailable.", claimResults: [{ claimId: verificationClaim, result: "unknown" as const, reason: "Environment unavailable." }] }] };
     const independentEvidenceResult = await ops.recordRepairEvidence(root, 7, independentEvidence);
     assert.ok("ok" in independentEvidenceResult && independentEvidenceResult.ok, JSON.stringify(independentEvidenceResult));
+    const independentEvidenceId = independentEvidenceResult.id;
     const records = await ops.repairRecords(root, 7);
     assert.ok("records" in records && records.records);
     const actor = requireActor(root);
     assert.ok(!("error" in actor));
-    const participant = await ops.recordRepairParticipant(root, 7, { repairId: independentSort.id, role: "fixer" }, new RepairConnection(actor.principal));
+    const participant = await ops.recordRepairParticipant(root, 7, { repairId: independentSortId, role: "fixer" }, new RepairConnection(actor.principal));
     assert.ok("ok" in participant && participant.ok, JSON.stringify(participant));
     const orchestrator = new RepairConnection(actor.principal).identity();
     const verificationTarget = (await readFinding(root, verificationFinding.id))!;
     const capsule: RepairVerificationCapsule = { scope: records.scope,
       targets: [{ findingId: verificationFinding.id, openEpoch: verificationTarget.openEpoch!, claimHash: issueClaimHash("finding", verificationTarget) }],
       code: { witnessCommit: commit, baseCommit: commit, fixCommit: commit, diff: "", availability: "available" },
-      claims: records.records.claims.filter(claim => claim.findingId === verificationFinding.id), sort: independentSort, evidence: independentEvidence,
+      claims: records.records.claims.filter(claim => claim.findingId === verificationFinding.id), sort: { ...independentSort, id: independentSortId }, evidence: { ...independentEvidence, id: independentEvidenceId },
       rulingContext: JSON.stringify({ decisions: (await decisionsView(root)).s, eligibility: [] }), orchestrator };
     const request = { id: "browser-request", capsule, capsuleHash: repairVerificationHash(capsule) };
     await emitEvent(side, records.scope, actor, "repair.verification-requested", request.id, { ...request });
@@ -107,14 +112,14 @@ test("repair page retains original scope, separate evidence outcomes and the clo
     await page.goto(`${server.url}/#/u/${universe}/repairs/7/`, { waitUntil: "networkidle" });
     await page.waitForSelector(".repair-evidence", { timeout: 10_000 });
     const text = await page.textContent("main");
-    for (const expected of ["Negative credits and duplicate credits are accepted.", "sort-first", "sort-correction", "A requirement dependency was overlooked.", "The duplicate policy needs a ruling.", "Keep the dependency until the owner rules.", "reported partial", "Duplicate credits remain unchecked.",
+    for (const expected of ["Negative credits and duplicate credits are accepted.", sort.id, revised.id, "A requirement dependency was overlooked.", "The duplicate policy needs a ruling.", "Keep the dependency until the owner rules.", "reported partial", "Duplicate credits remain unchecked.",
       "Finding reproducer", "Regression runs", "failed · exit 1", "unknown", "passed · exit 0",
       "weaker inspection grade", "No useful duplicate-credit fixture exists yet.", "Repair closure is gated", "partial coverage cannot resolve a whole finding"])
       assert.ok(text.includes(expected), `${expected} missing from ${text}`);
     for (const expected of ["browser-request", "Verifier slot 1", "The independently requested environment is unavailable.", "incomplete bounded coverage", "Not applied."])
       assert.ok(text.includes(expected), `${expected} missing from ${text}`);
     assert.equal(text.includes("Stale verification:"), false, "the fresh canonical receipt is not already stale");
-    const changed = await ops.postRepairSort(root, 7, { ...independentSort, id: "verification-sort-moved", prior: independentSort.id,
+    const changed = await ops.postRepairSort(root, 7, { ...independentSort, prior: independentSortId,
       reason: "New requirement context needs review.", classification: "design", restsOn: ["new-requirement"] });
     assert.ok("ok" in changed && changed.ok, JSON.stringify(changed));
     await page.reload({ waitUntil: "networkidle" });
@@ -124,15 +129,16 @@ test("repair page retains original scope, separate evidence outcomes and the clo
     assert.ok(staleText.includes("Verifier slot 1"), "staleness retains the earlier independent run");
     const closureFinding = await shareFinding(root, 7, { targetKind: "anchor", targetId: search.anchors[0].id, text: "Independent historical closure fixture." }) as { id: string };
     const closureClaim = `${closureFinding.id}:original`;
-    const closureSort = { ...independentSort, id: "closure-sort", coverage: [{ findingId: closureFinding.id, claimIds: [closureClaim] }] };
+    const closureSort = { ...independentSort, coverage: [{ findingId: closureFinding.id, claimIds: [closureClaim] }] };
     const closureSortResult = await ops.postRepairSort(root, 7, closureSort);
     assert.ok("ok" in closureSortResult && closureSortResult.ok, JSON.stringify(closureSortResult));
-    const closureEvidence = await ops.recordRepairEvidence(root, 7, { id: "closure-evidence", sortId: closureSort.id,
+    const closureSortId = closureSortResult.id;
+    const closureEvidence = await ops.recordRepairEvidence(root, 7, { sortId: closureSortId,
       witnessCommit: commit, baseCommit: commit, fixCommit: commit,
       coverage: [{ findingId: closureFinding.id, claimIds: [closureClaim], result: "complete", reason: "fixture scope inspected", claimResults: [{ claimId: closureClaim, result: "complete", reason: "fixture scope inspected" }] }],
       reproducer: [], regression: [], inspected: [], noCheckReason: "synthetic inspection fixture", rulingIds: [], attribution: [] });
     assert.ok("ok" in closureEvidence && closureEvidence.ok, JSON.stringify(closureEvidence));
-    const fixer = await ops.recordRepairParticipant(root, 7, { repairId: closureSort.id, role: "fixer" }, new RepairConnection(actor.principal));
+    const fixer = await ops.recordRepairParticipant(root, 7, { repairId: closureSortId, role: "fixer" }, new RepairConnection(actor.principal));
     assert.ok("ok" in fixer && fixer.ok, JSON.stringify(fixer));
     const verifiers: RepairConnection[] = [];
     const makeHost = () => {
@@ -142,7 +148,7 @@ test("repair page retains original scope, separate evidence outcomes and the clo
       return connection;
     };
     const closureHost = new RepairConnection(actor.principal);
-    const closureRequest = await ops.requestRepairVerification(root, 7, { sortId: closureSort.id, evidenceId: "closure-evidence" }, closureHost);
+    const closureRequest = await ops.requestRepairVerification(root, 7, { sortId: closureSortId, evidenceId: closureEvidence.id }, closureHost);
     assert.ok("request" in closureRequest && closureRequest.request, JSON.stringify(closureRequest));
     for (const slot of [1, 2] as const) {
       const verifierHost = makeHost();
@@ -191,7 +197,7 @@ test("repair page retains original scope, separate evidence outcomes and the clo
     assert.equal(driftSearch.findings[0].repair.lifecycles[0].currentProof, false);
     assert.ok(driftSearch.findings[0].repair.lifecycles[0].attention.some((reason: string) => reason.includes("source moved")));
     // Slot 1's own connection is later recorded as the fixer: its run stops counting.
-    const lateParticipant = await ops.recordRepairParticipant(root, 7, { repairId: closureSort.id, role: "fixer" }, verifiers[0]!);
+    const lateParticipant = await ops.recordRepairParticipant(root, 7, { repairId: closureSortId, role: "fixer" }, verifiers[0]!);
     assert.ok("ok" in lateParticipant && lateParticipant.ok, JSON.stringify(lateParticipant));
     await page.reload({ waitUntil: "networkidle" });
     await page.waitForSelector(".repair-closure-attention", { timeout: 10_000 });

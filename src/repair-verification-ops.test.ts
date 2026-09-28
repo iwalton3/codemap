@@ -20,25 +20,33 @@ import { resolveSidecar } from "./sidecar-config.js";
 import { findingScope } from "./shared-findings.js";
 import { findingKeyScope } from "./review-target.js";
 const ok = (result: unknown) => assert.equal((result as { error?: string }).error, undefined, JSON.stringify(result));
-async function fixture(count = 1, decomposed = false, changeEvidence?: (evidence: RepairEvidenceInput, root: string) => void, holdBeforeRequest?: "legacy" | "typed") {
+async function fixture(count = 1, decomposed = false, changeEvidence?: (evidence: Omit<RepairEvidenceInput, "id">, root: string) => void, holdBeforeRequest?: "legacy" | "typed") {
   const t = await team(["owner@acme.test", "fixer@acme.test"]);
   const root = t.all[0]!.repo, peer = t.all[1]!.repo, ids: string[] = [];
   for (let i = 0; i < count; i++) {
     const f = await shareFinding(root, 7, { targetKind: "anchor", targetId: `src/pay.ts#transfer${i}`, text: `obligation ${i}`, sourceRef: headCommit(root)! }) as { id: string };
     ok(f); ids.push(f.id);
   }
-  if (decomposed) ok(await recordRepairClaims(root, 7, { findingId: ids[0]!, parentId: `${ids[0]}:original`, reason: "two separate obligations", claims: [{ id: "extra", text: "second obligation" }] }));
-  const sort: RepairSortInput = { id: "sort1", classification: "mechanical", kind: "isolated", source: "approved owner worklist",
-    coverage: ids.map(id => ({ findingId: id, claimIds: [`${id}:original`, ...(decomposed ? ["extra"] : [])] })), restsOn: [], provenance: "owner-reviewed", assessments: [], disagreements: [] };
-  ok(await postRepairSort(root, 7, sort));
+  let extra = "";
+  if (decomposed) {
+    const claims = await recordRepairClaims(root, 7, { findingId: ids[0]!, parentId: `${ids[0]}:original`, reason: "two separate obligations", claims: [{ text: "second obligation" }] });
+    ok(claims); extra = (claims as { claims: { id: string }[] }).claims[0]!.id;
+  }
+  const sort: Omit<RepairSortInput, "id"> = { classification: "mechanical", kind: "isolated", source: "approved owner worklist",
+    coverage: ids.map(id => ({ findingId: id, claimIds: [`${id}:original`, ...(decomposed ? [extra] : [])] })), restsOn: [], provenance: "owner-reviewed", assessments: [], disagreements: [] };
+  const posted = await postRepairSort(root, 7, sort);
+  ok(posted);
+  const sortId = (posted as { id: string }).id;
   const sha = headCommit(root)!;
-  const evidence: RepairEvidenceInput = { id: "proof1", sortId: "sort1", witnessCommit: sha, baseCommit: sha, fixCommit: sha,
+  const evidence: Omit<RepairEvidenceInput, "id"> = { sortId, witnessCommit: sha, baseCommit: sha, fixCommit: sha,
     coverage: sort.coverage.map(ref => ({ ...ref, result: "complete", reason: "FIXER CONCLUSION MUST BE HIDDEN", claimResults: ref.claimIds.map(claimId => ({ claimId, result: "complete", reason: "FIXER CLAIM VERDICT MUST BE HIDDEN" })) })),
     reproducer: [], regression: [], inspected: [{ source: "src/pay.ts", commit: sha, reasoning: "FIXER REASONING MUST BE HIDDEN" }],
     noCheckReason: "synthetic inspection fixture has no useful executable check", rulingIds: [], attribution: [] };
   changeEvidence?.(evidence, root);
-  ok(await recordRepairEvidence(root, 7, evidence));
-  ok(await recordRepairParticipant(peer, 7, { repairId: "sort1", role: "fixer" }, new RepairConnection("fixer@acme.test")));
+  const recorded = await recordRepairEvidence(root, 7, evidence);
+  ok(recorded);
+  const evidenceId = (recorded as { id: string }).id;
+  ok(await recordRepairParticipant(peer, 7, { repairId: sortId, role: "fixer" }, new RepairConnection("fixer@acme.test")));
   await settle(t);
   if (holdBeforeRequest) await postHold(root, ids[0]!, holdBeforeRequest);
   /** A dedicated verifier session: its own connection, claimed before anything else. */
@@ -48,7 +56,7 @@ async function fixture(count = 1, decomposed = false, changeEvidence?: (evidence
     return connection;
   };
   const orchestrator = new RepairConnection("owner@acme.test");
-  const requested = await requestRepairVerification(root, 7, { sortId: "sort1", evidenceId: "proof1" }, orchestrator);
+  const requested = await requestRepairVerification(root, 7, { sortId, evidenceId }, orchestrator);
   let requestId = "";
   if (holdBeforeRequest) assert.match((requested as { error: string }).error, /held|decision/);
   else { ok(requested); assert.ok("request" in requested && requested.request); requestId = requested.request.id; }
@@ -66,7 +74,7 @@ async function fixture(count = 1, decomposed = false, changeEvidence?: (evidence
     assert.equal("records" in submitted, false);
     return { h, run: submitted.run };
   };
-  return { t, root, peer, ids, sort, evidence, host, orchestrator, requestId, requested, results, run };
+  return { t, root, peer, ids, sort, sortId, evidenceId, evidence, host, orchestrator, requestId, requested, results, run };
 }
 
 async function postHold(root: string, findingId: string, kind: "legacy" | "typed") {
@@ -151,7 +159,7 @@ test("changing exactly the claim or accepted sort makes application visibly stal
     try {
       await f.run(1); await f.run(2);
       if (mutation === "claim") ok(await reviseFinding(f.root, 7, f.ids[0]!, { text: "changed exact claim" }));
-      else ok(await postRepairSort(f.root, 7, { ...f.sort, id: "sort2", prior: f.sort.id, reason: "new independent assessment" }));
+      else ok(await postRepairSort(f.root, 7, { ...f.sort, prior: f.sortId, reason: "new independent assessment" }));
       const applied = await applyRepairVerification(f.root, 7, { requestId: f.requestId, findingId: f.ids[0]!, reason: "old inputs" }, f.orchestrator);
       assert.match((applied as { error: string }).error, /stale|not currently eligible|superseded/);
       assert.equal((await readFinding(f.root, f.ids[0]!, { pr: 7 }))!.state, "created");
@@ -221,7 +229,7 @@ test("later human assignment preserves the established release of an ordinary de
   try {
     ok(await reassignFinding(f.root, 7, f.ids[0]!, { kind: "fix", note: "owner explicitly assigns this existing mechanical work" }));
     assert.equal((await decisionsView(f.root)).work(f.ids[0]!, (await readFinding(f.root, f.ids[0]!, { pr: 7 }))!.assignment).allowed, true);
-    const released = await requestRepairVerification(f.root, 7, { sortId: "sort1", evidenceId: "proof1" }, new RepairConnection("owner@acme.test"));
+    const released = await requestRepairVerification(f.root, 7, { sortId: f.sortId, evidenceId: f.evidenceId }, new RepairConnection("owner@acme.test"));
     ok(released);
     assert.ok("request" in released && released.request);
   } finally { f.t.dispose(); }
@@ -268,7 +276,7 @@ test("a subagent verifier counts only from its own transcript, and the fixer's s
     const changed = await viaSubagent(f, f.orchestrator, 1, "a2222222", dir, { results: f.results("factually-refuted") });
     assert.match((changed as { error: string }).error, /differs from what was held/);
     // The launching session is the fixer: its subagents count, and the records say how.
-    ok(await recordRepairParticipant(f.root, 7, { repairId: "sort1", role: "fixer" }, f.orchestrator));
+    ok(await recordRepairParticipant(f.root, 7, { repairId: f.sortId, role: "fixer" }, f.orchestrator));
     const recorded = await viaSubagent(f, f.orchestrator, 1, "a3333333", dir);
     ok(recorded);
     assert.ok("run" in recorded && recorded.run);

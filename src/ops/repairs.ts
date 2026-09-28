@@ -1,7 +1,8 @@
 import { repairCodeLifecycle } from "../repair-lifecycle.js";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { canonical } from "../canonical.js";
 import { requireActor } from "../identity.js";
 import { sidecarWriteDoor, resolveSidecar, sidecarIdentity } from "../sidecar-config.js";
 import { findingKeyScope } from "../review-target.js";
@@ -9,7 +10,7 @@ import { findingScope, foldFindings, type SharedFinding } from "../shared-findin
 import { findingsProjection } from "../shared-projections.js";
 import { readCached } from "../materialize.js";
 import { emitEventChecked, readScopeChecked, GENESIS, SIDECAR_PROTOCOL, EVENT_SCHEMA, type LogEvent } from "../eventlog.js";
-import { emptyRepairRecords, foldRepairRecords, repairFindingCompleteness, type RepairFindingMap, type RepairSortInput, type RepairEvidenceInput } from "../repair-records.js";
+import { emptyRepairRecords, foldRepairRecords, repairFindingCompleteness, type RepairFindingMap, type RepairSortInput, type RepairEvidenceInput, type RepairRecords } from "../repair-records.js";
 import type { RepairConnection } from "../verifier-boundary.js";
 import { earlierUnfavourableRuns, emptyRepairVerificationState, isRepairVerificationState, repairVerificationDecision, repairVerificationHash } from "../repair-verification.js";
 import { issueClaimHash } from "../ruling-application.js";
@@ -89,7 +90,8 @@ export async function repairRecords(root: string, review: number | string) {
     closure: "independent-verification-requires-separate-application" as const };
 }
 
-async function append(root: string, review: number | string, kind: string, subject: string, data: Record<string, unknown>) {
+async function append(root: string, review: number | string, kind: string, subject: string, data: Record<string, unknown>,
+  recorded?: (records: RepairRecords) => boolean) {
   data = structuredClone(data);
   const door = sidecarWriteDoor(root);
   if (!door.cfg) return { error: door.error ?? "repair records require a configured sidecar" };
@@ -99,8 +101,9 @@ async function append(root: string, review: number | string, kind: string, subje
   if ("error" in actor) return actor;
   const scope = findingScope(findingKeyScope(cfg, review));
   const current = await repairRecords(root, review);
-  if ("error" in current) return current;
+  if (current.error !== undefined) return { error: current.error };
   if (current.status === "blocked") return { error: "repair scope is blocked; records remain visible but cannot authorize a write" };
+  if (recorded?.(current.records)) return { ...current, ok: true as const, id: subject, alreadyRecorded: true };
   const event = await emitEventChecked(cfg.path, scope, actor, async (events) => {
     const checked = await readScopeChecked(cfg.path, scope);
     if (checked.status === "blocked") return { error: "repair scope became blocked before append" };
@@ -113,23 +116,43 @@ async function append(root: string, review: number | string, kind: string, subje
   });
   if ("error" in event) return event;
   const result = await repairRecords(root, review);
-  return { ok: true, id: subject, eventId: event.id, ...result };
+  if (result.error !== undefined) return { error: result.error };
+  return { ...result, ok: true as const, id: subject, eventId: event.id };
 }
 
-export async function postRepairSort(root: string, review: number | string, sort: RepairSortInput) {
+/**
+ * Record ids are codemap's, derived from the content: a caller-chosen id collides across
+ * sessions, and the fold keeps whichever duplicate folds first — so evidence citing `s1`
+ * attached to another session's `s1` after a sync. Content-derived also makes a retry of the
+ * same record idempotent instead of minting a second, competing one.
+ */
+const contentId = (prefix: string, review: number | string, data: unknown): string =>
+  prefix + createHash("sha256").update(canonical({ review: String(review), data })).digest("hex").slice(0, 20);
+const callerId = (what: string) => ({ error: `codemap assigns a ${what}'s id; leave \`id\` out and use the id it returns` });
+
+export async function postRepairSort(root: string, review: number | string, sort: Omit<RepairSortInput, "id">) {
   sort = structuredClone(sort);
   if (!sort || !Array.isArray(sort.assessments) || sort.assessments.some(a => !a || typeof a !== "object")) return { error: "sort requires assessment records" };
-  return append(root, review, "repair.sort-recorded", sort?.id, { ...sort });
+  if ("id" in sort) return callerId("sort");
+  const id = contentId("rs_", review, sort);
+  return append(root, review, "repair.sort-recorded", id, { ...sort, id }, (r) => r.sorts.some(s => s.input.id === id));
 }
 
 export async function recordRepairClaims(root: string, review: number | string,
-  input: { findingId: string; parentId: string; reason: string; claims: { id: string; text: string }[] }) {
-  return append(root, review, "repair.claims-recorded", input.findingId, { ...input });
+  input: { findingId: string; parentId: string; reason: string; claims: { text: string }[] }) {
+  if (!Array.isArray(input?.claims) || input.claims.some(c => !c || typeof c !== "object")) return { error: "claims must be objects with text" };
+  if (input.claims.some(c => "id" in c)) return callerId("claim");
+  const claims = input.claims.map((c, i) => ({ id: `${input.findingId}:${contentId("c_", review, { findingId: input.findingId, parentId: input.parentId, reason: input.reason, i, text: c.text })}`, text: c.text }));
+  const out = await append(root, review, "repair.claims-recorded", input.findingId, { ...input, claims },
+    (r) => claims.every(c => r.claims.some(x => x.id === c.id)));
+  return "ok" in out ? { ...out, claims } : out;
 }
 
 /** Commands are recorded verbatim as data. This operation never runs them. */
-export async function recordRepairEvidence(root: string, review: number | string, evidence: RepairEvidenceInput) {
-  return append(root, review, "repair.evidence-recorded", evidence?.id, { ...evidence });
+export async function recordRepairEvidence(root: string, review: number | string, evidence: Omit<RepairEvidenceInput, "id">) {
+  if (evidence && "id" in evidence) return callerId("evidence record");
+  const id = contentId("re_", review, evidence);
+  return append(root, review, "repair.evidence-recorded", id, { ...evidence, id }, (r) => r.evidence.some(e => e.input.id === id));
 }
 
 /** The identity is this MCP connection's, never a tool argument (see `verifier-boundary.ts`). */

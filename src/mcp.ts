@@ -247,15 +247,15 @@ const repairRun = obj({ id: repairString, command: repairString, commit: repairS
   outcome: { type: "string", enum: ["passed", "failed", "unknown"] },
   exitCode: { type: "integer" }, stdout: repairString, stderr: repairString, reason: repairString },
   ["id", "command", "commit", "environment", "phase", "outcome"], false);
-const repairSortSchema = obj({ id: repairString, prior: repairString, reason: repairString, classification: repairString,
+const repairSortSchema = obj({ prior: repairString, reason: repairString, classification: repairString,
   kind: { type: "string", enum: ["isolated", "pattern"] }, coverage: { type: "array", items: obj(repairCoverage, ["findingId", "claimIds"], false) },
   predicate: repairString, sites: repairStrings, refutationSubtype: { type: "string", enum: ["factual", "scope"] },
   restsOn: repairStrings, source: repairString, provenance: { type: "string", enum: ["owner-reviewed", "dual-sorted"] },
   assessments: { type: "array", items: obj({ identity: repairIdentity, classification: repairString, reason: repairString, receipt: reportedSortReceipt }, ["identity", "classification", "reason"], false) },
   disagreements: { type: "array", items: obj({ id: repairString, text: repairString }, ["id", "text"], false) },
   arbitration: obj({ addresses: repairStrings, reason: repairString, identity: repairIdentity, receipt: reportedSortReceipt }, ["addresses", "reason", "identity"], false) },
-  ["id", "classification", "kind", "coverage", "restsOn", "source", "provenance", "assessments", "disagreements"], false);
-const repairEvidenceSchema = obj({ id: repairString, sortId: repairString, witnessCommit: repairString, baseCommit: repairString, fixCommit: repairString,
+  ["classification", "kind", "coverage", "restsOn", "source", "provenance", "assessments", "disagreements"], false);
+const repairEvidenceSchema = obj({ sortId: repairString, witnessCommit: repairString, baseCommit: repairString, fixCommit: repairString,
   coverage: { type: "array", items: obj({ ...repairCoverage, result: repairResult, reason: repairString,
     claimResults: { type: "array", items: obj({ claimId: repairString, result: repairResult, reason: repairString }, ["claimId", "result", "reason"], false) } },
     ["findingId", "claimIds", "result", "reason", "claimResults"], false) },
@@ -264,7 +264,7 @@ const repairEvidenceSchema = obj({ id: repairString, sortId: repairString, witne
   inspected: { type: "array", items: obj({ source: repairString, commit: repairString, reasoning: repairString }, ["source", "commit", "reasoning"], false) },
   noCheckReason: repairString, rulingIds: repairStrings,
   attribution: { type: "array", items: obj({ file: repairString, hunk: repairString, claimIds: repairStrings }, ["file", "hunk", "claimIds"], false) } },
-  ["id", "sortId", "witnessCommit", "baseCommit", "fixCommit", "coverage", "reproducer", "regression", "inspected", "rulingIds", "attribution"], false);
+  ["sortId", "witnessCommit", "baseCommit", "fixCommit", "coverage", "reproducer", "regression", "inspected", "rulingIds", "attribution"], false);
 
 const tools: Tool[] = [
   {
@@ -318,8 +318,8 @@ const tools: Tool[] = [
   },
   {
     name: "record_repair_claims",
-    description: "Split an original finding claim into sub-claims, with a reason. The original and every prior claim stay coverage obligations; nothing is removed or closed.",
-    inputSchema: obj({ review: repairString, findingId: repairString, parentId: repairString, reason: repairString, claims: { type: "array", items: obj({ id: repairString, text: repairString }, ["id", "text"], false) } }, ["review", "findingId", "parentId", "reason", "claims"]),
+    description: "Split an original finding claim into sub-claims, with a reason. The original and every prior claim stay coverage obligations; nothing is removed or closed. Returns the claims with the ids codemap gave them.",
+    inputSchema: obj({ review: repairString, findingId: repairString, parentId: repairString, reason: repairString, claims: { type: "array", items: obj({ text: repairString }, ["text"], false) } }, ["review", "findingId", "parentId", "reason", "claims"]),
     mutates: true,
     handler: (a, c) => ops.recordRepairClaims(c.universe.path, a.review,
       { findingId: a.findingId, parentId: a.parentId, reason: a.reason, claims: a.claims }),
@@ -332,14 +332,14 @@ const tools: Tool[] = [
   },
   {
     name: "post_repair_sort",
-    description: "Post the skill's sort of a repair: classification, claim coverage, and who sorted (owner-reviewed, or dual-sorted with both sorters and any arbitration). A correction names its prior sort. Holds come back in repair_records.",
+    description: "Post the skill's sort of a repair: classification, claim coverage, and who sorted (owner-reviewed, or dual-sorted with both sorters and any arbitration). A correction names its prior sort. Returns the sort's id; holds come back in repair_records.",
     inputSchema: obj({ review: repairString, sort: repairSortSchema }, ["review", "sort"]),
     mutates: true,
     handler: (a, c) => ops.postRepairSort(c.universe.path, a.review, a.sort),
   },
   {
     name: "record_repair_evidence",
-    description: "Record the fix's evidence: the checks (command, commit, witness/fix phase, actual result), regression runs, pattern enumeration and inspections. Commands are data; nothing is executed.",
+    description: "Record the fix's evidence: the checks (command, commit, witness/fix phase, actual result), regression runs, pattern enumeration and inspections. Commands are data; nothing is executed. Returns the evidence id.",
     inputSchema: obj({ review: repairString, evidence: repairEvidenceSchema }, ["review", "evidence"]),
     mutates: true,
     handler: (a, c) => ops.recordRepairEvidence(c.universe.path, a.review, a.evidence),
