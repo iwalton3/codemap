@@ -36,7 +36,7 @@ function fixture(kind: "finding" | "bug") {
       version: 1, key: applicationKey(rulingKey, issueKey),
       issue: { ref, key: issueKey, openEpoch, openState, claimHash },
       ruling: {
-        key: rulingKey, answerId: "answer_1", answerEvent: "answer_event_1", roundId: "round_1", questionId: "question_1",
+        key: rulingKey, answerId: rulingKey, answerEvent: "answer_event_1", roundId: "round_1", questionId: "question_1",
         display, displayHash,
         authority: { checkedAt: "2026-09-25T00:00:00Z", sourceFingerprint: "sha256:source", status: "current", comparison: "clear" },
       },
@@ -77,14 +77,25 @@ for (const kind of ["finding", "bug"] as const) {
     assert.equal(issue.closed, undefined);
   });
 
-  test(`${kind}: concurrent ordinary close does not refund act-time application`, () => {
+  test(`${kind}: an application a concurrent close got to first spends nothing`, () => {
+    // Owner: "spend only when a closure actually executes".
     const f = fixture(kind);
-    const cap = f.make();
-    const events = [f.created, f.state("02", "refuted"), f.app("03", cap), f.reopen("04", "02"), f.app("05", cap)];
+    const events = [f.created, f.state("02", "refuted"), f.app("03", f.make()), f.reopen("04", "02"),
+      f.app("05", f.make("ruling_1", "04", "created"), ["04"])];
     const issue = f.fold(sortEvents(events)).get(f.id)!;
-    assert.equal(issue.state, "created", "reopen of the ordinary close remains in force");
-    assert.deepEqual(issue.applications?.map((a) => a.status), ["executed", "duplicate"]);
-    assert.equal(issue.applications?.[0]?.eventId, "03", "the application was valid on its own clone");
+    assert.deepEqual(issue.applications?.map((a) => a.status), ["refused", "executed"]);
+    assert.match(issue.applications?.[0]?.reason ?? "", /nothing was spent/);
+    assert.equal(issue.closed?.eventId, "05", "the same ruling still closes the reopened issue");
+  });
+
+  test(`${kind}: a stale-epoch application after a reopen closes nothing and spends nothing`, () => {
+    const f = fixture(kind);
+    const stale = f.app("04", f.make("ruling_2"), ["01"]);
+    const fresh = f.app("05", f.make("ruling_2", "03", "created"), ["03", "04"]);
+    const issue = f.fold(sortEvents([f.created, f.app("02", f.make()), f.reopen("03", "02"), stale, fresh])).get(f.id)!;
+    assert.deepEqual(issue.applications?.map((a) => a.status), ["executed", "refused", "executed"]);
+    assert.equal(issue.state, "invalid");
+    assert.equal(issue.closed?.eventId, "05");
   });
 
   test(`${kind}: an application that saw closure is refused and spends nothing`, () => {
@@ -106,6 +117,17 @@ for (const kind of ["finding", "bug"] as const) {
     assert.equal(issue.state, "invalid");
     assert.equal(issue.closed?.eventId, "04");
     assert.deepEqual(issue.applications?.map((a) => a.status), ["executed", "executed", "duplicate"]);
+  });
+
+  test(`${kind}: changing only the ruling key cannot re-close a reopened issue`, () => {
+    const f = fixture(kind);
+    const rekeyed = f.make("ruling_1-again", "03", "created");
+    rekeyed.ruling.answerId = "ruling_1";
+    const issue = f.fold(sortEvents([f.created, f.app("02", f.make()), f.reopen("03", "02"),
+      f.app("04", rekeyed, ["03"])])).get(f.id)!;
+    assert.equal(issue.state, "created");
+    assert.equal(issue.applications?.[1]?.status, "refused");
+    assert.match(issue.applications?.[1]?.reason ?? "", /must be the answer it cites/);
   });
 
   test(`${kind}: malformed approval flag is preserved as refusal`, () => {

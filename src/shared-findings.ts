@@ -1005,14 +1005,20 @@ function foldFindingsInternal(events: LogEvent[], replay: ApplicationReplay): Ma
             key: capsule.key, capsule, reason: "issue was not open with this claim in the act-time view" });
           break;
         }
+        // Spent only by a closure that happens (owner: "spend only when a closure actually
+        // executes"): valid when written, but a concurrent close got there first, so this one
+        // closed nothing and a fresh application of the same ruling must still be able to.
+        if (isClosed(f.state) || f.openEpoch !== capsule.issue.openEpoch
+          || issueClaimHash("finding", f) !== capsule.issue.claimHash) {
+          attempts.push({ eventId: e.id, at: e.at, by: e.actor, status: "refused",
+            key: capsule.key, capsule, reason: "issue was no longer open with this claim when this was applied; nothing was spent" });
+          break;
+        }
         spent.add(capsule.key);
         attempts.push({ eventId: e.id, at: e.at, by: e.actor, status: "executed", key: capsule.key, capsule });
-        if (!isClosed(f.state) && f.openEpoch === capsule.issue.openEpoch
-          && issueClaimHash("finding", f) === capsule.issue.claimHash) {
-          f.state = "invalid";
-          f.closed = { eventId: e.id, at: e.at, by: e.actor, reason: capsule.reason };
-          f.pending = undefined;
-        }
+        f.state = "invalid";
+        f.closed = { eventId: e.id, at: e.at, by: e.actor, reason: capsule.reason };
+        f.pending = undefined;
         break;
       }
 

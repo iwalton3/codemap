@@ -139,7 +139,7 @@ test("two clones preserve one-shot application across reopen and delayed duplica
   } finally { t.dispose(); discard(tx); }
 });
 
-test("an already-closed issue spends nothing, while a concurrent ordinary close preserves historical execution on both clones", async () => {
+test("an already-closed issue spends nothing, and a concurrent ordinary close spends the ruling only if the application is the close that happened", async () => {
   const t = await team([A, B]);
   const tx = mkdtempSync(join(tmpdir(), "codemap-oracle-application-tx-"));
   try {
@@ -167,11 +167,16 @@ test("an already-closed issue spends nothing, while a concurrent ordinary close 
         const result = await withPerson(() => closeFinding(m.repo, 7, racing.id, "invalid", "independent human close")) as any;
         assert.equal(result.state, "invalid", JSON.stringify(result));
       });
-    for (const issue of await readBoth(a, b, racing.id)) {
+    // Which close the fold reaches first is the log's order, not the test's. Either way the
+    // clones agree, and an application that closed nothing spent nothing (owner: "spend only
+    // when a closure actually executes"; the fold cases are in ruling-application.test.ts).
+    const seen = (await readBoth(a, b, racing.id)).map((issue) => {
       assert.equal(issue.state, "invalid");
-      assert.equal(issue.applications?.filter((x) => x.status === "executed").length, 1,
-        "a concurrent ordinary close does not refund the ruling pair");
-      assert.equal(issue.applications?.[0]?.eventId, application);
-    }
+      const attempt = issue.applications?.find((x) => x.eventId === application);
+      assert.ok(attempt, JSON.stringify(issue.applications));
+      if (attempt.status !== "executed") assert.match(attempt.reason ?? "", /nothing was spent/);
+      return attempt.status;
+    });
+    assert.equal(seen[0], seen[1]);
   } finally { t.dispose(); discard(tx); }
 });

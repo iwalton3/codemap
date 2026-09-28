@@ -155,6 +155,9 @@ export function validateApplicationCapsule(
     || !obj(r.authority) || !str(r.authority.checkedAt) || !str(r.authority.sourceFingerprint)
     || r.authority.status !== "current" || r.authority.comparison !== "clear")
     return { error: "application ruling authority snapshot is invalid" };
+  // The pair key is what spends a ruling, so a key that is not the answer it cites would let
+  // one answer close a reopened issue again under a fresh key.
+  if (r.key !== r.answerId) return { error: "application ruling key must be the answer it cites" };
   if (c.key !== applicationKey(r.key, c.issue.key) || !str(c.reason))
     return { error: "application key or reason is invalid" };
   const readers = c.evidence.readers;
