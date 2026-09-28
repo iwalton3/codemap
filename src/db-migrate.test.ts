@@ -200,7 +200,7 @@ test("the decisions fold's event vocabulary is pinned to a materializer version"
   const proj = readFileSync("src/shared-projections.ts", "utf8");
   const block = proj.slice(proj.indexOf("export const decisionsProjection"), proj.indexOf("/** Shared notes"));
   assert.deepEqual([...new Set([...block.matchAll(/INSERT INTO (\w+)/g)].map((m) => m[1]!))].sort(),
-    ["decision_comparisons", "decision_records", "decision_rounds", "logged_questions"], "the decisions projection's tables changed — bump MATERIALIZER_VERSION with them");
+    ["decision_comparisons", "decision_records", "decision_rounds", "decision_skipped", "logged_questions"], "the decisions projection's tables changed — bump MATERIALIZER_VERSION with them");
   assert.equal(MATERIALIZER_VERSION, 44, "and record the new number here");
 });
 

@@ -184,8 +184,14 @@ export interface SharedDecisions {
   decisions: FoldedDecision[];
   questions: LoggedQuestion[];
   comparisons: FoldedComparison[];
+  /** Events the fold could not read and left out. Reported, never silent (owner, 2026-09-28:
+   *  "Skip it, and report it"): one bad line used to block the whole scope. */
+  skipped?: SkippedEvent[];
 }
 
+export interface SkippedEvent { id: string; kind: string; why: string }
+
+const isObject = (v: unknown): v is Record<string, any> => !!v && typeof v === "object" && !Array.isArray(v);
 const str = (v: unknown): string | undefined => (typeof v === "string" && v.trim() ? v : undefined);
 
 const validIssue = (value: unknown): value is CanonicalIssueReference => {
@@ -410,8 +416,9 @@ function confirmRefusal(decisions: Map<string, FoldedDecision>, c: FoldedDecisio
   if (d.round !== c.round) return "it is not in the round of the words it confirms";
   if (d.confirms) return "it confirms words on another confirm";
   if (!Array.isArray(cf.readings) || !cf.readings.length || cf.readings.length > 2) return "it offers no reading, or more than two";
-  if (cf.readings.some((reading) => !validMaps(reading) || reading.some((mapping) => !decisions.has(mapping.decision))))
-    return "a reading names a question that is not an exact decision here";
+  if (cf.readings.some((reading) => !validMaps(reading) || reading.some((mapping) => !decisions.has(mapping.decision)
+    || (mapping.option !== null && !decisions.get(mapping.decision)!.options.some((o) => o.label === mapping.option)))))
+    return "a reading names a question or option that is not an exact decision here";
   const labels = cf.readings.length === 1 ? [CONFIRM_YES, CONFIRM_NO] : ["Reading 1", "Reading 2"];
   if (c.kind !== "options" || c.payload.multiSelect || c.options.length !== 2 || c.options.some((o, i) => o.label !== labels[i] || o.effects.length || o.park)) return "its options are not the confirm's";
   // A matching ref and option label cannot authorize different action prose. The generated
@@ -638,6 +645,7 @@ export interface ListRevision {
 }
 
 export function parseListRelayAnswer(answer: string): Pick<ListRevision, "approveUnmarked" | "marked"> | null {
+  if (typeof answer !== "string") return null;
   if (answer === "Approve all reviewed items") return { approveUnmarked: true, marked: [] };
   const words = answer.startsWith("Other:") ? answer.slice("Other:".length).trim() : answer;
   let value: unknown;
@@ -705,7 +713,37 @@ function listRevisionMatchesAnswer(d: FoldedDecision, list: ListRevision | undef
   return canonical(via.checked) === canonical(checked);
 }
 
+/**
+ * Total: never throws. The arms check the shapes they are known to dereference. For a shape
+ * none of them anticipated, one event is left out: of those whose removal lets the fold
+ * complete, the one that keeps the most of it — removing the round a bad event sits on also
+ * completes, and would lose every question in it. Either way the event is named in `skipped`.
+ */
 export function foldDecisions(events: LogEvent[]): SharedDecisions {
+  return leaveOutUnreadable(foldDecisionsOnce, events, (s) => s.rounds.length + s.questions.length + s.comparisons.length
+    + s.decisions.reduce((n, d) => n + 1 + d.answers.length, 0));
+}
+
+export function leaveOutUnreadable<T extends { skipped?: SkippedEvent[] }>(
+  once: (events: LogEvent[]) => T, events: LogEvent[], size: (t: T) => number,
+): T {
+  try { return once(events); } catch (err) {
+    const why = `the fold could not read it: ${err instanceof Error ? err.message : String(err)}`;
+    let kept: { t: T; e: LogEvent } | undefined;
+    for (let i = 0; i < events.length; i++) {
+      let t: T;
+      try { t = once([...events.slice(0, i), ...events.slice(i + 1)]); } catch { continue; }
+      if (!kept || size(t) >= size(kept.t)) kept = { t, e: events[i]! };
+    }
+    if (!kept) throw err;
+    kept.t.skipped = [...(kept.t.skipped ?? []), { id: kept.e.id, kind: kept.e.kind, why }];
+    return kept.t;
+  }
+}
+
+function foldDecisionsOnce(events: LogEvent[]): SharedDecisions {
+  const skipped: SkippedEvent[] = [];
+  const skip = (e: LogEvent, why: string) => { skipped.push({ id: e.id, kind: e.kind, why }); };
   const rounds = new Map<string, DecisionRound>();
   const decisions = new Map<string, FoldedDecision>();
   const exactRound = (id: string): DecisionRound | undefined => {
@@ -802,8 +840,12 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
         const r = data?.round;
         if (!r || typeof r !== "object" || !str(r.id) || !str(r.source) || (!data?.publication && rounds.has(r.id)) || !Array.isArray(data?.decisions)) break;
         if (new Set(data.decisions.map((raw: Decision) => raw?.id)).size !== data.decisions.length) break;
-        if (r.questionnaire && (checkQuestionnaireDecisions(r.questionnaire, data.decisions)
-          || data.decisions.some((raw: Decision) => checkDecision(raw)))) break;
+        // Each decision's own shape first: the questionnaire check dereferences them.
+        if (r.questionnaire) {
+          const why = data.decisions.map((raw: Decision) => checkDecision(raw)).find(Boolean)
+            ?? checkQuestionnaireDecisions(r.questionnaire, data.decisions);
+          if (why) { skip(e, why); break; }
+        }
         if (!data?.publication && r.questionnaire && [...rounds.values()].some((prior) => prior.id === r.questionnaire.id
           || prior.questionnaire?.id === r.questionnaire.id || prior.questionnaire?.id === r.id)) break;
         const pv = r.prevalidated;
@@ -819,7 +861,9 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
           postedBy: e.actor, at: e.at,
         });
         for (const raw of data.decisions as Decision[]) {
-          if (!raw || typeof raw !== "object" || (!data?.publication && decisions.has(raw.id)) || raw.round !== r.id || checkDecision(raw)) continue;
+          const malformed = checkDecision(raw);
+          if (malformed) { skip(e, malformed); continue; }
+          if ((!data?.publication && decisions.has(raw.id)) || raw.round !== r.id) continue;
           const d: FoldedDecision = {
             id: data?.publication ? `${e.id}:${raw.id}` : raw.id, ...(data?.publication ? { label: raw.id } : {}),
             round: roundId, ref: raw.ref, kind: raw.kind,
@@ -868,6 +912,9 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
       }
 
       case "decision.answer.revised": {
+        const proof = data?.via?.kind === "revision-relay" ? data.via.proof : undefined;
+        if (data?.via?.kind === "revision-relay" && (!isObject(proof) || typeof proof.answer !== "string"
+          || (proof.question !== undefined && !isObject(proof.question)))) { skip(e, "a relayed revision needs its question and answer"); break; }
         const d = exactDecision(str(data?.decision) ?? "");
         const validList = d && !checkListRevision(d, data?.revision ?? { findings: [], issues: [] }, data?.list)
           && listRevisionMatchesAnswer(d, data?.list, data?.via);
@@ -1091,7 +1138,7 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
       a.by.principal, { findings, ...(issues.length ? { issues } : {}) }) : undefined;
     const relayValid = relay && isAgentActor(a.by) && str(relay.entryId) && str(relay.session)
       && str(relay.toolUseId) && str(relay.answeredAt) && ms(relay.answeredAt) !== undefined
-      && relayQuestion && sameQuestion(relay.question, relayQuestion)
+      && relayQuestion && relay.question && typeof relay.question === "object" && sameQuestion(relay.question, relayQuestion)
       && relay.answer === a.words && targets.every((x) => (ms(x!.givenAt) ?? Infinity) < ms(relay.answeredAt)!);
     const valid = (a.via === "direct" || a.via === "questionnaire" || !!relayValid) && a.verified && !a.sourceAnswer && targets.length > 0
       && targets.every((x) => x?.verified && !x.sourceAnswer && (x.via === "direct" || x.via === "questionnaire"))
@@ -1301,8 +1348,9 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
   }
 
   const base: SharedDecisions = { rounds: [...rounds.values()], decisions: [...decisions.values()], questions: [...questions.values()], comparisons: [] };
-  base.comparisons = foldComparisons(base, comparisonEvents);
+  base.comparisons = foldComparisons(base, comparisonEvents, skip);
   applyComparisonFrontier(base);
+  if (skipped.length) base.skipped = skipped;
   return base;
 }
 
@@ -1652,14 +1700,15 @@ export function resolutionShownHash(shown: unknown): string {
 }
 
 /** Replay accepts only requests whose source is exactly the posted question and response. */
-function foldComparisons(s: SharedDecisions, events: LogEvent[]): FoldedComparison[] {
+function foldComparisons(s: SharedDecisions, events: LogEvent[], skip: (e: LogEvent, why: string) => void): FoldedComparison[] {
   const byId = new Map<string, { request: ComparisonRequest; judgments: ReaderJudgment[]; resolutions: HumanResolution[] }>();
   const causal = causality(events);
   for (const e of events.filter((x) => x.kind === "decision.comparison.requested")) {
     const data = e.data as any;
     if (e.kind === "decision.comparison.requested") {
       const r = data?.request as ComparisonRequest;
-      if (!r || e.subject !== r.id || byId.has(r.id) || !validateComparisonRequest(r).ok) continue;
+      if (!r || typeof r !== "object" || !isObject(r.left) || !isObject(r.right)) { skip(e, "a comparison request needs both sides"); continue; }
+      if (e.subject !== r.id || byId.has(r.id) || !validateComparisonRequest(r).ok) continue;
       const leftDecision = s.decisions.find((d) => d.id === r.left.questionId);
       const rightDecision = s.decisions.find((d) => d.id === r.right.questionId);
       if (!leftDecision || !rightDecision || !r.issues.every((issue) => issue.universe === s.rounds[0]?.universe
@@ -1678,6 +1727,7 @@ function foldComparisons(s: SharedDecisions, events: LogEvent[]): FoldedComparis
   for (const e of events.filter((x) => x.kind !== "decision.comparison.requested")) {
     const data = e.data as any;
     if (e.kind === "decision.comparison.judged") {
+      if (data?.judgment && !isObject(data.judgment.reader)) { skip(e, "a comparison judgment needs its reader"); continue; }
       const j = data?.judgment ? { ...data.judgment, id: e.id, at: e.at } as ReaderJudgment : undefined;
       const r = byId.get(j?.requestId ?? "");
       const proof = data?.proof;
@@ -1689,6 +1739,7 @@ function foldComparisons(s: SharedDecisions, events: LogEvent[]): FoldedComparis
         || !str(proof.call) || !str(proof.toolUseId)) continue;
       r.judgments.push(j);
     } else if (e.kind === "decision.comparison.resolved") {
+      if (data?.resolution && !isObject(data.resolution.human)) { skip(e, "a comparison resolution needs the person's act"); continue; }
       const h = data?.resolution ? { ...data.resolution, id: e.id, at: e.at } as HumanResolution : undefined;
       const r = byId.get(h?.requestId ?? "");
       const proof = data?.proof;

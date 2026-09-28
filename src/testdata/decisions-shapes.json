@@ -1,0 +1,1324 @@
+{
+ "comparison": [
+  {
+   "sidecarProtocol": 1,
+   "eventSchema": 1,
+   "id": "00mularbzy-e322d67b54",
+   "kind": "decision.answer.recorded",
+   "subject": "00mularbjm-1dc673981e:d1",
+   "actor": {
+    "principal": "bob@acme.test"
+   },
+   "at": "2026-09-28T13:42:21.310Z",
+   "writer": "w_9e38cc1648a26912",
+   "writerPrev": "GENESIS",
+   "after": [
+    "00mularbqr-d4d0656ec3"
+   ],
+   "data": {
+    "decision": "00mularbjm-1dc673981e:d1",
+    "hash": "d:sha256:1c3b2b5753d6907020560e70",
+    "via": {
+     "kind": "direct",
+     "option": "Fix"
+    }
+   }
+  },
+  {
+   "sidecarProtocol": 1,
+   "eventSchema": 1,
+   "id": "00mularbjm-1dc673981e",
+   "kind": "decision.round.posted",
+   "subject": "R1",
+   "actor": {
+    "principal": "alice@acme.test",
+    "via": {
+     "kind": "agent",
+     "model": "semantic-oracle"
+    }
+   },
+   "at": "2026-09-28T13:42:20.722Z",
+   "writer": "w_d81129111d1e4995",
+   "writerPrev": "GENESIS",
+   "after": [],
+   "data": {
+    "publication": 2,
+    "round": {
+     "id": "R1",
+     "source": "execution oracle",
+     "universe": "acme-api"
+    },
+    "decisions": [
+     {
+      "id": "d1",
+      "round": "R1",
+      "ref": "D1",
+      "kind": "options",
+      "payload": {
+       "question": "D1: is f_00mularbcq-71c160cf49 a real defect?",
+       "options": [
+        {
+         "label": "Reject",
+         "description": "The behavior is intended"
+        },
+        {
+         "label": "Fix",
+         "description": "Repair the behavior"
+        }
+       ]
+      },
+      "options": [
+       {
+        "label": "Reject",
+        "effects": [
+         {
+          "findings": [
+           "f_00mularbcq-71c160cf49"
+          ],
+          "on": "settle",
+          "as": "refuted"
+         }
+        ]
+       },
+       {
+        "label": "Fix",
+        "effects": [
+         {
+          "findings": [
+           "f_00mularbcq-71c160cf49"
+          ],
+          "on": "unblock"
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "sidecarProtocol": 1,
+   "eventSchema": 1,
+   "id": "00mularbqr-d4d0656ec3",
+   "kind": "decision.answer.recorded",
+   "subject": "00mularbjm-1dc673981e:d1",
+   "actor": {
+    "principal": "alice@acme.test"
+   },
+   "at": "2026-09-28T13:42:20.979Z",
+   "writer": "w_d81129111d1e4995",
+   "writerPrev": "00mularbjm-1dc673981e",
+   "after": [
+    "00mularbjm-1dc673981e"
+   ],
+   "data": {
+    "decision": "00mularbjm-1dc673981e:d1",
+    "hash": "d:sha256:1c3b2b5753d6907020560e70",
+    "via": {
+     "kind": "direct",
+     "option": "Reject"
+    }
+   }
+  },
+  {
+   "sidecarProtocol": 1,
+   "eventSchema": 1,
+   "id": "00mularc8a-7d8b1606d7",
+   "kind": "decision.comparison.requested",
+   "subject": "cmp_4cc39dc91ccf8f3eb6aaa0f6",
+   "actor": {
+    "principal": "independent-reader@acme.test",
+    "via": {
+     "kind": "agent",
+     "model": "semantic-oracle"
+    }
+   },
+   "at": "2026-09-28T13:42:21.610Z",
+   "writer": "w_d81129111d1e4995",
+   "writerPrev": "00mularbqr-d4d0656ec3",
+   "after": [
+    "00mularbzy-e322d67b54"
+   ],
+   "data": {
+    "request": {
+     "id": "cmp_4cc39dc91ccf8f3eb6aaa0f6",
+     "left": {
+      "answerId": "00mularbqr-d4d0656ec3",
+      "version": "e372c49e23853bd788a175c47c1982edb84fa349fb0a6d697229413a15bc4680",
+      "principal": "alice@acme.test",
+      "questionId": "00mularbjm-1dc673981e:d1",
+      "questionVersion": "d:sha256:1c3b2b5753d6907020560e70",
+      "display": {
+       "prompt": "D1: is f_00mularbcq-71c160cf49 a real defect?",
+       "answerFormat": "options",
+       "context": "{\"round\":{\"id\":\"00mularbjm-1dc673981e\",\"source\":\"execution oracle\"},\"decision\":{\"ref\":\"D1\",\"payload\":{\"question\":\"D1: is f_00mularbcq-71c160cf49 a real defect?\",\"options\":[{\"label\":\"Reject\",\"description\":\"The behavior is intended\"},{\"label\":\"Fix\",\"description\":\"Repair the behavior\"}],\"multiSelect\":false}}}",
+       "options": [
+        {
+         "label": "Reject",
+         "effects": [
+          {
+           "findings": [
+            "f_00mularbcq-71c160cf49"
+           ],
+           "on": "settle",
+           "as": "refuted"
+          }
+         ],
+         "displayed": {
+          "label": "Reject",
+          "description": "The behavior is intended"
+         }
+        },
+        {
+         "label": "Fix",
+         "effects": [
+          {
+           "findings": [
+            "f_00mularbcq-71c160cf49"
+           ],
+           "on": "unblock"
+          }
+         ],
+         "displayed": {
+          "label": "Fix",
+          "description": "Repair the behavior"
+         }
+        }
+       ]
+      },
+      "words": "Reject"
+     },
+     "right": {
+      "answerId": "00mularbzy-e322d67b54",
+      "version": "51363ee2cf396752a7943be525dad24357d9206d1a51ab567e06438b8be8f9d8",
+      "principal": "bob@acme.test",
+      "questionId": "00mularbjm-1dc673981e:d1",
+      "questionVersion": "d:sha256:1c3b2b5753d6907020560e70",
+      "display": {
+       "prompt": "D1: is f_00mularbcq-71c160cf49 a real defect?",
+       "answerFormat": "options",
+       "context": "{\"round\":{\"id\":\"00mularbjm-1dc673981e\",\"source\":\"execution oracle\"},\"decision\":{\"ref\":\"D1\",\"payload\":{\"question\":\"D1: is f_00mularbcq-71c160cf49 a real defect?\",\"options\":[{\"label\":\"Reject\",\"description\":\"The behavior is intended\"},{\"label\":\"Fix\",\"description\":\"Repair the behavior\"}],\"multiSelect\":false}}}",
+       "options": [
+        {
+         "label": "Reject",
+         "effects": [
+          {
+           "findings": [
+            "f_00mularbcq-71c160cf49"
+           ],
+           "on": "settle",
+           "as": "refuted"
+          }
+         ],
+         "displayed": {
+          "label": "Reject",
+          "description": "The behavior is intended"
+         }
+        },
+        {
+         "label": "Fix",
+         "effects": [
+          {
+           "findings": [
+            "f_00mularbcq-71c160cf49"
+           ],
+           "on": "unblock"
+          }
+         ],
+         "displayed": {
+          "label": "Fix",
+          "description": "Repair the behavior"
+         }
+        }
+       ]
+      },
+      "words": "Fix"
+     },
+     "issues": [
+      {
+       "kind": "finding",
+       "universe": "acme-api",
+       "id": "f_00mularbcq-71c160cf49",
+       "scope": "findings/acme-api/pr-7",
+       "review": "7"
+      }
+     ],
+     "contextHash": "75eaf785b2f3babcfd586fe23c886229718b7e1a1a181b36ef5dde724141cd05"
+    }
+   }
+  },
+  {
+   "sidecarProtocol": 1,
+   "eventSchema": 1,
+   "id": "00mularc9h-4713e3ca96",
+   "kind": "decision.comparison.judged",
+   "subject": "cmp_4cc39dc91ccf8f3eb6aaa0f6",
+   "actor": {
+    "principal": "independent-reader@acme.test",
+    "via": {
+     "kind": "agent",
+     "model": "semantic-oracle"
+    }
+   },
+   "at": "2026-09-28T13:42:21.653Z",
+   "writer": "w_d81129111d1e4995",
+   "writerPrev": "00mularc8a-7d8b1606d7",
+   "after": [
+    "00mularc8a-7d8b1606d7"
+   ],
+   "data": {
+    "judgment": {
+     "requestId": "cmp_4cc39dc91ccf8f3eb6aaa0f6",
+     "contextHash": "75eaf785b2f3babcfd586fe23c886229718b7e1a1a181b36ef5dde724141cd05",
+     "issues": [
+      {
+       "kind": "finding",
+       "universe": "acme-api",
+       "id": "f_00mularbcq-71c160cf49",
+       "scope": "findings/acme-api/pr-7",
+       "review": "7"
+      }
+     ],
+     "answerVersions": [
+      "00mularbqr-d4d0656ec3\u0000e372c49e23853bd788a175c47c1982edb84fa349fb0a6d697229413a15bc4680",
+      "00mularbzy-e322d67b54\u000051363ee2cf396752a7943be525dad24357d9206d1a51ab567e06438b8be8f9d8"
+     ],
+     "verdict": "incompatible",
+     "rationale": "The same Yes label refers to incompatible read-only and write-through policies.",
+     "reader": {
+      "principal": "independent-reader@acme.test",
+      "agent": "aSEMANTIC0000012",
+      "session": "5e55a0a0-0000-0000-0000-000000000012",
+      "request": "toolu_launch_12",
+      "receipt": "acb11776-38f2-4e73-8a12-f5a9368f0fa5"
+     }
+    },
+    "proof": {
+     "purpose": "pair-comparison",
+     "requestId": "cmp_4cc39dc91ccf8f3eb6aaa0f6",
+     "contextHash": "75eaf785b2f3babcfd586fe23c886229718b7e1a1a181b36ef5dde724141cd05",
+     "brief": "{\n  \"purpose\": \"pair-comparison\",\n  \"request\": {\n    \"id\": \"cmp_4cc39dc91ccf8f3eb6aaa0f6\",\n    \"left\": {\n      \"answerId\": \"00mularbqr-d4d0656ec3\",\n      \"version\": \"e372c49e23853bd788a175c47c1982edb84fa349fb0a6d697229413a15bc4680\",\n      \"principal\": \"alice@acme.test\",\n      \"questionId\": \"00mularbjm-1dc673981e:d1\",\n      \"questionVersion\": \"d:sha256:1c3b2b5753d6907020560e70\",\n      \"display\": {\n        \"prompt\": \"D1: is f_00mularbcq-71c160cf49 a real defect?\",\n        \"answerFormat\": \"options\",\n        \"context\": \"{\\\"round\\\":{\\\"id\\\":\\\"00mularbjm-1dc673981e\\\",\\\"source\\\":\\\"execution oracle\\\"},\\\"decision\\\":{\\\"ref\\\":\\\"D1\\\",\\\"payload\\\":{\\\"question\\\":\\\"D1: is f_00mularbcq-71c160cf49 a real defect?\\\",\\\"options\\\":[{\\\"label\\\":\\\"Reject\\\",\\\"description\\\":\\\"The behavior is intended\\\"},{\\\"label\\\":\\\"Fix\\\",\\\"description\\\":\\\"Repair the behavior\\\"}],\\\"multiSelect\\\":false}}}\",\n        \"options\": [\n          {\n            \"label\": \"Reject\",\n            \"effects\": [\n              {\n                \"findings\": [\n                  \"f_00mularbcq-71c160cf49\"\n                ],\n                \"on\": \"settle\",\n                \"as\": \"refuted\"\n              }\n            ],\n            \"displayed\": {\n              \"label\": \"Reject\",\n              \"description\": \"The behavior is intended\"\n            }\n          },\n          {\n            \"label\": \"Fix\",\n            \"effects\": [\n              {\n                \"findings\": [\n                  \"f_00mularbcq-71c160cf49\"\n                ],\n                \"on\": \"unblock\"\n              }\n            ],\n            \"displayed\": {\n              \"label\": \"Fix\",\n              \"description\": \"Repair the behavior\"\n            }\n          }\n        ]\n      },\n      \"words\": \"Reject\"\n    },\n    \"right\": {\n      \"answerId\": \"00mularbzy-e322d67b54\",\n      \"version\": \"51363ee2cf396752a7943be525dad24357d9206d1a51ab567e06438b8be8f9d8\",\n      \"principal\": \"bob@acme.test\",\n      \"questionId\": \"00mularbjm-1dc673981e:d1\",\n      \"questionVersion\": \"d:sha256:1c3b2b5753d6907020560e70\",\n      \"display\": {\n        \"prompt\": \"D1: is f_00mularbcq-71c160cf49 a real defect?\",\n        \"answerFormat\": \"options\",\n        \"context\": \"{\\\"round\\\":{\\\"id\\\":\\\"00mularbjm-1dc673981e\\\",\\\"source\\\":\\\"execution oracle\\\"},\\\"decision\\\":{\\\"ref\\\":\\\"D1\\\",\\\"payload\\\":{\\\"question\\\":\\\"D1: is f_00mularbcq-71c160cf49 a real defect?\\\",\\\"options\\\":[{\\\"label\\\":\\\"Reject\\\",\\\"description\\\":\\\"The behavior is intended\\\"},{\\\"label\\\":\\\"Fix\\\",\\\"description\\\":\\\"Repair the behavior\\\"}],\\\"multiSelect\\\":false}}}\",\n        \"options\": [\n          {\n            \"label\": \"Reject\",\n            \"effects\": [\n              {\n                \"findings\": [\n                  \"f_00mularbcq-71c160cf49\"\n                ],\n                \"on\": \"settle\",\n                \"as\": \"refuted\"\n              }\n            ],\n            \"displayed\": {\n              \"label\": \"Reject\",\n              \"description\": \"The behavior is intended\"\n            }\n          },\n          {\n            \"label\": \"Fix\",\n            \"effects\": [\n              {\n                \"findings\": [\n                  \"f_00mularbcq-71c160cf49\"\n                ],\n                \"on\": \"unblock\"\n              }\n            ],\n            \"displayed\": {\n              \"label\": \"Fix\",\n              \"description\": \"Repair the behavior\"\n            }\n          }\n        ]\n      },\n      \"words\": \"Fix\"\n    },\n    \"issues\": [\n      {\n        \"kind\": \"finding\",\n        \"universe\": \"acme-api\",\n        \"id\": \"f_00mularbcq-71c160cf49\",\n        \"scope\": \"findings/acme-api/pr-7\",\n        \"review\": \"7\"\n      }\n    ],\n    \"contextHash\": \"75eaf785b2f3babcfd586fe23c886229718b7e1a1a181b36ef5dde724141cd05\"\n  },\n  \"task\": \"Independently compare the complete human intent of both sources across the exact affected scope. Equal labels or effects do not prove equivalent meaning. Choose equivalent, incompatible, or unclear and explain your rationale. Do not infer a coordinator preference.\",\n  \"submit\": {\n    \"tool\": \"submit_comparison_judgment\",\n    \"request\": \"cmp_4cc39dc91ccf8f3eb6aaa0f6\",\n    \"verdict\": \"equivalent | incompatible | unclear\",\n    \"rationale\": \"your own explanation\"\n  }\n}",
+     "receipt": "acb11776-38f2-4e73-8a12-f5a9368f0fa5",
+     "agent": "aSEMANTIC0000012",
+     "session": "5e55a0a0-0000-0000-0000-000000000012",
+     "launch": "toolu_launch_12",
+     "toolUseId": "toolu_launch_12",
+     "call": "toolu_submit_12",
+     "result": "held"
+    }
+   }
+  },
+  {
+   "sidecarProtocol": 1,
+   "eventSchema": 1,
+   "id": "00mularche-9c9f8655a6",
+   "kind": "decision.comparison.resolved",
+   "subject": "cmp_4cc39dc91ccf8f3eb6aaa0f6",
+   "actor": {
+    "principal": "resolver@acme.test"
+   },
+   "at": "2026-09-28T13:42:21.938Z",
+   "writer": "w_d81129111d1e4995",
+   "writerPrev": "00mularc9h-4713e3ca96",
+   "after": [
+    "00mularc9h-4713e3ca96"
+   ],
+   "data": {
+    "resolution": {
+     "requestId": "cmp_4cc39dc91ccf8f3eb6aaa0f6",
+     "contextHash": "75eaf785b2f3babcfd586fe23c886229718b7e1a1a181b36ef5dde724141cd05",
+     "issues": [
+      {
+       "kind": "finding",
+       "universe": "acme-api",
+       "id": "f_00mularbcq-71c160cf49",
+       "scope": "findings/acme-api/pr-7",
+       "review": "7"
+      }
+     ],
+     "answerVersions": [
+      "00mularbqr-d4d0656ec3\u0000e372c49e23853bd788a175c47c1982edb84fa349fb0a6d697229413a15bc4680",
+      "00mularbzy-e322d67b54\u000051363ee2cf396752a7943be525dad24357d9206d1a51ab567e06438b8be8f9d8"
+     ],
+     "preserve": "00mularbzy-e322d67b54",
+     "rationale": "I saw the prior closure and choose the repair intent for future work.",
+     "human": {
+      "principal": "resolver@acme.test",
+      "session": "web",
+      "request": "cmp_4cc39dc91ccf8f3eb6aaa0f6",
+      "receipt": "17bb1f42-dd0b-4066-87af-9699daeffefc",
+      "shownHash": "resolution:v1:34f95a356fb2b4a92ad45cf2941ffb51f5672e215e4548ed461066896ff9dc8c"
+     }
+    },
+    "proof": {
+     "purpose": "human-comparison",
+     "source": "web",
+     "principal": "resolver@acme.test",
+     "contextHash": "75eaf785b2f3babcfd586fe23c886229718b7e1a1a181b36ef5dde724141cd05",
+     "shownHash": "resolution:v1:34f95a356fb2b4a92ad45cf2941ffb51f5672e215e4548ed461066896ff9dc8c",
+     "receipt": "17bb1f42-dd0b-4066-87af-9699daeffefc",
+     "session": "web",
+     "shown": {
+      "request": {
+       "id": "cmp_4cc39dc91ccf8f3eb6aaa0f6",
+       "left": {
+        "answerId": "00mularbqr-d4d0656ec3",
+        "version": "e372c49e23853bd788a175c47c1982edb84fa349fb0a6d697229413a15bc4680",
+        "principal": "alice@acme.test",
+        "questionId": "00mularbjm-1dc673981e:d1",
+        "questionVersion": "d:sha256:1c3b2b5753d6907020560e70",
+        "display": {
+         "prompt": "D1: is f_00mularbcq-71c160cf49 a real defect?",
+         "answerFormat": "options",
+         "context": "{\"round\":{\"id\":\"00mularbjm-1dc673981e\",\"source\":\"execution oracle\"},\"decision\":{\"ref\":\"D1\",\"payload\":{\"question\":\"D1: is f_00mularbcq-71c160cf49 a real defect?\",\"options\":[{\"label\":\"Reject\",\"description\":\"The behavior is intended\"},{\"label\":\"Fix\",\"description\":\"Repair the behavior\"}],\"multiSelect\":false}}}",
+         "options": [
+          {
+           "label": "Reject",
+           "effects": [
+            {
+             "findings": [
+              "f_00mularbcq-71c160cf49"
+             ],
+             "on": "settle",
+             "as": "refuted"
+            }
+           ],
+           "displayed": {
+            "label": "Reject",
+            "description": "The behavior is intended"
+           }
+          },
+          {
+           "label": "Fix",
+           "effects": [
+            {
+             "findings": [
+              "f_00mularbcq-71c160cf49"
+             ],
+             "on": "unblock"
+            }
+           ],
+           "displayed": {
+            "label": "Fix",
+            "description": "Repair the behavior"
+           }
+          }
+         ]
+        },
+        "words": "Reject"
+       },
+       "right": {
+        "answerId": "00mularbzy-e322d67b54",
+        "version": "51363ee2cf396752a7943be525dad24357d9206d1a51ab567e06438b8be8f9d8",
+        "principal": "bob@acme.test",
+        "questionId": "00mularbjm-1dc673981e:d1",
+        "questionVersion": "d:sha256:1c3b2b5753d6907020560e70",
+        "display": {
+         "prompt": "D1: is f_00mularbcq-71c160cf49 a real defect?",
+         "answerFormat": "options",
+         "context": "{\"round\":{\"id\":\"00mularbjm-1dc673981e\",\"source\":\"execution oracle\"},\"decision\":{\"ref\":\"D1\",\"payload\":{\"question\":\"D1: is f_00mularbcq-71c160cf49 a real defect?\",\"options\":[{\"label\":\"Reject\",\"description\":\"The behavior is intended\"},{\"label\":\"Fix\",\"description\":\"Repair the behavior\"}],\"multiSelect\":false}}}",
+         "options": [
+          {
+           "label": "Reject",
+           "effects": [
+            {
+             "findings": [
+              "f_00mularbcq-71c160cf49"
+             ],
+             "on": "settle",
+             "as": "refuted"
+            }
+           ],
+           "displayed": {
+            "label": "Reject",
+            "description": "The behavior is intended"
+           }
+          },
+          {
+           "label": "Fix",
+           "effects": [
+            {
+             "findings": [
+              "f_00mularbcq-71c160cf49"
+             ],
+             "on": "unblock"
+            }
+           ],
+           "displayed": {
+            "label": "Fix",
+            "description": "Repair the behavior"
+           }
+          }
+         ]
+        },
+        "words": "Fix"
+       },
+       "issues": [
+        {
+         "kind": "finding",
+         "universe": "acme-api",
+         "id": "f_00mularbcq-71c160cf49",
+         "scope": "findings/acme-api/pr-7",
+         "review": "7"
+        }
+       ],
+       "contextHash": "75eaf785b2f3babcfd586fe23c886229718b7e1a1a181b36ef5dde724141cd05"
+      },
+      "judgments": [
+       {
+        "requestId": "cmp_4cc39dc91ccf8f3eb6aaa0f6",
+        "contextHash": "75eaf785b2f3babcfd586fe23c886229718b7e1a1a181b36ef5dde724141cd05",
+        "issues": [
+         {
+          "kind": "finding",
+          "universe": "acme-api",
+          "id": "f_00mularbcq-71c160cf49",
+          "scope": "findings/acme-api/pr-7",
+          "review": "7"
+         }
+        ],
+        "answerVersions": [
+         "00mularbqr-d4d0656ec3\u0000e372c49e23853bd788a175c47c1982edb84fa349fb0a6d697229413a15bc4680",
+         "00mularbzy-e322d67b54\u000051363ee2cf396752a7943be525dad24357d9206d1a51ab567e06438b8be8f9d8"
+        ],
+        "verdict": "incompatible",
+        "rationale": "The same Yes label refers to incompatible read-only and write-through policies.",
+        "reader": {
+         "principal": "independent-reader@acme.test",
+         "agent": "aSEMANTIC0000012",
+         "session": "5e55a0a0-0000-0000-0000-000000000012",
+         "request": "toolu_launch_12",
+         "receipt": "acb11776-38f2-4e73-8a12-f5a9368f0fa5"
+        },
+        "id": "00mularc9h-4713e3ca96",
+        "at": "2026-09-28T13:42:21.653Z"
+       }
+      ],
+      "resolutions": [],
+      "executions": [
+       {
+        "eventId": "00mularbrw-708929d43d",
+        "at": "2026-09-28T13:42:21.020Z",
+        "by": {
+         "principal": "application-agent",
+         "via": {
+          "kind": "agent",
+          "model": "semantic-oracle"
+         }
+        },
+        "status": "executed",
+        "key": "apply_93a42054dd20c84c8d59fc635d3f26c929ad3359c18d1deeace61226158018b6",
+        "capsule": {
+         "version": 1,
+         "key": "apply_93a42054dd20c84c8d59fc635d3f26c929ad3359c18d1deeace61226158018b6",
+         "issue": {
+          "ref": {
+           "kind": "finding",
+           "universe": "acme-api",
+           "id": "f_00mularbcq-71c160cf49",
+           "scope": "findings/acme-api/pr-7",
+           "review": "7"
+          },
+          "key": "issue_c48a88c877b92cc7d8b40f6c8f2cacb0eb21d7d2ea988dbda9a209ea66c35269",
+          "openEpoch": "00mularbcr-4377776972",
+          "openState": "issued",
+          "claimHash": "sha256:e33ad8fe8f254a5ede9865e8764f9c3f4ec406bd94a8c24c4c6ccce4edf43f09"
+         },
+         "ruling": {
+          "key": "00mularbqr-d4d0656ec3",
+          "answerId": "00mularbqr-d4d0656ec3",
+          "answerEvent": "00mularbqr-d4d0656ec3",
+          "roundId": "00mularbjm-1dc673981e",
+          "questionId": "00mularbjm-1dc673981e:d1",
+          "display": {
+           "question": "D1: is f_00mularbcq-71c160cf49 a real defect?",
+           "answer": "Reject\nThe behavior is intended",
+           "context": "{\"payload\":{\"question\":\"D1: is f_00mularbcq-71c160cf49 a real defect?\",\"options\":[{\"label\":\"Reject\",\"description\":\"The behavior is intended\"},{\"label\":\"Fix\",\"description\":\"Repair the behavior\"}],\"multiSelect\":false},\"options\":[{\"label\":\"Reject\",\"effects\":[{\"findings\":[\"f_00mularbcq-71c160cf49\"],\"on\":\"settle\",\"as\":\"refuted\"}]},{\"label\":\"Fix\",\"effects\":[{\"findings\":[\"f_00mularbcq-71c160cf49\"],\"on\":\"unblock\"}]}]}"
+          },
+          "displayHash": "sha256:f792345151be12e336c6ac3cfb84b44c95975560deba46611483b779d81c4769",
+          "authority": {
+           "checkedAt": "2026-09-28T13:42:21.020Z",
+           "sourceFingerprint": "sha256:b032ceefbc519d50a1e43f91e957180f83e44a5df8ea65a152d99f867b04f9a6",
+           "status": "current",
+           "comparison": "clear"
+          }
+         },
+         "evidence": {
+          "directMention": "f_00mularbcq-71c160cf49",
+          "readers": [
+           {
+            "id": "9be9c104-7888-4308-aacd-b3d4e73f9c2c",
+            "request": "application_reader_ffacd018bd75d2c7a95d98be15db45c1d48ad06228211b4165471b39c3359e82",
+            "launch": "toolu_launch_11",
+            "session": "5e55a0a0-0000-0000-0000-000000000011",
+            "by": {
+             "principal": "application-agent",
+             "via": {
+              "kind": "agent",
+              "harness": "subagent"
+             }
+            },
+            "briefHash": "sha256:42ca9217fb159b1500ab229c0482a934a886a27438765ca108fe1bf22e78afb1",
+            "manifestHash": "sha256:e5a84b66e3f45fb73513317142e394b2f9054d2905c6134ca9971bb14ed9ec42",
+            "issueHash": "sha256:e33ad8fe8f254a5ede9865e8764f9c3f4ec406bd94a8c24c4c6ccce4edf43f09",
+            "rulingHash": "sha256:f792345151be12e336c6ac3cfb84b44c95975560deba46611483b779d81c4769",
+            "verdict": "sound",
+            "rationale": "The human ruling defeats the premise of this exact finding."
+           }
+          ]
+         },
+         "reason": "The ruling 00mularbqr-d4d0656ec3 defeats this issue's premise: The human ruling defeats the premise of this exact finding."
+        }
+       }
+      ]
+     },
+     "executionsHash": "e7ee5e5b1ee220d8d7b74d970a083a01b203a5904dd3237315a7f5a9a597b59d"
+    }
+   }
+  }
+ ],
+ "questionnaire": [
+  {
+   "sidecarProtocol": 1,
+   "eventSchema": 1,
+   "id": "00mulartk6-f8ee5c47e2",
+   "kind": "decision.round.posted",
+   "subject": "R1",
+   "actor": {
+    "principal": "alice@x.com",
+    "via": {
+     "kind": "agent",
+     "model": "claude-opus-5"
+    }
+   },
+   "at": "2026-09-28T13:42:44.070Z",
+   "writer": "w_5dbf2940a6019ca3",
+   "writerPrev": "GENESIS",
+   "after": [],
+   "data": {
+    "publication": 2,
+    "round": {
+     "id": "R1",
+     "source": "stakeholder",
+     "questionnaire": {
+      "id": "stakeholder-q",
+      "title": "Review decisions",
+      "recipient": "stakeholder",
+      "sections": [
+       {
+        "id": "decision",
+        "title": "Decision",
+        "questions": [
+         {
+          "id": "choice",
+          "kind": "choice",
+          "prompt": "D1: Is f_00mulartjv-54d7b66599 a real defect?",
+          "allowOther": true,
+          "options": [
+           {
+            "id": "reject",
+            "label": "Not a defect",
+            "description": "Reject claim",
+            "action": "settles f_00mulartjv-54d7b66599 as refuted"
+           },
+           {
+            "id": "fix",
+            "label": "Real, fix it",
+            "description": "Fix claim",
+            "action": "unblocks f_00mulartjv-54d7b66599"
+           }
+          ]
+         },
+         {
+          "id": "short",
+          "kind": "short",
+          "prompt": "D2: Why does this matter?"
+         }
+        ]
+       },
+       {
+        "id": "items",
+        "title": "Review each item",
+        "questions": [
+         {
+          "id": "list",
+          "kind": "list",
+          "prompt": "D3: Review f_00mulartjv-54d7b66599 item by item",
+          "items": [
+           {
+            "id": "fix-item",
+            "text": "Fix item",
+            "context": "Move to work",
+            "action": "unblocks f_00mulartjv-54d7b66599"
+           },
+           {
+            "id": "reject-item",
+            "text": "Reject item",
+            "context": "Close claim",
+            "action": "settles f_00mulartjv-54d7b66599 as refuted"
+           }
+          ]
+         }
+        ]
+       }
+      ]
+     },
+     "universe": "codemap-questionnaire-op-eyewxp"
+    },
+    "decisions": [
+     {
+      "id": "choice",
+      "round": "R1",
+      "ref": "D1",
+      "kind": "options",
+      "payload": {
+       "question": "D1: Is f_00mulartjv-54d7b66599 a real defect?",
+       "options": [
+        {
+         "label": "Not a defect",
+         "description": "Reject claim"
+        },
+        {
+         "label": "Real, fix it",
+         "description": "Fix claim"
+        }
+       ]
+      },
+      "options": [
+       {
+        "label": "Not a defect",
+        "effects": [
+         {
+          "findings": [
+           "f_00mulartjv-54d7b66599"
+          ],
+          "on": "settle",
+          "as": "refuted"
+         }
+        ]
+       },
+       {
+        "label": "Real, fix it",
+        "effects": [
+         {
+          "findings": [
+           "f_00mulartjv-54d7b66599"
+          ],
+          "on": "unblock"
+         }
+        ]
+       }
+      ]
+     },
+     {
+      "id": "short",
+      "round": "R1",
+      "ref": "D2",
+      "kind": "words",
+      "payload": {
+       "question": "D2: Why does this matter?",
+       "options": []
+      },
+      "options": []
+     },
+     {
+      "id": "list",
+      "round": "R1",
+      "ref": "D3",
+      "kind": "bulk",
+      "payload": {
+       "question": "D3: Review f_00mulartjv-54d7b66599 item by item",
+       "multiSelect": true,
+       "options": [
+        {
+         "label": "Fix item",
+         "description": "Move to work"
+        },
+        {
+         "label": "Reject item",
+         "description": "Close claim"
+        },
+        {
+         "label": "Approve all unmarked"
+        }
+       ]
+      },
+      "options": [
+       {
+        "label": "Fix item",
+        "effects": [
+         {
+          "findings": [
+           "f_00mulartjv-54d7b66599"
+          ],
+          "on": "unblock"
+         }
+        ]
+       },
+       {
+        "label": "Reject item",
+        "effects": [
+         {
+          "findings": [
+           "f_00mulartjv-54d7b66599"
+          ],
+          "on": "settle",
+          "as": "refuted"
+         }
+        ]
+       },
+       {
+        "label": "Approve all unmarked",
+        "effects": [],
+        "approveAll": true
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "sidecarProtocol": 1,
+   "eventSchema": 1,
+   "id": "00mulartki-ae7b9a7506",
+   "kind": "decision.questionnaire.submitted",
+   "subject": "00mulartk6-f8ee5c47e2",
+   "actor": {
+    "principal": "alice@x.com"
+   },
+   "at": "2026-09-28T13:42:44.082Z",
+   "writer": "w_5dbf2940a6019ca3",
+   "writerPrev": "00mulartk6-f8ee5c47e2",
+   "after": [
+    "00mulartk6-f8ee5c47e2"
+   ],
+   "data": {
+    "round": "00mulartk6-f8ee5c47e2",
+    "staged": {
+     "questionnaireId": "stakeholder-q",
+     "version": "d08836d4d847a034aeef04f1c318bf3d5233010e08f8bfaf8f83978e0c1a606e",
+     "attemptId": "list-relay-source",
+     "payloadHash": "a737fe8b03562128ea52e161da91149ffdee546c443bd1131bae5fbb1feed48b",
+     "answers": [
+      {
+       "questionId": "list",
+       "kind": "list",
+       "approveUnmarked": true,
+       "marked": [
+        {
+         "itemId": "reject-item",
+         "correction": "The claim needs a narrower scope"
+        }
+       ]
+      }
+     ],
+     "listApprovals": [
+      {
+       "questionId": "list",
+       "approvedItemIds": [
+        "fix-item"
+       ],
+       "correctedItemIds": [
+        "reject-item"
+       ]
+      }
+     ]
+    }
+   }
+  },
+  {
+   "sidecarProtocol": 1,
+   "eventSchema": 1,
+   "id": "00mulartkt-808ca6a752",
+   "kind": "decision.revision.presented",
+   "subject": "00mulartk6-f8ee5c47e2:list",
+   "actor": {
+    "principal": "bob@x.com"
+   },
+   "at": "2026-09-28T13:42:44.093Z",
+   "writer": "w_5dbf2940a6019ca3",
+   "writerPrev": "00mulartki-ae7b9a7506",
+   "after": [
+    "00mulartki-ae7b9a7506"
+   ],
+   "data": {
+    "decision": "00mulartk6-f8ee5c47e2:list",
+    "to": "bob@x.com",
+    "answers": [
+     {
+      "id": "qans_1e96d660d30fae2fd6f40c19",
+      "responseHash": "bf5afab2e0517b99fbcc0bcf6848a93c928a48fabaef4ee8237402925606e64e",
+      "questionHash": "d:sha256:ce49336f9daf50fbd70ef490"
+     }
+    ],
+    "scope": {
+     "findings": [
+      "f_00mulartjv-54d7b66599"
+     ]
+    },
+    "display": {
+     "question": {
+      "question": "D3: Review f_00mulartjv-54d7b66599 item by item",
+      "options": [
+       {
+        "label": "Fix item",
+        "description": "Move to work"
+       },
+       {
+        "label": "Reject item",
+        "description": "Close claim"
+       },
+       {
+        "label": "Approve all unmarked"
+       }
+      ],
+      "multiSelect": true
+     },
+     "questionnaire": {
+      "questionnaire": {
+       "id": "stakeholder-q",
+       "title": "Review decisions",
+       "recipient": "stakeholder"
+      },
+      "section": {
+       "id": "items",
+       "title": "Review each item",
+       "questions": [
+        {
+         "id": "list",
+         "kind": "list",
+         "prompt": "D3: Review f_00mulartjv-54d7b66599 item by item",
+         "items": [
+          {
+           "id": "fix-item",
+           "text": "Fix item",
+           "context": "Move to work",
+           "action": "unblocks f_00mulartjv-54d7b66599"
+          },
+          {
+           "id": "reject-item",
+           "text": "Reject item",
+           "context": "Close claim",
+           "action": "settles f_00mulartjv-54d7b66599 as refuted"
+          }
+         ]
+        }
+       ]
+      },
+      "question": {
+       "id": "list",
+       "kind": "list",
+       "prompt": "D3: Review f_00mulartjv-54d7b66599 item by item",
+       "items": [
+        {
+         "id": "fix-item",
+         "text": "Fix item",
+         "context": "Move to work",
+         "action": "unblocks f_00mulartjv-54d7b66599"
+        },
+        {
+         "id": "reject-item",
+         "text": "Reject item",
+         "context": "Close claim",
+         "action": "settles f_00mulartjv-54d7b66599 as refuted"
+        }
+       ]
+      }
+     },
+     "answers": [
+      {
+       "id": "qans_1e96d660d30fae2fd6f40c19",
+       "principal": "alice@x.com",
+       "words": "Reject item",
+       "reviewed": {
+        "answer": {
+         "questionId": "list",
+         "kind": "list",
+         "approveUnmarked": true,
+         "marked": [
+          {
+           "itemId": "reject-item",
+           "correction": "The claim needs a narrower scope"
+          }
+         ]
+        },
+        "approvals": [
+         "fix-item"
+        ],
+        "corrections": [
+         {
+          "itemId": "reject-item",
+          "text": "The claim needs a narrower scope",
+          "verdict": "pending"
+         }
+        ]
+       }
+      }
+     ],
+     "action": [
+      {
+       "label": "Fix item",
+       "effects": [
+        {
+         "findings": [
+          "f_00mulartjv-54d7b66599"
+         ],
+         "on": "unblock"
+        }
+       ]
+      },
+      {
+       "label": "Reject item",
+       "effects": [
+        {
+         "findings": [
+          "f_00mulartjv-54d7b66599"
+         ],
+         "on": "settle",
+         "as": "refuted"
+        }
+       ]
+      },
+      {
+       "label": "Approve all unmarked",
+       "effects": []
+      }
+     ]
+    },
+    "contextHash": "b149829f5286cf811b0ac6331ecc6e748f1f89539bfa4cbf0b46c42e2c98ec0e",
+    "sourceReceipt": "2572a960-a3fd-4f31-b09e-1220568e3696"
+   }
+  },
+  {
+   "sidecarProtocol": 1,
+   "eventSchema": 1,
+   "id": "00mulartl8-59333a9fed",
+   "kind": "decision.answer.revised",
+   "subject": "00mulartk6-f8ee5c47e2:list",
+   "actor": {
+    "principal": "bob@x.com",
+    "via": {
+     "kind": "agent",
+     "model": "claude-opus-5"
+    }
+   },
+   "at": "2026-09-28T13:42:44.108Z",
+   "writer": "w_5dbf2940a6019ca3",
+   "writerPrev": "00mulartkt-808ca6a752",
+   "after": [
+    "00mulartkt-808ca6a752"
+   ],
+   "data": {
+    "decision": "00mulartk6-f8ee5c47e2:list",
+    "hash": "d:sha256:ce49336f9daf50fbd70ef490",
+    "via": {
+     "kind": "revision-relay",
+     "proof": {
+      "session": "list-relay-session",
+      "toolUseId": "list-relay-call",
+      "entryId": "answered",
+      "answeredAt": "2026-09-28T13:42:49.104Z",
+      "question": {
+       "question": "{\"purpose\":\"explicit-ruling-revision\",\"decision\":\"00mulartk6-f8ee5c47e2:list\",\"answers\":[{\"id\":\"qans_1e96d660d30fae2fd6f40c19\",\"responseHash\":\"bf5afab2e0517b99fbcc0bcf6848a93c928a48fabaef4ee8237402925606e64e\",\"questionHash\":\"d:sha256:ce49336f9daf50fbd70ef490\"}],\"scope\":{\"findings\":[\"f_00mulartjv-54d7b66599\"]},\"display\":{\"question\":{\"question\":\"D3: Review f_00mulartjv-54d7b66599 item by item\",\"options\":[{\"label\":\"Fix item\",\"description\":\"Move to work\"},{\"label\":\"Reject item\",\"description\":\"Close claim\"},{\"label\":\"Approve all unmarked\"}],\"multiSelect\":true},\"questionnaire\":{\"questionnaire\":{\"id\":\"stakeholder-q\",\"title\":\"Review decisions\",\"recipient\":\"stakeholder\"},\"section\":{\"id\":\"items\",\"title\":\"Review each item\",\"questions\":[{\"id\":\"list\",\"kind\":\"list\",\"prompt\":\"D3: Review f_00mulartjv-54d7b66599 item by item\",\"items\":[{\"id\":\"fix-item\",\"text\":\"Fix item\",\"context\":\"Move to work\",\"action\":\"unblocks f_00mulartjv-54d7b66599\"},{\"id\":\"reject-item\",\"text\":\"Reject item\",\"context\":\"Close claim\",\"action\":\"settles f_00mulartjv-54d7b66599 as refuted\"}]}]},\"question\":{\"id\":\"list\",\"kind\":\"list\",\"prompt\":\"D3: Review f_00mulartjv-54d7b66599 item by item\",\"items\":[{\"id\":\"fix-item\",\"text\":\"Fix item\",\"context\":\"Move to work\",\"action\":\"unblocks f_00mulartjv-54d7b66599\"},{\"id\":\"reject-item\",\"text\":\"Reject item\",\"context\":\"Close claim\",\"action\":\"settles f_00mulartjv-54d7b66599 as refuted\"}]}},\"answers\":[{\"id\":\"qans_1e96d660d30fae2fd6f40c19\",\"principal\":\"alice@x.com\",\"words\":\"Reject item\",\"reviewed\":{\"answer\":{\"questionId\":\"list\",\"kind\":\"list\",\"approveUnmarked\":true,\"marked\":[{\"itemId\":\"reject-item\",\"correction\":\"The claim needs a narrower scope\"}]},\"approvals\":[\"fix-item\"],\"corrections\":[{\"itemId\":\"reject-item\",\"text\":\"The claim needs a narrower scope\",\"verdict\":\"pending\"}]}}],\"action\":[{\"label\":\"Fix item\",\"effects\":[{\"findings\":[\"f_00mulartjv-54d7b66599\"],\"on\":\"unblock\"}]},{\"label\":\"Reject item\",\"effects\":[{\"findings\":[\"f_00mulartjv-54d7b66599\"],\"on\":\"settle\",\"as\":\"refuted\"}]},{\"label\":\"Approve all unmarked\",\"effects\":[]}]},\"contextHash\":\"b149829f5286cf811b0ac6331ecc6e748f1f89539bfa4cbf0b46c42e2c98ec0e\",\"reviewedItems\":[{\"id\":\"fix-item\",\"text\":\"Fix item\",\"context\":\"Move to work\",\"action\":\"unblocks f_00mulartjv-54d7b66599\"},{\"id\":\"reject-item\",\"text\":\"Reject item\",\"context\":\"Close claim\",\"action\":\"settles f_00mulartjv-54d7b66599 as refuted\"}],\"answerFormat\":\"Approve all reviewed items, or enter JSON: {\\\"approveUnmarked\\\":true,\\\"marked\\\":[{\\\"itemId\\\":\\\"id\\\",\\\"correction\\\":\\\"your correction\\\"}]}\"}",
+       "options": [
+        {
+         "label": "Approve all reviewed items"
+        },
+        {
+         "label": "Other",
+         "description": "Enter the exact per-item correction JSON shown in the question"
+        }
+       ],
+       "multiSelect": false
+      },
+      "answer": "Other: {\"approveUnmarked\":true,\"marked\":[{\"itemId\":\"fix-item\",\"correction\":\"Fix item needs a boundary check\"}]}"
+     }
+    },
+    "list": {
+     "items": [
+      "fix-item",
+      "reject-item"
+     ],
+     "approveUnmarked": true,
+     "marked": [
+      {
+       "itemId": "fix-item",
+       "correction": "Fix item needs a boundary check"
+      }
+     ]
+    },
+    "revision": {
+     "of": [
+      "qans_1e96d660d30fae2fd6f40c19"
+     ],
+     "findings": [
+      "f_00mulartjv-54d7b66599"
+     ]
+    }
+   }
+  }
+ ],
+ "confirm": [
+  {
+   "sidecarProtocol": 1,
+   "eventSchema": 1,
+   "id": "00mularloo-4389f81c6b",
+   "kind": "decision.round.posted",
+   "subject": "R1",
+   "actor": {
+    "principal": "alice@acme.test",
+    "via": {
+     "kind": "agent",
+     "model": "test-reader"
+    }
+   },
+   "at": "2026-09-28T13:42:33.864Z",
+   "writer": "w_2c71b215d6eaf39d",
+   "writerPrev": "GENESIS",
+   "after": [],
+   "data": {
+    "publication": 2,
+    "round": {
+     "id": "R1",
+     "source": "withdrawal oracle",
+     "universe": "acme-api"
+    },
+    "decisions": [
+     {
+      "id": "q1",
+      "round": "R1",
+      "ref": "D1",
+      "kind": "options",
+      "payload": {
+       "question": "D1: is f_00mularlhq-d473cf5a06 invalid?",
+       "options": [
+        {
+         "label": "Reject",
+         "description": "The premise is false"
+        },
+        {
+         "label": "Fix",
+         "description": "The code needs repair"
+        }
+       ]
+      },
+      "options": [
+       {
+        "label": "Reject",
+        "effects": [
+         {
+          "findings": [
+           "f_00mularlhq-d473cf5a06"
+          ],
+          "on": "settle",
+          "as": "refuted"
+         }
+        ]
+       },
+       {
+        "label": "Fix",
+        "effects": [
+         {
+          "findings": [
+           "f_00mularlhq-d473cf5a06"
+          ],
+          "on": "unblock"
+         }
+        ]
+       }
+      ]
+     },
+     {
+      "id": "q2",
+      "round": "R1",
+      "ref": "D2",
+      "kind": "options",
+      "payload": {
+       "question": "D2: is f_00mularli6-b37c753763 invalid?",
+       "options": [
+        {
+         "label": "Reject",
+         "description": "The premise is false"
+        },
+        {
+         "label": "Fix",
+         "description": "The code needs repair"
+        }
+       ]
+      },
+      "options": [
+       {
+        "label": "Reject",
+        "effects": [
+         {
+          "findings": [
+           "f_00mularli6-b37c753763"
+          ],
+          "on": "settle",
+          "as": "refuted"
+         }
+        ]
+       },
+       {
+        "label": "Fix",
+        "effects": [
+         {
+          "findings": [
+           "f_00mularli6-b37c753763"
+          ],
+          "on": "unblock"
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "sidecarProtocol": 1,
+   "eventSchema": 1,
+   "id": "00mularlv3-4737713f9e",
+   "kind": "decision.answer.recorded",
+   "subject": "00mularloo-4389f81c6b:q1",
+   "actor": {
+    "principal": "alice@acme.test"
+   },
+   "at": "2026-09-28T13:42:34.095Z",
+   "writer": "w_2c71b215d6eaf39d",
+   "writerPrev": "00mularloo-4389f81c6b",
+   "after": [
+    "00mularloo-4389f81c6b"
+   ],
+   "data": {
+    "decision": "00mularloo-4389f81c6b:q1",
+    "hash": "d:sha256:0f78ea1f2c80de89a6593330",
+    "via": {
+     "kind": "direct",
+     "option": "Fix"
+    }
+   }
+  },
+  {
+   "sidecarProtocol": 1,
+   "eventSchema": 1,
+   "id": "00mularlvh-328a04f422",
+   "kind": "decision.answer.recorded",
+   "subject": "00mularloo-4389f81c6b:q1",
+   "actor": {
+    "principal": "alice@acme.test"
+   },
+   "at": "2026-09-28T13:42:34.109Z",
+   "writer": "w_2c71b215d6eaf39d",
+   "writerPrev": "00mularlv3-4737713f9e",
+   "after": [
+    "00mularlv3-4737713f9e"
+   ],
+   "data": {
+    "decision": "00mularloo-4389f81c6b:q1",
+    "hash": "d:sha256:0f78ea1f2c80de89a6593330",
+    "via": {
+     "kind": "direct",
+     "words": "The premise is false after all."
+    }
+   }
+  },
+  {
+   "sidecarProtocol": 1,
+   "eventSchema": 1,
+   "id": "00mularma9-a0ff3437b6",
+   "kind": "decision.withdrawn",
+   "subject": "00mularloo-4389f81c6b:q1",
+   "actor": {
+    "principal": "alice@acme.test"
+   },
+   "at": "2026-09-28T13:42:34.641Z",
+   "writer": "w_2c71b215d6eaf39d",
+   "writerPrev": "00mularlvh-328a04f422",
+   "after": [
+    "00mularm2y-e00dc11faa"
+   ],
+   "data": {
+    "decision": "00mularloo-4389f81c6b:q1",
+    "answer": "00mularlvh-328a04f422",
+    "reason": "I retract this ruling",
+    "knownAnswers": [
+     "00mularlv3-4737713f9e",
+     "00mularlvh-328a04f422"
+    ],
+    "scope": {
+     "findings": [
+      "f_00mularlhq-d473cf5a06"
+     ],
+     "issues": []
+    }
+   }
+  },
+  {
+   "sidecarProtocol": 1,
+   "eventSchema": 1,
+   "id": "00mularm2y-e00dc11faa",
+   "kind": "decision.confirm.posted",
+   "subject": "cf_e8bde23eebf6d8ed",
+   "actor": {
+    "principal": "independent-reader",
+    "via": {
+     "kind": "agent",
+     "model": "test-reader"
+    }
+   },
+   "at": "2026-09-28T13:42:34.378Z",
+   "writer": "w_457fc5e429b31105",
+   "writerPrev": "GENESIS",
+   "after": [
+    "00mularlvh-328a04f422"
+   ],
+   "data": {
+    "publication": 2,
+    "round": "00mularloo-4389f81c6b",
+    "decision": {
+     "id": "cf_e8bde23eebf6d8ed",
+     "round": "00mularloo-4389f81c6b",
+     "ref": "D3",
+     "kind": "options",
+     "payload": {
+      "question": "D3: confirm how your words on D1 (answer 00mularlvh-328a04f422, round 00mularloo-4389f81c6b) are read. You typed at 2026-09-28T13:42:34.109Z:\n\"The premise is false after all.\"\nD1 → Reject (settles f_00mularlhq-d473cf5a06 as refuted)\nAs of when you typed it, is that what you meant?",
+      "header": "Confirm",
+      "options": [
+       {
+        "label": "Yes",
+        "description": "Bind exactly the action above, as of when you typed it"
+       },
+       {
+        "label": "No — ask me again",
+        "description": "Not what I meant: ask the question again"
+       }
+      ],
+      "multiSelect": false
+     },
+     "options": [
+      {
+       "label": "Yes",
+       "effects": []
+      },
+      {
+       "label": "No — ask me again",
+       "effects": []
+      }
+     ],
+     "confirms": {
+      "answer": "00mularlvh-328a04f422",
+      "readings": [
+       [
+        {
+         "decision": "00mularloo-4389f81c6b:q1",
+         "option": "Reject"
+        }
+       ]
+      ]
+     }
+    }
+   }
+  }
+ ]
+}

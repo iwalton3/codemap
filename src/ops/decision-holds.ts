@@ -150,7 +150,14 @@ export async function decisionsView(root: string): Promise<DecisionsView> {
   if (!cfg) return missing("no sidecar is configured, and this store has read decisions from one before");
   if (!existsSync(join(cfg.path, ".git"))) return missing(`the sidecar at ${cfg.path} is missing, and this store has read decisions from it before`);
   if (!existsSync(join(cfg.path, decisionScope(cfg.universe)))) return missing(`the decisions log is missing from ${cfg.path}, and this store has read decisions from it before`);
-  const { value, ...status } = await readCached(root, cfg.path, decisionScope(cfg.universe), sidecarIdentity(cfg), foldDecisions, decisionsProjection);
+  const { value, ...read } = await readCached(root, cfg.path, decisionScope(cfg.universe), sidecarIdentity(cfg), foldDecisions, decisionsProjection);
+  // A blocked or acknowledged diagnostic outranks this one; left-out events never block.
+  const status: ScopeStatus = read.diagnostic || !value.skipped?.length ? read : { ...read, diagnostic: {
+    reason: "malformed-event",
+    detail: `${value.skipped.length} decisions event(s) could not be read and were left out; everything else was read. `
+      + value.skipped.slice(0, 3).map((x) => `${x.id} (${x.kind}): ${x.why}`).join("; "),
+    evidence: [...new Set(value.skipped.map((x) => x.id))].slice(0, 5),
+  } };
   return view(value, status, status.status === "blocked" ? status.diagnostic?.detail ?? "the decisions log cannot be read" : undefined);
 }
 

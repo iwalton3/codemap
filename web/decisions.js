@@ -450,6 +450,7 @@ class DecisionsPage extends Component {
     const blocked = v.status === 'blocked';
     return html`
       ${when(blocked, () => html`<div class="attn-banner"><span class="attn-n">!</span><span>The decisions log cannot be read, so these lists may be wrong and answering is refused: ${v.diagnostic?.detail ?? 'unreadable'}</span></div>`)}
+      ${when(!blocked && v.diagnostic?.reason === 'malformed-event', () => html`<div class="attn-banner"><span class="attn-n">!</span><span>${v.diagnostic.detail}</span></div>`)}
       <div class="sec">waiting on you (${v.waitingOnYou.length})</div>
       ${when(!v.waitingOnYou.length, () => html`<div class="empty">${blocked ? UNKNOWN : 'nothing — every question is answered'}</div>`)}
       ${each(v.waitingOnYou, (w) => html`<div class="fs"><a href="${href(decisionsUrl(u, w.round))}">${w.round} ${w.ref}</a> — ${w.why}</div>`, (w, i) => w.decision + i)}

@@ -894,6 +894,8 @@ function migrate(d: DatabaseSync): void {
       scope TEXT NOT NULL, id TEXT NOT NULL, body TEXT NOT NULL,
       PRIMARY KEY (scope, id)
     );
+    -- Events the decisions fold left out, so a cache hit still reports them.
+    CREATE TABLE IF NOT EXISTS decision_skipped (scope TEXT NOT NULL, body TEXT NOT NULL);
     -- A reader's request (the agent's reading and the brief as issued) and the verdicts readers
     -- submitted, held on THIS machine until checked against its transcripts (owner, Q2.2). One
     -- machine's pending state, like cover rules: never a scope, never folded. See ops/decisions.ts.

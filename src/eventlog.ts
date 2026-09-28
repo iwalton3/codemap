@@ -685,8 +685,10 @@ export interface ScopeDiagnostic {
    * `sidecar-missing` and `sidecar-mismatch` are the odd ones out and are raised by the
    * MATERIALIZER, not by `scopeStatus`: they are facts about the configured path rather
    * than about a scope's events, and there are no events to judge when they fire.
+   * `malformed-event` is raised by a fold that left an event out, and never blocks: the scope
+   * is read without it, and the diagnostic is what keeps that from being silent.
    */
-  reason: "sidecar-missing" | "sidecar-mismatch" | "corrupt-shard" | "protocol" | "duplicate-id" | "chain-cycle" | "fork";
+  reason: "sidecar-missing" | "sidecar-mismatch" | "corrupt-shard" | "protocol" | "duplicate-id" | "chain-cycle" | "fork" | "malformed-event";
   /** One line a person can act on. */
   detail: string;
   /** The ids or writers the detail is about, so a repair does not have to search. */

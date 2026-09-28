@@ -238,7 +238,8 @@ import { readScopeChecked, sortEvents, SHARD_EXT, type LogEvent, type ScopeDiagn
 // 38 → 39: comparison requests, judgments and resolutions change decision authority and add a projection table.
 // 39 → 40: explicit withdrawal approval and revision presentation are new decision events.
 // 42 → 43: list relay revisions now fold into per-item authority; cached decisions must refold.
-// 43 → 44: the findings and bugs folds spend a ruling only when its application closes the issue.
+// 43 → 44: the findings and bugs folds spend a ruling only when its application closes the issue;
+// the decisions fold leaves out events it cannot read, and records them.
 export const MATERIALIZER_VERSION = 44;
 
 /**
