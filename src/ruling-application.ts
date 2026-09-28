@@ -1,6 +1,7 @@
 /** Versioned evidence carried by a target-scope ruling application act. */
 import { createHash } from "node:crypto";
 import type { Actor } from "./schema.js";
+import { codeUnitOrder } from "./canonical.js";
 
 export type ApplicationIssueRef =
   | { kind: "finding"; universe: string; id: string; scope: string; review: string }
@@ -85,7 +86,7 @@ export function issueClaimHash(kind: "finding" | "bug", issue: Record<string, an
     : hash([issue.title, issue.text, issue.severity, issue.category ?? null,
       (issue.anchors ?? []).filter((a: { removed?: unknown }) => !a.removed)
         .map((a: { anchorId: string; bodyHash: string; deleted?: true }) => [a.anchorId, a.bodyHash, !!a.deleted])
-        .sort((a: unknown[], b: unknown[]) => String(a[0]).localeCompare(String(b[0])))]);
+        .sort((a: unknown[], b: unknown[]) => codeUnitOrder(String(a[0]), String(b[0])))]);
 }
 
 const expectedFindingScope = (ref: Extract<ApplicationIssueRef, { kind: "finding" }>): string | null => {

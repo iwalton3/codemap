@@ -1,5 +1,6 @@
 /** Pure questionnaire presentation and submission rules. The decision fold supplies authority. */
 import { createHash } from "node:crypto";
+import { canonical } from "./canonical.js";
 
 export interface QuestionBase { id: string; prompt: string; context?: string; action?: string }
 export type QuestionnaireQuestion =
@@ -29,9 +30,7 @@ export type Validation<T> = { ok: true; value: T } | { ok: false; errors: string
 const obj = (x: unknown): x is Record<string, unknown> => !!x && typeof x === "object" && !Array.isArray(x);
 const nonempty = (x: unknown): x is string => typeof x === "string" && !!x.trim();
 const exact = (x: Record<string, unknown>, keys: string[]) => Object.keys(x).every((k) => keys.includes(k));
-const canonical = (x: unknown): unknown => Array.isArray(x) ? x.map(canonical)
-  : obj(x) ? Object.fromEntries(Object.keys(x).filter((k) => x[k] !== undefined).sort().map((k) => [k, canonical(x[k])])) : x;
-const hash = (x: unknown) => createHash("sha256").update(JSON.stringify(canonical(x))).digest("hex");
+const hash = (x: unknown) => createHash("sha256").update(canonical(x)).digest("hex");
 const unique = (xs: string[]) => new Set(xs).size === xs.length;
 
 /** Reject ambiguous or incomplete publication before any answer can name it. */

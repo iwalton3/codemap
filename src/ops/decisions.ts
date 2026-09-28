@@ -984,9 +984,12 @@ export async function withdrawDecision(root: string, input: { decision: string; 
   }
   if (isAgentActor(b.actor) && input.answer && !input.relay)
     return { error: "an agent cannot retire a ruling: report it (report_ruling) and relay the person's answer" };
+  const relays = input.relay ? decisionMatches(w.s, input.relay) : [];
+  if (input.relay && relays.length !== 1) return { error: relays.length ? ambiguous("decision", input.relay, relays) : `no question ${input.relay}` };
+  const relay = relays[0]?.id;
   const e = await withdrawDecisionEvent(b.cfg.path, b.cfg.universe, b.actor,
     { decision: d.id, ...(input.answer ? { answer: input.answer } : {}), reason, knownAnswers: sources.map((a) => a.id),
-      ...(input.relay ? { relay: decisionMatches(w.s, input.relay)[0]?.id ?? input.relay } : {}), ...(review ? { review } : {}) });
+      ...(relay ? { relay } : {}), ...(review ? { review } : {}) });
   if ("error" in e) return e;
   return { ok: true as const, withdrawal: e.id, decision: d.id, ...(input.answer ? { answer: input.answer } : {}) };
 }
@@ -1001,7 +1004,9 @@ export async function reportRuling(root: string, input: { decision: string; answ
   if ("error" in b) return b;
   const w = await writable(root);
   if ("error" in w) return w;
-  const d = decisionMatches(w.s, input?.decision)[0];
+  const found = decisionMatches(w.s, input?.decision);
+  if (found.length > 1) return { error: ambiguous("decision", String(input?.decision), found) };
+  const d = found[0];
   const ruling = d?.answers.find((a) => a.id === input?.answer && a.verified && !a.sourceAnswer && !a.withdrawn);
   if (!d || !ruling) return { error: "report_ruling needs an exact decision and one of its current verified answers" };
   if (typeof input.reason !== "string" || !input.reason.trim()) return { error: "say what looks wrong or conflicting" };
@@ -1017,7 +1022,9 @@ export async function reportRuling(root: string, input: { decision: string; answ
 /** The frozen brief a withdrawal reader is launched with; `slot` 3 arbitrates two disagreeing readers. */
 export async function withdrawalReaderBrief(root: string, input: { decision: string; reason: string; slot: 1 | 2 | 3; readers?: WithdrawalReaderRef[] }, dir: string = transcriptDir()) {
   const view = await decisionsView(root);
-  const d = decisionMatches(view.s, input?.decision)[0];
+  const found = decisionMatches(view.s, input?.decision);
+  if (found.length > 1) return { error: ambiguous("decision", String(input?.decision), found) };
+  const d = found[0];
   if (!d) return { error: `no decision ${String(input?.decision)}` };
   if (d.answers.some((a) => a.verified && !a.sourceAnswer)) return { error: `${d.ref} is answered; its ruling is withdrawn by its principal, not by readers` };
   if (![1, 2, 3].includes(input.slot) || !input.reason?.trim()) return { error: "a withdrawal brief needs the reason and slot 1, 2 or 3 (the arbitrator)" };

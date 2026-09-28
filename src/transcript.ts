@@ -98,15 +98,8 @@ export function normalizeQuestion(q: AskedQuestion): AskedQuestion {
   };
 }
 
-/** A key-sorted serialisation, so two equal questions compare equal whatever the key order. */
-export function canonical(v: unknown): string {
-  if (Array.isArray(v)) return `[${v.map(canonical).join(",")}]`;
-  if (v && typeof v === "object") {
-    return `{${Object.keys(v).sort().filter((k) => (v as any)[k] !== undefined)
-      .map((k) => `${JSON.stringify(k)}:${canonical((v as any)[k])}`).join(",")}}`;
-  }
-  return JSON.stringify(v);
-}
+export { canonical, codeUnitOrder } from "./canonical.js";
+import { canonical } from "./canonical.js";
 
 export const sameQuestion = (a: AskedQuestion, b: AskedQuestion): boolean =>
   canonical(normalizeQuestion(a)) === canonical(normalizeQuestion(b));

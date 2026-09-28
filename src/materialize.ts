@@ -240,13 +240,13 @@ import { readScopeChecked, sortEvents, SHARD_EXT, type LogEvent, type ScopeDiagn
 // 42 → 43: list relay revisions now fold into per-item authority; cached decisions must refold.
 // 43 → 44: the findings and bugs folds spend a ruling only when its application closes the issue;
 // the decisions fold leaves out events it cannot read, and records them.
-// Codex branch (renumbered by rebase over the 44 above):
-// 43 -> 44: native question receipts retain provenance and deduplicate per human reply.
-// 44 -> 45: immutable repair claims, sort histories, evidence and participants are
-// projected with findings. Unchanged shards must replay after this upgrade.
-// 45 -> 46: sealed repair verification records join the findings projection.
-// 46 -> 47: independently sealed sorter receipts now affect repair eligibility.
-export const MATERIALIZER_VERSION = 49;
+// 44 → 49: an unreleased branch (repair records and verification, acceptance, operation
+// sign-off; renumbered by a rebase, so its own notes are in git history).
+// 49 → 50 (2026-09-28 recovery, one bump for all of it): repair seals, sorter receipts and
+// Codex receipts are gone and verification identity is the connection; the ruling capsule's
+// key fields are one; revision receipts and withdrawal approvals are gone and withdrawal takes
+// readers or a relayed answer; cross-clone keys order by code unit, not locale.
+export const MATERIALIZER_VERSION = 50;
 
 /**
  * What the events in a scope are, cheaply.

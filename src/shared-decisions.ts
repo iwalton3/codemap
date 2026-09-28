@@ -28,7 +28,7 @@ import { causality, emitEvent, emitEventChecked, GENESIS, type LogEvent } from "
 import { isAgentActor } from "./identity.js";
 import { canonicalIssueKey, type CanonicalIssueReference } from "./decision-issues.js";
 import { questionnaireVersion, stageSubmission, validateQuestionnaire, type Questionnaire, type QuestionnaireAnswer, type StagedSubmission } from "./questionnaire.js";
-import { canonical, normalizeQuestion, sameQuestion } from "./transcript.js";
+import { canonical, codeUnitOrder, normalizeQuestion, sameQuestion } from "./transcript.js";
 import { ISO_DATE, type Actor, type AskedQuestion, type Decision, type DecisionEffect, type DecisionOption, type DecisionRound, type LoggedQuestion } from "./schema.js";
 
 export const decisionScope = (universe: string): string => `decisions/${universe}`;
@@ -652,7 +652,7 @@ export const validVerdict = (m: unknown, unclear: unknown): Mapping[] | null =>
   str(unclear) ? (Array.isArray(m) && !m.length ? [] : null) : validMaps(m);
 
 /** A reading's lines in one order: the order a confirm renders and stores them in. */
-export const canonicalMaps = (ms: Mapping[]): Mapping[] => [...ms].sort((x, y) => mapsKey([x]).localeCompare(mapsKey([y])));
+export const canonicalMaps = (ms: Mapping[]): Mapping[] => [...ms].sort((x, y) => codeUnitOrder(mapsKey([x]), mapsKey([y])));
 
 /** Two readings are the same reading when they map the same lines, in any order. */
 export const mapsKey = (ms: Mapping[]): string => ms.map((m) => `${m.decision}\0${m.option ?? ""}`).sort().join("\n");
@@ -1704,7 +1704,7 @@ export function comparisonSource(s: SharedDecisions, answerId: string): AnswerSo
 export function comparisonRequestFor(s: SharedDecisions, id: string, answers: [string, string], issues: CanonicalIssue[]): ComparisonRequest | undefined {
   const left = comparisonSource(s, answers[0]), right = comparisonSource(s, answers[1]);
   if (!left || !right) return undefined;
-  const ordered = [left, right].sort((a, b) => a.answerId.localeCompare(b.answerId));
+  const ordered = [left, right].sort((a, b) => codeUnitOrder(a.answerId, b.answerId));
   const request = { id, left: ordered[0]!, right: ordered[1]!, issues,
     contextHash: comparisonContextHash({ left: ordered[0]!, right: ordered[1]!, issues }) };
   return validateComparisonRequest(request).ok ? request : undefined;

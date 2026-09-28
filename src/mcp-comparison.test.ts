@@ -6,7 +6,7 @@ import { rpc } from "./test-mcp.js";
 
 const names = ["comparison_detail", "request_comparison", "comparison_reader_brief",
   "submit_comparison_judgment", "record_comparison_judgment", "comparison_resolution_brief", "resolve_comparison",
-  "execute_approved_decision_withdrawal", "decision_revision_relay_brief", "record_relayed_decision_revision"];
+  "withdraw_decision", "decision_revision_relay_brief", "record_relayed_decision_revision"];
 
 function toolsList(root: string): Promise<{ name: string; inputSchema: any }[]> {
   return new Promise((resolve, reject) => {
@@ -37,8 +37,9 @@ test("comparison tools expose exact reader and human routes without an agent web
     const resolution = tools.find((x) => x.name === "resolve_comparison")!;
     assert.ok(resolution.inputSchema.required.includes("toolUseId"));
     assert.equal(resolution.inputSchema.properties.source, undefined);
-    const withdrawal = tools.find((x) => x.name === "execute_approved_decision_withdrawal")!;
-    assert.deepEqual(withdrawal.inputSchema.required, ["decision", "reason", "approval"]);
+    const withdrawal = tools.find((x) => x.name === "withdraw_decision")!;
+    assert.deepEqual(withdrawal.inputSchema.required, ["decision", "reason"]);
+    assert.equal(withdrawal.inputSchema.properties.approval, undefined, "no human-approval shortcut");
     assert.deepEqual(tools.find((x) => x.name === "record_relayed_decision_revision")?.inputSchema.required,
       ["decision", "revises", "findings", "session", "toolUseId"]);
     const out = await rpc(root, [
@@ -47,7 +48,7 @@ test("comparison tools expose exact reader and human routes without an agent web
       { name: "comparison_reader_brief", arguments: { id: "missing" } },
       { name: "resolve_comparison", arguments: { request: "missing", preserve: "a", rationale: "x",
         shownHash: "x", executionsHash: "x", session: "s", toolUseId: "t", source: "web" } },
-      { name: "execute_approved_decision_withdrawal", arguments: { decision: "missing", reason: "retract", approval: "missing" } },
+      { name: "withdraw_decision", arguments: { decision: "missing", reason: "retract" } },
       { name: "decision_revision_relay_brief", arguments: { decision: "missing", revises: ["a"], findings: [] } },
       { name: "record_relayed_decision_revision", arguments: { decision: "missing", revises: ["a"], findings: [], session: "s", toolUseId: "t" } },
     ]);

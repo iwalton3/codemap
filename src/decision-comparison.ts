@@ -1,5 +1,6 @@
 /** Pure semantic-comparison evidence and authority. Event admission and storage live elsewhere. */
 import { createHash } from "node:crypto";
+import { canonical, codeUnitOrder } from "./canonical.js";
 
 export interface CanonicalIssue {
   universe: string; kind: "finding" | "bug" | "decision"; scope: string; id: string;
@@ -47,9 +48,7 @@ export type Validation<T> = { ok: true; value: T } | { ok: false; errors: string
 
 const obj = (x: unknown): x is Record<string, unknown> => !!x && typeof x === "object" && !Array.isArray(x);
 const nonempty = (x: unknown): x is string => typeof x === "string" && !!x.trim();
-const canonical = (x: unknown): unknown => Array.isArray(x) ? x.map(canonical)
-  : obj(x) ? Object.fromEntries(Object.keys(x).filter((k) => x[k] !== undefined).sort().map((k) => [k, canonical(x[k])])) : x;
-const hash = (x: unknown) => createHash("sha256").update(JSON.stringify(canonical(x))).digest("hex");
+const hash = (x: unknown) => createHash("sha256").update(canonical(x)).digest("hex");
 const issueKey = (x: CanonicalIssue) => `${x.universe}\0${x.kind}\0${x.scope}\0${x.id}`;
 const issueScope = (xs: CanonicalIssue[]) => xs.map(issueKey).sort();
 const sameScope = (x: CanonicalIssue[], y: CanonicalIssue[]) => Array.isArray(x) && Array.isArray(y)
@@ -69,7 +68,7 @@ const complete = (s: AnswerSource) => nonempty(s.answerId) && nonempty(s.version
 
 /** The hash binds all visible meaning, even when labels or effect tuples happen to match. */
 export function comparisonContextHash(input: Pick<ComparisonRequest, "left" | "right" | "issues">): string {
-  const sources = [input.left, input.right].sort((a, b) => a.answerId.localeCompare(b.answerId));
+  const sources = [input.left, input.right].sort((a, b) => codeUnitOrder(a.answerId, b.answerId));
   return hash({ sources, issues: issueScope(input.issues) });
 }
 
