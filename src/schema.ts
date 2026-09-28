@@ -1762,11 +1762,6 @@ export interface OperationSignoffCapsule {
         rationale: string;
     };
     executor: Actor;
-    seal: {
-        producerKeyId: string;
-        publicKey: string;
-        signature: string;
-    };
 }
 
 export interface ProposalWitness {

@@ -1,5 +1,5 @@
 /** Exact operation approval carried into workspace law without delegating ratification. */
-import { createHash, createPublicKey, verify } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { framingContent, operationContent, witnessHash, type Actor, type AskedQuestion, type Operation, type Spec, type OperationSignoffCapsule } from './schema.js';
 import { canonical } from './transcript.js';
 export const SIGN_OPERATION = 'Sign off this exact operation';
@@ -17,7 +17,7 @@ ${JSON.stringify({ operationId, specId, content, framing }, null, 2)}`,
 export type { OperationSignoffCapsule } from "./schema.js";
 export const operationSignoffKey = (operationId: string, answerId: string) => 'op_sign_' + signoffHash([operationId, answerId]).slice(7);
 const word = (x: unknown): x is string => typeof x === 'string' && !!x.trim();
-export function validateOperationSignoff(value: unknown, op: Operation, spec: Spec, executor?: Actor, publicKey?: string): {
+export function validateOperationSignoff(value: unknown, op: Operation, spec: Spec, executor?: Actor): {
   capsule: OperationSignoffCapsule;
 } | {
   error: string;
@@ -31,9 +31,6 @@ export function validateOperationSignoff(value: unknown, op: Operation, spec: Sp
       return { error: 'sign-off content must be exact string field maps' };
     if (witnessHash(c.content) !== witnessHash(operationContent(op)) || witnessHash(c.framing) !== witnessHash(framingContent(spec)))
       return { error: 'operation or framing content differs from the human presentation' };
-    if (!publicKey || createPublicKey(publicKey).asymmetricKeyType !== 'ed25519' || !c.seal || c.seal.publicKey !== publicKey || !/^[A-Za-z0-9+/]{86}==$/.test(c.seal.signature) || c.seal.producerKeyId !== operationSignoffProducerId(publicKey)
-      || !verify(null, operationSignoffSignedBytes(c), createPublicKey(publicKey), Buffer.from(c.seal.signature, 'base64')))
-      return { error: 'operation sign-off seal is absent, unregistered or invalid' };
     const r = c.ruling;
     if (!r || ![r.answerId, r.decisionId, r.ref, r.universe, r.sourceScope, r.via, r.principal, r.responseHash, r.sourceFingerprint, r.checkedAt].every(word) || !Number.isFinite(Date.parse(r.checkedAt)) || typeof r.words !== 'string' || r.verified !== true || r.status !== 'current' || r.comparison !== 'clear')
       return { error: 'sign-off lacks current verified human authority' };
@@ -57,8 +54,3 @@ export function validateOperationSignoff(value: unknown, op: Operation, spec: Sp
 export function operationSignoffReaderPrompt(requestId: string, context: Pick<OperationSignoffCapsule, 'operationId' | 'specId' | 'content' | 'framing' | 'ruling'>): string {
   return JSON.stringify({ purpose: 'operation-signoff', requestId, ...context, task: 'Independently decide whether this exact human answer signs off the complete shown operation and context. Plan-only approval, matching labels with contradictory text, or partial approval are unsound. Do not approve framing, other operations, or ratification. Call submit_operation_signoff_verdict with sound or unsound and your rationale.' });
 }
-export const operationSignoffProducerId = (publicKey: string) => 'operation_key_' + signoffHash(publicKey).slice(7);
-export const operationSignoffSignedBytes = (c: Omit<OperationSignoffCapsule, 'seal'> | OperationSignoffCapsule) => {
-  const { seal: ignored, ...body } = c as OperationSignoffCapsule;
-  return Buffer.from(canonical({ domain: 'codemap.operation-signoff.v1', capsule: body }));
-};

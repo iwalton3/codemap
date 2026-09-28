@@ -397,9 +397,11 @@ amendment re-baselined away.
 A fifth, and it is the gate the fourth made necessary: **a ratifier signs what they read.**
 `ratify_spec` refuses unless that principal has signed off every operation AND the spec's
 framing, at the text they say now — a content hash, so revise-and-revise-back invalidates
-nothing and the refusal can say which field moved. Sign-off is principal-only (an agent
-signing for its principal would void the gate in one step) and bulk sign-off states and
-checks its size. Pull is step one of the loop, not a precondition: `review_proposal` pulls
+nothing and the refusal can say which field moved. An agent never signs on its own authority
+(that would void the gate in one step): a person signs off themselves, or an agent relays their
+recorded answer to the exact sign-off question and the fold credits it only where the answer it
+carries is that person's and signs that exact operation (`operation-signoff-authority.test.ts`).
+Bulk sign-off states and checks its size. Pull is step one of the loop, not a precondition: `review_proposal` pulls
 and shows the diff, sign-offs pull and refuse if the pull moved what is being signed.
 
 A fourth, added because the code read the design's silence the wrong way for as long as the

@@ -213,6 +213,15 @@ Three properties carry the fix, and each is a choice that could have gone otherw
 write its principal's signature it would approve twelve operations and the principal would
 ratify having read none — the gate voiding itself in one step, by the shortest path.
 
+So an agent never signs on its own authority. A person signs off themselves, or an agent
+RELAYS the answer they gave to the exact sign-off question (`apply_operation_signoff`): the
+event carries a copy of that answer, the op checks the copy against the decisions log when it
+writes, and the fold credits the answer's principal only where the copy signs this exact
+operation, shown this exact text (owner, 2026-09-28, "It cites that person's real answer").
+The fold reads the copy rather than the log because sign-offs are law (workspace-wide) and
+answers are per-universe evidence. That guards against an agent's mistakes — the wrong
+person, answer or operation — and not against forgery, which the owner put out of scope.
+
 **Bulk sign-off states its size and the size is checked.** Signing off a group writes one
 witness per member, so twelve witnesses each claim an operation was read; the one thing the
 system can do about a skim is make the size of the claim impossible not to notice at the
@@ -1028,8 +1037,8 @@ MCP surface via `ops/standard.ts`:
   the first's output, so the rendering a principal approved is not what lands). Repairing a
   case split *is* a legal move, which is why the guard excludes the subtree being moved.
 - `ProposalWitness` and `reviewGap` — the reviewer's signature over the proposal's own
-  text, refused at `ratifySpec` and again in `foldStandard`. Sign-off is principal-only;
-  bulk sign-off states and checks its size. `src/proposal-review.test.ts` pairs every
+  text, refused at `ratifySpec` and again in `foldStandard`. Sign-off is a person's, directly
+  or as their relayed answer (above); bulk sign-off states and checks its size. `src/proposal-review.test.ts` pairs every
   refusal with the loop working, and 20 mutants over the new guards are each caught by a
   named test.
 - `withdrawSpec` — withdrawal, below. It tombstones what a ratified spec introduced; the

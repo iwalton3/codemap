@@ -34,17 +34,18 @@ pulls and content movement refuse. The act credits the answering principal while
 retaining the agent executor separately. It signs only the named operation;
 framing, sibling operations, and ratification require their separate acts.
 
-The workspace law event `spec.operation-signoff-applied` carries a signed,
-versioned capsule. A registered local Ed25519 producer seals the complete content,
-human source scope, independent reading and executor after admission succeeds.
-The standard fold validates the same capsule against the live draft operation
-and registered producer, and materializes an ordinary proposal witness with its
-receipt provenance. Bare agent stamps, mutated bodies, unregistered producers,
-changed executor identity and removed/non-draft operations cannot grant sign-off.
-Producer registration is `spec.operation-signoff-producer`, also workspace law.
-The private key is existing local store control data, never shared. This is the
-trusted-machine/sidecar model used by repair verification, not hostile-log or
-remote hardware attestation.
+The workspace law event `spec.operation-signoff-applied` carries a versioned
+capsule: the operation and framing content, a copy of the human answer (its id,
+principal, the exact question shown, the option picked and the words), the
+independent reading and the executor. The standard fold validates it against the
+live draft operation and credits the answer's principal only where that copy is a
+verified, current answer picking "Sign off this exact operation" on exactly this
+operation's question; the event's actor must be the capsule's executor. Plan-only
+answers, answers to another operation's question, copies edited after the reading,
+and removed/non-draft operations grant nothing (`operation-signoff-authority.test.ts`).
+The copy guards against an agent's mistakes, not forgery, which is out of scope
+(owner, 2026-09-28); an Ed25519 producer seal was removed for adding ceremony
+without trust.
 
 Ordinary reads use projected witnesses. The standard detail view shows the human
 answer, source scope, agent executor and independent reader. Later changes do not

@@ -1,4 +1,4 @@
-import { randomUUID, generateKeyPairSync, createPrivateKey, createPublicKey, sign } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { requireActor } from '../identity.js';
@@ -13,8 +13,8 @@ import { operationContent, framingContent, contentDiff } from '../schema.js';
 import { readReader, isUnverified, transcriptDir } from '../transcript.js';
 import { verifyCodexReaderReceipt, type CodexReaderSubmission } from '../codex-reader.js';
 import { saveReaderRequest, readerRequest, holdReaderReceipt, readerReceipts, settleReaderReceipt } from '../reader-local.js';
-import { readRepairSigningKey, saveRepairSigningKey, readProposalWitnesses } from '../store.js';
-import { operationSignoffProducerId, operationSignoffSignedBytes, operationSignoffDisplay, operationSignoffReaderPrompt, operationSignoffKey, signoffHash, validateOperationSignoff, SIGN_OPERATION, type OperationSignoffCapsule } from '../operation-signoff.js';
+import { readProposalWitnesses } from '../store.js';
+import { operationSignoffDisplay, operationSignoffReaderPrompt, operationSignoffKey, signoffHash, validateOperationSignoff, SIGN_OPERATION, type OperationSignoffCapsule } from '../operation-signoff.js';
 const PURPOSE = 'operation-signoff' as const;
 export interface OperationSignoffReceiptRef {
   requestId: string;
@@ -245,24 +245,6 @@ export async function applyOperationSignoff(root: string, input: {
   const actor = requireActor(root, { agent: true });
   if ('error' in actor)
     return actor;
-  let signingKey = readRepairSigningKey(root);
-  if (!signingKey) {
-    const pair = generateKeyPairSync('ed25519');
-    signingKey = { publicKey: pair.publicKey.export({ type: 'spki', format: 'pem' }).toString(), privateKey: pair.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString() };
-    saveRepairSigningKey(root, signingKey);
-  }
-  if (createPublicKey(signingKey.privateKey).export({ type: 'spki', format: 'pem' }) !== signingKey.publicKey || createPrivateKey(signingKey.privateKey).asymmetricKeyType !== 'ed25519')
-    return { error: 'invalid local operation sign-off producer key' };
-  const key = signingKey;
-  const producerKeyId = operationSignoffProducerId(key.publicKey);
-  const registered = await emitEventChecked(initial.cfg.path, lawScope(), actor, async (events) => {
-    const prior = events.find(e => e.kind === 'spec.operation-signoff-producer' && e.subject === producerKeyId);
-    if (prior)
-      return prior.actor.principal === actor.principal ? { existing: prior } : { error: 'operation sign-off producer belongs to another principal' };
-    return { kind: 'spec.operation-signoff-producer', subject: producerKeyId, data: { publicKey: key.publicKey } };
-  });
-  if ('error' in registered)
-    return registered;
   const event = await emitEventChecked(initial.cfg.path, lawScope(), actor, async (events) => {
     const c = await context(root, input);
     if ('error' in c)
@@ -282,9 +264,8 @@ export async function applyOperationSignoff(root: string, input: {
     c.ruling!.checkedAt = frozen.ruling.checkedAt;
     if (signoffHash(frozen) !== signoffHash({ operationId: op.id, specId: spec.id, content: c.content, framing: c.framing, ruling: c.ruling }))
       return { error: 'operation, context, or answer changed since the independent reading' };
-    const body: Omit<OperationSignoffCapsule, 'seal'> = { version: 1, key: operationSignoffKey(op.id, input.answerId), ...frozen, executor: actor, reader: { id: input.reader.receipt, requestId: input.reader.requestId, session: checked.call.session, launch: checked.call.launch, callId: input.reader.callId, prompt: checked.brief.prompt, displayHash: signoffHash(frozen.ruling), verdict: checked.body.verdict as 'sound', rationale: checked.body.rationale } };
-    const capsule: OperationSignoffCapsule = { ...body, seal: { producerKeyId, publicKey: key.publicKey, signature: sign(null, operationSignoffSignedBytes(body), key.privateKey).toString('base64') } };
-    const valid = validateOperationSignoff(capsule, op, spec, actor, key.publicKey);
+    const capsule: OperationSignoffCapsule = { version: 1, key: operationSignoffKey(op.id, input.answerId), ...frozen, executor: actor, reader: { id: input.reader.receipt, requestId: input.reader.requestId, session: checked.call.session, launch: checked.call.launch, callId: input.reader.callId, prompt: checked.brief.prompt, displayHash: signoffHash(frozen.ruling), verdict: checked.body.verdict as 'sound', rationale: checked.body.rationale } };
+    const valid = validateOperationSignoff(capsule, op, spec, actor);
     if ('error' in valid)
       return valid;
     const existing = events.find(e => e.kind === 'spec.operation-signoff-applied' && (e.data?.capsule as any)?.key === capsule.key);

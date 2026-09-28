@@ -1,73 +1,84 @@
+/**
+ * What the standard fold credits from an operation sign-off an agent relayed.
+ *
+ * The capsule carries a copy of the person's answer; the op checked that copy against the
+ * decisions log when it wrote the event, and the FOLD checks the copy itself: it credits the
+ * answer's principal only where that answer signs this exact operation (owner, 2026-09-28,
+ * "It cites that person's real answer" and "Embedded answer"). Forgery is out of scope, so the
+ * cases below are the mistakes an agent can make, each made internally consistent where it can
+ * be — a copy whose hashes were recomputed must still be refused.
+ */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { generateKeyPairSync, sign } from "node:crypto";
 import { testChain } from "./test-events.js";
 import { foldStandard, reviewGap } from "./shared-standard.js";
 import { operationContent, framingContent, type Actor, type Operation, type Spec, type OperationSignoffCapsule } from "./schema.js";
-import { operationSignoffDisplay, operationSignoffKey, operationSignoffReaderPrompt, operationSignoffProducerId, operationSignoffSignedBytes, signoffHash, SIGN_OPERATION } from "./operation-signoff.js";
+import { operationSignoffDisplay, operationSignoffKey, operationSignoffReaderPrompt, signoffHash, PLAN_ONLY, SIGN_OPERATION } from "./operation-signoff.js";
 
 const executor: Actor = { principal: "bob@acme.test", via: { kind: "agent", model: "coordinator" } };
 const principal: Actor = { principal: "alice@acme.test" };
 const spec: Spec = { id: "sp_authority", title: "Credit rule", narrative: "Bounded credit context", status: "draft", author: executor, createdAt: "2026-09-26T00:00:00Z" };
 const op: Operation = { id: "op_authority", specId: spec.id, ord: 0, kind: "add_requirement", title: "Credit limit", statement: "Do not exceed approved credit.", section: "Credit", provenance: "Human", rationale: "Bound exposure", reversibility: "reversible" };
+const sibling: Operation = { ...op, id: "op_sibling", ord: 1 };
 
-function fixture() {
-  const key = generateKeyPairSync("ed25519");
-  const publicKey = key.publicKey.export({ type: "spki", format: "pem" }).toString();
-  const producerKeyId = operationSignoffProducerId(publicKey);
-  const content = operationContent(op), framing = framingContent(spec);
-  const ruling: OperationSignoffCapsule["ruling"] = { answerId: "native-answer", decisionId: "decision", ref: "D1", universe: "acme/api", sourceScope: "decisions/acme/api", via: "web", principal: principal.principal, responseHash: "source-response", display: operationSignoffDisplay(op.id, spec.id, content, framing), selected: [SIGN_OPERATION], words: "Sign off this exact operation", verified: true, status: "current", comparison: "clear", sourceFingerprint: "source-events", checkedAt: "2026-09-26T00:00:00Z" };
-  const context = { operationId: op.id, specId: spec.id, content, framing, ruling };
-  const body: Omit<OperationSignoffCapsule, "seal"> = { version: 1, key: operationSignoffKey(op.id, ruling.answerId), ...context, executor,
-    reader: { id: "receipt", requestId: "request", session: "fresh-reader", launch: "launch", callId: "call", prompt: operationSignoffReaderPrompt("request", context), displayHash: signoffHash(ruling), verdict: "sound", rationale: "The full exact operation is approved, separately from ratification." } };
-  const signed = (value: Omit<OperationSignoffCapsule, "seal"> | OperationSignoffCapsule): OperationSignoffCapsule => ({ ...value, seal: { producerKeyId, publicKey, signature: sign(null, operationSignoffSignedBytes(value), key.privateKey).toString("base64") } });
-  const capsule = signed(body);
-  const before = testChain("signoff-authority", [
-    { id: "draft", kind: "spec.drafted", subject: spec.id, actor: executor, data: { spec } },
-    { id: "operation", kind: "spec.operation", subject: op.id, actor: executor, data: { operation: op } },
-    { id: "sibling", kind: "spec.operation", subject: "op_sibling", actor: executor, data: { operation: { ...op, id: "op_sibling", ord: 1 } } },
-    { id: "producer", kind: "spec.operation-signoff-producer", subject: producerKeyId, actor: executor, data: { publicKey } },
-  ]);
-  const applied = (c: unknown, actor = executor) => ({ ...before[3]!, id: "application", writerPrev: "producer", kind: "spec.operation-signoff-applied", subject: op.id, actor, data: { capsule: c } });
-  return { capsule, before, applied, signed, publicKey, producerKeyId };
+/** A capsule whose every derived field is recomputed from `ruling`, as a careful agent would. */
+function capsuleFor(ruling: OperationSignoffCapsule["ruling"]): OperationSignoffCapsule {
+  const context = { operationId: op.id, specId: spec.id, content: operationContent(op), framing: framingContent(spec), ruling };
+  return { version: 1, key: operationSignoffKey(op.id, ruling.answerId), ...context, executor,
+    reader: { id: "receipt", requestId: "request", session: "fresh-reader", launch: "launch", callId: "call",
+      prompt: operationSignoffReaderPrompt("request", context), displayHash: signoffHash(ruling), verdict: "sound",
+      rationale: "The full exact operation is approved, separately from ratification." } };
 }
 
-test("registered sign-off seals bind every authority field and sign only exact shown operation", () => {
-  const f = fixture();
-  const good = foldStandard([...f.before, f.applied(f.capsule)]);
-  assert.equal(good.witnesses.length, 1); assert.deepEqual(good.witnesses[0]!.reviewer, principal);
-  assert.equal(good.specs[0]!.status, "draft"); assert.equal(good.requirements.length, 0);
-  const gap = reviewGap(good.specs[0]!, good.operations, good.witnesses, principal.principal);
-  assert.equal(gap.framing?.state, "unwitnessed"); assert.deepEqual(gap.unwitnessed.map(o => o.id), ["op_sibling"]);
-  for (const mutate of [
-    (c: OperationSignoffCapsule) => delete (c as Partial<OperationSignoffCapsule>).seal,
-    (c: OperationSignoffCapsule) => c.ruling.principal = "stranger@acme.test",
-    (c: OperationSignoffCapsule) => c.ruling.words = "Do not sign this operation",
-    (c: OperationSignoffCapsule) => c.reader.rationale = "Invented approval",
-    (c: OperationSignoffCapsule) => c.reader.session = "another-reader",
-    (c: OperationSignoffCapsule) => c.executor = principal,
-    (c: OperationSignoffCapsule) => c.content.statement = "Different credit law",
-    (c: OperationSignoffCapsule) => c.framing.narrative = "Different approval context",
-    (c: OperationSignoffCapsule) => c.seal.signature = "invented",
-  ]) {
-    const bad = structuredClone(f.capsule); mutate(bad);
-    assert.equal(foldStandard([...f.before, f.applied(bad)]).witnesses.length, 0);
-  }
-  assert.equal(foldStandard(f.before.filter(e => e.kind !== "spec.operation-signoff-producer").concat(f.applied(f.capsule))).witnesses.length, 0);
-  assert.equal(foldStandard([...f.before, f.applied(f.capsule, principal)]).witnesses.length, 0, "signed executor cannot be replaced by event actor");
-  const wrongScope = f.signed({ ...f.capsule, ruling: { ...f.capsule.ruling, sourceScope: "decisions/another/api" } });
-  assert.equal(foldStandard([...f.before, f.applied(wrongScope)]).witnesses.length, 0, "even a signed capsule must have the answer's exact universe scope");
+const answer = (over: Partial<OperationSignoffCapsule["ruling"]> = {}): OperationSignoffCapsule["ruling"] => ({
+  answerId: "answer", decisionId: "decision", ref: "D1", universe: "acme/api", sourceScope: "decisions/acme/api", via: "direct",
+  principal: principal.principal, responseHash: "response", display: operationSignoffDisplay(op.id, spec.id, operationContent(op), framingContent(spec)),
+  selected: [SIGN_OPERATION], words: SIGN_OPERATION, verified: true, status: "current", comparison: "clear",
+  sourceFingerprint: "source-events", checkedAt: "2026-09-26T00:00:00Z", ...over,
 });
 
-test("producer registration cannot be taken over by another principal or replaced key", () => {
-  const f = fixture();
-  const rogue = { principal: "rogue@acme.test", via: { kind: "agent" as const, model: "forger" } };
-  const reassigned = { ...f.before[3]!, id: "replace-principal", writerPrev: "producer", actor: rogue };
-  const rogueCapsule = f.signed({ ...f.capsule, executor: rogue });
-  assert.equal(foldStandard([...f.before, reassigned, { ...f.applied(rogueCapsule, rogue), writerPrev: reassigned.id }]).witnesses.length, 0);
-  const newKey = generateKeyPairSync("ed25519").publicKey.export({ type: "spki", format: "pem" }).toString();
-  const replaced = { ...f.before[3]!, id: "replace-key", writerPrev: "producer", data: { publicKey: newKey } };
-  assert.equal(foldStandard([...f.before, replaced, { ...f.applied(f.capsule), writerPrev: replaced.id }]).witnesses.length, 1, "invalid replacement cannot erase a legitimate producer");
-  const fake = { ...f.capsule, seal: { ...f.capsule.seal, publicKey: newKey } };
-  assert.equal(foldStandard([...f.before, f.applied(fake)]).witnesses.length, 0);
+const before = testChain("signoff-authority", [
+  { id: "draft", kind: "spec.drafted", subject: spec.id, actor: executor, data: { spec } },
+  { id: "operation", kind: "spec.operation", subject: op.id, actor: executor, data: { operation: op } },
+  { id: "sibling", kind: "spec.operation", subject: sibling.id, actor: executor, data: { operation: sibling } },
+]);
+const applied = (c: unknown, actor = executor) => ({ ...before[2]!, id: "application", writerPrev: "sibling",
+  kind: "spec.operation-signoff-applied", subject: op.id, actor, data: { capsule: c } });
+const credited = (c: unknown, actor = executor) => foldStandard([...before, applied(c, actor)]).witnesses;
+
+test("a relayed sign-off credits the person whose answer it carries, for that operation only", () => {
+  const w = credited(capsuleFor(answer()));
+  assert.equal(w.length, 1);
+  assert.deepEqual(w[0]!.reviewer, principal);
+  const s = foldStandard([...before, applied(capsuleFor(answer()))]);
+  assert.equal(s.specs[0]!.status, "draft", "a sign-off ratifies nothing");
+  const gap = reviewGap(s.specs[0]!, s.operations, s.witnesses, principal.principal);
+  assert.equal(gap.framing?.state, "unwitnessed");
+  assert.deepEqual(gap.unwitnessed.map((o) => o.id), [sibling.id]);
+});
+
+test("an answer that does not sign this exact operation credits nobody, however consistent the copy", () => {
+  const cases: [string, OperationSignoffCapsule["ruling"]][] = [
+    ["a plan-only answer", answer({ selected: [PLAN_ONLY], words: PLAN_ONLY })],
+    ["an answer to another operation's question", answer({ display: operationSignoffDisplay(sibling.id, spec.id, operationContent(sibling), framingContent(spec)) })],
+    ["an answer shown different text", answer({ display: operationSignoffDisplay(op.id, spec.id, { ...operationContent(op), statement: "Other law" }, framingContent(spec)) })],
+    ["an unverified answer", answer({ verified: false as true })],
+    ["an answer from another universe's log", answer({ sourceScope: "decisions/another/api" })],
+    ["a withdrawn or outranked answer", answer({ status: "superseded" as "current" })],
+  ];
+  for (const [name, ruling] of cases) assert.equal(credited(capsuleFor(ruling)).length, 0, name);
+});
+
+test("a copy edited after the reading, or recorded by someone other than its executor, credits nobody", () => {
+  for (const mutate of [
+    (c: OperationSignoffCapsule) => { c.ruling.principal = "stranger@acme.test"; },
+    (c: OperationSignoffCapsule) => { c.ruling.words = "Do not sign this operation"; },
+    (c: OperationSignoffCapsule) => { c.content.statement = "Different credit law"; },
+    (c: OperationSignoffCapsule) => { c.framing.narrative = "Different approval context"; },
+    (c: OperationSignoffCapsule) => { c.reader.verdict = "unsound" as "sound"; },
+  ]) {
+    const bad = capsuleFor(answer()); mutate(bad);
+    assert.equal(credited(bad).length, 0, String(mutate));
+  }
+  assert.equal(credited(capsuleFor(answer()), principal).length, 0, "the event's actor must be the capsule's executor");
 });
