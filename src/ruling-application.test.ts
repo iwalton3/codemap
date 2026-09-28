@@ -36,7 +36,7 @@ function fixture(kind: "finding" | "bug") {
       version: 1, key: applicationKey(rulingKey, issueKey),
       issue: { ref, key: issueKey, openEpoch, openState, claimHash },
       ruling: {
-        key: rulingKey, answerId: rulingKey, answerEvent: "answer_event_1", roundId: "round_1", questionId: "question_1",
+        answerId: rulingKey, roundId: "round_1", questionId: "question_1",
         display, displayHash,
         authority: { checkedAt: "2026-09-25T00:00:00Z", sourceFingerprint: "sha256:source", status: "current", comparison: "clear" },
       },
@@ -119,7 +119,7 @@ for (const kind of ["finding", "bug"] as const) {
     assert.deepEqual(issue.applications?.map((a) => a.status), ["executed", "executed", "duplicate"]);
   });
 
-  test(`${kind}: changing only the ruling key cannot re-close a reopened issue`, () => {
+  test(`${kind}: a pair key that is not its answer's cannot re-close a reopened issue`, () => {
     const f = fixture(kind);
     const rekeyed = f.make("ruling_1-again", "03", "created");
     rekeyed.ruling.answerId = "ruling_1";
@@ -127,7 +127,7 @@ for (const kind of ["finding", "bug"] as const) {
       f.app("04", rekeyed, ["03"])])).get(f.id)!;
     assert.equal(issue.state, "created");
     assert.equal(issue.applications?.[1]?.status, "refused");
-    assert.match(issue.applications?.[1]?.reason ?? "", /must be the answer it cites/);
+    assert.match(issue.applications?.[1]?.reason ?? "", /application key/);
   });
 
   test(`${kind}: malformed approval flag is preserved as refusal`, () => {

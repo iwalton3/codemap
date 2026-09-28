@@ -329,7 +329,7 @@ export async function applyRuling(root: string, input: { issue: IssueReference; 
     const capsule: ApplicationCapsuleV1 = {
       version: c.acceptance ? 2 : 1, key, ...(c.acceptance ? { acceptance: c.acceptance } : {}),
       issue: { ref: c.target.ref, key: c.target.key, openEpoch: target.openEpoch!, openState: target.state as "issued" | "created", claimHash: c.claimHash },
-      ruling: { key: c.answer.id, answerId: c.answer.id, answerEvent: c.answer.id, ...(c.acceptance ? { answerer: { principal: c.answer.by.principal } } : {}), roundId: c.decision.round, questionId: c.decision.id,
+      ruling: { answerId: c.answer.id, ...(c.acceptance ? { answerer: { principal: c.answer.by.principal } } : {}), roundId: c.decision.round, questionId: c.decision.id,
         display: c.display, displayHash: c.displayHash,
         authority: { checkedAt: new Date().toISOString(), sourceFingerprint: c.decisionFingerprint, status: "current", comparison: "clear" } },
       evidence: { ...(c.directMention ? { directMention: c.directMention } : {}), readers, ...(arbitrator ? { arbitrator } : {}) },

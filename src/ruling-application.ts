@@ -33,10 +33,9 @@ export interface ApplicationCapsuleV1 {
     claimHash: string;
   };
   ruling: {
-    /** Authority identity, stable across retries/readers, changed only by a substantive human ruling. */
-    key: string;
+    /** The answer this applies — the whole of the ruling's identity: the pair key that spends
+     *  it is derived from this id, so no second field can disagree with it. */
     answerId: string;
-    answerEvent: string;
     answerer?: { principal: string };
     roundId: string;
     questionId: string;
@@ -75,8 +74,8 @@ const canonicalIssueKey = (ref: ApplicationIssueRef): string =>
 
 const hash = (value: unknown): string => "sha256:" + createHash("sha256").update(JSON.stringify(value)).digest("hex");
 export const applicationDisplayHash = (display: ApplicationCapsuleV1["ruling"]["display"]): string => hash(display);
-export const applicationKey = (rulingKey: string, issueKey: string): string =>
-  "apply_" + createHash("sha256").update(JSON.stringify(["codemap-ruling-application-v1", rulingKey, issueKey])).digest("hex");
+export const applicationKey = (answerId: string, issueKey: string): string =>
+  "apply_" + createHash("sha256").update(JSON.stringify(["codemap-ruling-application-v1", answerId, issueKey])).digest("hex");
 
 /** Claim meaning only. State, assignments, comments and observation times are separate. */
 export function issueClaimHash(kind: "finding" | "bug", issue: Record<string, any>): string {
@@ -172,16 +171,13 @@ export function validateApplicationCapsule(
     || (c.issue.openState !== "created" && c.issue.openState !== "issued") || !str(c.issue.claimHash))
     return { error: "application issue witness is invalid" };
   const r = c.ruling;
-  if (![r.key, r.answerId, r.answerEvent, r.roundId, r.questionId].every(str)
+  if (![r.answerId, r.roundId, r.questionId].every(str)
     || !obj(r.display) || ![r.display.question, r.display.answer, r.display.context].every(str)
     || r.displayHash !== applicationDisplayHash(r.display)
     || !obj(r.authority) || !str(r.authority.checkedAt) || !str(r.authority.sourceFingerprint)
     || r.authority.status !== "current" || r.authority.comparison !== "clear")
     return { error: "application ruling authority snapshot is invalid" };
-  // The pair key is what spends a ruling, so a key that is not the answer it cites would let
-  // one answer close a reopened issue again under a fresh key.
-  if (r.key !== r.answerId) return { error: "application ruling key must be the answer it cites" };
-  if (c.key !== applicationKey(r.key, c.issue.key) || !str(c.reason))
+  if (c.key !== applicationKey(r.answerId, c.issue.key) || !str(c.reason))
     return { error: "application key or reason is invalid" };
   const readers = c.evidence.readers;
   if (!Array.isArray(readers) || !readers.every((x) => receipt(x, c.issue.claimHash, r.displayHash)))
