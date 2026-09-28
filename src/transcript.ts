@@ -15,7 +15,6 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AskedQuestion } from "./schema.js";
-import { CODEX_READER_UNSUPPORTED } from "./codex-harness.js";
 
 export interface Unverified { unverified: string }
 export const isUnverified = (v: unknown): v is Unverified =>
@@ -232,7 +231,6 @@ const callsTool = (e: Record<string, any>, id: string): boolean =>
  * reader has given its verdict cannot have shaped it.
  */
 export function readReader(agentId: string, callId: string, dir: string = transcriptDir()): ReaderAgent | Unverified {
-  if (/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(agentId)) return { unverified: CODEX_READER_UNSUPPORTED };
   if (!AGENT.test(agentId)) return { unverified: `not a subagent id: ${JSON.stringify(agentId)}` };
   let sessions: string[];
   try { sessions = readdirSync(dir).filter((s) => SESSION.test(s)); } catch { return { unverified: `no transcripts in ${dir}` }; }
@@ -438,4 +436,24 @@ export function findComparisonCalls(requestId: string, verdict: string, rational
     }
   }
   return out.sort((a, b) => a.at.localeCompare(b.at));
+}
+
+/**
+ * Subagent `agentId`'s own call `callId` to a codemap tool whose name matches `tool`, verified
+ * the way `readReader` verifies a reader (its own sidechain, launched by the named session, no
+ * message sent in first), with the call's arguments and the result the tool gave it. One call
+ * and one result, or unverified: a retry makes a second call, which is a second submission.
+ */
+export function readSubagentCall(agentId: string, callId: string, tool: RegExp, dir: string = transcriptDir()):
+  { reader: ReaderAgent; input: any; result: any } | Unverified {
+  const reader = readReader(agentId, callId, dir);
+  if (isUnverified(reader)) return reader;
+  const own = jsonl(join(dir, reader.session, "subagents", `agent-${agentId}.jsonl`)) ?? [];
+  const calls = own.filter((e) => e.type === "assistant").flatMap((e) => (Array.isArray(e.message?.content) ? e.message.content : [])
+    .filter((x: any) => x?.type === "tool_use" && x.id === callId));
+  if (calls.length !== 1 || !tool.test(String(calls[0]!.name ?? ""))) return { unverified: `subagent ${agentId} made no single ${tool.source} call ${callId}` };
+  const results = own.filter((e) => e.type === "user" && Array.isArray(e.message?.content))
+    .flatMap((e) => e.message.content.filter((x: any) => x?.type === "tool_result" && x.tool_use_id === callId).map((x: any) => ({ e, x })));
+  if (results.length !== 1) return { unverified: `subagent ${agentId}'s call ${callId} has no single result` };
+  return { reader, input: calls[0]!.input, result: resultObject(results[0]!.e.toolUseResult) ?? resultObject(results[0]!.x.content) };
 }

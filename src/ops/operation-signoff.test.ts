@@ -14,7 +14,6 @@ import { lawScope, foldStandard, reviewGap } from '../shared-standard.js';
 import { operationSignoffQuestion, operationSignoffReaderBrief, submitOperationSignoffVerdict, recordOperationSignoffVerdict, applyOperationSignoff } from './operation-signoff.js';
 import { PLAN_ONLY, SIGN_OPERATION } from '../operation-signoff.js';
 import { discard } from '../test-tmp.js';
-import { nativeReaderFixture } from '../test-codex-reader.js';
 const ok = (r: any) => { assert.equal(r.error, undefined, JSON.stringify(r)); return r; };
 function transcript(dir: string, prompt: string, requestId: string, receipt: string, verdict: "sound"|"unsound" = "sound") {
   const agentId = 'a12345678', sessionId = '5e55a0a0-0000-0000-0000-000000000001', launch = 'toolu_launch', callId = 'toolu_submit', rationale = 'The human approves the full exact operation, separately from ratification.';
@@ -50,41 +49,11 @@ async function fixture(option = SIGN_OPERATION, contradict = false) {
 async function reader(u: Awaited<ReturnType<typeof fixture>>, verdict: "sound"|"unsound" = "sound") {
   const brief = ok(await operationSignoffReaderBrief(u.b.repo, { operationId: u.operation.id, answerId: u.answer }));
   const held = ok(submitOperationSignoffVerdict(u.b.repo, { requestId: brief.requestId, verdict, rationale: 'The human approves the full exact operation, separately from ratification.' }));
-  const missingNative = recordOperationSignoffVerdict(u.b.repo, { requestId: brief.requestId, receipt: held.receipt, agentId: '5e55a0a0-0000-0000-0000-000000000002', callId: 'native-call' }, u.tx) as any;
-  assert.equal(missingNative.pending, true, "unproven native provenance grants no recorded reader");
-  assert.match(missingNative.reason,/native|Codex|unsupported/i);
   const ref = transcript(u.tx, brief.prompt, brief.requestId, held.receipt, verdict);
   assert.equal((recordOperationSignoffVerdict(u.b.repo, ref, u.tx) as any).recorded, true);
   return ref;
 }
 
-test('host-bound native sign-off signs only the shown operation and refuses lost source', async () => {
-  const u = await fixture();
-  let native: ReturnType<typeof nativeReaderFixture> | undefined;
-  try {
-    const brief = ok(await operationSignoffReaderBrief(u.b.repo, { operationId: u.operation.id, answerId: u.answer }));
-    const input = { requestId: brief.requestId, verdict: 'sound' as const, rationale: 'The person signs exactly this full operation.' };
-    native = nativeReaderFixture(brief.prompt, 'submit_operation_signoff_verdict', input);
-    const held = ok(submitOperationSignoffVerdict(u.b.repo, input, native.submission));
-    const ref = native.completed(held.receipt);
-    assert.equal((recordOperationSignoffVerdict(u.b.repo, ref, native.options.transcriptDir) as any).recorded, true);
-    native.eraseChild();
-    assert.equal((recordOperationSignoffVerdict(u.b.repo, ref, native.options.transcriptDir) as any).pending, true);
-    assert.match(String((await applyOperationSignoff(u.b.repo, { operationId: u.operation.id, answerId: u.answer, reader: ref }, native.options.transcriptDir) as any).error), /provenance/);
-    assert.equal((await readProposalWitnesses(u.b.repo, { specId: u.spec.id })).length, 0);
-    native.save();
-    ok(await applyOperationSignoff(u.b.repo, { operationId: u.operation.id, answerId: u.answer, reader: ref }, native.options.transcriptDir));
-    await settle(u.t);
-    for (const m of [u.a, u.b]) {
-      const witnesses = await readProposalWitnesses(m.repo, { specId: u.spec.id });
-      assert.equal(witnesses.length, 1);
-      assert.equal(witnesses[0]!.operationId, u.operation.id);
-      const events = await readScopeChecked(resolveSidecar(m.repo)!.path, lawScope());
-      assert.equal(foldStandard(events.events).specs[0]!.status, 'draft');
-      assert.equal(witnesses.some(w => !w.operationId), false);
-    }
-  } finally { native?.clean(); u.cleanup(); }
-});
 test('Alice exact approval applied by Bob agent signs only the named operation and replays to both clones', async () => {
   const u = await fixture();
   try {

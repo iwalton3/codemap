@@ -2,9 +2,8 @@
  * These rows are machine-local transcript correlation state, not shared decision events.
  * The older answer-keyed tables remain for already issued interpretation briefs. */
 import { db, tx } from "./db.js";
-import { bindCodexReaderHost, type CodexReaderSubmission } from "./codex-reader.js";
 
-export type ReaderPurpose = "answer-interpretation" | "pair-comparison" | "issue-application" | "operation-signoff";
+export type ReaderPurpose = "answer-interpretation" | "pair-comparison" | "issue-application" | "operation-signoff" | "repair-verification" | "repair-arbitration";
 export type ReaderReceiptState = "pending" | "recorded" | "invalid" | "cancelled";
 export interface ReaderKey { purpose: ReaderPurpose; requestId: string }
 export interface ReaderReceipt extends ReaderKey {
@@ -15,11 +14,10 @@ export interface ReaderReceipt extends ReaderKey {
   state: ReaderReceiptState;
   why?: string;
   call?: string;
-  nativeHost?: string;
 }
 
 const validKey = ({ purpose, requestId }: ReaderKey): boolean =>
-  ["answer-interpretation", "pair-comparison", "issue-application", "operation-signoff"].includes(purpose)
+  ["answer-interpretation", "pair-comparison", "issue-application", "operation-signoff", "repair-verification", "repair-arbitration"].includes(purpose)
   && !!requestId && requestId.trim() === requestId;
 
 /** An issued brief is immutable under its exact key. A changed brief needs a new request ID. */
@@ -58,28 +56,25 @@ export function readerRequests(root: string, purpose: ReaderPurpose): { requestI
  * This stores the claim for later transcript verification; it does not verify it. */
 export function holdReaderReceipt(
   root: string, key: ReaderKey, receipt: string, body: string, heldAt = new Date().toISOString(),
-  nativeSubmission?: CodexReaderSubmission,
 ): { held: boolean; seq: number } | { error: string } {
   if (!validKey(key) || !receipt?.trim() || !body || !Number.isFinite(Date.parse(heldAt)))
     return { error: "a held reader receipt needs an exact request, receipt, body and time" };
-  const nativeHost = nativeSubmission === undefined ? undefined : bindCodexReaderHost(nativeSubmission, key.purpose, key.requestId, body);
-  if (typeof nativeHost === "object") return nativeHost;
   const d = db(root);
   let result: { held: boolean; seq: number } | { error: string } = { error: "reader request is missing" };
   tx(d, () => {
     const request = d.prepare("SELECT 1 AS found FROM reader_work_requests WHERE purpose = ? AND request_id = ?")
       .get(key.purpose, key.requestId);
     if (!request) return;
-    const prior = d.prepare("SELECT seq, purpose, request_id AS requestId, body, native_host AS nativeHost FROM reader_work_receipts WHERE receipt = ?")
-      .get(receipt) as { seq: number; purpose: string; requestId: string; body: string; nativeHost: string | null } | undefined;
+    const prior = d.prepare("SELECT seq, purpose, request_id AS requestId, body FROM reader_work_receipts WHERE receipt = ?")
+      .get(receipt) as { seq: number; purpose: string; requestId: string; body: string } | undefined;
     if (prior) {
-      result = prior.purpose === key.purpose && prior.requestId === key.requestId && prior.body === body && prior.nativeHost === (nativeHost ?? null)
+      result = prior.purpose === key.purpose && prior.requestId === key.requestId && prior.body === body
         ? { held: false, seq: prior.seq }
         : { error: "that reader receipt already belongs to a different request or content" };
       return;
     }
-    const write = d.prepare("INSERT INTO reader_work_receipts(purpose, request_id, receipt, body, held_at, state, native_host) VALUES(?, ?, ?, ?, ?, 'pending', ?)")
-      .run(key.purpose, key.requestId, receipt, body, heldAt, nativeHost ?? null);
+    const write = d.prepare("INSERT INTO reader_work_receipts(purpose, request_id, receipt, body, held_at, state) VALUES(?, ?, ?, ?, ?, 'pending')")
+      .run(key.purpose, key.requestId, receipt, body, heldAt);
     result = { held: true, seq: Number(write.lastInsertRowid) };
   });
   return result;
@@ -87,9 +82,9 @@ export function holdReaderReceipt(
 
 export function readerReceipts(root: string, key: ReaderKey): ReaderReceipt[] {
   if (!validKey(key)) return [];
-  return (db(root).prepare("SELECT seq, purpose, request_id AS requestId, receipt, body, held_at AS heldAt, state, why, call, native_host AS nativeHost FROM reader_work_receipts WHERE purpose = ? AND request_id = ? ORDER BY seq")
-    .all(key.purpose, key.requestId) as unknown as (ReaderReceipt & { why: string | null; call: string | null; nativeHost: string | null })[])
-    .map(({ why, call, nativeHost, ...row }) => ({ ...row, ...(why ? { why } : {}), ...(call ? { call } : {}), ...(nativeHost ? { nativeHost } : {}) }));
+  return (db(root).prepare("SELECT seq, purpose, request_id AS requestId, receipt, body, held_at AS heldAt, state, why, call FROM reader_work_receipts WHERE purpose = ? AND request_id = ? ORDER BY seq")
+    .all(key.purpose, key.requestId) as unknown as (ReaderReceipt & { why: string | null; call: string | null })[])
+    .map(({ why, call, ...row }) => ({ ...row, ...(why ? { why } : {}), ...(call ? { call } : {}) }));
 }
 
 /** Called only after an external transcript check has reached a verdict. */

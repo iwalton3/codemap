@@ -930,12 +930,10 @@ function migrate(d: DatabaseSync): void {
       scope TEXT PRIMARY KEY, body TEXT NOT NULL
     );
 
-    CREATE TABLE IF NOT EXISTS verifier_session_activity (
-      identity_key TEXT PRIMARY KEY,
-      connection_id TEXT NOT NULL,
-      kind TEXT NOT NULL CHECK(kind IN ('domain', 'claimed', 'tainted')),
-      first_action TEXT
-    );
+    -- An unreleased build kept verifier sessions and a signing key here; both went with the
+    -- in-memory verifier claim (2026-09-28).
+    DROP TABLE IF EXISTS verifier_session_activity;
+    DELETE FROM meta WHERE k = 'repair-verification-producer-key';
 
     -- Requirements (COD-29). A separate table from nodes/node_versions on purpose,
     -- not a new LogicalNodeType: the two kinds have inverted truthmakers, and sharing
@@ -1188,7 +1186,6 @@ function migrate(d: DatabaseSync): void {
     try { d.exec(`ALTER TABLE reader_verdicts ADD COLUMN ${col}`); } catch { /* already present */ }
   }
   d.exec("CREATE UNIQUE INDEX IF NOT EXISTS ix_reader_verdicts_receipt ON reader_verdicts(receipt)");
-  try { d.exec("ALTER TABLE reader_work_receipts ADD COLUMN native_host TEXT"); } catch { /* already present */ }
   // anchors.derivation — NULL on rows indexed before provenance existed, which is
   // `legacy_live_derivation`: this machine cannot say how its own index was made.
   try { d.exec("ALTER TABLE anchors ADD COLUMN derivation INTEGER"); } catch { /* already present */ }

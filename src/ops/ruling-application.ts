@@ -13,7 +13,6 @@ import { foldBugs, type SharedBug } from "../shared-bugs.js";
 import { decisionScope, foldDecisions, intentCandidates, comparisonRestricts, namedIssues, answerHasCurrentAuthority, type FoldedAnswer, type FoldedDecision } from "../shared-decisions.js";
 import { saveReaderRequest, readerRequest, holdReaderReceipt, readerReceipts, settleReaderReceipt } from "../reader-local.js";
 import { readReader, isUnverified, transcriptDir } from "../transcript.js";
-import { verifyCodexReaderReceipt, type CodexReaderSubmission } from "../codex-reader.js";
 import {
   applicationDisplayHash, applicationKey, issueClaimHash, validateApplicationCapsule,
   type ApplicationCapsuleV1, type ApplicationReaderReceipt,
@@ -197,14 +196,14 @@ export async function applicationReaderBrief(root: string, input: { issue: Issue
 }
 
 /** The reader submits its own verdict; it is only held until its successful tool call is verified. */
-export function submitApplicationVerdict(root: string, input: { requestId: string; verdict: "sound" | "unsound"; rationale: string }, nativeSubmission?: CodexReaderSubmission) {
+export function submitApplicationVerdict(root: string, input: { requestId: string; verdict: "sound" | "unsound"; rationale: string }) {
   const brief = parsedBrief(root, input.requestId);
   if (!brief) return { error: "no application reader brief with that request ID" };
   if (input.verdict !== "sound" && input.verdict !== "unsound") return { error: "verdict must be sound or unsound" };
   if (!word(input.rationale)) return { error: "the reader must explain its verdict" };
   const receipt = randomUUID();
   const held = holdReaderReceipt(root, { purpose: PURPOSE, requestId: input.requestId }, receipt,
-    JSON.stringify({ verdict: input.verdict, rationale: input.rationale }), undefined, nativeSubmission);
+    JSON.stringify({ verdict: input.verdict, rationale: input.rationale }));
   if ("error" in held) return held;
   return { ok: true as const, held: true as const, receipt };
 }
@@ -219,9 +218,7 @@ const resultObject = (v: unknown): any => {
   if (typeof v === "string") { try { return resultObject(JSON.parse(v)); } catch { return undefined; } }
   return undefined;
 };
-function verifyCall(brief: Brief, receipt: string, body: { verdict: string; rationale: string }, agentId: string, callId: string, dir: string | undefined, nativeHost?: string): VerifiedCall | { error: string } {
-  if (nativeHost) return verifyCodexReaderReceipt({ nativeHost, purpose: PURPOSE, requestId: brief.requestId,
-    prompt: brief.prompt, body, receipt, agentId, callId, dir });
+function verifyCall(brief: Brief, receipt: string, body: { verdict: string; rationale: string }, agentId: string, callId: string, dir: string | undefined): VerifiedCall | { error: string } {
   dir ??= transcriptDir();
   const reader = readReader(agentId, callId, dir);
   if (isUnverified(reader)) return { error: reader.unverified };
@@ -258,7 +255,7 @@ function verifiedReceipt(root: string, ref: ApplicationReceiptRef, dir: string |
   try { body = JSON.parse(held.body); } catch { return { error: "application reader receipt is malformed" }; }
   if ((body.verdict !== "sound" && body.verdict !== "unsound") || !word(body.rationale))
     return { error: "application reader receipt has no valid verdict" };
-  const call = verifyCall(brief, held.receipt, body, ref.agentId, ref.callId, dir, held.nativeHost);
+  const call = verifyCall(brief, held.receipt, body, ref.agentId, ref.callId, dir);
   if ("error" in call) return call;
   return { brief, body, call, ref };
 }
@@ -269,11 +266,11 @@ export function recordApplicationVerdict(root: string, input: { requestId: strin
   if (!brief) return { error: "no application reader brief with that request ID" };
   const held = readerReceipts(root, { purpose: PURPOSE, requestId: input.requestId }).find((x) => x.receipt === input.receipt);
   if (!held) return { error: "no held application reader receipt" };
-  if (held.state === "recorded" && !held.nativeHost) return held.call === input.callId ? { ok: true as const, recorded: true as const, existing: true as const } : { error: "receipt was recorded from another call" };
-  if (held.state !== "pending" && held.state !== "recorded") return { error: `reader receipt is ${held.state}: ${held.why ?? "not actionable"}` };
+  if (held.state === "recorded") return held.call === input.callId ? { ok: true as const, recorded: true as const, existing: true as const } : { error: "receipt was recorded from another call" };
+  if (held.state !== "pending") return { error: `reader receipt is ${held.state}: ${held.why ?? "not actionable"}` };
   let body: { verdict: string; rationale: string };
   try { body = JSON.parse(held.body); } catch { return { error: "application reader receipt is malformed" }; }
-  const verified = verifyCall(brief, held.receipt, body, input.agentId, input.callId, dir, held.nativeHost);
+  const verified = verifyCall(brief, held.receipt, body, input.agentId, input.callId, dir);
   if ("error" in verified) return { pending: true as const, reason: verified.error };
   const settled = settleReaderReceipt(root, { purpose: PURPOSE, requestId: input.requestId }, input.receipt, "recorded", undefined, input.callId);
   if ("error" in settled) return settled;

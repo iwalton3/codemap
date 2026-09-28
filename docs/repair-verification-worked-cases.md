@@ -17,8 +17,9 @@ relevant drift or conflicting evidence. No case grants agents missing requiremen
 ## Synthetic fixture
 
 Acme has an API universe and a UI universe. Alice and Bob are principals. Morgan
-sorts, Casey fixes, and Rowan and Taylor verify in fresh blind sessions. An
-arbitrator receives their rationales only after both are sealed. Session identity
+sorts, Casey fixes, and Rowan and Taylor verify in blind sessions of their own (or as
+subagents Casey launched, at a weaker grade). An arbitrator receives their rationales only
+after both are recorded. Session identity
 and model diversity are separate facts, even when Rowan and Taylor use one model.
 Every reference below includes its universe and owning review/scope, not just F1.
 
@@ -38,7 +39,7 @@ applies only to its exact claims, sort, evidence, commits and ruling context.
 
 | ID / situation | Record before and after | Authority and eligible work | Visibility after |
 |---|---|---|---|
-| C01 Ordinary mechanical repair | F1 as filed; accepted mechanical sort; W/X evidence; two sealed fixed receipts; separate application | Existing requirement permits the guard. Both verifiers rerun the reproducer and change falsifier. Application rechecks all inputs and closes F1. | F1 leaves active queues; search and history retain claim, X, commands, actual results and verifier identities. |
+| C01 Ordinary mechanical repair | F1 as filed; accepted mechanical sort; W/X evidence; two recorded fixed runs; separate application | Existing requirement permits the guard. Both verifiers run the reproducer themselves: it fails at W and passes at X. Application rechecks all inputs and closes F1. | F1 leaves active queues; search and history retain claim, X, commands, actual results and verifier identities. |
 | C02 Multi-site pattern | P1 retains predicate and all three sites; X evidence names only API; Y evidence later covers all three | X cannot resolve P1. Enumerating only the surviving sites cannot redefine its scope. Y needs independently checked complete coverage before application. | Missing import/batch sites remain actionable; prior partial proof remains visible after eventual closure. |
 | C03 Missing design ruling | F1 sort rests on an unanswered business question about negative credits | Agents may investigate and post the question. They cannot implement a policy or close F1 by choosing an answer. | Decision-needed, linked question, original claim and unanswered scope. |
 | C04 Missing assumption ruling | A finding asserts credits must expire after thirty days; no rule supplies that deadline | Code can establish current behavior, not the missing obligation. Independent sorting keeps the requirement question open. | Decision-needed; no manufactured requirement, repair or refutation. |
@@ -54,10 +55,9 @@ applies only to its exact claims, sort, evidence, commits and ruling context.
 | C14 Cancelled ruling reading | A human answer is revised after reading but before application | Cancel pending reading authority; changed answer requires a new reading. Existing executed closure, if any, is retained separately. | Cancelled reading in history; pending action refuses with the changed input identified. |
 | C15 Current conflict hold | Alice and Bob give independent incompatible answers; dependent repair has receipts | Comparison/arbitration hold still blocks authority-dependent work and application. A vote, assignment or old receipt cannot bypass it. | Both answers, pending comparison or conflict, held work and prior executions visible. |
 | C16 Same-model independence | Rowan and Taylor use the same model in proven distinct fresh sessions | Keep two opinions and session provenance. A session's revision replaces only itself. Never label this model diversity. Legacy actors gain no invented session. | Both identities, same-model limitation and revised opinion history. |
-| C17 Contaminated verifier | Casey tries to verify; or Rowan inherits history, receives Casey's conclusion, sees Taylor's answer, or claims role after a domain read | Refuse role-dependent authority. A thread identity is insufficient proof of a fresh MCP claim boundary. Unsupported provenance stays unsupported. | Exact refusal/unsupported reason; no closure and no silently downgraded identity. |
+| C17 Contaminated verifier | Casey tries to verify; or Rowan inherits history, receives Casey's conclusion, sees Taylor's answer, or claims role after a domain read | Casey's own connection is refused; a subagent Casey launched counts at a weaker grade. A verifier connection claims its role before any other call, and a subagent's submission counts only from its own transcript with the exact issued launch prompt. | Exact refusal/unsupported reason; no closure and no silently downgraded identity. |
 | C18 Exact operation sign-off | Alice sees full operation O text/context and elects promotion; verified answer and independent validation bind O's witness; Bob's agent applies | Pull/recheck O immediately before applying the narrow receipt. Credit Alice, record Bob's executor, sign O alone. Drafting or a plan-only answer signs nothing. | O sign-off, exact shown text, human authority and executor; framing/other operations unsigned, ratification still separate. |
 | C19 Changed operation | O's text or context changes after the answer or during pull; a label still matches | Refuse application with witness mismatch. Withdrawn, conflicting or unverified answers and forged agent stamps also cannot sign. | Original receipt and current mismatch; no sign-off or implicit ratification. |
-| C20 Codex delayed answer | Async question call gets accepted acknowledgment; human reply arrives later with source/message identity | Acknowledgment authorizes nothing. Verify exact linkage and human provenance only for measured supported formats; role=user alone is insufficient. | Pending until actual verified answer; unsupported/torn provenance has reason and questionnaire alternative. |
 | C21 Markdown-only skills | No accessible database, tools or resolvable sidecar; questions and exact responses retained in run record | Honest markdown-only work continues within known authority. No guessed sidecar, synthetic transcript or trusted markdown import. Previously shared IDs remain pending on outage. | Non-verified status, resolved absolute record and repository identity, durable IDs for resume. |
 | C22 Human acceptance and later work | Alice explicitly accepts a real defect, or postpones it with a deadline | Permanent acceptance is attributed to verified human authority, never chosen by verifiers. Later work uses existing principal-granted backlog and witness/expiry rules. | Accepted distinct from fixed/refuted; backlog carries deadline and wakes on drift/expiry. |
 | C23 Suggestion | Alice adopts, declines or postpones an improvement | Adoption authorizes work and does not prove completion. Decline records human disposition; postponement uses dated backlog. | Authorized unfinished work, human decline or dated backlog; no verifier dismissal. |
@@ -68,8 +68,8 @@ applies only to its exact claims, sort, evidence, commits and ruling context.
 ## Executable evidence negative controls
 
 For C01/C02, pin command definitions and code before verification. The reproducer
-must fail at W and pass at X (or Y for full pattern coverage). Separately, undoing
-the relevant change or applying a documented mutation must falsify the claimed fix.
+must fail at W and pass at X (or Y for full pattern coverage), observed by each
+verifier itself (owner, 2026-09-28: no mutation or reversal requirement).
 Actual environment, exit status and output are evidence; suite counts alone are
 regression information. Stored commands remain data until assessed for execution
 in an isolated clone.
@@ -77,11 +77,10 @@ in an isolated clone.
 | Control | Expected refusal or incomplete state |
 |---|---|
 | Suite passes while negative credits remain accepted | No adequate closure; suite success cannot replace the finding reproducer. |
-| Falsifier detects a changed formatting string while the defect persists | No adequate closure; independent reproducer still fails. |
 | Pattern enumeration omits import | P1 remains incomplete against its original site set. |
-| X replaced by Z after receipts seal | Application refuses stale evidence; no receipt reuse. |
+| X replaced by Z after the runs are recorded | Application refuses stale evidence; no receipt reuse. |
 | One verifier missing, or fixer submits both verdicts | No independent authority, regardless of vote labels. |
-| Arbitrator agrees without addressing the sealed disagreement | No resolved verification conflict. |
+| Arbitrator agrees without addressing the recorded disagreement | No resolved verification conflict. |
 | Original C-duplicate erased by a correction/split | No complete F3 closure; as-filed scope is retained. |
 | Receipt replayed or application retried in a second clone | Deterministic result; no extra authority or duplicate execution. |
 | Broken, missing or differently bound sidecar | Stored history visible but non-authoritative; no new closure. |

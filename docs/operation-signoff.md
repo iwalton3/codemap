@@ -16,16 +16,7 @@ operation or answering a different approval question signs nothing.
 exact operation and current human answer. The reader submits its own sound or
 unsound verdict through `submit_operation_signoff_verdict`.
 `record_operation_signoff_verdict` correlates the exact independent launch,
-submission, and successful receipt against local transcripts. Claude readers use
-their existing transcript contract. The CLI continuation adapter supports bound
-native Codex submissions: the production dispatcher binds the actual host
-request to a held receipt, and recording checks its unique native MCP completion,
-exact issued task, arguments and successful receipt result. A bare native UUID or
-an outer exec echo supplies no binding. Current live launches are encrypted and
-cannot prove their exact issued brief, so native recording and application refuse.
-The cleartext admission path is covered by hermetic fixtures, not a live success.
-See `harness-provenance.md` for the pinned profile and measurement limits. Existing verified native human-answer sources can
-be consumed without claiming an account-to-git identity mapping. A changed,
+submission, and successful receipt against the reader subagent's own transcript. A changed,
 withdrawn, unverified or conflicted answer cannot authorize application.
 
 `apply_operation_signoff` pulls immediately before application and rechecks the

@@ -3,7 +3,10 @@ import { Component, defineComponent, html, when, each } from './vendor/vdx/frame
 import { api, pageShell, nav, href, taskError, sharedUrl, reviewLabel } from './core.js';
 
 export const repairsUrl = (u, review) => `/u/${u}/repairs/${encodeURIComponent(String(review))}/`;
-const identityText = (identity) => `${identity.principal} · ${identity.harness} · session ${identity.session}${identity.child ? ' · child ' + identity.child : ''}`;
+/** A verifier is a session (its MCP connection) or a subagent launched on one. */
+const identityText = (identity) => identity.child
+  ? `${identity.principal} · subagent ${identity.child}, launched on session ${identity.session}`
+  : `${identity.principal} · session ${identity.session}`;
 /**
  * @typedef {{ params: { universe: string, review: string } }} RepairProps
  * @typedef {{ d: ApiMap['/api/repairs']|null }} RepairState
@@ -49,9 +52,9 @@ class RepairsPage extends Component {
   }
   verificationHistory(verification, summaries) {
     return html`<div class="sec">Independent verification history (${verification.requests.length})</div>
-      <div class="fs dim">Sealed runs preserve their exact checked claims and code. Unknown neither closes nor automatically reopens a finding. A separate application checks whether the result still applies.</div>
+      <div class="fs dim">Runs keep their exact checked claims and code. Unknown neither closes nor automatically reopens a finding. A separate application checks whether the result still applies.</div>
       ${each(verification.requests, (request) => html`<div class="op-card verification-request"><h3>${request.id}</h3>
-        ${each(summaries.filter(summary => summary.requestId === request.id), (summary) => html`<div class="fs verification-summary">Finding ${summary.findingId}: ${summary.verdict} · ${summary.complete ? 'complete bounded coverage at checked inputs' : 'incomplete bounded coverage'} · ${summary.grade === 'inspection' ? 'weaker inspection grade' : summary.grade + ' grade'}${summary.reasons.length ? ' — ' + summary.reasons.join('; ') : ''}
+        ${each(summaries.filter(summary => summary.requestId === request.id), (summary) => html`<div class="fs verification-summary">Finding ${summary.findingId}: ${summary.verdict} · ${summary.complete ? 'complete bounded coverage at checked inputs' : 'incomplete bounded coverage'} · ${summary.grade === 'inspection' ? 'weaker inspection grade' : summary.grade + ' grade'}${summary.launchedByParticipant ? ' · weaker: a verifier the fixer launched' : ''}${summary.reasons.length ? ' — ' + summary.reasons.join('; ') : ''}
           ${each(summary.staleReasons || [], (reason) => html`<div class="fs qbadge drift">Stale verification: ${reason}. Historical evidence cannot establish current applicability.</div>`, (reason) => reason)}
         </div>`, (summary) => summary.findingId)}
         <div class="fs">Orchestrator: ${identityText(request.capsule.orchestrator)}</div>
@@ -62,19 +65,19 @@ class RepairsPage extends Component {
           ${each(request.capsule.claims, (claim) => html`<div class="fs">${claim.id} · finding ${claim.findingId}: ${claim.text}</div>`, (claim) => claim.id)}
           <pre>${request.capsule.rulingContext}</pre><pre>${request.capsule.code.diff}</pre>
         </details>
-        ${each(verification.runs.filter(run => run.requestId === request.id), (run) => html`<div class="op-card verification-run"><h4>Sealed verifier slot ${run.slot} · ${run.id}</h4>
-          <div class="fs">${identityText(run.identity)} · connection ${run.connectionId}</div>
+        ${each(verification.runs.filter(run => run.requestId === request.id), (run) => html`<div class="op-card verification-run"><h4>Verifier slot ${run.slot} · ${run.id}</h4>
+          <div class="fs">${identityText(run.identity)}</div>
           ${each(run.results, (result) => html`<div class="claim-verdict"><div class="fs">Finding ${result.findingId} · claim ${result.claimId} · <strong>${result.verdict}</strong> · ${result.grade === 'inspection' ? 'weaker inspection grade' : result.grade + ' grade'}: ${result.reason}</div>
             ${this.executions('Independent execution results', result.executions)}
             ${each(result.inspected, (inspection) => html`<div class="fs">Inspected ${inspection.source} at ${inspection.commit}: ${inspection.reasoning}</div>`, (inspection, i) => i)}
             ${when(!!result.noCheckReason, () => html`<div class="fs">No-check reason: ${result.noCheckReason}</div>`)}
           </div>`, (result) => result.findingId + ':' + result.claimId)}
         </div>`, (run) => run.id)}
-        ${when(verification.runs.filter(run => run.requestId === request.id).length < 2, () => html`<div class="fs">Unknown — two sealed independent runs are required. Partial coverage cannot resolve a whole finding.</div>`)}
+        ${when(verification.runs.filter(run => run.requestId === request.id).length < 2, () => html`<div class="fs">Unknown — two independent runs are required. Partial coverage cannot resolve a whole finding.</div>`)}
         ${each(verification.arbitrations.filter(arbitration => arbitration.requestId === request.id), (arbitration) => html`<div class="fs">Arbitration ${arbitration.id} by ${identityText(arbitration.identity)}
           ${each(arbitration.addresses, (address) => html`<div class="fs">Finding ${address.findingId} · claim ${address.claimId}: ${address.verdict} — ${address.reason}</div>`, (address) => address.findingId + ':' + address.claimId)}
         </div>`, (arbitration) => arbitration.id)}
-        ${when(!verification.applications.some(application => application.requestId === request.id), () => html`<div class="fs dim">${summaries.some(summary => summary.requestId === request.id && summary.historicalClosure) ? 'No currently eligible application receipt; the recorded historical closure remains above.' : 'Not applied. A verification receipt alone does not close a finding.'}</div>`)}
+        ${when(!verification.applications.some(application => application.requestId === request.id), () => html`<div class="fs dim">${summaries.some(summary => summary.requestId === request.id && summary.historicalClosure) ? 'No currently eligible application receipt; the recorded historical closure remains above.' : 'Not applied. A verification alone does not close a finding.'}</div>`)}
         ${each(verification.applications.filter(application => application.requestId === request.id), (application) => html`<div class="fs verification-application">Recorded application ${application.id}: finding ${application.findingId} · ${application.outcome} · opening ${application.openEpoch} — ${application.reason}</div>`, (application) => application.id)}
       </div>`, (request) => request.id)}
       ${when(!!verification.rejected.length, () => html`<h4>Rejected verification attempts</h4>${each(verification.rejected, (rejection) => html`<div class="fs">${rejection.eventId}: ${rejection.reason}</div>`, (rejection) => rejection.eventId)}`)}`;
@@ -85,7 +88,7 @@ class RepairsPage extends Component {
     const { universe, review } = this.props.params;
     return pageShell(d, taskError(this.load) || (d && 'error' in d ? d.error : null), () => html`
       <div class="crumbs"><b>${universe}</b> <span class="sep">·</span> <a href="${href(sharedUrl(universe, review))}">${reviewLabel(review)}</a> <span class="sep">·</span> repair records</div>
-      <div class="attn-banner repair-closure-gate">Repair closure is gated by independent sealed verification and separate application checks. Reported coverage and passing runs do not resolve findings.</div>
+      <div class="attn-banner repair-closure-gate">Repair closure is gated by independent verification and separate application checks. Reported coverage and passing runs do not resolve findings.</div>
       ${when(!!detail, () => html`
         ${when(detail.status === 'blocked', () => html`<div class="attn-banner">The repair scope is blocked. Stored records may be incomplete: ${detail.diagnostic?.detail || 'unreadable log'}</div>`)}
         <div class="sec">Repair lifecycle (${detail.lifecycles.length})</div>
@@ -94,7 +97,8 @@ class RepairsPage extends Component {
           ${when(!!lifecycle.code, () => html`<div class="fs">Exact checked commit ${lifecycle.code.checkedCommit} · default commit ${lifecycle.code.defaultCommit || 'unavailable'} · landing ${lifecycle.code.landing} · source ${lifecycle.code.source} · default source ${lifecycle.code.defaultSource}</div>
             ${each(lifecycle.code.reasons, (reason) => html`<div class="fs dim">${reason}</div>`, (reason) => reason)}`)}
           <div class="fs">Unresolved or checked scope: ${each(lifecycle.claims, (claim) => html`<div class="fs">${claim.id}: ${claim.text}</div>`, (claim) => claim.id)}</div>
-          <div class="fs">Verifiers: ${lifecycle.verifiers.map(identityText).join('; ') || 'no qualifying independent verdict'}</div>
+          <div class="fs">Verifiers: ${lifecycle.verifiers.map(identityText).join('; ') || 'no qualifying independent verdict'}${lifecycle.launchedByParticipant ? ' · weaker grade: launched by the fixer' : ''}</div>
+          ${each(lifecycle.earlierUnfavourable || [], (e) => html`<div class="fs repair-earlier">Earlier request ${e.requestId}, run ${e.runId}: ${e.verdicts.join(', ')}</div>`, (e) => e.runId)}
           <div class="fs">Ruling IDs: ${lifecycle.rulingIds.join(', ') || 'none recorded'}</div>
           ${each(lifecycle.attention, (reason) => html`<div class="fs qbadge drift repair-lifecycle-attention">Repair needs attention: ${reason}</div>`, (reason) => reason)}
         </div>`, (lifecycle) => lifecycle.requestId + ':' + lifecycle.findingId)}
@@ -111,9 +115,9 @@ class RepairsPage extends Component {
           ${when(!!record.input.refutationSubtype, () => html`<div class="fs">Refutation subtype: ${record.input.refutationSubtype}</div>`)}
           <div class="fs">Depends on: ${record.input.restsOn.join(', ') || 'none recorded'}</div>
           ${each(record.holds, (hold) => html`<div class="fs qbadge drift">${hold}</div>`, (hold) => hold)}
-          ${each(record.input.assessments, (assessment) => html`<div class="fs">Sorter ${identityText(assessment.identity)} · ${assessment.classification}: ${assessment.reason}${when(!!assessment.receipt, () => html`<details><summary>${assessment.receipt.seal ? 'Sealed sorter receipt' : 'Reported receipt'} ${assessment.receipt.id} · ${assessment.receipt.source}</summary><pre>${assessment.receipt.content}</pre></details>`)}</div>`, (assessment, i) => i)}
+          ${each(record.input.assessments, (assessment) => html`<div class="fs">Sorter ${identityText(assessment.identity)} · ${assessment.classification}: ${assessment.reason}${when(!!assessment.receipt, () => html`<details><summary>Reported receipt ${assessment.receipt.id} · ${assessment.receipt.source}</summary><pre>${assessment.receipt.content}</pre></details>`)}</div>`, (assessment, i) => i)}
           ${each(record.input.disagreements, (disagreement) => html`<div class="fs">Disagreement ${disagreement.id}: ${disagreement.text}</div>`, (disagreement) => disagreement.id)}
-          ${when(!!record.input.arbitration, () => html`<div class="fs">Arbitration by ${identityText(record.input.arbitration.identity)} · addresses ${record.input.arbitration.addresses.join(', ')}: ${record.input.arbitration.reason}${when(!!record.input.arbitration.receipt, () => html`<details><summary>${record.input.arbitration.receipt.seal ? 'Sealed arbitration receipt' : 'Reported arbitration receipt'}</summary><pre>${record.input.arbitration.receipt.content}</pre></details>`)}</div>`)}
+          ${when(!!record.input.arbitration, () => html`<div class="fs">Arbitration by ${identityText(record.input.arbitration.identity)} · addresses ${record.input.arbitration.addresses.join(', ')}: ${record.input.arbitration.reason}${when(!!record.input.arbitration.receipt, () => html`<details><summary>Reported arbitration receipt</summary><pre>${record.input.arbitration.receipt.content}</pre></details>`)}</div>`)}
         </div>`, (record) => record.eventId)}
         <div class="sec">Structured repair evidence (${detail.records.evidence.length})</div>
         <div class="fs dim">Commands below are evidence data. This page does not execute them. Regression runs alone do not demonstrate a repair.</div>
@@ -125,7 +129,6 @@ class RepairsPage extends Component {
           ${this.coverage(record.input.coverage)}
           <div class="fs dim">Coverage is a report for these exact claims. Uncovered claims remain unresolved; partial coverage cannot resolve a whole finding.</div>
           ${this.executions('Finding reproducer', record.input.reproducer)}
-          ${this.executions('Change falsifier', record.input.changeFalsifier)}
           ${this.executions('Regression runs', record.input.regression)}
           <h4>Pattern enumeration</h4>
           ${when(!!record.input.patternEnumeration, () => html`<div class="fs">Method: ${record.input.patternEnumeration.method}</div><div class="fs">Expected sites: ${record.input.patternEnumeration.expected.join(', ')}</div><div class="fs">Actual sites: ${record.input.patternEnumeration.actual.join(', ')}</div>`)}
@@ -138,8 +141,8 @@ class RepairsPage extends Component {
           ${each(record.input.attribution, (attribution) => html`<div class="fs">${attribution.file} · claims ${attribution.claimIds.join(', ')}<pre>${attribution.hunk}</pre></div>`, (attribution, i) => i)}
           <div class="fs">Ruling IDs: ${record.input.rulingIds.join(', ') || 'none recorded'}</div>
         </div>`, (record) => record.eventId)}
-        <div class="sec">Trusted repair participants (${detail.records.participants.length})</div>
-        ${each(detail.records.participants, (record) => html`<div class="op-card"><div class="fs">${record.input.role} · repair ${record.input.repairId} · ${identityText(record.input.identity)} · ${record.input.trust}</div>${this.provenance(record)}</div>`, (record) => record.eventId)}
+        <div class="sec">Repair participants (${detail.records.participants.length})</div>
+        ${each(detail.records.participants, (record) => html`<div class="op-card"><div class="fs">${record.input.role} · repair ${record.input.repairId} · ${identityText(record.input.identity)}</div>${this.provenance(record)}</div>`, (record) => record.eventId)}
         <div class="sec">Recorded closure history (${detail.historicalClosures.length})</div>
         ${each(detail.historicalClosures, (closure) => html`<div class="op-card historical-repair-closure"><div class="fs">Recorded historical closure ${closure.applicationId}: finding ${closure.findingId} · ${closure.outcome} · current finding state ${closure.state}. Request ${closure.requestId}. The completed act remains history.</div>
           ${each(closure.attention, (reason) => html`<div class="fs qbadge drift repair-closure-attention">Closure needs attention: ${reason}</div>`, (reason) => reason)}

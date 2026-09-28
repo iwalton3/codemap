@@ -1,16 +1,20 @@
 import { randomUUID } from "node:crypto";
 
+/**
+ * Who did a piece of repair work, as codemap can tell it (owner rulings, 2026-09-28).
+ *
+ * `session` is the MCP CONNECTION the work arrived on — one per agent session, held in memory
+ * for the connection's life. A subagent shares its parent's connection, so a subagent's work
+ * carries its parent's `session` plus `child` (the subagent id `readReader` verified). That is
+ * what lets the fold tell a subagent the fixer launched (allowed, weaker grade) from the fixer
+ * itself (refused): both arrive on the fixer's connection, only one has a verified `child`.
+ */
 export interface VerifierIdentity {
   principal: string;
-  harness: string;
+  harness: "mcp" | "claude-subagent";
   session: string;
   child?: string;
-  model?: string;
 }
-
-export type TrustedVerifierContext =
-  | { supported: true; identity: VerifierIdentity }
-  | { supported: false; reason: string };
 
 export interface RepairParticipant {
   identity: VerifierIdentity;
@@ -19,184 +23,44 @@ export interface RepairParticipant {
 
 export type BoundaryResult = { ok: true } | { ok: false; error: string };
 
-/** Session identity survives reconnects; model is descriptive metadata. */
 export function verifierIdentityKey(identity: VerifierIdentity): string {
-  return JSON.stringify([identity.principal, identity.harness, identity.session, identity.child ?? null]);
+  return JSON.stringify([identity.principal, identity.session, identity.child ?? null]);
 }
 
+/** The work a claimed verifier connection may do; anything else ends the claim. */
 export const REPAIR_VERIFIER_TOOLS: readonly string[] = Object.freeze([
-  "repair_brief", "repair_evidence", "repair_verification", "repair_arbitration", "repair_request", "repair_apply_verification",
+  "repair_brief", "repair_verification", "repair_arbitration", "repair_records",
 ]);
 
-export const REPAIR_SORTER_TOOLS: readonly string[] = Object.freeze(["repair_sort_brief", "repair_sort_assess", "repair_sort_arbitrate"]);
-
-export interface RepairVerifierReceipt {
-  id: string;
-  identity: VerifierIdentity;
-  identityKey: string;
-  role: "repair-verifier" | "repair-sorter";
-  connectionId: string;
-  requestKey: string;
-  content: string;
-}
-
-interface IssuedReceipt {
-  serialized: string;
-  provenance: () => BoundaryResult;
-}
-
-declare const sealCapabilityBrand: unique symbol;
-export interface RepairSealCapability { readonly [sealCapabilityBrand]: true }
-const sealCapabilities = new WeakMap<RepairSealCapability, {
-  receipt: RepairVerifierReceipt;
-  validate: () => BoundaryResult;
-}>();
-
-/** Opaque capabilities come only from a claimed boundary; tool JSON cannot recreate one. */
-export function consumeRepairSealCapability(capability: RepairSealCapability): RepairVerifierReceipt | { error: string } {
-  const issued = capability && typeof capability === "object" ? sealCapabilities.get(capability) : undefined;
-  if (!issued) return { error: "unissued repair sealing capability" };
-  const result = issued.validate();
-  if (!result.ok) return { error: result.error };
-  sealCapabilities.delete(capability);
-  return structuredClone(issued.receipt);
-}
-
-function participantError(identity: VerifierIdentity, participants: readonly RepairParticipant[]): string | undefined {
-  const participant = participants.find((p) => verifierIdentityKey(p.identity) === verifierIdentityKey(identity));
-  return participant ? `repair verifier cannot reuse a ${participant.role} identity` : undefined;
-}
-
-const issuers = new WeakMap<RepairVerifierReceipts, (receipt: RepairVerifierReceipt, provenance: () => BoundaryResult) => RepairVerifierReceipt>();
-
-/** In-process issuance registry, not a signature or a portable attestation. */
-export class RepairVerifierReceipts {
-  readonly #issued = new Map<string, IssuedReceipt>();
-
-  constructor() {
-    issuers.set(this, (receipt, provenance) => {
-      this.#issued.set(receipt.id, { serialized: JSON.stringify(receipt), provenance });
-      return structuredClone(receipt);
-    });
-  }
-
-  validate(receipt: RepairVerifierReceipt, expected: {
-    requestKey: string;
-    content: string;
-    participants: readonly RepairParticipant[];
-  }): BoundaryResult {
-    const issued = this.#issued.get(receipt.id);
-    if (!issued || issued.serialized !== JSON.stringify(receipt)) {
-      return { ok: false, error: "receipt was not issued here or was altered" };
-    }
-    if (receipt.requestKey !== expected.requestKey || receipt.content !== expected.content) {
-      return { ok: false, error: "receipt does not bind this request and content" };
-    }
-    const provenance = issued.provenance();
-    if (!provenance.ok) return provenance;
-    const error = participantError(receipt.identity, expected.participants);
-    return error ? { ok: false, error } : { ok: true };
-  }
-}
-
-/** Construct only from an adapter's resolved context, never tool arguments. */
-export class RepairVerifierBoundary {
-  readonly connectionId = randomUUID();
-  readonly #context: TrustedVerifierContext;
-  readonly #participants: () => readonly RepairParticipant[];
-  readonly #revalidate: () => BoundaryResult;
-  readonly receipts: RepairVerifierReceipts;
+/**
+ * One MCP connection's repair standing. A dedicated verifier session claims the role before
+ * any other codemap call; the claim is held here, never stored, and dies with the connection
+ * (owner: "keep the claim in memory for the life of the connection, and drop the table and the
+ * permanent taint rules"). An unclaimed connection is an ordinary agent session: it can fix,
+ * relay, request and apply, and it can launch subagent verifiers.
+ */
+export class RepairConnection {
+  readonly session = randomUUID();
   #domainActions = 0;
   #claimed = false;
-  #role: "repair-verifier" | "repair-sorter" = "repair-verifier";
-  #forbidden = false;
-  #invalidReason?: string;
 
-  constructor(options: {
-    context: TrustedVerifierContext;
-    participants: () => readonly RepairParticipant[];
-    receipts?: RepairVerifierReceipts;
-    revalidate?: () => BoundaryResult;
-  }) {
-    this.#context = structuredClone(options.context);
-    this.#participants = options.participants;
-    this.receipts = options.receipts ?? new RepairVerifierReceipts();
-    this.#revalidate = options.revalidate ?? (() => ({ ok: true }));
-  }
+  constructor(readonly principal: string) {}
 
-  claimedRole(): "repair-verifier" | "repair-sorter" | undefined { return this.#claimed ? this.#role : undefined; }
+  identity(): VerifierIdentity { return { principal: this.principal, harness: "mcp", session: this.session }; }
+  claimed(): boolean { return this.#claimed; }
 
-  invalidate(reason: string): void { this.#invalidReason ??= reason; }
-  checkProvenance(): BoundaryResult { return this.#provenance(); }
-
-  trustedIdentity(): VerifierIdentity | { error: string } {
-    const checked = this.#provenance();
-    if (!checked.ok) return { error: checked.error };
-    return this.#context.supported ? structuredClone(this.#context.identity) : { error: "unsupported verifier context" };
-  }
-
-  claim(role: "repair-verifier" | "repair-sorter" = "repair-verifier"): BoundaryResult {
-    if (!["repair-verifier", "repair-sorter"].includes(role)) return { ok: false, error: "unknown repair role" };
-    if (this.#claimed) return { ok: false, error: "repair verifier role is already claimed" };
-    if (this.#domainActions) return { ok: false, error: "repair verifier must claim before any domain action, including reads" };
-    const eligible = this.#eligible();
-    if (!eligible.ok) return eligible;
+  claim(): BoundaryResult {
+    if (this.#claimed) return { ok: false, error: "this connection has already claimed the verifier role" };
+    if (this.#domainActions) return { ok: false, error: "a verifier must claim before any other codemap call on its connection: this session has already worked here" };
     this.#claimed = true;
-    this.#role = role;
     return { ok: true };
   }
 
-  /** The adapter excludes protocol negotiation, but counts every domain read/write. */
-  enterDomainAction(tool: string): BoundaryResult {
+  /** Every tool but the claim counts; a claimed connection is refused anything outside the role. */
+  enter(tool: string): BoundaryResult {
+    if (tool === "claim_verifier") return { ok: true };
+    if (this.#claimed && !REPAIR_VERIFIER_TOOLS.includes(tool)) return { ok: false, error: `the verifier role does not allow ${tool}` };
     this.#domainActions++;
-    if (!this.#claimed) return { ok: true };
-    if (!(this.#role === "repair-sorter" ? REPAIR_SORTER_TOOLS : REPAIR_VERIFIER_TOOLS).includes(tool)) {
-      this.#forbidden = true;
-      return { ok: false, error: `repair verifier role forbids ${tool}` };
-    }
-    return this.#provenance();
-  }
-
-  sealReceipt(requestKey: string, content: string): RepairVerifierReceipt | { error: string } {
-    const provenance = this.#provenance();
-    if (!provenance.ok) return { error: provenance.error };
-    if (typeof requestKey !== "string" || !requestKey.trim() || typeof content !== "string" || !content.trim()) {
-      return { error: "receipt requires a nonempty request key and exact content" };
-    }
-    if (!this.#context.supported) return { error: "unsupported verifier context" };
-    const identity = structuredClone(this.#context.identity);
-    return issuers.get(this.receipts)!({
-      id: randomUUID(), identity, identityKey: verifierIdentityKey(identity),
-      role: this.#role, connectionId: this.connectionId, requestKey, content,
-    }, () => this.#provenance());
-  }
-
-  sealCapability(requestKey: string, content: string): RepairSealCapability | { error: string } {
-    const receipt = this.sealReceipt(requestKey, content);
-    if ("error" in receipt) return receipt;
-    const capability = Object.freeze({}) as RepairSealCapability;
-    sealCapabilities.set(capability, { receipt, validate: () => this.receipts.validate(receipt, {
-      requestKey, content, participants: this.#participants(),
-    }) });
-    return capability;
-  }
-
-  #eligible(): BoundaryResult {
-    if (!this.#context.supported) return { ok: false, error: `unsupported verifier context: ${this.#context.reason}` };
-    const identity = this.#context.identity;
-    if (![identity.principal, identity.harness, identity.session].every((s) => typeof s === "string" && s.trim().length > 0)
-      || (identity.child !== undefined && (typeof identity.child !== "string" || !identity.child.trim()))) {
-      return { ok: false, error: "unsupported verifier context: incomplete session identity" };
-    }
-    const error = participantError(identity, this.#participants());
-    if (error) return { ok: false, error };
-    if (this.#invalidReason) return { ok: false, error: this.#invalidReason };
-    return this.#revalidate();
-  }
-
-  #provenance(): BoundaryResult {
-    if (!this.#claimed) return { ok: false, error: "connection has not claimed repair verifier role" };
-    if (this.#forbidden) return { ok: false, error: "repair verifier attempted a forbidden domain action" };
-    return this.#eligible();
+    return { ok: true };
   }
 }

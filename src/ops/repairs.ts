@@ -1,4 +1,3 @@
-import { currentSortReceiptError } from "./repair-sort.js";
 import { repairCodeLifecycle } from "../repair-lifecycle.js";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -11,8 +10,8 @@ import { findingsProjection } from "../shared-projections.js";
 import { readCached } from "../materialize.js";
 import { emitEventChecked, readScopeChecked, GENESIS, SIDECAR_PROTOCOL, EVENT_SCHEMA, type LogEvent } from "../eventlog.js";
 import { emptyRepairRecords, foldRepairRecords, repairFindingCompleteness, type RepairFindingMap, type RepairSortInput, type RepairEvidenceInput } from "../repair-records.js";
-import { repairParticipationIdentity, type RepairParticipationCapability } from "../repair-participation.js";
-import { emptyRepairVerificationState, isRepairVerificationState, repairVerificationDecision, repairVerificationHash } from "../repair-verification.js";
+import type { RepairConnection } from "../verifier-boundary.js";
+import { earlierUnfavourableRuns, emptyRepairVerificationState, isRepairVerificationState, repairVerificationDecision, repairVerificationHash } from "../repair-verification.js";
 import { issueClaimHash } from "../ruling-application.js";
 import { decisionsView } from "./decision-holds.js";
 
@@ -23,10 +22,7 @@ export async function repairRecords(root: string, review: number | string) {
   const scope = findingScope(findingKeyScope(cfg, review));
   const cached = await readCached(root, cfg.path, scope, sidecarIdentity(cfg), foldFindings, findingsProjection);
   const records = structuredClone((cached.value as RepairFindingMap<SharedFinding>).repairRecords ?? emptyRepairRecords());
-  for (const sort of records.sorts) {
-    const error = currentSortReceiptError(root, sort.input);
-    if (error) { sort.eligible = false; sort.holds.push(error); }
-  }
+  const participants = records.participants.map(p => p.input);
   const projectedVerification = (cached.value as RepairFindingMap<SharedFinding>).repairVerification;
   if (projectedVerification !== undefined && !isRepairVerificationState(projectedVerification)) throw new Error("repair verification projection has a malformed shape");
   const verification = isRepairVerificationState(projectedVerification) ? projectedVerification : emptyRepairVerificationState();
@@ -49,7 +45,7 @@ export async function repairRecords(root: string, review: number | string) {
       const finding = cached.value.get(findingId);
       const target = request.capsule.targets.find(t => t.findingId === findingId)!;
       const claimChanged = !finding || finding.openEpoch !== target.openEpoch || issueClaimHash("finding", finding) !== target.claimHash;
-      return { requestId: request.id, findingId, ...repairVerificationDecision(verification, request.id, findingId),
+      return { requestId: request.id, findingId, ...repairVerificationDecision(verification, request.id, findingId, participants),
         historicalClosure: finding?.repairClosure?.requestId === request.id ? finding.repairClosure : undefined,
         staleReasons: [...staleReasons, ...(claimChanged ? ["current finding claim or opening changed"] : [])] };
     });
@@ -78,6 +74,9 @@ export async function repairRecords(root: string, review: number | string) {
       : result.verdict === "factually-refuted" ? "factually-refuted"
       : code?.landing === "landed" ? "verified-repair-landed" : "verified-at-commit";
     return { findingId: result.findingId, requestId: result.requestId, state, grade: result.grade,
+      launchedByParticipant: result.launchedByParticipant,
+      earlierUnfavourable: earlierUnfavourableRuns(verification, result.requestId).map(r => ({ requestId: r.requestId, runId: r.id,
+        verdicts: r.results.filter(v => v.findingId === result.findingId).map(v => v.verdict) })),
       applied: !!result.historicalClosure, code, attention,
       currentProof: result.complete && !attention.length && code?.source === "unchanged" && code?.defaultSource !== "moved" && code?.defaultSource !== "unknown",
       verifiers: verification.runs.filter(r => r.requestId === result.requestId).map(r => r.identity),
@@ -105,10 +104,6 @@ async function append(root: string, review: number | string, kind: string, subje
   const event = await emitEventChecked(cfg.path, scope, actor, async (events) => {
     const checked = await readScopeChecked(cfg.path, scope);
     if (checked.status === "blocked") return { error: "repair scope became blocked before append" };
-    if (kind === "repair.sort-recorded") {
-      const receiptError = currentSortReceiptError(root, data as unknown as RepairSortInput);
-      if (receiptError) return { error: receiptError };
-    }
     const candidate: LogEvent = { id: randomUUID(), kind, subject, data,
       actor, at: new Date().toISOString(), after: events.map((e) => e.id),
       writer: "repair-admission", writerPrev: GENESIS, sidecarProtocol: SIDECAR_PROTOCOL, eventSchema: EVENT_SCHEMA };
@@ -124,11 +119,6 @@ async function append(root: string, review: number | string, kind: string, subje
 export async function postRepairSort(root: string, review: number | string, sort: RepairSortInput) {
   sort = structuredClone(sort);
   if (!sort || !Array.isArray(sort.assessments) || sort.assessments.some(a => !a || typeof a !== "object")) return { error: "sort requires assessment records" };
-  const error = currentSortReceiptError(root, sort);
-  if (error) return { error };
-  const cfg = resolveSidecar(root);
-  const scope = cfg ? findingScope(findingKeyScope(cfg, review)) : undefined;
-  if ([...sort.assessments, ...(sort.arbitration ? [sort.arbitration] : [])].some(a => a.receipt?.seal && a.receipt.scope !== scope)) return { error: "sort receipt belongs to another review scope" };
   return append(root, review, "repair.sort-recorded", sort?.id, { ...sort });
 }
 
@@ -142,13 +132,11 @@ export async function recordRepairEvidence(root: string, review: number | string
   return append(root, review, "repair.evidence-recorded", evidence?.id, { ...evidence });
 }
 
-/** The capability comes from the host adapter; there is no tool identity argument. */
+/** The identity is this MCP connection's, never a tool argument (see `verifier-boundary.ts`). */
 export async function recordRepairParticipant(root: string, review: number | string,
-  input: { repairId: string; role: "fixer" | "relayer" }, capability: RepairParticipationCapability) {
+  input: { repairId: string; role: "fixer" | "relayer" }, connection: RepairConnection) {
   const actor = requireActor(root);
   if ("error" in actor) return actor;
-  const identity = repairParticipationIdentity(capability, actor.principal);
-  if (!identity) return { error: "repair participation requires a server-resolved native session identity" };
-  return append(root, review, "repair.participant-recorded", input.repairId,
-    { ...input, identity, trust: "native-session" });
+  if (connection.principal !== actor.principal) return { error: "this connection belongs to another principal" };
+  return append(root, review, "repair.participant-recorded", input.repairId, { ...input, identity: connection.identity() });
 }

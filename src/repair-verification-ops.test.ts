@@ -3,15 +3,17 @@ import assert from "node:assert/strict";
 import { team, settle } from "./oracle.js";
 import { shareFinding, reviseFinding, reassignFinding } from "./ops-shared.js";
 import { postRepairSort, recordRepairClaims, recordRepairEvidence, recordRepairParticipant } from "./ops/repairs.js";
-import { requestRepairVerification, repairVerificationBrief, submitRepairVerification, arbitrateRepairVerification, applyRepairVerification, repairVerificationRecords } from "./ops/repair-verification.js";
-import { RepairVerifierBoundary } from "./verifier-boundary.js";
-import { issueRepairParticipation } from "./repair-participation.js";
+import { requestRepairVerification, repairVerificationBrief, submitRepairVerification, arbitrateRepairVerification, applyRepairVerification, repairVerificationRecords, recordRepairVerification } from "./ops/repair-verification.js";
+import { repairRecords } from "./ops/repairs.js";
+import { RepairConnection } from "./verifier-boundary.js";
 import { headCommit } from "./git.js";
-import { readFinding, trustedRepairParticipants } from "./store.js";
+import { readFinding } from "./store.js";
 import type { RepairClaimVerdict } from "./repair-verification.js";
 import type { RepairSortInput, RepairEvidenceInput } from "./repair-records.js";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { discard } from "./test-tmp.js";
 import { postRound } from "./ops/decisions.js";
 import { decisionsView } from "./ops/decision-holds.js";
 import { resolveSidecar } from "./sidecar-config.js";
@@ -32,19 +34,20 @@ async function fixture(count = 1, decomposed = false, changeEvidence?: (evidence
   const sha = headCommit(root)!;
   const evidence: RepairEvidenceInput = { id: "proof1", sortId: "sort1", witnessCommit: sha, baseCommit: sha, fixCommit: sha,
     coverage: sort.coverage.map(ref => ({ ...ref, result: "complete", reason: "FIXER CONCLUSION MUST BE HIDDEN", claimResults: ref.claimIds.map(claimId => ({ claimId, result: "complete", reason: "FIXER CLAIM VERDICT MUST BE HIDDEN" })) })),
-    reproducer: [], changeFalsifier: [], regression: [], inspected: [{ source: "src/pay.ts", commit: sha, reasoning: "FIXER REASONING MUST BE HIDDEN" }],
+    reproducer: [], regression: [], inspected: [{ source: "src/pay.ts", commit: sha, reasoning: "FIXER REASONING MUST BE HIDDEN" }],
     noCheckReason: "synthetic inspection fixture has no useful executable check", rulingIds: [], attribution: [] };
   changeEvidence?.(evidence, root);
   ok(await recordRepairEvidence(root, 7, evidence));
-  ok(await recordRepairParticipant(peer, 7, { repairId: "sort1", role: "fixer" }, issueRepairParticipation({ principal: "fixer@acme.test", harness: "codex", session: "fixer" })));
+  ok(await recordRepairParticipant(peer, 7, { repairId: "sort1", role: "fixer" }, new RepairConnection("fixer@acme.test")));
   await settle(t);
   if (holdBeforeRequest) await postHold(root, ids[0]!, holdBeforeRequest);
-  const host = (session: string) => {
-    const boundary = new RepairVerifierBoundary({ context: { supported: true, identity: { principal: "owner@acme.test", harness: "codex", session, model: "same-model" } }, participants: () => trustedRepairParticipants(root) });
-    assert.equal(boundary.claim().ok, true);
-    return { boundary };
+  /** A dedicated verifier session: its own connection, claimed before anything else. */
+  const host = (_label: string) => {
+    const connection = new RepairConnection("owner@acme.test");
+    assert.equal(connection.claim().ok, true);
+    return connection;
   };
-  const orchestrator = host("orchestrator");
+  const orchestrator = new RepairConnection("owner@acme.test");
   const requested = await requestRepairVerification(root, 7, { sortId: "sort1", evidenceId: "proof1" }, orchestrator);
   let requestId = "";
   if (holdBeforeRequest) assert.match((requested as { error: string }).error, /held|decision/);
@@ -57,7 +60,7 @@ async function fixture(count = 1, decomposed = false, changeEvidence?: (evidence
     const brief = await repairVerificationBrief(root, 7, { requestId, role: "verifier", slot }, h);
     ok(brief);
     assert.equal(JSON.stringify(brief).includes("FIXER"), false);
-    assert.equal(JSON.stringify(brief).includes("sealedRuns"), false);
+    assert.equal(JSON.stringify(brief).includes('"runs"'), false);
     const submitted = await submitRepairVerification(root, 7, { requestId, slot, results: results(verdict, subset) }, h);
     ok(submitted); assert.ok("run" in submitted && submitted.run);
     assert.equal("records" in submitted, false);
@@ -97,19 +100,22 @@ test("ops request, blind runs, separate application and sync close each finding 
   } finally { f.t.dispose(); }
 });
 
-test("ops refuse fabricated hosts, slot switching, self-verification and missing blind briefs", async () => {
+test("a dedicated verifier holds one job and reads its brief first; an unclaimed session's submission is only held", async () => {
   const f = await fixture();
   try {
-    const fake = await submitRepairVerification(f.root, 7, { requestId: f.requestId, slot: 1, results: f.results() }, {} as never);
-    assert.match((fake as { error: string }).error, /trusted fresh host/);
-    const self = await repairVerificationBrief(f.root, 7, { requestId: f.requestId, role: "verifier", slot: 1 }, f.orchestrator);
-    assert.match((self as { error: string }).error, /orchestrator/);
     const h = f.host("third");
     const missing = await submitRepairVerification(f.root, 7, { requestId: f.requestId, slot: 1, results: f.results() }, h);
-    assert.match((missing as { error: string }).error, /blind bounded/);
+    assert.match((missing as { error: string }).error, /brief/);
     ok(await repairVerificationBrief(f.root, 7, { requestId: f.requestId, role: "verifier", slot: 1 }, h));
-    assert.match((await submitRepairVerification(f.root, 7, { requestId: f.requestId, slot: 2, results: f.results() }, h) as { error: string }).error, /exact slot/);
-    assert.match((await repairVerificationBrief(f.root, 7, { requestId: f.requestId, role: "verifier", slot: 2 }, h) as { error: string }).error, /assigned another/);
+    assert.match((await submitRepairVerification(f.root, 7, { requestId: f.requestId, slot: 2, results: f.results() }, h) as { error: string }).error, /brief/);
+    assert.match((await repairVerificationBrief(f.root, 7, { requestId: f.requestId, role: "verifier", slot: 2 }, h) as { error: string }).error, /another job/);
+    // The orchestrator never claimed: what it submits waits for a transcript-checked record.
+    ok(await repairVerificationBrief(f.root, 7, { requestId: f.requestId, role: "verifier", slot: 2 }, f.orchestrator));
+    const held = await submitRepairVerification(f.root, 7, { requestId: f.requestId, slot: 2, results: f.results() }, f.orchestrator) as { held?: boolean };
+    assert.equal(held.held, true);
+    const records = await repairVerificationRecords(f.root, 7);
+    assert.ok("records" in records && records.records);
+    assert.equal(records.records.runs.length, 0, "a held submission is not a run");
   } finally { f.t.dispose(); }
 });
 
@@ -129,10 +135,10 @@ test("disagreement needs a separate arbitrator who sees both sealed rationales",
     const a = await f.run(1, "fixed"), b = await f.run(2, "factually-refuted");
     const premature = await applyRepairVerification(f.root, 7, { requestId: f.requestId, findingId: f.ids[0]!, reason: "majority" }, f.orchestrator);
     assert.match((premature as { error: string }).error, /disagreement/);
-    assert.match((await repairVerificationBrief(f.root, 7, { requestId: f.requestId, role: "arbitrator" }, a.h) as { error: string }).error, /sealed verifier/);
+    assert.match((await repairVerificationBrief(f.root, 7, { requestId: f.requestId, role: "arbitrator" }, a.h) as { error: string }).error, /another job/);
     const arb = f.host("arbitrator");
     const brief = await repairVerificationBrief(f.root, 7, { requestId: f.requestId, role: "arbitrator" }, arb);
-    ok(brief); assert.ok("sealedRuns" in brief && brief.sealedRuns?.length === 2);
+    ok(brief); assert.ok("runs" in brief && brief.runs?.length === 2);
     const addresses = [{ findingId: f.ids[0]!, claimId: `${f.ids[0]}:original`, verdict: "fixed" as const, reason: "the original witness lacked the guard and the checked commit supplies it; present guard is a repair rather than contradiction of filing" }];
     ok(await arbitrateRepairVerification(f.root, 7, { requestId: f.requestId, runIds: [a.run.id, b.run.id], addresses }, arb));
     ok(await applyRepairVerification(f.root, 7, { requestId: f.requestId, findingId: f.ids[0]!, reason: "both inspection records and arbitration cover the claim" }, f.orchestrator));
@@ -153,7 +159,7 @@ test("changing exactly the claim or accepted sort makes application visibly stal
   }
 });
 
-test("recorded command data is never executed by request, brief, seal or application", async () => {
+test("recorded command data is never executed by request, brief, run or application", async () => {
   const f = await fixture(1, false, (e, root) => {
     e.reproducer = [{ id: "unavailable-check", command: `touch '${join(root, "must-not-execute")}'`, commit: e.fixCommit,
       environment: "missing fixture runner", phase: "fix", outcome: "unknown", reason: "runner is unavailable; command has not run" }];
@@ -215,8 +221,70 @@ test("later human assignment preserves the established release of an ordinary de
   try {
     ok(await reassignFinding(f.root, 7, f.ids[0]!, { kind: "fix", note: "owner explicitly assigns this existing mechanical work" }));
     assert.equal((await decisionsView(f.root)).work(f.ids[0]!, (await readFinding(f.root, f.ids[0]!, { pr: 7 }))!.assignment).allowed, true);
-    const released = await requestRepairVerification(f.root, 7, { sortId: "sort1", evidenceId: "proof1" }, f.host("released-orchestrator"));
+    const released = await requestRepairVerification(f.root, 7, { sortId: "sort1", evidenceId: "proof1" }, new RepairConnection("owner@acme.test"));
     ok(released);
     assert.ok("request" in released && released.request);
   } finally { f.t.dispose(); }
+});
+
+/** A Claude transcript in which session `session` launched subagent `agentId` with `prompt`, and
+ *  the subagent called `tool` with `input` and got `result` back — the shape `readReader` reads. */
+function subagentTranscript(dir: string, agentId: string, prompt: string, tool: string, input: unknown, result: unknown, callId = `toolu_${agentId}`) {
+  const session = "5e55a0a0-0000-0000-0000-00000000000" + agentId.slice(-1), launch = `launch_${agentId}`;
+  const sub = join(dir, session, "subagents");
+  mkdirSync(sub, { recursive: true });
+  writeFileSync(join(sub, `agent-${agentId}.meta.json`), JSON.stringify({ agentType: "general-purpose", toolUseId: launch }));
+  writeFileSync(join(sub, `agent-${agentId}.jsonl`), [
+    { type: "user", isSidechain: true, agentId, sessionId: session, message: { role: "user", content: prompt } },
+    { type: "assistant", isSidechain: true, agentId, sessionId: session, message: { content: [{ type: "tool_use", id: callId, name: `mcp__codemap__${tool}`, input }] } },
+    { type: "user", isSidechain: true, agentId, sessionId: session, message: { content: [{ type: "tool_result", tool_use_id: callId, content: JSON.stringify(result) }] } },
+  ].map((x) => JSON.stringify(x)).join("\n") + "\n");
+  writeFileSync(join(dir, `${session}.jsonl`), [
+    { type: "assistant", isSidechain: false, timestamp: new Date().toISOString(), message: { content: [{ type: "tool_use", id: launch, name: "Agent", input: { prompt, subagent_type: "general-purpose" } }] } },
+    { type: "user", isSidechain: false, message: { content: [{ type: "tool_result", tool_use_id: launch, content: "launched" }] }, toolUseResult: { agentId } },
+  ].map((x) => JSON.stringify(x)).join("\n") + "\n");
+  return callId;
+}
+
+/** Brief, held submission and transcript for one subagent slot, launched on `launcher`. */
+async function viaSubagent(f: Awaited<ReturnType<typeof fixture>>, launcher: RepairConnection, slot: 1 | 2, agentId: string, dir: string,
+  tamper: { prompt?: string; results?: RepairClaimVerdict[] } = {}) {
+  const brief = await repairVerificationBrief(f.root, 7, { requestId: f.requestId, role: "verifier", slot }, launcher) as { launch: string };
+  ok(brief);
+  const results = f.results();
+  const held = await submitRepairVerification(f.root, 7, { requestId: f.requestId, slot, results }, launcher) as { held: boolean; receipt: string };
+  assert.equal(held.held, true, JSON.stringify(held));
+  const callId = subagentTranscript(dir, agentId, tamper.prompt ?? brief.launch, "repair_verification",
+    { review: "7", requestId: f.requestId, slot, results: tamper.results ?? results }, held);
+  return recordRepairVerification(f.root, 7, { requestId: f.requestId, role: "verifier", slot, receipt: held.receipt, agentId, callId }, dir);
+}
+
+test("a subagent verifier's held run is recorded only from its own transcript: exact launch prompt, exact submission", async () => {
+  const f = await fixture();
+  const dir = mkdtempSync(join(tmpdir(), "codemap-repair-tx-"));
+  try {
+    const wrongPrompt = await viaSubagent(f, f.orchestrator, 1, "a1111111", dir, { prompt: "verify the repair please" });
+    assert.match((wrongPrompt as { error: string }).error, /exactly the issued prompt/);
+    const changed = await viaSubagent(f, f.orchestrator, 1, "a2222222", dir, { results: f.results("factually-refuted") });
+    assert.match((changed as { error: string }).error, /differs from what was held/);
+    const recorded = await viaSubagent(f, f.orchestrator, 1, "a3333333", dir);
+    ok(recorded);
+    assert.ok("run" in recorded && recorded.run);
+    assert.deepEqual(recorded.run.identity, { principal: "owner@acme.test", harness: "claude-subagent", session: f.orchestrator.session, child: "a3333333" });
+  } finally { discard(dir); f.t.dispose(); }
+});
+
+test("subagents the fixer launched verify its repair at a weaker grade; the fixer's own connection cannot", async () => {
+  const f = await fixture();
+  const dir = mkdtempSync(join(tmpdir(), "codemap-repair-tx-"));
+  try {
+    ok(await recordRepairParticipant(f.root, 7, { repairId: "sort1", role: "fixer" }, f.orchestrator));
+    ok(await viaSubagent(f, f.orchestrator, 1, "a4444444", dir));
+    ok(await viaSubagent(f, f.orchestrator, 2, "a5555555", dir));
+    const records = await repairRecords(f.root, 7);
+    assert.ok("verificationResults" in records && records.verificationResults);
+    const result = records.verificationResults.find((r) => r.findingId === f.ids[0]);
+    assert.equal(result?.complete, true);
+    assert.equal(result?.launchedByParticipant, true, "the owner's weaker grade");
+  } finally { discard(dir); f.t.dispose(); }
 });

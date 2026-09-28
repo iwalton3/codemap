@@ -289,7 +289,7 @@ test("repair verification event vocabulary and projection are pinned to the mate
   const { MATERIALIZER_VERSION } = await import("./materialize.js");
   const src = readFileSync("src/repair-verification.ts", "utf8");
   const kinds = [...new Set([...src.matchAll(/"(repair\.verification-[a-z-]+)"/g)].map(m => m[1]))].sort();
-  assert.deepEqual(kinds, ["repair.verification-arbitrated", "repair.verification-producer", "repair.verification-requested", "repair.verification-sealed"]);
+  assert.deepEqual(kinds, ["repair.verification-arbitrated", "repair.verification-recorded", "repair.verification-requested"]);
   assert.match(readFileSync("src/shared-projections.ts", "utf8"), /INSERT OR REPLACE INTO repair_verifications/);
   assert.match(readFileSync("src/db.ts", "utf8"), /CREATE TABLE IF NOT EXISTS repair_verifications/);
   assert.equal(MATERIALIZER_VERSION, 49);

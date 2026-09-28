@@ -11,7 +11,6 @@ import { materializeStandard } from '../standard-publish.js';
 import { decisionScope, foldDecisions, answerHasCurrentAuthority, intentCandidates, comparisonRestricts } from '../shared-decisions.js';
 import { operationContent, framingContent, contentDiff } from '../schema.js';
 import { readReader, isUnverified, transcriptDir } from '../transcript.js';
-import { verifyCodexReaderReceipt, type CodexReaderSubmission } from '../codex-reader.js';
 import { saveReaderRequest, readerRequest, holdReaderReceipt, readerReceipts, settleReaderReceipt } from '../reader-local.js';
 import { readProposalWitnesses } from '../store.js';
 import { operationSignoffDisplay, operationSignoffReaderPrompt, operationSignoffKey, signoffHash, validateOperationSignoff, SIGN_OPERATION, type OperationSignoffCapsule } from '../operation-signoff.js';
@@ -118,13 +117,13 @@ export function submitOperationSignoffVerdict(root: string, input: {
   requestId: string;
   verdict: 'sound' | 'unsound';
   rationale: string;
-}, nativeSubmission?: CodexReaderSubmission) {
+}) {
   if (!parsedBrief(root, input.requestId))
     return { error: 'no operation sign-off reader brief' };
   if (!['sound', 'unsound'].includes(input.verdict) || !input.rationale?.trim())
     return { error: 'reader verdict and rationale are required' };
   const receipt = randomUUID();
-  const held = holdReaderReceipt(root, { purpose: PURPOSE, requestId: input.requestId }, receipt, JSON.stringify({ verdict: input.verdict, rationale: input.rationale }), undefined, nativeSubmission);
+  const held = holdReaderReceipt(root, { purpose: PURPOSE, requestId: input.requestId }, receipt, JSON.stringify({ verdict: input.verdict, rationale: input.rationale }));
   return 'error' in held ? held : { ok: true as const, held: true as const, receipt };
 }
 interface VerifiedCall {
@@ -155,11 +154,9 @@ const resultObject = (v: unknown): any => {
 function verifyCall(brief: Brief, receipt: string, body: {
   verdict: string;
   rationale: string;
-}, agentId: string, callId: string, dir: string | undefined, nativeHost?: string): VerifiedCall | {
+}, agentId: string, callId: string, dir: string | undefined): VerifiedCall | {
   error: string;
 } {
-  if (nativeHost) return verifyCodexReaderReceipt({ nativeHost, purpose: PURPOSE, requestId: brief.requestId,
-    prompt: brief.prompt, body, receipt, agentId, callId, dir });
   dir ??= transcriptDir();
   const reader = readReader(agentId, callId, dir);
   if (isUnverified(reader))
@@ -213,7 +210,7 @@ function verifiedReceipt(root: string, ref: OperationSignoffReceiptRef, dir: str
   catch {
     return { error: 'malformed reader verdict' };
   }
-  const call = verifyCall(brief, ref.receipt, body, ref.agentId, ref.callId, dir, held.nativeHost);
+  const call = verifyCall(brief, ref.receipt, body, ref.agentId, ref.callId, dir);
   if ('error' in call)
     return call;
   return { brief, body, call };

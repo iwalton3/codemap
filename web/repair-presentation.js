@@ -18,7 +18,7 @@ export function repairPresentation(repair) {
     ${each(repair.lifecycles || [], (l) => html`<div class="repair-lifecycle"><b>${repairStateLabel(l.state)}</b> · ${l.grade} grade · ${l.applied ? 'historical closure applied' : 'not applied'}
       <div class="fs">Checked commit ${l.code?.checkedCommit || 'unknown'} · landing ${l.code?.landing || 'unknown'} · ${l.currentProof ? 'current proof' : 'historical or incomplete proof'}</div>
       <div class="fs">Evidence ${l.evidenceId} · request ${l.requestId} · rulings ${l.rulingIds.join(', ') || 'none'}</div>
-      <div class="fs">Verifiers ${l.verifiers.map(v => [v.principal, v.harness, v.session, v.child].filter(Boolean).join(' / ')).join('; ') || 'none qualifying'}</div>
+      <div class="fs">Verifiers ${l.verifiers.map(v => v.child ? `${v.principal} / subagent ${v.child}` : `${v.principal} / session ${v.session}`).join('; ') || 'none qualifying'}${l.launchedByParticipant ? ' · weaker: launched by the fixer' : ''}</div>
       ${each(l.claims, (claim) => html`<div class="fs">Claim ${claim.id}: ${claim.text}</div>`, (claim) => claim.id)}
       ${each(l.attention, (reason) => html`<div class="repair-lifecycle-attention qbadge drift">Repair needs attention: ${reason}</div>`, (reason) => reason)}
     </div>`, (l) => l.requestId + ':' + l.findingId)}

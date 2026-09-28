@@ -7,8 +7,6 @@ import { DatabaseSync } from "node:sqlite";
 import { db } from "./db.js";
 import { discard } from "./test-tmp.js";
 import { holdReaderReceipt, readerReceipts, readerRequest, saveReaderRequest, settleReaderReceipt } from "./reader-local.js";
-import { mintCodexReaderSubmission } from "./codex-reader.js";
-import { codexCliVerifierFixture } from "./test-codex-verifier.js";
 
 test("purpose-keyed reader persistence upgrades an existing store without changing answer-keyed evidence", () => {
   const root = mkdtempSync(join(tmpdir(), "codemap-reader-local-"));
@@ -56,7 +54,6 @@ test("purpose-keyed reader persistence upgrades an existing store without changi
     assert.deepEqual(readerReceipts(root, { purpose: "issue-application", requestId: "legacy-work" }),
       [{ seq: 1, purpose: "issue-application", requestId: "legacy-work", receipt: "legacy-token", body: "legacy-verdict",
         heldAt: "2026-09-23T00:00:00Z", state: "recorded", call: "legacy-call" }]);
-    assert.equal((d.prepare("SELECT native_host FROM reader_work_receipts WHERE receipt='legacy-token'").get() as { native_host: null }).native_host, null);
     assert.equal((d.prepare("SELECT body FROM reader_requests WHERE answer = 'same-id'").get() as { body: string }).body, "issued old brief");
     assert.equal((d.prepare("SELECT verdict, state FROM reader_verdicts WHERE answer = 'same-id'").get() as { verdict: string; state: string }).verdict, "old pending verdict");
     assert.equal((d.prepare("SELECT state FROM reader_verdicts WHERE answer = 'same-id'").get() as { state: string }).state, "pending");
@@ -65,25 +62,3 @@ test("purpose-keyed reader persistence upgrades an existing store without changi
   } finally { discard(root); }
 });
 
-test("native held provenance is immutable and only accepted through a dispatcher capability", () => {
-  const root = mkdtempSync(join(tmpdir(), "codemap-reader-native-"));
-  const f = codexCliVerifierFixture();
-  try {
-    const key = { purpose: "issue-application" as const, requestId: "request" };
-    const args = { requestId: key.requestId, verdict: "sound", rationale: "exact ruling" };
-    const body = JSON.stringify({ verdict: args.verdict, rationale: args.rationale });
-    saveReaderRequest(root, key, "issued");
-    const cap = mintCodexReaderSubmission({ ...f.options, tool: "submit_application_verdict", arguments: args }, f.options.transcriptDir);
-    assert.ok(!("error" in cap));
-    assert.deepEqual(holdReaderReceipt(root, key, "native-token", body, undefined, cap), { held: true, seq: 1 });
-    const held = readerReceipts(root, key)[0]!;
-    assert.equal(JSON.parse(held.nativeHost!).requestMeta.callId, f.options.requestMeta.callId);
-    f.options.requestMeta.callId = "mutated-after-mint";
-    assert.deepEqual(holdReaderReceipt(root, key, "native-token", body, undefined, cap), { held: false, seq: 1 });
-    assert.ok("error" in holdReaderReceipt(root, key, "native-token", body));
-    assert.ok("error" in holdReaderReceipt(root, key, "forged-token", body, undefined, { nativeReaderSubmission: true }));
-    assert.equal(readerReceipts(root, key).length, 1);
-    settleReaderReceipt(root, key, "native-token", "recorded", undefined, "claim-call");
-    assert.equal(readerReceipts(root, key)[0]?.nativeHost, held.nativeHost);
-  } finally { f.clean(); discard(root); }
-});

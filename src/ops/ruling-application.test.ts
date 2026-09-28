@@ -17,7 +17,6 @@ import { findingsProjection } from "../shared-projections.js";
 import { applicationReaderBrief, submitApplicationVerdict, recordApplicationVerdict, applyRuling } from "./ruling-application.js";
 import { readerReceipts } from "../reader-local.js";
 import { discard } from "../test-tmp.js";
-import { nativeReaderFixture } from "../test-codex-reader.js";
 
 const SRC = "export function creditLine(cents) { return cents * 2; }\n";
 const session = "5e55a0a0-0000-0000-0000-000000000001";
@@ -86,36 +85,6 @@ function transcript(dir: string, prompt: string, requestId: string, verdict: str
   return { agentId, callId: call, requestId, receipt };
 }
 
-test("host-bound native application receipt rechecks source before recording and applying", async () => {
-  const u = await fixture();
-  let native: ReturnType<typeof nativeReaderFixture> | undefined;
-  try {
-    await asAgent(async () => {
-      const brief = await applicationReaderBrief(u.root, { issue: u.issue, answerId: u.answer, slot: 1 }) as any;
-      assert.equal(brief.ok, true);
-      const input = { requestId: brief.requestId, verdict: "sound" as const, rationale: "The exact human answer refutes this finding." };
-      native = nativeReaderFixture(brief.prompt, "submit_application_verdict", input);
-      const held = submitApplicationVerdict(u.root, input, native.submission) as any;
-      assert.equal(held.held, true, JSON.stringify(held));
-      const ref = { requestId: brief.requestId, receipt: held.receipt, agentId: "child", callId: "claim-call" };
-      assert.equal((recordApplicationVerdict(u.root, ref, native.options.transcriptDir) as any).pending, true);
-      native.completed(held.receipt);
-      assert.equal((recordApplicationVerdict(u.root, ref, native.options.transcriptDir) as any).recorded, true);
-      assert.equal((recordApplicationVerdict(u.root, { ...ref, agentId: "other" }, native.options.transcriptDir) as any).pending, true);
-      native.eraseChild();
-      assert.equal((recordApplicationVerdict(u.root, ref, native.options.transcriptDir) as any).pending, true);
-      assert.match(error(await applyRuling(u.root, { issue: u.issue, answerId: u.answer, readers: [ref] }, native.options.transcriptDir)), /provenance/);
-      assert.equal((await readFinding(u.root, u.id))?.state, "issued");
-      native.save();
-      const applied = await applyRuling(u.root, { issue: u.issue, answerId: u.answer, readers: [ref] }, native.options.transcriptDir) as any;
-      assert.equal(applied.materialized, true, JSON.stringify(applied));
-      assert.equal((await readFinding(u.root, u.id))?.state, "invalid");
-      const retry = await applyRuling(u.root, { issue: u.issue, answerId: u.answer, readers: [ref] }, native.options.transcriptDir) as any;
-      assert.equal(retry.application, applied.application);
-    });
-  } finally { native?.clean(); u.cleanup(); }
-});
-
 test("application refuses bare approval and requires a recorded authentic reader call; retry keeps one event", async () => {
   const u = await fixture();
   try {
@@ -135,34 +104,6 @@ test("application refuses bare approval and requires a recorded authentic reader
       assert.equal((await readFinding(u.root, u.id))?.state, "invalid", JSON.stringify(await readFinding(u.root, u.id)));
       const retry = await applyRuling(u.root, { issue: u.issue, answerId: u.answer, readers: [] }, u.tx) as any;
       assert.equal(retry.application, applied.application, JSON.stringify(retry));
-    });
-  } finally { u.cleanup(); }
-});
-
-test("a native outer exec receipt cannot establish the nested application reader call", async () => {
-  const u = await fixture();
-  try {
-    await asAgent(async () => {
-      const brief = await applicationReaderBrief(u.root, { issue: u.issue, answerId: u.answer, slot: 1 }, u.tx) as any;
-      assert.equal(brief.ok, true, JSON.stringify(brief));
-      const rationale = "The person rejects the premise.";
-      const held = submitApplicationVerdict(u.root, { requestId: brief.requestId, verdict: "sound", rationale }) as any;
-      assert.equal(held.held, true, JSON.stringify(held));
-      const agentId = "5e55a0a0-0000-0000-0000-000000000002", callId = "outer-exec-call";
-      writeFileSync(join(u.tx, `rollout-native-${agentId}.jsonl`), [
-        { type: "session_meta", payload: { id: agentId, session_id: session, cli_version: "0.158.0-alpha.2.1" } },
-        { type: "response_item", payload: { type: "custom_tool_call", name: "exec", call_id: callId,
-          input: `text(await tools.mcp__codemap__submit_application_verdict(${JSON.stringify({ requestId: brief.requestId, verdict: "sound", rationale })}));` } },
-        { type: "response_item", payload: { type: "custom_tool_call_output", call_id: callId,
-          output: JSON.stringify({ ok: true, held: true, receipt: held.receipt }) } },
-      ].map((row) => JSON.stringify(row)).join("\n") + "\n");
-      const ref = { requestId: brief.requestId, receipt: held.receipt, agentId, callId };
-      const recorded = recordApplicationVerdict(u.root, ref, u.tx) as any;
-      assert.equal(recorded.pending, true, JSON.stringify(recorded));
-      assert.match(recorded.reason, /native Codex.*unsupported/);
-      assert.equal(readerReceipts(u.root, { purpose: "issue-application", requestId: brief.requestId })[0]?.state, "pending");
-      assert.match(error(await applyRuling(u.root, { issue: u.issue, answerId: u.answer, readers: [ref] }, u.tx)), /not recorded/);
-      assert.equal((await readFinding(u.root, u.id))?.state, "issued");
     });
   } finally { u.cleanup(); }
 });

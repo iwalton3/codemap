@@ -991,8 +991,7 @@ function foldFindingsInternal(events: LogEvent[], replay: ApplicationReplay): Ma
       case "finding.repairApplied": {
         const application = d as unknown as RepairVerificationApplication;
         const prior = replay.all.filter(p => replay.causal.saw(e.id, p.id));
-        const participants = foldRepairRecords(prior).participants.filter(p => p.input.trust === "native-session").map(p => p.input);
-        const verification = foldRepairVerification([...prior, e], { participants });
+        const verification = foldRepairVerification([...prior, e]);
         if (!verification.applications.some(a => a.id === application?.id)) break;
         const act = atAct(e);
         if (!act || isClosed(act.state) || act.contested?.length || act.openEpoch !== application.openEpoch
@@ -1089,7 +1088,7 @@ function foldFindingsInternal(events: LogEvent[], replay: ApplicationReplay): Ma
 export function foldFindings(events: LogEvent[]): RepairFindingMap<SharedFinding> {
   const out: RepairFindingMap<SharedFinding> = foldFindingsInternal(events, { all: events, causal: causality(events), snapshots: new Map() });
   out.repairRecords = foldRepairRecords(events);
-  const verification = foldRepairVerification(events, { participants: out.repairRecords.participants.filter(p => p.input.trust === "native-session").map(p => p.input) });
+  const verification = foldRepairVerification(events);
   out.repairVerification = verification;
   for (const finding of out.values()) {
     if (finding.repairClosure && !verification.applications.some(a => a.id === finding.repairClosure!.applicationId)) {

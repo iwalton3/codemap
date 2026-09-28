@@ -10,17 +10,20 @@ import { foldFindings } from "./shared-findings.js";
 import { findingsProjection } from "./shared-projections.js";
 import { readCached, scopeFingerprint, MATERIALIZER_VERSION } from "./materialize.js";
 import { db } from "./db.js";
-import { readRepairRecords, trustedRepairParticipants } from "./store.js";
+import { readRepairRecords } from "./store.js";
 import { discard } from "./test-tmp.js";
 
-const who = { principal: "alice", harness: "codex", session: "s1" };
+/** A sorter as the skill's sort reports it, and a fixer as the connection it worked on. */
+const who = { principal: "alice", session: "s1" };
 const other = { ...who, session: "s2" };
+const fixer = { principal: "alice", harness: "mcp" as const, session: "s1" };
 const actor = { principal: "alice" };
+const agent = { principal: "alice", via: { kind: "agent" as const, model: "m" } };
 const created = { kind: "finding.created", subject: "f1", data: { text: "negative and duplicate credits accepted", targetId: "a", targetKind: "anchor" } };
 const sort = (over: Partial<RepairSortInput> = {}): RepairSortInput => ({ id: "s1", classification: "mechanical", kind: "isolated", coverage: [{ findingId: "f1", claimIds: ["f1:original"] }], restsOn: [], source: "exact reviewed worklist", provenance: "owner-reviewed", assessments: [], disagreements: [], ...over });
-const ev = (over: Partial<RepairEvidenceInput> = {}): RepairEvidenceInput => ({ id: "proof", sortId: "s1", witnessCommit: "a".repeat(40), baseCommit: "b".repeat(40), fixCommit: "c".repeat(40), coverage: [{ findingId: "f1", claimIds: ["f1:original"], result: "complete", reason: "examined whole claim", claimResults: [{ claimId: "f1:original", result: "complete", reason: "examined whole claim" }] }], reproducer: [], changeFalsifier: [], regression: [], inspected: [], rulingIds: [], attribution: [], ...over });
-const chain = (rest: { kind: string; subject: string; data: Record<string, unknown>; actor?: typeof actor }[]) => testChain("writer", [created, ...rest].map((e, i) => ({ id: String(i + 1), actor, ...e })));
-const sorted = (s = sort()) => ({ kind: "repair.sort-recorded", subject: s.id, data: { ...s } });
+const ev = (over: Partial<RepairEvidenceInput> = {}): RepairEvidenceInput => ({ id: "proof", sortId: "s1", witnessCommit: "a".repeat(40), baseCommit: "b".repeat(40), fixCommit: "c".repeat(40), coverage: [{ findingId: "f1", claimIds: ["f1:original"], result: "complete", reason: "examined whole claim", claimResults: [{ claimId: "f1:original", result: "complete", reason: "examined whole claim" }] }], reproducer: [], regression: [], inspected: [], rulingIds: [], attribution: [], ...over });
+const chain = (rest: { kind: string; subject: string; data: Record<string, unknown>; actor?: { principal: string } }[]) => testChain("writer", [created, ...rest].map((e, i) => ({ id: String(i + 1), actor, ...e })));
+const sorted = (s = sort(), by: { principal: string; via?: { kind: "agent"; model: string } } = actor) => ({ kind: "repair.sort-recorded", subject: s.id, data: { ...s }, actor: by });
 const proof = (data = ev()) => ({ kind: "repair.evidence-recorded", subject: data.id, data: { ...data } });
 
 test("repeated correction cannot launder a narrowed original pattern", () => {
@@ -39,7 +42,7 @@ test("malformed arbitration is rejected without crashing the canonical fold", ()
   assert.equal(foldFindings(chain([sorted(input)])).get("f1")!.state, "created");
 });
 
-test("exact reported sorter and arbitration receipts survive without granting verified authority", () => {
+test("the skill's two-sorter sort, arbitrated where they disagree, makes a repair eligible and keeps its reported receipts", () => {
   const receipt = { id: "sort-call-1", source: "native transcript call", content: "mechanical: two missing guards" };
   const input = sort({ provenance: "dual-sorted", assessments: [
     { identity: who, classification: "mechanical", reason: "missing guards", receipt },
@@ -49,8 +52,11 @@ test("exact reported sorter and arbitration receipts survive without granting ve
   const records = foldRepairRecords(JSON.parse(JSON.stringify(chain([sorted(input)]))));
   assert.deepEqual(records.sorts[0]!.input.assessments[0]!.receipt, receipt);
   assert.equal(records.sorts[0]!.input.arbitration!.receipt!.content, input.arbitration!.receipt!.content);
-  assert.equal(records.sorts[0]!.eligible, false);
-  assert.match(records.sorts[0]!.holds.join(), /receipt unverified|receipts unverified/);
+  assert.equal(records.sorts[0]!.eligible, true, records.sorts[0]!.holds.join());
+  const unarbitrated = foldRepairRecords(chain([sorted({ ...input, arbitration: undefined })]));
+  assert.match(unarbitrated.sorts[0]!.holds.join(), /requires arbitration/);
+  const sameArbitrator = foldRepairRecords(chain([sorted({ ...input, arbitration: { ...input.arbitration!, identity: who } })]));
+  assert.match(sameArbitrator.sorts[0]!.holds.join(), /third session/);
 });
 
 test("original claim remains exact after canonical finding revision and decomposition", () => {
@@ -73,12 +79,12 @@ test("a shared command cannot complete a sibling finding without its own claim r
   assert.equal(repairFindingCompleteness(records, "proof", "f2"), "unknown");
 });
 
-test("same-model sessions cannot invent trusted dual sorting, same-session receipts refuse", () => {
+test("two sorters who agree make a sort eligible; one session sorting twice is refused", () => {
+  // Owner: "2 blind isn't needed for the skill's findings sort" — the sort is the skill's, posted.
   const assessments = [who, other].map(identity => ({ identity, classification: "mechanical", reason: "read code" }));
-  const records = foldRepairRecords(chain([sorted(sort({ provenance: "dual-sorted", assessments }))]));
+  const records = foldRepairRecords(chain([sorted(sort({ provenance: "dual-sorted", assessments }), agent)]));
   assert.equal(records.sorts.length, 1);
-  assert.equal(records.sorts[0]!.eligible, false);
-  assert.match(records.sorts[0]!.holds.join(), /unverified/);
+  assert.equal(records.sorts[0]!.eligible, true, records.sorts[0]!.holds.join());
   const repeated = foldRepairRecords(chain([sorted(sort({ provenance: "dual-sorted", assessments: [assessments[0]!, assessments[0]!] }))]));
   assert.match(repeated.rejected[0]!.reason, /distinct sessions/);
 });
@@ -91,11 +97,11 @@ test("arbitration must address each disagreement and unresolved dependency holds
 });
 
 test("fixer cannot reclassify an initial principal-approved worklist", () => {
-  const records = foldRepairRecords(chain([sorted(), sorted(sort({ id: "s2", prior: "s1", reason: "new reading" })), { kind: "repair.participant-recorded", subject: "s1", data: { repairId: "s1", identity: who, role: "fixer", trust: "native-session" } }]));
+  const records = foldRepairRecords(chain([sorted(), sorted(sort({ id: "s2", prior: "s1", reason: "new reading" })), { kind: "repair.participant-recorded", subject: "s1", data: { repairId: "s1", identity: fixer, role: "fixer" } }]));
   assert.equal(records.sorts.length, 2);
   assert.equal(records.sorts[0]!.holds.some(h => h.includes("fixer")), false);
   assert.ok(records.sorts[1]!.holds.some(h => h.includes("fixer")));
-  const initial = foldRepairRecords(chain([sorted(), { kind: "repair.participant-recorded", subject: "s1", data: { repairId: "s1", identity: who, role: "fixer", trust: "native-session" } }]));
+  const initial = foldRepairRecords(chain([sorted(), { kind: "repair.participant-recorded", subject: "s1", data: { repairId: "s1", identity: fixer, role: "fixer" } }]));
   assert.equal(initial.sorts[0]!.eligible, true);
 });
 
@@ -121,17 +127,17 @@ test("folding repair proof never closes a canonical finding", () => {
   assert.equal(findings.repairRecords!.evidence.length, 1);
 });
 
-test("unchanged shards replay old materializer cache and atomically persist trusted participants", async () => {
+test("unchanged shards replay old materializer cache and atomically persist participants", async () => {
   const root = mkdtempSync(join(tmpdir(), "repair-replay-"));
   const log = join(root, "sidecar"); const scope = "findings/acme/pr-1";
   try {
     mkdirSync(join(log, scope), { recursive: true });
-    const events = chain([sorted(), proof(), { kind: "repair.participant-recorded", subject: "s1", data: { repairId: "s1", identity: who, role: "fixer", trust: "native-session" } }]);
+    const events = chain([sorted(), proof(), { kind: "repair.participant-recorded", subject: "s1", data: { repairId: "s1", identity: fixer, role: "fixer" } }]);
     writeFileSync(join(log, scope, "writer.ndjson"), events.map(e => JSON.stringify(e)).join("\n") + "\n");
     await readCached(root, log, scope, "identity", foldFindings, findingsProjection);
     const d = db(root);
     assert.equal(readRepairRecords(root, scope).evidence.length, 1);
-    assert.equal(trustedRepairParticipants(root)[0]!.identity.session, "s1");
+    assert.equal(readRepairRecords(root, scope).participants[0]!.input.identity.session, "s1");
     d.prepare("UPDATE repair_records SET body=? WHERE scope=?").run(JSON.stringify({ claims: [], sorts: [], evidence: [], participants: [], rejected: [] }), scope);
     const oldHash = createHash("sha256");
     oldHash.update(`v44\0identity\0${scope}\0`);
@@ -144,19 +150,24 @@ test("unchanged shards replay old materializer cache and atomically persist trus
     assert.equal(MATERIALIZER_VERSION, 49);
     assert.equal((d.prepare("SELECT fingerprint FROM shared_scope WHERE scope=?").get(scope) as {fingerprint:string}).fingerprint, await scopeFingerprint(log, scope, "identity"));
     d.prepare("UPDATE repair_records SET body='{}' WHERE scope=?").run(scope);
-    assert.throws(() => trustedRepairParticipants(root), /malformed shape/);
-    await readCached(root, log, scope, "identity", foldFindings, findingsProjection);
-    assert.equal(readRepairRecords(root, scope).evidence.length, 1);
-    d.prepare("UPDATE shared_scope SET status='blocked' WHERE scope=?").run(scope);
-    assert.throws(() => trustedRepairParticipants(root), /not authoritative/);
+    assert.throws(() => readRepairRecords(root, scope), /malformed shape/);
   } finally { discard(root); }
 });
 
 
-test("competing correction heads remain held rather than becoming one latest eligible sort", () => {
-  const records = foldRepairRecords(chain([sorted(), sorted(sort({ id: "left", prior: "s1", reason: "first reading" })), sorted(sort({ id: "right", prior: "s1", reason: "different reading" }))]));
+test("two corrections competing from one sort are a question for the owner; the owner's own correction answers it", () => {
+  // Owner, Defaults A2: "the latest wins, and two competing corrections become a question to you".
+  const left = sorted(sort({ id: "left", prior: "s1", reason: "first reading" }), agent);
+  const right = sorted(sort({ id: "right", prior: "s1", reason: "different reading" }), agent);
+  const records = foldRepairRecords(chain([sorted(), left, right]));
   assert.equal(records.sorts[0]!.current, false);
-  assert.ok(records.sorts.slice(1).every(s => s.current && !s.eligible && s.holds.some(h => h.includes("competing"))));
+  assert.ok(records.sorts.slice(1).every(s => s.current && !s.eligible && s.holds.some(h => h.includes("question for the owner"))));
+  const decided = foldRepairRecords(chain([sorted(), left, right, sorted(sort({ id: "owner", prior: "left", reason: "the owner's reading" }))]));
+  const by = (id: string) => decided.sorts.find(s => s.input.id === id)!;
+  assert.equal(by("owner").eligible, true, by("owner").holds.join());
+  assert.match(by("right").holds.join(), /outranked by the owner's correction owner/);
+  const linear = foldRepairRecords(chain([sorted(), sorted(sort({ id: "s2", prior: "s1", reason: "r" }), agent), sorted(sort({ id: "s3", prior: "s2", reason: "r" }), agent)]));
+  assert.ok(!linear.sorts.find(s => s.input.id === "s3")!.holds.some(h => h.includes("question")), "a linear chain has one latest correction");
 });
 
 test("absent check data stays absent, explicit no-check reasons cannot be blank", () => {
@@ -178,13 +189,13 @@ test("pattern completeness retains original sites despite narrowed enumeration",
 
 
 test("deep correction descendants cannot launder another unresolved lineage head", () => {
-  const records = foldRepairRecords(chain([sorted(), sorted(sort({ id: "left", prior: "s1", reason: "first reading" })), sorted(sort({ id: "right", prior: "s1", reason: "different reading" })), sorted(sort({ id: "left2", prior: "left", reason: "adjust first reading" }))]));
-  assert.ok(records.sorts.filter(s => s.current).every(s => !s.eligible && s.holds.some(h => h.includes("competing"))));
+  const records = foldRepairRecords(chain([sorted(), sorted(sort({ id: "left", prior: "s1", reason: "first reading" }), agent), sorted(sort({ id: "right", prior: "s1", reason: "different reading" }), agent), sorted(sort({ id: "left2", prior: "left", reason: "adjust first reading" }), agent)]));
+  assert.ok(records.sorts.filter(s => s.current).every(s => !s.eligible && s.holds.some(h => h.includes("question for the owner"))));
 });
 
 
 test("a fresh sort ID cannot bypass an existing contested claim lineage", () => {
-  const records = foldRepairRecords(chain([sorted(), sorted(sort({ id: "left", prior: "s1", reason: "first reading" })), sorted(sort({ id: "right", prior: "s1", reason: "different reading" })), sorted(sort({ id: "unrelated" }))]));
+  const records = foldRepairRecords(chain([sorted(), sorted(sort({ id: "left", prior: "s1", reason: "first reading" }), agent), sorted(sort({ id: "right", prior: "s1", reason: "different reading" }), agent), sorted(sort({ id: "unrelated" }), agent)]));
   assert.ok(records.sorts.filter(s => s.current).every(s => !s.eligible));
 });
 

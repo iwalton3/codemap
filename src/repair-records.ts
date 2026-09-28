@@ -1,26 +1,24 @@
-import { repairSortReceiptHolds } from "./repair-sort.js";
 import type { Actor, BugWitness } from "./schema.js";
 import { sortEvents, type LogEvent } from "./eventlog.js";
-import { verifierIdentityKey, type VerifierIdentity, type RepairParticipant } from "./verifier-boundary.js";
+import type { VerifierIdentity, RepairParticipant } from "./verifier-boundary.js";
 
 export type { RepairClaim, RepairCoverage, ReportedSortReceipt, RepairAssessment, RepairSortInput } from "./repair-sort-types.js";
 import type { RepairClaim, RepairCoverage, ReportedSortReceipt, RepairSortInput } from "./repair-sort-types.js";
 export interface RepairExecution {
   id: string; command: string; commit: string; environment: string;
-  phase: "witness" | "fix" | "reversal" | "mutation" | "regression"; mutation?: string; reversedHunks?: string[];
+  phase: "witness" | "fix" | "regression";
   outcome: "passed" | "failed" | "unknown"; exitCode?: number; stdout?: string; stderr?: string; reason?: string;
 }
 export interface RepairEvidenceInput {
   id: string; sortId: string; witnessCommit: string; baseCommit: string; fixCommit: string;
   coverage: (RepairCoverage & { result: "complete" | "partial" | "unknown"; reason: string; claimResults: { claimId: string; result: "complete" | "partial" | "unknown"; reason: string }[] })[];
-  reproducer: RepairExecution[]; changeFalsifier: RepairExecution[]; regression: RepairExecution[];
+  reproducer: RepairExecution[]; regression: RepairExecution[];
   patternEnumeration?: { expected: string[]; actual: string[]; method: string };
   inspected: { source: string; commit: string; reasoning: string }[]; noCheckReason?: string;
   rulingIds: string[]; attribution: { file: string; hunk: string; claimIds: string[] }[];
 }
-export interface RepairParticipantInput extends RepairParticipant {
-  repairId: string; trust: "native-session" | "server-actor";
-}
+/** A fixer or relayer, as the connection it worked on — see `verifier-boundary.ts`. */
+export interface RepairParticipantInput extends RepairParticipant { repairId: string }
 export interface Recorded<T> { input: T; eventId: string; actor: Actor; at: string }
 export interface RepairRecords {
   claims: RepairClaim[]; sorts: (Recorded<RepairSortInput> & { eligible: boolean; current: boolean; holds: string[] })[];
@@ -30,8 +28,8 @@ export interface RepairRecords {
 export type RepairFindingMap<T> = Map<string, T> & { repairRecords?: RepairRecords; repairVerification?: unknown };
 export const emptyRepairRecords = (): RepairRecords => ({ claims: [], sorts: [], evidence: [], participants: [], rejected: [] });
 const nonempty = (v: unknown): v is string => typeof v === "string" && v.trim().length > 0;
-const identity = (v: VerifierIdentity | undefined): boolean => !!v && [v.principal, v.harness, v.session].every(nonempty)
-  && (v.child === undefined || nonempty(v.child));
+const identity = (v: VerifierIdentity | undefined): boolean => !!v && v.harness === "mcp" && v.child === undefined && [v.principal, v.session].every(nonempty);
+const reported = (v: { principal: string; session: string } | undefined): boolean => !!v && nonempty(v.principal) && nonempty(v.session);
 const unique = (xs: string[]) => new Set(xs).size === xs.length;
 const commit = (v: string) => /^[a-f0-9]{40,64}$/.test(v);
 const receiptValid = (v: ReportedSortReceipt | undefined) => v === undefined || !!v && [v.id, v.source, v.content].every(nonempty);
@@ -65,19 +63,19 @@ export function foldRepairRecords(input: LogEvent[]): RepairRecords {
         else for (const c of d.claims) out.claims.push({ id: c.id, text: c.text, findingId: parent.findingId, parentId: parent.id, eventId: e.id, actor: e.actor, at: e.at, reason: d.reason });
       } else if (e.kind === "repair.participant-recorded") {
         const data = d as RepairParticipantInput;
-        if (!nonempty(data.repairId) || !identity(data.identity) || !["fixer", "relayer"].includes(data.role) || !["native-session", "server-actor"].includes(data.trust) || data.identity.principal !== e.actor.principal) error = "invalid server-bound repair participant";
+        if (!nonempty(data.repairId) || !identity(data.identity) || !["fixer", "relayer"].includes(data.role) || data.identity.principal !== e.actor.principal) error = "invalid repair participant";
         else out.participants.push(record(e, data));
       } else if (e.kind === "repair.sort-recorded") {
         const data = d as RepairSortInput;
         error = coverageError(data.coverage);
         if (!error && (!nonempty(data.id) || data.id !== e.subject || out.sorts.some(s => s.input.id === data.id) || !nonempty(data.classification) || !["isolated", "pattern"].includes(data.kind))) error = "invalid or duplicate sort";
-        if (!error && (!Array.isArray(data.restsOn) || !Array.isArray(data.disagreements) || !Array.isArray(data.assessments) || data.assessments.some(a => !identity(a.identity) || !nonempty(a.reason) || !nonempty(a.classification)))) error = "invalid sort provenance";
+        if (!error && (!Array.isArray(data.restsOn) || !Array.isArray(data.disagreements) || !Array.isArray(data.assessments) || data.assessments.some(a => !reported(a.identity) || !nonempty(a.reason) || !nonempty(a.classification)))) error = "invalid sort provenance";
         if (!error && (data.restsOn.some(x => !nonempty(x)) || data.disagreements.some(x => !x || !nonempty(x.id) || !nonempty(x.text)) || !unique(data.disagreements.map(x => x.id)))) error = "invalid sort dependencies or disagreement";
-        if (!error && data.arbitration && (!Array.isArray(data.arbitration.addresses) || data.arbitration.addresses.some(x => !nonempty(x)) || !nonempty(data.arbitration.reason) || !identity(data.arbitration.identity))) error = "arbitration needs addressed disagreements and provenance";
+        if (!error && data.arbitration && (!Array.isArray(data.arbitration.addresses) || data.arbitration.addresses.some(x => !nonempty(x)) || !nonempty(data.arbitration.reason) || !reported(data.arbitration.identity))) error = "arbitration needs addressed disagreements and provenance";
         if (!error && data.sites !== undefined && (!Array.isArray(data.sites) || data.sites.some(x => !nonempty(x)))) error = "sites must be explicit strings";
         if (!error && (data.assessments.some(a => !receiptValid(a.receipt)) || !receiptValid(data.arbitration?.receipt))) error = "reported receipt needs exact content and source";
         if (!error && data.provenance !== "owner-reviewed" && data.provenance !== "dual-sorted") error = "unknown sort provenance";
-        if (!error && data.provenance === "dual-sorted" && new Set(data.assessments.map(a => verifierIdentityKey(a.identity))).size < 2) error = "dual sorting needs distinct sessions";
+        if (!error && data.provenance === "dual-sorted" && (data.assessments.length !== 2 || new Set(data.assessments.map(a => a.identity.session)).size < 2)) error = "dual sorting needs two sorters in distinct sessions";
         if (!error && data.prior && (!nonempty(data.reason) || !out.sorts.some(s => s.input.id === data.prior))) error = "correction needs predecessor and reason";
         if (!error && data.kind === "pattern" && (!nonempty(data.predicate) || !data.sites?.length || !unique(data.sites))) error = "pattern needs predicate and original sites";
         if (!error) out.sorts.push({ ...record(e, data), eligible: false, current: true, holds: [] });
@@ -87,12 +85,11 @@ export function foldRepairRecords(input: LogEvent[]): RepairRecords {
         const sort = out.sorts.find(s => s.input.id === data.sortId);
         if (!error && (!sort || !nonempty(data.id) || data.id !== e.subject || out.evidence.some(p => p.input.id === data.id) || ![data.witnessCommit, data.baseCommit, data.fixCommit].every(commit))) error = "evidence needs existing sort and immutable commits";
         if (!error && data.coverage.some(c => !["complete", "partial", "unknown"].includes(c.result) || !nonempty(c.reason) || c.claimIds.some(id => !sort!.input.coverage.some(r => r.findingId === c.findingId && r.claimIds.includes(id))))) error = "evidence exceeds sorted coverage or omits result reason";
-        if (!error && ![data.reproducer, data.changeFalsifier, data.regression, data.inspected, data.rulingIds, data.attribution].every(Array.isArray)) error = "structured evidence fields are required";
-        if (!error && [...data.reproducer, ...data.changeFalsifier, ...data.regression].some(x => !nonempty(x.command) || !commit(x.commit) || !nonempty(x.environment) || !["passed", "failed", "unknown"].includes(x.outcome) || (x.outcome === "unknown" ? !nonempty(x.reason) : !Number.isInteger(x.exitCode)))) error = "execution needs actual result or explicit unknown reason";
+        if (!error && ![data.reproducer, data.regression, data.inspected, data.rulingIds, data.attribution].every(Array.isArray)) error = "structured evidence fields are required";
+        if (!error && [...data.reproducer, ...data.regression].some(x => !nonempty(x.command) || !commit(x.commit) || !nonempty(x.environment) || !["passed", "failed", "unknown"].includes(x.outcome) || (x.outcome === "unknown" ? !nonempty(x.reason) : !Number.isInteger(x.exitCode)))) error = "execution needs actual result or explicit unknown reason";
         if (!error && data.coverage.some(c => !Array.isArray(c.claimResults) || !unique(c.claimResults.map(r => r.claimId)) || c.claimResults.some(r => !c.claimIds.includes(r.claimId) || !["complete", "partial", "unknown"].includes(r.result) || !nonempty(r.reason)))) error = "per-claim outcomes must cite covered claims and explicit reasons";
-        if (!error && [...data.reproducer, ...data.changeFalsifier, ...data.regression].some(x => !["witness", "fix", "reversal", "mutation", "regression"].includes(x.phase))) error = "execution phase is required";
+        if (!error && [...data.reproducer, ...data.regression].some(x => !["witness", "fix", "regression"].includes(x.phase))) error = "execution phase is required";
         if (!error && data.reproducer.some(x => !["witness", "fix"].includes(x.phase))) error = "reproducer runs distinguish witness from fix";
-        if (!error && data.changeFalsifier.some(x => !["reversal", "mutation"].includes(x.phase) || (x.phase === "mutation" ? !nonempty(x.mutation) : !x.reversedHunks?.length))) error = "falsifier needs explicit reversal or mutation";
         if (!error && data.regression.some(x => x.phase !== "regression")) error = "regression runs have a separate phase";
         if (!error && !unique(data.rulingIds)) error = "ruling IDs must be unique";
         if (!error && data.rulingIds.some(x => !nonempty(x))) error = "ruling IDs must be nonempty";
@@ -110,23 +107,40 @@ export function foldRepairRecords(input: LogEvent[]): RepairRecords {
     while (cursor.input.prior) cursor = out.sorts.find(s => s.input.id === cursor.input.prior)!;
     return cursor.input.id;
   };
+  const overlaps = (a: RepairSortInput, b: RepairSortInput) =>
+    a.coverage.some(ref => b.coverage.some(own => own.findingId === ref.findingId && own.claimIds.some(id => ref.claimIds.includes(id))));
   const heads = out.sorts.filter(s => !out.sorts.some(next => next.input.prior === s.input.id));
+  const position = (s: { eventId: string }) => events.findIndex(e => e.id === s.eventId);
   for (const sort of out.sorts) {
     const d = sort.input;
-    sort.current = !out.sorts.some(s => s.input.prior === d.id);
+    sort.current = heads.includes(sort);
     if (!sort.current) sort.holds.push("superseded sort retained as history");
-    if (heads.filter(s => lineage(s.input.id) === lineage(d.id) || s.input.coverage.some(ref => d.coverage.some(own => own.findingId === ref.findingId && own.claimIds.some(id => ref.claimIds.includes(id))))).length > 1) sort.holds.push("competing sort corrections require independent arbitration");
-    sort.holds.push(...repairSortReceiptHolds(d, out.claims, events.filter(e => events.findIndex(x => x.id === e.id) < events.findIndex(x => x.id === sort.eventId)), out.participants.map(p => p.input)));
+    // Competing corrections: two heads from one lineage, or two sorts of the same claims. The
+    // latest correction on a lineage wins; when two compete, the owner decides, by posting a
+    // correction of their own that is newer than the rest (owner, Defaults A2).
+    const rivals = heads.filter(s => s !== sort && (lineage(s.input.id) === lineage(d.id) || overlaps(s.input, d)));
+    if (sort.current && rivals.length) {
+      const newest = [sort, ...rivals].reduce((a, b) => (position(b) > position(a) ? b : a));
+      if (newest.actor.via?.kind === "agent")
+        sort.holds.push(`competes with ${rivals.map(r => r.input.id).join(", ")}: a question for the owner, answered by a correction of their own`);
+      else if (newest !== sort) sort.holds.push(`outranked by the owner's correction ${newest.input.id}`);
+    }
+    if (d.provenance === "dual-sorted") {
+      const disagreement = new Set(d.assessments.map(a => a.classification)).size > 1;
+      if (disagreement && !d.disagreements.length) sort.holds.push("sorter classification disagreement is not recorded");
+      if (!disagreement && d.assessments.some(a => a.classification !== d.classification)) sort.holds.push("sort classification does not match the sorters' classification");
+      if (disagreement && !d.arbitration) sort.holds.push("sorter classification disagreement requires arbitration");
+      if (d.arbitration && d.assessments.some(a => a.identity.session === d.arbitration!.identity.session)) sort.holds.push("the arbitrator must be a third session");
+    }
     if (d.provenance === "owner-reviewed" && (!nonempty(d.source) || sort.actor.via?.kind === "agent")) sort.holds.push("owner worklist requires principal authorship and exact source");
     if (!["mechanical", "implementation-defect"].includes(d.classification) && !(d.refutationSubtype === "factual" && ["invalid", "factual-refutation"].includes(d.classification))) sort.holds.push("classification requires an explicit decision or factual basis");
     if (d.refutationSubtype === "scope") sort.holds.push("scope judgment cannot be settled as factual refutation");
     if (d.restsOn.length) sort.holds.push("requirement or ruling dependency remains explicit");
-    if (d.disagreements.length && (!d.arbitration || !nonempty(d.arbitration.reason) || !identity(d.arbitration.identity) || d.disagreements.some(x => !d.arbitration!.addresses.includes(x.id)))) sort.holds.push("unaddressed sort disagreement");
-    const participants = out.participants.filter(p => p.input.role === "fixer");
+    if (d.disagreements.length && (!d.arbitration || !nonempty(d.arbitration.reason) || !reported(d.arbitration.identity) || d.disagreements.some(x => !d.arbitration!.addresses.includes(x.id)))) sort.holds.push("unaddressed sort disagreement");
+    const fixers = out.participants.filter(p => p.input.role === "fixer");
     const initialOwnerApproval = !d.prior && d.provenance === "owner-reviewed" && sort.actor.via?.kind !== "agent";
-    const independentlySorted = d.provenance === "dual-sorted" && !repairSortReceiptHolds(d, out.claims, events, out.participants.map(p => p.input)).length;
-    if (participants.some(p => (!initialOwnerApproval && !independentlySorted && p.actor.principal === sort.actor.principal)
-      || d.assessments.some(a => verifierIdentityKey(a.identity) === verifierIdentityKey(p.input.identity)))) sort.holds.push("fixer cannot improve repair eligibility by sorting its work");
+    if (fixers.some(p => (!initialOwnerApproval && d.provenance !== "dual-sorted" && p.actor.principal === sort.actor.principal)
+      || d.assessments.some(a => a.identity.session === p.input.identity.session))) sort.holds.push("fixer cannot improve repair eligibility by sorting its work");
     if (d.prior) {
       const original = out.sorts.find(s => s.input.id === lineage(d.id))!;
       if (JSON.stringify(d.coverage) !== JSON.stringify(original.input.coverage) || (original.input.kind === "pattern" && (d.kind !== "pattern" || JSON.stringify(d.sites) !== JSON.stringify(original.input.sites)))) sort.holds.push("correction cannot remove original coverage");
@@ -164,6 +178,6 @@ export function isRepairRecords(value: unknown): value is RepairRecords {
     && v.claims.every(c => !!c && nonempty(c.id) && nonempty(c.findingId) && nonempty(c.text))
     && v.sorts.every(s => !!s && !!s.input && Array.isArray(s.input.coverage) && Array.isArray(s.holds) && typeof s.current === "boolean" && typeof s.eligible === "boolean")
     && v.evidence.every(e => !!e && !!e.input && Array.isArray(e.input.coverage) && Array.isArray(e.staleReasons))
-    && v.participants.every(p => !!p && !!p.input && identity(p.input.identity) && ["fixer", "relayer"].includes(p.input.role) && ["native-session", "server-actor"].includes(p.input.trust))
+    && v.participants.every(p => !!p && !!p.input && identity(p.input.identity) && ["fixer", "relayer"].includes(p.input.role))
     && v.rejected.every(r => !!r && nonempty(r.eventId) && nonempty(r.reason));
 }
