@@ -39,8 +39,7 @@ export const comparisonUrl = (u, id) => href(decisionsUrl(u), { comparison: id }
  * @typedef {{ d: ApiMap['/api/decisions']|null, r: ApiMap['/api/decisions/round']|null, qlist: ApiMap['/api/decisions/questionnaires']|null, qdetail: ApiMap['/api/decisions/questionnaire']|null, comparison: ApiMap['/api/decisions/comparison']|null, resolutionBrief: ApiMap['/api/decisions/comparison/resolution']|null, busy: string|null, err: string|null, rationale: string, preserve: string, revises: string,
  *   words: Record<string,string>, reasons: Record<string,string>, checked: Record<string,string[]>, revisionFindings: Record<string,string[]>, revisionIssues: Record<string,string[]>,
  *   revisionPresentations: Record<string,{displayed:any,scopeKey:string}>,
- *   revisionMarked: Record<string,string[]>, revisionCorrections: Record<string,Record<string,string>>,
- *   withdrawalApprovals: Record<string,string> }} DecState
+ *   revisionMarked: Record<string,string[]>, revisionCorrections: Record<string,Record<string,string>> }} DecState
  * @extends {Component<DecProps, DecState>}
  */
 class DecisionsPage extends Component {
@@ -49,7 +48,7 @@ class DecisionsPage extends Component {
   constructor(props) {
     super(props);
     /** @type {DecState} */
-    this.state = { d: null, r: null, qlist: null, qdetail: null, comparison: null, resolutionBrief: null, busy: null, err: null, rationale: '', preserve: '', revises: '', words: {}, reasons: {}, checked: {}, revisionFindings: {}, revisionIssues: {}, revisionPresentations: {}, revisionMarked: {}, revisionCorrections: {}, withdrawalApprovals: {} };
+    this.state = { d: null, r: null, qlist: null, qdetail: null, comparison: null, resolutionBrief: null, busy: null, err: null, rationale: '', preserve: '', revises: '', words: {}, reasons: {}, checked: {}, revisionFindings: {}, revisionIssues: {}, revisionPresentations: {}, revisionMarked: {}, revisionCorrections: {} };
     /** @type {null|(() => void)} */
     this.qUnmount = null;
   }
@@ -252,18 +251,6 @@ class DecisionsPage extends Component {
     } catch (e) { this.state.err = errText(e); } finally { this.state.busy = null; }
   }
 
-  async approveWithdrawal(decision, answer) {
-    if (this.state.busy) return;
-    this.state.busy = decision; this.state.err = null;
-    try {
-      const r = await attestedPost('/api/decisions/withdraw/approve', {
-        u: this.props.params.universe, decision, ...(answer ? { answer } : {}), reason: this.state.reasons[decision] || '',
-      });
-      if (r?.error) { this.state.err = r.error; return; }
-      this.state.withdrawalApprovals = { ...this.state.withdrawalApprovals, [decision]: r.approval };
-    } catch (e) { this.state.err = errText(e); } finally { this.state.busy = null; }
-  }
-
   revisionScope(d) {
     const findings = d.kind === 'words' ? [d.id] : this.state.revisionFindings[d.id] || [];
     const issues = (d.currentByIssue || []).filter((entry) => (this.state.revisionIssues[d.id] || [])
@@ -372,12 +359,9 @@ class DecisionsPage extends Component {
         ${each(d.possiblySuperseded || [], (p) => html`<div class="fs dim">“${p.words}” (${p.state})</div>`, (p) => p.answer)}</div>`)}
       ${when(!blocked && !d.withdrawn && !retired && !d.confirms, () => html`<div class="op-actions">
         <input placeholder="reason for withdrawal" value="${this.state.reasons[d.id] || ''}"
-          on-change="${(e, v) => { this.state.reasons = { ...this.state.reasons, [d.id]: v }; this.state.withdrawalApprovals = { ...this.state.withdrawalApprovals, [d.id]: undefined }; }}">
+          on-change="${(e, v) => { this.state.reasons = { ...this.state.reasons, [d.id]: v }; }}">
         <button class="pullbtn" disabled="${busy || !(this.state.reasons[d.id] || '').trim()}"
           on-click="${() => this.withdraw(d.id, s?.id)}">${s ? 'withdraw this ruling' : 'withdraw unanswered question'}</button>
-        <button class="pullbtn" disabled="${busy || !(this.state.reasons[d.id] || '').trim()}"
-          on-click="${() => this.approveWithdrawal(d.id, s?.id)}">approve exact withdrawal for an agent</button>
-        ${when(!!this.state.withdrawalApprovals[d.id], () => html`<div class="fs dim">Approved withdrawal receipt: <code>${this.state.withdrawalApprovals[d.id]}</code>. Give this ID and the same reason to the agent.</div>`)}
       </div>`)}
       ${when(!inactive && (d.kind === 'options' || d.kind === 'bulk') && (Object.values(d.currentByFinding || {}).some(Boolean) || (d.currentByIssue || []).some((entry) => !!entry.answer)), () => html`<div class="op-actions">
         <div class="fs dim">Select the exact findings or bugs to revise. Earlier answers stay in history.</div>

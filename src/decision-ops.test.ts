@@ -21,7 +21,7 @@ import { readerReceipts, readerRequests } from "./reader-local.js";
 import type { State } from "./schema.js";
 import { shareFinding, closeFinding, bindDecisions, reassignFinding, sharedFindings, sharedSync } from "./ops-shared.js";
 import { reviewQueue } from "./ops/annotations.js";
-import { postRound, logQuestion, relayAnswer, answerDirect, decisionRounds, decisionRound, nominateComparison, readerBrief, recordReading, submitVerdict as submitVerdictOp, confirmReading, parseVerdict, confirmId, withdrawDecision, reviseDecision, revisionRelayBrief, reviseDecisionRelayed, interpretationRequestId } from "./ops/decisions.js";
+import { postRound, logQuestion, relayAnswer, answerDirect, decisionRounds, decisionRound, nominateComparison, readerBrief, recordReading, submitVerdict as submitVerdictOp, confirmReading, parseVerdict, confirmId, withdrawDecision, reportRuling, withdrawalReaderBrief, submitWithdrawalVerdict, reviseDecision, revisionRelayBrief, reviseDecisionRelayed, interpretationRequestId } from "./ops/decisions.js";
 import { discard } from "./test-tmp.js";
 import { decisionsView, holdBuilds } from "./ops/decision-holds.js";
 import { decisionScope, foldDecisions, postRoundEvent, logQuestionEvent, postConfirmEvent, recordReadingEvent } from "./shared-decisions.js";
@@ -1723,4 +1723,72 @@ test("asking again about a finding already ruled on tells the agent the standing
       assert.equal(unrelated.alreadyRuled, undefined);
     });
   } finally { u.cleanup(); }
+});
+
+/** A reader subagent's own transcript: launched with `prompt`, one call to `tool` with `input`, result `result`. */
+function readerTranscript(dir: string, agentId: string, prompt: string, tool: string, input: unknown, result: unknown) {
+  const session = "5e55a0a0-0000-0000-0000-00000000000" + agentId.slice(-1), launch = `launch_${agentId}`, callId = `toolu_${agentId}`;
+  mkdirSync(join(dir, session, "subagents"), { recursive: true });
+  writeFileSync(join(dir, session, "subagents", `agent-${agentId}.meta.json`), JSON.stringify({ agentType: "general-purpose", toolUseId: launch }));
+  writeFileSync(join(dir, session, "subagents", `agent-${agentId}.jsonl`), [
+    { type: "user", isSidechain: true, agentId, sessionId: session, message: { role: "user", content: prompt } },
+    { type: "assistant", isSidechain: true, agentId, sessionId: session, message: { content: [{ type: "tool_use", id: callId, name: `mcp__codemap__${tool}`, input }] } },
+    { type: "user", isSidechain: true, agentId, sessionId: session, message: { content: [{ type: "tool_result", tool_use_id: callId, content: JSON.stringify(result) }] } },
+  ].map((x) => JSON.stringify(x)).join("\n") + "\n");
+  writeFileSync(join(dir, `${session}.jsonl`), [
+    { type: "assistant", isSidechain: false, timestamp: new Date().toISOString(), message: { content: [{ type: "tool_use", id: launch, name: "Agent", input: { prompt, subagent_type: "general-purpose" } }] } },
+    { type: "user", isSidechain: false, message: { content: [{ type: "tool_result", tool_use_id: launch, content: "launched" }] }, toolUseResult: { agentId } },
+  ].map((x) => JSON.stringify(x)).join("\n") + "\n");
+  return callId;
+}
+
+test("an agent reports a ruling; only the person's \"Withdraw it\" lets it be retired", async () => {
+  const u = await universe();
+  try {
+    const f = await withFinding(u);
+    await asAgent(async () => { assert.equal((await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f)] }) as any).ok, true); });
+    let ruling = "";
+    await asPerson(async () => { ruling = (await answerDirect(u.root, { decision: "d1", option: "Real, fix it" }) as any).answer; });
+    let relay = "";
+    await asAgent(async () => {
+      assert.match(String(err(await withdrawDecision(u.root, { decision: "d1", answer: ruling, reason: "stale" }))), /report it/);
+      const report = await reportRuling(u.root, { decision: "d1", answer: ruling, reason: "it conflicts with the later ruling" }) as any;
+      assert.equal(report.ok, true, JSON.stringify(report));
+      relay = report.relay;
+      assert.match(report.ask.question, new RegExp(ruling));
+      assert.match(String(err(await withdrawDecision(u.root, { decision: "d1", answer: ruling, reason: "it conflicts with the later ruling", relay }))), /has not answered/);
+    });
+    await asPerson(async () => { assert.equal((await answerDirect(u.root, { decision: relay, option: "Withdraw it" }) as any).recorded, true); });
+    await asAgent(async () => {
+      const done = await withdrawDecision(u.root, { decision: "d1", answer: ruling, reason: "it conflicts with the later ruling", relay }) as any;
+      assert.equal(done.ok, true, JSON.stringify(done));
+    });
+    const d = (await decisionsView(u.root)).s.decisions.find((x) => (x.label ?? x.id) === "d1")!;
+    assert.ok(d.answers.find((a) => a.id === ruling)?.withdrawn);
+  } finally { u.cleanup(); }
+});
+
+test("an agent withdraws an unanswered question with two readers whose transcripts prove their verdicts", async () => {
+  const u = await universe();
+  const dir = mkdtempSync(join(tmpdir(), "codemap-withdrawal-tx-"));
+  try {
+    const f = await withFinding(u);
+    await asAgent(async () => {
+      assert.equal((await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f)] }) as any).ok, true);
+      const reason = "the finding it asks about was filed twice";
+      const refs = [];
+      for (const [slot, agentId] of [[1, "a1111111"], [2, "a2222222"]] as const) {
+        const brief = await withdrawalReaderBrief(u.root, { decision: "d1", reason, slot }) as any;
+        assert.equal(brief.ok, true, JSON.stringify(brief));
+        const verdict = { requestId: brief.requestId, verdict: "sound" as const, rationale: `slot ${slot}: the duplicate makes it moot` };
+        const held = submitWithdrawalVerdict(u.root, verdict) as any;
+        const callId = readerTranscript(dir, agentId, brief.prompt, "submit_withdrawal_verdict", verdict, held);
+        refs.push({ requestId: brief.requestId, receipt: held.receipt, agentId, callId });
+      }
+      assert.match(String(err(await withdrawDecision(u.root, { decision: "d1", reason, review: { readers: [refs[0]!] } }, {}, dir))), /two readers/);
+      const done = await withdrawDecision(u.root, { decision: "d1", reason, review: { readers: refs } }, {}, dir) as any;
+      assert.equal(done.ok, true, JSON.stringify(done));
+    });
+    assert.ok((await decisionsView(u.root)).s.decisions.find((x) => (x.label ?? x.id) === "d1")!.withdrawn);
+  } finally { discard(dir); u.cleanup(); }
 });

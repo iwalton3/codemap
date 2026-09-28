@@ -408,15 +408,8 @@ describe("the decisions UI", { skip: pw ? false : "playwright not resolvable (se
 
     await card.getByPlaceholder("reason for withdrawal").fill("The product owner is reconsidering this instruction");
     await card.getByPlaceholder("reason for withdrawal").press("Tab");
-    await card.getByRole("button", { name: "approve exact withdrawal for an agent" }).click();
-    await card.getByText("Approved withdrawal receipt").waitFor();
-    const receiptText = (await card.textContent())!;
-    const approval = receiptText.match(/Approved withdrawal receipt: ([0-9a-z-]+)/)?.[1];
-    assert.ok(approval, receiptText);
-    const executed = await asAgent(() => ops.withdrawDecision(root, {
-      decision: "bug-web", answer: second.id, reason: "The product owner is reconsidering this instruction", approval,
-    })) as any;
-    assert.equal(executed.ok, true, JSON.stringify(executed));
+    await card.getByRole("button", { name: "withdraw this ruling" }).click();
+    await page.waitForFunction(() => document.body.textContent?.includes("Ruling withdrawn"));
     await page.reload({ waitUntil: "networkidle" });
     assert.match((await page.textContent("main"))!, /Ruling withdrawn. Ask a fresh question/);
     assert.equal(await page.getByRole("button", { name: "withdraw unanswered question" }).count(), 0);

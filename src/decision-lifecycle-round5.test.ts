@@ -1,7 +1,8 @@
 /** Acceptance probes for the remaining explicit lifecycle acts in plan §3. */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { decisionHash, foldDecisions, revisionRelayQuestion, standingForFinding, standingForIssue, waitingOnMe, heldFindings } from "./shared-decisions.js";
+import { decisionHash, foldDecisions, revisionRelayQuestion, standingForFinding, standingForIssue, waitingOnMe, heldFindings,
+  withdrawalQuestion, withdrawalBriefContent, withdrawalBriefHash, WITHDRAW_IT, KEEP_IT } from "./shared-decisions.js";
 
 const alice = { principal: "alice" };
 const bob = { principal: "bob" };
@@ -22,25 +23,48 @@ const post = (d: any, id = "p1", round = "R1") => event(id, "decision.round.post
 const answer = (id: string, d: any, option: string, actor: any, after: string[]) => event(id, "decision.answer.recorded", d.id,
   { decision: d.id, hash: decisionHash(d), via: { kind: "direct", option } }, actor, after);
 
-test("an agent can execute only the exact human-approved withdrawal, with approval retained", () => {
+test("an agent retires a ruling only as the person's answer to the relayed withdrawal question", () => {
+  // Owner, 2026-09-28: "me for rulings, allow relay via verified question system".
   const p = post(findingDecision), a = answer("a2", findingDecision, "Settle", alice, [p.id]);
-  const scope = { findings: ["F1"], issues: [] };
-  const approval = event("h3", "decision.withdrawal.approved", "d1", {
-    decision: "d1", answer: a.id, reason: "I retract this ruling", scope,
-    knownAnswers: [a.id], sourceReceipt: "human-approval-receipt",
-  }, alice, [a.id]);
-  const withdrawal = event("w4", "decision.withdrawn", "d1", {
-    decision: "d1", answer: a.id, reason: "I retract this ruling", scope,
-    knownAnswers: [a.id], approval: approval.id,
-  }, agent, [approval.id]);
-  const folded = foldDecisions([p, a, approval, withdrawal]);
-  const d = folded.decisions.find((x) => x.id === "d1")!;
-  assert.equal(d.answers.find((x) => x.id === a.id)?.withdrawn?.by, withdrawal.id);
-  assert.equal(d.withdrawals?.find((x) => x.id === withdrawal.id)?.state, "applied");
-  assert.equal(waitingOnMe(folded, "2026-09-25").some((x) => x.decision === d.id), false);
-  assert.equal(heldFindings(folded, () => true).has("F1"), false);
-  const forged = foldDecisions([p, a, { ...withdrawal, data: { ...withdrawal.data, approval: "missing" } }]);
-  assert.equal(forged.decisions.find((x) => x.id === "d1")?.answers[0]?.withdrawn, undefined);
+  const d1 = foldDecisions([p, a]).decisions.find((x) => x.id === "d1")!;
+  const reason = "it conflicts with the later currency ruling";
+  const q = withdrawalQuestion(d1, d1.answers[0]!, reason, "D1");
+  const relay: any = { id: "withdraw", round: "R9", ref: "D1", kind: "options", payload: q, options: q.options.map((o) => ({ label: o.label, effects: [] })) };
+  const posted = { ...post(relay, "p3", "R9"), after: [a.id] };
+  const withdraw = (id: string, after: string[], over: any = {}) => event(id, "decision.withdrawn", "d1",
+    { decision: "d1", answer: a.id, reason, knownAnswers: [a.id], relay: "withdraw", ...over }, agent, after);
+  const state = (evs: any[], id: string) => foldDecisions(evs).decisions.find((x) => x.id === "d1")!.withdrawals?.find((w) => w.id === id);
+
+  const yes = answer("a4", relay, WITHDRAW_IT, alice, [posted.id]);
+  assert.equal(state([p, a, posted, yes, withdraw("w5", [yes.id])], "w5")?.state, "applied");
+  assert.equal(foldDecisions([p, a, posted, yes, withdraw("w5", [yes.id])]).decisions.find((x) => x.id === "d1")!.answers[0]!.withdrawn?.by, "w5");
+  assert.match(state([p, a, posted, answer("a4", relay, KEEP_IT, alice, [posted.id]), withdraw("w5", ["a4"])], "w5")?.refused ?? "", /has not answered "Withdraw it"/);
+  assert.match(state([p, a, posted, answer("a4", relay, WITHDRAW_IT, bob, [posted.id]), withdraw("w5", ["a4"])], "w5")?.refused ?? "", /has not answered/,
+    "another person's answer is not the ruling's principal's");
+  assert.match(state([p, a, posted, yes, withdraw("w5", [posted.id])], "w5")?.refused ?? "", /before the person's answer/);
+  assert.match(state([p, a, posted, yes, withdraw("w5", [yes.id], { reason: "a different reason" })], "w5")?.refused ?? "", /relayed withdrawal question/);
+  assert.match(state([p, a, withdraw("w5", [a.id], { relay: undefined })], "w5")?.refused ?? "", /relayed withdrawal question/, "no relay, no retirement");
+});
+
+test("an agent withdraws an unanswered question only with two sound readers, or an arbitrator between them", () => {
+  // Owner: "Readers for unanswered" — the ruling-application shape (A6).
+  const p = post(findingDecision);
+  const d1 = foldDecisions([p]).decisions.find((x) => x.id === "d1")!;
+  const reason = "the finding was withdrawn by its author";
+  const brief = withdrawalBriefHash(withdrawalBriefContent(d1, reason));
+  const reader = (n: number, verdict: "sound" | "unsound", hash = brief) => ({ id: `r${n}`, session: `s${n}`, launch: `l${n}`, briefHash: hash, verdict, rationale: `reason ${n}` });
+  const withdraw = (review: unknown) => event("w5", "decision.withdrawn", "d1", { decision: "d1", reason, knownAnswers: [], review }, agent, [p.id]);
+  const state = (review: unknown) => foldDecisions([p, withdraw(review)]).decisions.find((x) => x.id === "d1")!.withdrawals?.[0];
+  assert.equal(state({ readers: [reader(1, "sound"), reader(2, "sound")] })?.state, "applied");
+  assert.match(state({ readers: [reader(1, "sound")] })?.refused ?? "", /two readers/);
+  assert.match(state({ readers: [reader(1, "sound"), { ...reader(2, "sound"), session: "s1" }] })?.refused ?? "", /independently/);
+  assert.match(state({ readers: [reader(1, "sound"), reader(2, "sound", "sha256:other")] })?.refused ?? "", /this exact brief/);
+  assert.match(state({ readers: [reader(1, "sound"), reader(2, "unsound")] })?.refused ?? "", /third reader must arbitrate/);
+  const arbHash = withdrawalBriefHash(withdrawalBriefContent(d1, reason, ["reason 1", "reason 2"]));
+  assert.equal(state({ readers: [reader(1, "sound"), reader(2, "unsound")], arbitrator: reader(3, "sound", arbHash) })?.state, "applied");
+  assert.match(state({ readers: [reader(1, "sound"), reader(2, "unsound")], arbitrator: reader(3, "unsound", arbHash) })?.refused ?? "", /arbitrator found/);
+  assert.match(state({ readers: [reader(1, "unsound"), reader(2, "unsound")] })?.refused ?? "", /both readers/);
+  assert.match(state(undefined)?.refused ?? "", /two readers/, "an agent alone withdraws nothing");
 });
 
 test("another person's revision stands when the old answer was in their store, and not when it was not", () => {

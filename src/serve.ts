@@ -427,19 +427,6 @@ const server = createServer(async (req, res) => {
       res.end(JSON.stringify(out));
       return;
     }
-    if (req.method === "POST" && url.pathname === "/api/decisions/withdraw/approve") {
-      const chunks: Buffer[] = [];
-      for await (const c of req) chunks.push(c as Buffer);
-      const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
-      if (!attested(body, "approve decision withdrawal")) return;
-      const root = rootFor(body.u ?? null);
-      const out = await withLock<unknown>(root, () => ops.approveDecisionWithdrawal(root, {
-        decision: String(body.decision ?? ""), answer: body.answer, reason: String(body.reason ?? ""),
-      }));
-      res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
-      res.end(JSON.stringify(out));
-      return;
-    }
     if (req.method === "POST" && url.pathname === "/api/decisions/withdraw") {
       const chunks: Buffer[] = [];
       for await (const c of req) chunks.push(c as Buffer);

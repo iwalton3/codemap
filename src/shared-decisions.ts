@@ -24,7 +24,7 @@
  */
 import { createHash } from "node:crypto";
 import { comparisonContextHash, deriveComparison, validateComparisonRequest, type AnswerSource, type CanonicalIssue, type ComparisonProjection, type ComparisonRequest, type ReaderJudgment, type HumanResolution } from "./decision-comparison.js";
-import { causality, emitEvent, emitEventChecked, type LogEvent } from "./eventlog.js";
+import { causality, emitEvent, emitEventChecked, GENESIS, type LogEvent } from "./eventlog.js";
 import { isAgentActor } from "./identity.js";
 import { canonicalIssueKey, type CanonicalIssueReference } from "./decision-issues.js";
 import { questionnaireVersion, stageSubmission, validateQuestionnaire, type Questionnaire, type QuestionnaireAnswer, type StagedSubmission } from "./questionnaire.js";
@@ -138,9 +138,60 @@ export interface FoldedAnswer {
 
 export interface WithdrawalRecord {
   id: string; by: Actor; at: string; reason: string; answer?: string;
-  knownAnswers: string[]; state: "applied" | "conflict";
+  knownAnswers: string[]; state: "applied" | "conflict" | "refused";
   conflictingAnswers?: string[];
-  approvedBy?: string;
+  /** Why the fold refused it: kept visible, never silently dropped. */
+  refused?: string;
+  /** The relayed question the person answered "Withdraw it" on. */
+  relay?: string;
+}
+
+// --- withdrawal (owner, 2026-09-28: "Readers for unanswered, me for rulings, allow relay via
+// verified question system and agents to report ruling conflicts and possible erroneous rulings")
+
+export const WITHDRAW_IT = "Withdraw it", KEEP_IT = "Keep it";
+
+/** The verified question that asks a person whether to retire their ruling. `report_ruling`
+ *  posts it; the fold checks a relayed withdrawal against exactly this text. */
+export function withdrawalQuestion(d: Pick<FoldedDecision, "id" | "ref" | "payload">, ruling: Pick<FoldedAnswer, "id" | "by" | "words">,
+  reason: string, ref: string): AskedQuestion {
+  return {
+    question: `${ref}: Withdraw ${ruling.by.principal}'s ruling ${ruling.id} on ${d.ref} (${d.id})? `
+      + `The question was ${JSON.stringify(d.payload.question)}; the ruling said ${JSON.stringify(ruling.words)}. `
+      + `Reported as possibly wrong or in conflict: ${JSON.stringify(reason)}`,
+    options: [{ label: WITHDRAW_IT, description: "Retire this ruling; a new instruction needs a fresh question" },
+      { label: KEEP_IT, description: "The ruling stands" }],
+    multiSelect: false,
+  };
+}
+
+/** One reader's recorded verdict on withdrawing an unanswered question. */
+export interface WithdrawalReviewReceipt { id: string; session: string; launch: string; briefHash: string; verdict: "sound" | "unsound"; rationale: string }
+export interface WithdrawalReview { readers: WithdrawalReviewReceipt[]; arbitrator?: WithdrawalReviewReceipt }
+
+/** What a reader judges: the question, as posted, and the reason given for withdrawing it. */
+export const withdrawalBriefContent = (d: Pick<FoldedDecision, "id" | "payload">, reason: string, rationales?: string[]) =>
+  ({ purpose: "withdraw-unanswered-question", decision: d.id, question: d.payload, reason, ...(rationales ? { rationales } : {}) });
+export const withdrawalBriefHash = (content: unknown): string => "sha256:" + createHash("sha256").update(canonical(content)).digest("hex");
+
+/** Two blind readers who find the withdrawal sound, or a third who arbitrates their disagreement
+ *  having read both rationales — the ruling-application shape (A6). */
+export function withdrawalReviewRefusal(d: Pick<FoldedDecision, "id" | "payload">, reason: string, review: unknown): string | null {
+  const r = review as WithdrawalReview | undefined;
+  const receipt = (x: WithdrawalReviewReceipt | undefined, hash: string) => !!x && [x.id, x.session, x.launch, x.rationale].every((v) => str(v))
+    && (x.verdict === "sound" || x.verdict === "unsound") && x.briefHash === hash;
+  const brief = withdrawalBriefHash(withdrawalBriefContent(d, reason));
+  if (!r || !Array.isArray(r.readers) || r.readers.length !== 2 || !r.readers.every((x) => receipt(x, brief)))
+    return "an agent withdraws an unanswered question only with two readers' recorded verdicts on this exact brief";
+  const [a, b] = r.readers as [WithdrawalReviewReceipt, WithdrawalReviewReceipt];
+  if (a.session === b.session || a.launch === b.launch || a.id === b.id) return "the two readers were not independently launched";
+  if (a.verdict === "sound" && b.verdict === "sound") return r.arbitrator ? "no disagreement needs an arbitrator" : null;
+  if (a.verdict === "unsound" && b.verdict === "unsound") return "both readers found the withdrawal unsound";
+  const arb = r.arbitrator;
+  if (!receipt(arb, withdrawalBriefHash(withdrawalBriefContent(d, reason, [a.rationale, b.rationale])))
+    || [a, b].some((x) => x.session === arb!.session || x.launch === arb!.launch))
+    return "the readers disagree: a third reader must arbitrate, having read both rationales";
+  return arb!.verdict === "sound" ? null : "the arbitrator found the withdrawal unsound";
 }
 
 export interface ComparisonNomination {
@@ -773,7 +824,6 @@ function foldDecisionsOnce(events: LogEvent[]): SharedDecisions {
   const picks: { a: FoldedAnswer; c: FoldedDecision }[] = [];
   const nominationEvents: LogEvent[] = [];
   const withdrawalEvents: LogEvent[] = [];
-  const withdrawalApprovals: LogEvent[] = [];
   const seenQuestionnaireAttempts = new Set<string>();
   const comparisonEvents: LogEvent[] = [];
 
@@ -1006,7 +1056,6 @@ function foldDecisionsOnce(events: LogEvent[]): SharedDecisions {
         break;
       }
 
-      case "decision.withdrawal.approved": { withdrawalApprovals.push(e); break; }
 
 
       case "decision.withdrawn": {
@@ -1184,41 +1233,48 @@ function foldDecisionsOnce(events: LogEvent[]): SharedDecisions {
     }
   }
 
-  // The act stays visible even when another writer's answer makes it unsafe to apply.
-  // Only the authority projection is withheld; the event is never silently dropped.
-  const usedApprovals = new Set<string>();
+  // The act stays visible even when another writer's answer makes it unsafe to apply, or the
+  // fold refuses it. Only the authority projection is withheld; nothing is silently dropped.
   for (const e of withdrawalEvents) {
     const data = e.data as any;
     const d = decisions.get(str(data?.decision) ?? "");
     if (!d || !str(data?.reason) || e.subject !== d.id) continue;
     const target = str(data?.answer);
-    const approval = isAgentActor(e.actor) ? withdrawalApprovals.find((a) => a.id === data.approval) : undefined;
-    if (isAgentActor(e.actor) && (!approval || canonical(data.scope) !== canonical(withdrawalScope(d))
-      || usedApprovals.has(approval.id)
-      || isAgentActor(approval.actor) || approval.actor.principal !== e.actor.principal
-      || approval.subject !== d.id || !str((approval.data as any)?.sourceReceipt)
-      || !causal.saw(e.id, approval.id)
-      || canonical(approval.data) !== canonical({ decision: d.id, ...(target ? { answer: target } : {}),
-        reason: data.reason, scope: data.scope, knownAnswers: data.knownAnswers,
-        sourceReceipt: (approval.data as any).sourceReceipt }))) continue;
-    if (approval) usedApprovals.add(approval.id);
     const known = data?.knownAnswers;
     if (!Array.isArray(known) || !known.every((id: unknown) => str(id))) continue;
     const sources = d.answers.filter((a) => a.verified && !a.sourceAnswer);
+    const named = target ? sources.find((a) => a.id === target) : undefined;
+    const refuse = (why: string) => (d.withdrawals ??= []).push({ id: e.id, by: e.actor, at: e.at, reason: data.reason,
+      ...(target ? { answer: target } : {}), knownAnswers: [...known], state: "refused", refused: why });
+    if (target && (!named || !known.includes(target))) { refuse("it names no current verified answer on this question"); continue; }
+    if (isAgentActor(e.actor)) {
+      // An agent never retires a ruling on its own: the person answers a relayed question.
+      if (named) {
+        const r = decisions.get(str(data?.relay) ?? "");
+        const theirs = r ? r.answers.filter((a) => a.verified && !a.sourceAnswer && !a.cancelled && a.by.principal === named.by.principal) : [];
+        const latest = theirs.reduce<FoldedAnswer | undefined>((x, a) => (!x || outranksByTime(a, x) ? a : x), undefined);
+        const why = !r || r.payload.question !== withdrawalQuestion(d, named, data.reason, r.ref).question
+          ? "an agent withdraws a ruling only as the person's answer to the relayed withdrawal question"
+          : latest?.options[0] !== WITHDRAW_IT ? `${named.by.principal} has not answered "${WITHDRAW_IT}"`
+          : !causal.saw(e.id, sourceEventId(latest.id)) ? "the withdrawal was written before the person's answer" : null;
+        if (why) { refuse(why); continue; }
+      } else {
+        const why = withdrawalReviewRefusal(d, data.reason, data.review);
+        if (why) { refuse(why); continue; }
+      }
+    } else if (named && named.by.principal !== e.actor.principal) { refuse("only the person who gave a ruling withdraws it"); continue; }
     // A direct page answer is given at append time. For a relayed question/message,
     // the recorder may have pulled after the person answered; its causal edge proves
     // the recorder's knowledge, not the person's act-time knowledge.
     const beforeOrConcurrent = sources.filter((a) => (a.via !== "direct" && a.via !== "questionnaire") || !causal.saw(sourceEventId(a.id), e.id));
     const visible = beforeOrConcurrent.filter((a) => causal.saw(e.id, sourceEventId(a.id)));
     const unseen = beforeOrConcurrent.filter((a) => !known.includes(a.id) || !visible.includes(a));
-    const named = target ? sources.find((a) => a.id === target) : undefined;
-    if (target && (!named || !known.includes(target) || named.by.principal !== e.actor.principal)) continue;
     const peers = target ? beforeOrConcurrent.filter((a) => a.by.principal !== named!.by.principal) : beforeOrConcurrent;
     const conflicts = [...new Set([...unseen, ...peers].map((a) => a.id))];
     const prior = d.withdrawn || d.answers.some((a) => a.withdrawn);
     const record: WithdrawalRecord = { id: e.id, by: e.actor, at: e.at, reason: data.reason,
       ...(target ? { answer: target } : {}), knownAnswers: [...known],
-      ...(approval ? { approvedBy: approval.id } : {}),
+      ...(str(data?.relay) ? { relay: data.relay } : {}),
       state: conflicts.length || prior ? "conflict" : "applied",
       ...(conflicts.length ? { conflictingAnswers: conflicts } : {}),
     };
@@ -2394,51 +2450,32 @@ export const nominateComparisonEvent = (logRoot: string, universe: string, actor
   emitEvent(logRoot, decisionScope(universe), actor, "decision.comparison.nominated",
     [...input.answers].sort().join("/"), input);
 
-export const approveDecisionWithdrawalEvent = (logRoot: string, universe: string, actor: Actor,
-  input: { decision: string; answer?: string; reason: string; scope: RevisionScope;
-    knownAnswers: string[]; sourceReceipt: string }) =>
-  emitEventChecked(logRoot, decisionScope(universe), actor, async (events) => {
-    if (isAgentActor(actor)) return { error: "withdrawal approval is a human act" };
-    const d = foldDecisions(events).decisions.find((x) => x.id === input.decision);
-    if (!d || !str(input.reason) || !str(input.sourceReceipt) || canonical(input.scope) !== canonical(withdrawalScope(d)))
-      return { error: "approval needs exact decision scope, reason and source receipt" };
-    const sources = d.answers.filter((a) => a.verified && !a.sourceAnswer);
-    if (canonical(sources.map((a) => a.id).sort()) !== canonical([...input.knownAnswers].sort()))
-      return { error: "answers changed before approval" };
-    if (input.answer && !sources.some((a) => a.id === input.answer && a.by.principal === actor.principal))
-      return { error: "approval must name this principal's exact answer" };
-    if (!input.answer && sources.length) return { error: "answered question needs exact answer approval" };
-    return { kind: "decision.withdrawal.approved", subject: d.id, data: input };
-  });
+/**
+ * What the fold makes of `data` appended now by `actor` — the ONE predicate for a withdrawal or
+ * revision (plan Phase 3.5): the op refuses exactly what the fold would refuse, because it asks
+ * the fold rather than keeping a second copy of its rules.
+ */
+function asFolded(events: LogEvent[], actor: Actor, kind: string, subject: string, data: unknown) {
+  // A writer of its own, or causality gives it no segment and it "saw" nothing.
+  const candidate = { id: "~candidate", kind, subject, actor, at: new Date().toISOString(),
+    after: events.map((e) => e.id), writer: "~candidate", writerPrev: GENESIS, data } as unknown as LogEvent;
+  return foldDecisions([...events, candidate]).decisions.find((x) => x.id === subject);
+}
 
 export const withdrawDecisionEvent = (logRoot: string, universe: string, actor: Actor,
   input: { decision: string; answer?: string; reason: string; knownAnswers: string[];
-    scope?: RevisionScope; approval?: string }) =>
+    relay?: string; review?: WithdrawalReview }) =>
   emitEventChecked(logRoot, decisionScope(universe), actor, async (events) => {
     const d = foldDecisions(events).decisions.find((x) => x.id === input.decision);
     if (!d) return { error: `no decision ${input.decision}` };
     if (d.withdrawn) return { error: `${d.ref} is already withdrawn (${d.withdrawn.id})` };
-    if (isAgentActor(actor)) {
-      const approval = events.find((e) => e.id === input.approval && e.kind === "decision.withdrawal.approved");
-      if (!approval || canonical(input.scope) !== canonical(withdrawalScope(d))
-        || isAgentActor(approval.actor) || approval.actor.principal !== actor.principal
-        || approval.subject !== input.decision || !str((approval.data as any)?.sourceReceipt)
-        || canonical(approval.data) !== canonical({ decision: input.decision,
-          ...(input.answer ? { answer: input.answer } : {}), reason: input.reason,
-          scope: input.scope, knownAnswers: input.knownAnswers,
-          sourceReceipt: (approval.data as any).sourceReceipt }))
-        return { error: "agent withdrawal needs exact recorded human approval" };
-    }
     const sources = d.answers.filter((a) => a.verified && !a.sourceAnswer);
     if (canonical(sources.map((a) => a.id).sort()) !== canonical([...input.knownAnswers].sort()))
       return { error: "answers changed before withdrawal; read the decision again" };
-    if (input.answer) {
-      const a = sources.find((x) => x.id === input.answer);
-      if (!a || a.by.principal !== actor.principal || a.withdrawn)
-        return { error: "the named ruling is not current authority of this principal" };
-      if (sources.some((x) => x.by.principal !== actor.principal))
-        return { error: "independent answers require conflict resolution before withdrawal" };
-    } else if (sources.length) return { error: "an answered question needs an exact answer withdrawal" };
+    const record = asFolded(events, actor, "decision.withdrawn", d.id, input)?.withdrawals?.find((w) => w.id === "~candidate");
+    if (!record) return { error: "the withdrawal is not well formed" };
+    if (record.state === "refused") return { error: record.refused! };
+    if (record.state === "conflict") return { error: `withdrawing now would conflict with ${record.conflictingAnswers?.join(", ") ?? "an earlier withdrawal"}; those answers need resolving first` };
     return { kind: "decision.withdrawn", subject: input.decision, data: input };
   });
 
@@ -2451,41 +2488,8 @@ export const reviseAnswerEvent = (logRoot: string, universe: string, actor: Acto
     const d = foldDecisions(events).decisions.find((x) => x.id === input.decision);
     if (!d || d.hash !== input.hash || d.withdrawn || d.answers.some((a) => a.withdrawn))
       return { error: "the question or its authority changed before revision; read it again" };
-    if (isAgentActor(actor) && input.via.kind !== "revision-relay")
-      return { error: "agent revision needs a verified human relay" };
-    if (!isAgentActor(actor) && input.via.kind === "revision-relay")
-      return { error: "relay revision must be recorded by its verifying agent" };
-    const { of, findings, issues = [], resolves } = input.revision;
-    if (!Array.isArray(of) || !of.length || new Set(of).size !== of.length
-      || !Array.isArray(findings) || new Set(findings).size !== findings.length
-      || !Array.isArray(issues) || new Set(issues.map(issueKey)).size !== issues.length
-      || !findings.every((f) => named(d).length ? named(d).includes(f) : d.kind === "words" && f === d.id)
-      || !issues.every((issue) => validIssue(issue) && namedIssues(d).some((named) => issueKey(named) === issueKey(issue))))
-      return { error: "revision needs exact source answer ids and canonical scope" };
-    const listError = checkListRevision(d, { findings, issues }, input.list);
-    if (listError) return { error: listError };
-    if (!listRevisionMatchesAnswer(d, input.list, input.via))
-      return { error: "list revision answer does not match its marked item corrections" };
-    const sources = of.map((id) => d.answers.find((a) => a.id === id));
-    if (sources.some((a) => !a?.verified || a.sourceAnswer || (a.via !== "direct" && a.via !== "questionnaire") || a.cancelled))
-      return { error: "revision source is not a current direct or questionnaire answer" };
-    if (resolves) {
-      if (!d.resolves || of.length !== 1 || resolves.priorResolution !== of[0]
-        || resolves.shownHash !== d.hash
-        || canonical([...resolves.answers].sort()) !== canonical([...d.resolves.answers].sort())
-        || findings.length || issues.length || sources[0]!.by.principal !== actor.principal)
-        return { error: "resolution correction needs the exact prior choice and shown pair" };
-    } else if (!findings.length && !issues.length)
-      return { error: "revision needs named finding or issue scope" };
-    if (input.via.kind === "revision-relay") {
-      const proof = input.via.proof;
-      const question = revisionRelayQuestion(d, sources as FoldedAnswer[], actor.principal,
-        { findings, ...(issues.length ? { issues } : {}) });
-      if (!str(proof?.entryId) || !str(proof?.session) || !str(proof?.toolUseId)
-        || !str(proof?.answeredAt) || ms(proof.answeredAt) === undefined
-        || !sameQuestion(proof.question, question) || !str(proof.answer)
-        || sources.some((a) => (ms(a!.givenAt) ?? Infinity) >= ms(proof.answeredAt)!))
-        return { error: "relay did not prove exact predecessor context at human answer time" };
-    }
+    const answer = asFolded(events, actor, "decision.answer.revised", d.id, input)?.answers.find((a) => a.id === "~candidate");
+    if (!answer) return { error: "the fold would not read this as an answer: check the source answers, the scope and who is recording it" };
+    if (answer.revisionInvalid) return { error: answer.revisionInvalid };
     return { kind: "decision.answer.revised", subject: d.id, data: input };
   });

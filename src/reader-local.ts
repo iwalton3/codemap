@@ -3,7 +3,7 @@
  * The older answer-keyed tables remain for already issued interpretation briefs. */
 import { db, tx } from "./db.js";
 
-export type ReaderPurpose = "answer-interpretation" | "pair-comparison" | "issue-application" | "operation-signoff" | "repair-verification" | "repair-arbitration";
+export type ReaderPurpose = "answer-interpretation" | "pair-comparison" | "issue-application" | "operation-signoff" | "repair-verification" | "repair-arbitration" | "withdrawal-review";
 export type ReaderReceiptState = "pending" | "recorded" | "invalid" | "cancelled";
 export interface ReaderKey { purpose: ReaderPurpose; requestId: string }
 export interface ReaderReceipt extends ReaderKey {
@@ -17,7 +17,7 @@ export interface ReaderReceipt extends ReaderKey {
 }
 
 const validKey = ({ purpose, requestId }: ReaderKey): boolean =>
-  ["answer-interpretation", "pair-comparison", "issue-application", "operation-signoff", "repair-verification", "repair-arbitration"].includes(purpose)
+  ["answer-interpretation", "pair-comparison", "issue-application", "operation-signoff", "repair-verification", "repair-arbitration", "withdrawal-review"].includes(purpose)
   && !!requestId && requestId.trim() === requestId;
 
 /** An issued brief is immutable under its exact key. A changed brief needs a new request ID. */

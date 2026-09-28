@@ -19,13 +19,13 @@ import { canonicalIssueKey, resolveDecisionIssue, type CanonicalIssueReference }
 import {
   CONFIRM_NO, CONFIRM_YES, NONE, canonicalMaps, briefManifest, briefListing, briefRefusal, readingRefusal, readerBrief as briefFor, bindRefusal, checkDecision, checkQuestionnaireDecisions, confirmPayload, confirmState, confirmedWords, decisionHash, logQuestionEvent,
   mapsKey, named, namedIssues, possiblySuperseded, postConfirmEvent, postRoundEvent, validMaps, loggedQuestionOnce,
-  approveDecisionWithdrawalEvent, revisionRelayQuestion, withdrawalScope, standingForIssue, checkListRevision, listRevisionItemIds, parseListRelayAnswer, type ListRevision,
+  revisionRelayQuestion, withdrawalQuestion, withdrawalBriefContent, withdrawalBriefHash, withdrawalReviewRefusal, WITHDRAW_IT, type WithdrawalReview, type WithdrawalReviewReceipt, withdrawalScope, standingForIssue, checkListRevision, listRevisionItemIds, parseListRelayAnswer, type ListRevision,
   readingsInDispute, intentCandidates, nominateComparisonEvent, recordAnswerEvent, submitQuestionnaireEvent, recordReadingEvent, ruledNotCarriedOut, standing, standingForFinding, waitingOnMe, awaitingReading, parked, withdrawDecisionEvent, reviseAnswerEvent,
   type AnswerVia, type BriefEntry, type FoldedDecision, type Mapping, type SharedDecisions,
 } from "../shared-decisions.js";
 import { decisionsView } from "./decision-holds.js";
-import { findVerdictCalls, isUnverified, readCall, readMessage, readReader, sameQuestion, sessionHolding, transcriptDir } from "../transcript.js";
-import { saveReaderRequest, readerRequests, holdReaderReceipt, readerReceipts, settleReaderReceipt,
+import { findVerdictCalls, isUnverified, readCall, readMessage, readReader, readSubagentCall, sameQuestion, sessionHolding, transcriptDir } from "../transcript.js";
+import { saveReaderRequest, readerRequest, readerRequests, holdReaderReceipt, readerReceipts, settleReaderReceipt,
   legacyReaderRequest, legacyReaderVerdicts, holdLegacyReaderVerdict, pendingLegacyReaderAnswers,
   settleLegacyReaderVerdict, noteLegacyReaderVerdict, type LegacyReaderVerdict } from "../reader-local.js";
 import type { AskedQuestion, Decision, DecisionRound } from "../schema.js";
@@ -952,56 +952,127 @@ export { decisionHash, CONFIRM_YES, CONFIRM_NO };
 
 /** Withdraw an unanswered question or this principal's answered ruling. The act is
  *  preserved in the decision log; the projection retires its authority and pending readings. */
-export async function withdrawDecision(root: string, input: { decision: string; answer?: string; reason: string; approval?: string }, via: Via = {}) {
+export interface WithdrawalReaderRef { requestId: string; receipt: string; agentId: string; callId: string }
+
+/**
+ * Withdraw a question or a ruling (owner, 2026-09-28: "Readers for unanswered, me for rulings,
+ * allow relay via verified question system"). A person withdraws their own ruling, or an
+ * unanswered question, directly. An agent withdraws an unanswered question only with two
+ * readers' verdicts (`review`, see `withdrawalReaderBrief`), and a ruling only as the person's
+ * "Withdraw it" answer to the question `reportRuling` posted (`relay`). The fold decides.
+ */
+export async function withdrawDecision(root: string, input: { decision: string; answer?: string; reason: string;
+  relay?: string; review?: { readers: WithdrawalReaderRef[]; arbitrator?: WithdrawalReaderRef } }, via: Via = {}, dir: string = transcriptDir()) {
   const b = bindDecisions(root, via);
   if ("error" in b) return b;
-  if (isAgentActor(b.actor) && !input.approval) return { error: "agent withdrawal needs exact recorded human approval" };
   const w = await writable(root);
   if ("error" in w) return w;
   const matches = decisionMatches(w.s, input?.decision);
   if (matches.length > 1) return { error: ambiguous("decision", String(input?.decision), matches) };
   const d = matches[0];
   if (!d) return { error: `no decision ${String(input?.decision)}` };
-  if (d.withdrawn) return { error: `${d.ref} is already withdrawn (${d.withdrawn.id})` };
   if (typeof input.reason !== "string" || !input.reason.trim()) return { error: "withdrawal needs a reason" };
+  const reason = input.reason.trim();
   const sources = d.answers.filter((a) => a.verified && !a.sourceAnswer);
-  if (input.answer) {
-    const a = sources.find((x) => x.id === input.answer);
-    if (!a) return { error: `${input.answer} is not a verified source answer on ${d.ref}` };
-    if (a.by.principal !== b.actor.principal) return { error: "withdrawing another principal's answer requires conflict resolution" };
-    if (sources.some((x) => x.by.principal !== b.actor.principal)) return { error: "independent answers require conflict resolution before withdrawal" };
-    if (a.withdrawn) return { error: `${input.answer} was already withdrawn (${a.withdrawn.by})` };
-  } else if (sources.length) return { error: `${d.ref} has a submitted answer; name the exact answer to withdraw its ruling` };
+  if (!input.answer && sources.length) return { error: `${d.ref} has a submitted answer; name the exact answer to withdraw its ruling` };
+  let review: WithdrawalReview | undefined;
+  if (isAgentActor(b.actor) && !input.answer) {
+    if (!input.review) return { error: "an agent withdraws an unanswered question with two readers' verdicts (withdrawal_reader_brief)" };
+    const checked = verifiedWithdrawalReview(root, d, reason, input.review, dir);
+    if ("error" in checked) return checked;
+    review = checked;
+  }
+  if (isAgentActor(b.actor) && input.answer && !input.relay)
+    return { error: "an agent cannot retire a ruling: report it (report_ruling) and relay the person's answer" };
   const e = await withdrawDecisionEvent(b.cfg.path, b.cfg.universe, b.actor,
-    { decision: d.id, ...(input.answer ? { answer: input.answer } : {}), reason: input.reason.trim(),
-      knownAnswers: sources.map((a) => a.id), scope: withdrawalScope(d),
-      ...(input.approval ? { approval: input.approval } : {}) });
+    { decision: d.id, ...(input.answer ? { answer: input.answer } : {}), reason, knownAnswers: sources.map((a) => a.id),
+      ...(input.relay ? { relay: decisionMatches(w.s, input.relay)[0]?.id ?? input.relay } : {}), ...(review ? { review } : {}) });
   if ("error" in e) return e;
-  const after = (await decisionsView(root)).s.decisions.find((x) => x.id === d.id);
-  const accepted = input.answer ? after?.answers.find((a) => a.id === input.answer)?.withdrawn?.by === e.id : after?.withdrawn?.id === e.id;
-  if (!accepted) return { error: "the fold did not accept this withdrawal; its event remains available for inspection", withdrawal: e.id };
   return { ok: true as const, withdrawal: e.id, decision: d.id, ...(input.answer ? { answer: input.answer } : {}) };
 }
 
-/** Record the person's approval of one exact withdrawal; an agent may cite this act later. */
-export async function approveDecisionWithdrawal(root: string,
-  input: { decision: string; answer?: string; reason: string }, via: Via = {}) {
+/**
+ * Report a ruling an agent suspects is wrong or in conflict: posts the verified question that
+ * asks its principal whether to withdraw it. Ask it verbatim; their "Withdraw it" answer is what
+ * lets `withdraw_decision` retire the ruling (with `relay`). Nothing is withdrawn here.
+ */
+export async function reportRuling(root: string, input: { decision: string; answer: string; reason: string }, via: Via = {}) {
   const b = bindDecisions(root, via);
   if ("error" in b) return b;
-  if (isAgentActor(b.actor)) return { error: "withdrawal approval needs the principal's own act" };
   const w = await writable(root);
   if ("error" in w) return w;
-  const matches = decisionMatches(w.s, input.decision);
-  if (matches.length > 1) return { error: ambiguous("decision", String(input.decision), matches) };
-  const d = matches[0];
-  if (!d || !input.reason?.trim()) return { error: "approval needs an exact decision and reason" };
-  const sources = d.answers.filter((a) => a.verified && !a.sourceAnswer);
-  const e = await approveDecisionWithdrawalEvent(b.cfg.path, b.cfg.universe, b.actor, {
-    decision: d.id, ...(input.answer ? { answer: input.answer } : {}), reason: input.reason.trim(),
-    scope: withdrawalScope(d), knownAnswers: sources.map((a) => a.id), sourceReceipt: randomUUID(),
-  });
-  if ("error" in e) return e;
-  return { ok: true as const, approval: e.id, decision: d.id, scope: withdrawalScope(d) };
+  const d = decisionMatches(w.s, input?.decision)[0];
+  const ruling = d?.answers.find((a) => a.id === input?.answer && a.verified && !a.sourceAnswer && !a.withdrawn);
+  if (!d || !ruling) return { error: "report_ruling needs an exact decision and one of its current verified answers" };
+  if (typeof input.reason !== "string" || !input.reason.trim()) return { error: "say what looks wrong or conflicting" };
+  const id = `report-${randomUUID()}`;
+  const question = withdrawalQuestion(d, ruling, input.reason.trim(), "D1");
+  const decision: Decision = { id: "withdraw", round: id, ref: "D1", kind: "options", payload: question,
+    options: question.options.map((o) => ({ label: o.label, effects: [] })) };
+  const event = await postRoundEvent(b.cfg.path, b.cfg.universe, b.actor, { id, source: "report_ruling", universe: b.cfg.universe }, [decision]);
+  return { ok: true as const, round: event.id, relay: `${event.id}:withdraw`, ask: question,
+    next: `ask the person this question verbatim (log_question), or send them to the decisions page; on "${WITHDRAW_IT}", call withdraw_decision with relay` };
+}
+
+/** The frozen brief a withdrawal reader is launched with; `slot` 3 arbitrates two disagreeing readers. */
+export async function withdrawalReaderBrief(root: string, input: { decision: string; reason: string; slot: 1 | 2 | 3; readers?: WithdrawalReaderRef[] }, dir: string = transcriptDir()) {
+  const view = await decisionsView(root);
+  const d = decisionMatches(view.s, input?.decision)[0];
+  if (!d) return { error: `no decision ${String(input?.decision)}` };
+  if (d.answers.some((a) => a.verified && !a.sourceAnswer)) return { error: `${d.ref} is answered; its ruling is withdrawn by its principal, not by readers` };
+  if (![1, 2, 3].includes(input.slot) || !input.reason?.trim()) return { error: "a withdrawal brief needs the reason and slot 1, 2 or 3 (the arbitrator)" };
+  let rationales: string[] | undefined;
+  if (input.slot === 3) {
+    const readers = (input.readers ?? []).map((ref) => withdrawalReceipt(root, ref, dir));
+    const bad = readers.find((r) => "error" in r);
+    if (readers.length !== 2 || bad) return { error: bad && "error" in bad ? bad.error : "the arbitrator reads both readers' recorded verdicts" };
+    rationales = readers.map((r) => (r as WithdrawalReviewReceipt).rationale);
+  }
+  const content = withdrawalBriefContent(d, input.reason.trim(), rationales);
+  const requestId = "withdrawal_" + withdrawalBriefHash({ content, slot: input.slot }).slice(7, 39);
+  const prompt = JSON.stringify({ requestId, ...content,
+    task: "Decide, blind to any other reader, whether this unanswered question should be withdrawn for the reason given: sound if the reason holds and nothing the question asks is still needed, unsound otherwise. Call submit_withdrawal_verdict with this requestId, sound or unsound, and your rationale." });
+  const saved = saveReaderRequest(root, { purpose: "withdrawal-review", requestId }, prompt);
+  if ("error" in saved) return saved;
+  return { ok: true as const, requestId, prompt };
+}
+
+export function submitWithdrawalVerdict(root: string, input: { requestId: string; verdict: "sound" | "unsound"; rationale: string }) {
+  if (!readerRequest(root, { purpose: "withdrawal-review", requestId: input?.requestId })) return { error: "no withdrawal brief with that request id" };
+  if (input.verdict !== "sound" && input.verdict !== "unsound") return { error: "verdict must be sound or unsound" };
+  if (typeof input.rationale !== "string" || !input.rationale.trim()) return { error: "the reader must explain its verdict" };
+  const receipt = randomUUID();
+  const held = holdReaderReceipt(root, { purpose: "withdrawal-review", requestId: input.requestId }, receipt, JSON.stringify({ verdict: input.verdict, rationale: input.rationale }));
+  return "error" in held ? held : { ok: true as const, held: true as const, receipt };
+}
+
+/** A reader's held verdict, checked against its own transcript: the exact brief, the exact call. */
+function withdrawalReceipt(root: string, ref: WithdrawalReaderRef, dir: string): WithdrawalReviewReceipt | { error: string } {
+  const key = { purpose: "withdrawal-review" as const, requestId: ref?.requestId };
+  const prompt = readerRequest(root, key);
+  const held = readerReceipts(root, key).find((r) => r.receipt === ref.receipt);
+  if (!prompt || !held || (held.state !== "pending" && held.state !== "recorded")) return { error: `no held withdrawal verdict ${ref?.receipt}` };
+  const body = JSON.parse(held.body) as { verdict: "sound" | "unsound"; rationale: string };
+  const call = readSubagentCall(ref.agentId, ref.callId, /(^|__)submit_withdrawal_verdict$/, dir);
+  if (isUnverified(call)) return { error: call.unverified };
+  if (call.reader.prompt !== prompt) return { error: "the reader was not launched with exactly the issued withdrawal brief" };
+  if (call.input?.requestId !== ref.requestId || call.input?.verdict !== body.verdict || call.input?.rationale !== body.rationale || call.result?.receipt !== ref.receipt)
+    return { error: "the reader's own call does not match the held verdict" };
+  const content = JSON.parse(prompt) as Record<string, unknown>;
+  const { requestId: _r, task: _t, ...brief } = content;
+  return { id: ref.receipt, session: call.reader.session, launch: call.reader.toolUseId, briefHash: withdrawalBriefHash(brief), verdict: body.verdict, rationale: body.rationale };
+}
+
+function verifiedWithdrawalReview(root: string, d: FoldedDecision, reason: string, input: { readers: WithdrawalReaderRef[]; arbitrator?: WithdrawalReaderRef }, dir: string): WithdrawalReview | { error: string } {
+  if (!Array.isArray(input?.readers)) return { error: "review needs its readers" };
+  const readers = input.readers.map((ref) => withdrawalReceipt(root, ref, dir));
+  const bad = readers.find((r) => "error" in r);
+  if (bad) return bad as { error: string };
+  const arbitrator = input.arbitrator ? withdrawalReceipt(root, input.arbitrator, dir) : undefined;
+  if (arbitrator && "error" in arbitrator) return arbitrator;
+  const review: WithdrawalReview = { readers: readers as WithdrawalReviewReceipt[], ...(arbitrator ? { arbitrator } : {}) };
+  const why = withdrawalReviewRefusal(d, reason, review);
+  return why ? { error: why } : review;
 }
 
 /** Give an agent the exact question that a later transcript must prove was shown. */
