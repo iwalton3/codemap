@@ -219,7 +219,7 @@ describe("the decisions UI", { skip: pw ? false : "playwright not resolvable (se
     await page.waitForSelector('text=submitted rulings and revisions');
     const shortRuling = page.locator('.op-card').filter({ hasText: 'D20: explain the intended behavior?' }).last();
     assert.match((await shortRuling.textContent())!, /answer history \(1\)/);
-    await shortRuling.getByRole('button', { name: 'review exact revision context' }).click();
+    await shortRuling.getByRole('button', { name: 'review what you are revising' }).click();
     await shortRuling.locator('pre').waitFor();
     await shortRuling.getByPlaceholder('revised answer').fill('Keep behavior B');
     await shortRuling.getByPlaceholder('revised answer').press('Tab');
@@ -234,7 +234,7 @@ describe("the decisions UI", { skip: pw ? false : "playwright not resolvable (se
       .filter({ has: page.getByPlaceholder('reason for withdrawal') }).first();
     assert.match((await listRuling.textContent())!, /Select the exact findings or bugs to revise/);
     await listRuling.getByLabel(new RegExp(`finding ${finding}`)).check();
-    await listRuling.getByRole('button', { name: 'review exact revision context' }).click();
+    await listRuling.getByRole('button', { name: 'review what you are revising' }).click();
     await listRuling.locator('pre').waitFor();
     const reviseList = listRuling.getByRole('button', { name: 'revise reviewed list' });
     assert.equal(await reviseList.isDisabled(), false, "the reviewed item can be explicitly approved");
@@ -395,8 +395,8 @@ describe("the decisions UI", { skip: pw ? false : "playwright not resolvable (se
     const { page, errors } = await open(`/u/${universe}/decisions/R-bug-web/`);
     const card = page.locator(".op-card").filter({ hasText: `D30: how should ${bug.id}` });
     await card.getByLabel(new RegExp(`bug ${bug.id}`)).check();
-    await card.getByRole("button", { name: "review exact revision context" }).click();
-    await card.getByText("Revision context shown").waitFor();
+    await card.getByRole("button", { name: "review what you are revising" }).click();
+    await card.getByText(/^Revising /).waitFor();
     assert.match((await card.textContent())!, new RegExp(first.answer));
     await card.getByRole("button", { name: "revise selected to Repair it" }).click();
     await page.waitForFunction(() => document.body.textContent?.includes("you said: Repair it"));

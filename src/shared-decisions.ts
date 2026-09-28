@@ -86,7 +86,6 @@ export interface FoldedAnswer {
   withdrawn?: { by: string; reason: string };
   /** A human correction of named source answer(s), limited to these findings. */
   revision?: { of: string[]; findings: string[]; issues?: CanonicalIssueReference[];
-    seen?: { presentation: string; contextHash: string };
     resolves?: { answers: [string, string]; priorResolution: string; shownHash: string } };
   revisionInvalid?: string;
   /** Source receipt for a selected question in one atomic stakeholder submission. */
@@ -613,7 +612,7 @@ export const withdrawalScope = (d: FoldedDecision): RevisionScope =>
 
 export function revisionRelayQuestion(d: FoldedDecision, sources: FoldedAnswer[], to: string,
   scope: RevisionScope): AskedQuestion {
-  const shown = revisionPresentation(d, sources, to, scope, "");
+  const shown = revisionPresentation(d, sources, to, scope);
   const listQuestion = d.presentation?.question;
   const reviewedItems = listQuestion?.kind === "list"
     ? listQuestion.items.filter((item) => listRevisionItemIds(d, scope).includes(item.id)) : undefined;
@@ -625,8 +624,8 @@ export function revisionRelayQuestion(d: FoldedDecision, sources: FoldedAnswer[]
       : d.payload.options.length ? d.payload.options : [{ label: "Other", description: "Give the corrected answer in your own words" }] };
 }
 
-export function revisionPresentation(d: FoldedDecision, sources: FoldedAnswer[], to: string,
-  scope: RevisionScope, sourceReceipt: string) {
+/** What a person revising `sources` is shown, and the hash a relayed question carries. */
+export function revisionPresentation(d: FoldedDecision, sources: FoldedAnswer[], to: string, scope: RevisionScope) {
   const context = { decision: d.id, to,
     answers: sources.map((a) => ({ id: a.id, responseHash: a.responseHash, questionHash: d.hash })),
     scope, display: { question: d.payload,
@@ -638,7 +637,7 @@ export function revisionPresentation(d: FoldedDecision, sources: FoldedAnswer[],
         : sources.map((a) => a.words),
       action: d.options.map((option) => ({ label: option.label, effects: option.effects })) } };
   return { ...context,
-    contextHash: createHash("sha256").update(canonical(context)).digest("hex"), sourceReceipt };
+    contextHash: createHash("sha256").update(canonical(context)).digest("hex") };
 }
 
 export interface ListRevision {
@@ -775,7 +774,6 @@ function foldDecisionsOnce(events: LogEvent[]): SharedDecisions {
   const nominationEvents: LogEvent[] = [];
   const withdrawalEvents: LogEvent[] = [];
   const withdrawalApprovals: LogEvent[] = [];
-  const revisionPresentations: LogEvent[] = [];
   const seenQuestionnaireAttempts = new Set<string>();
   const comparisonEvents: LogEvent[] = [];
 
@@ -1010,7 +1008,6 @@ function foldDecisionsOnce(events: LogEvent[]): SharedDecisions {
 
       case "decision.withdrawal.approved": { withdrawalApprovals.push(e); break; }
 
-      case "decision.revision.presented": { revisionPresentations.push(e); break; }
 
       case "decision.withdrawn": {
         withdrawalEvents.push(e);
@@ -1124,16 +1121,6 @@ function foldDecisionsOnce(events: LogEvent[]): SharedDecisions {
         && new Set(findings).size === findings.length
         && new Set(issues.map(issueKey)).size === issues.length;
     const samePrincipal = targets.every((x) => x?.by.principal === a.by.principal);
-    const presentation = rev.seen && revisionPresentations.find((e) => e.id === rev.seen!.presentation);
-    const expected = presentation && targets.every(Boolean)
-      ? revisionPresentation(d, targets as FoldedAnswer[], a.by.principal,
-        { findings, ...(issues.length ? { issues } : {}) }, str((presentation.data as any)?.sourceReceipt) ?? "") : undefined;
-    const seen = presentation && expected && presentation.actor.principal === a.by.principal
-      && !isAgentActor(presentation.actor) && str((presentation.data as any)?.sourceReceipt)
-      && (presentation.data as any)?.contextHash === rev.seen?.contextHash
-      && canonical(presentation.data) === canonical(expected)
-      && targets.every((x) => causal.saw(presentation.id, sourceEventId(x!.id)))
-      && causal.saw(sourceEventId(a.id), presentation.id);
     const answerEvent = answerEvents.get(a.id);
     const relay = answerEvent?.kind === "decision.answer.revised" && (answerEvent.data as any)?.via?.kind === "revision-relay"
       ? (answerEvent.data as any).via.proof : undefined;
@@ -1149,10 +1136,9 @@ function foldDecisionsOnce(events: LogEvent[]): SharedDecisions {
       && !checkListRevision(d, { findings, issues }, (answerEvents.get(a.id)?.data as any)?.list)
       && listRevisionMatchesAnswer(d, (answerEvents.get(a.id)?.data as any)?.list,
         (answerEvents.get(a.id)?.data as any)?.via)
-      && (!!relayValid || targets.every((x) => causal.saw(sourceEventId(a.id), sourceEventId(x!.id))))
-      && (d.presentation?.question.kind !== "list" || !!seen || !!relayValid)
-      && (samePrincipal || !!seen || !!relayValid)
-      && (!rev.seen || !!seen);
+      // Another person's revision is valid when the old answer was in their store when they
+      // revised it (owner's rule; a shown-receipt was too strict — plan Phase 3.2).
+      && (!!relayValid || targets.every((x) => causal.saw(sourceEventId(a.id), sourceEventId(x!.id))));
     if (!valid) {
       a.revisionInvalid = "revision needs exact source, scope and verified human act-time context";
       a.cancelled = { by: a.id, reason: a.revisionInvalid };
@@ -2408,18 +2394,6 @@ export const nominateComparisonEvent = (logRoot: string, universe: string, actor
   emitEvent(logRoot, decisionScope(universe), actor, "decision.comparison.nominated",
     [...input.answers].sort().join("/"), input);
 
-export const presentDecisionRevisionEvent = (logRoot: string, universe: string, actor: Actor,
-  input: { decision: string; revises: string[]; scope: RevisionScope; sourceReceipt: string }) =>
-  emitEventChecked(logRoot, decisionScope(universe), actor, async (events) => {
-    if (isAgentActor(actor)) return { error: "revision presentation needs the principal's own act" };
-    const d = foldDecisions(events).decisions.find((x) => x.id === input.decision);
-    if (!d || !str(input.sourceReceipt) || !input.revises?.length) return { error: "revision presentation needs exact sources and receipt" };
-    const sources = input.revises.map((id) => d.answers.find((a) => a.id === id));
-    if (sources.some((a) => !a?.verified || a.sourceAnswer || a.cancelled)) return { error: "revision source is not current" };
-    return { kind: "decision.revision.presented", subject: d.id,
-      data: revisionPresentation(d, sources as FoldedAnswer[], actor.principal, input.scope, input.sourceReceipt) };
-  });
-
 export const approveDecisionWithdrawalEvent = (logRoot: string, universe: string, actor: Actor,
   input: { decision: string; answer?: string; reason: string; scope: RevisionScope;
     knownAnswers: string[]; sourceReceipt: string }) =>
@@ -2472,7 +2446,6 @@ export const reviseAnswerEvent = (logRoot: string, universe: string, actor: Acto
   input: { decision: string; hash: string; via: Extract<AnswerVia, { kind: "direct" | "revision-relay" }>;
     list?: ListRevision;
     revision: { of: string[]; findings: string[]; issues?: CanonicalIssueReference[];
-      seen?: { presentation: string; contextHash: string };
       resolves?: { answers: [string, string]; priorResolution: string; shownHash: string } } }) =>
   emitEventChecked(logRoot, decisionScope(universe), actor, async (events) => {
     const d = foldDecisions(events).decisions.find((x) => x.id === input.decision);
@@ -2482,7 +2455,7 @@ export const reviseAnswerEvent = (logRoot: string, universe: string, actor: Acto
       return { error: "agent revision needs a verified human relay" };
     if (!isAgentActor(actor) && input.via.kind === "revision-relay")
       return { error: "relay revision must be recorded by its verifying agent" };
-    const { of, findings, issues = [], seen, resolves } = input.revision;
+    const { of, findings, issues = [], resolves } = input.revision;
     if (!Array.isArray(of) || !of.length || new Set(of).size !== of.length
       || !Array.isArray(findings) || new Set(findings).size !== findings.length
       || !Array.isArray(issues) || new Set(issues.map(issueKey)).size !== issues.length
@@ -2513,18 +2486,6 @@ export const reviseAnswerEvent = (logRoot: string, universe: string, actor: Acto
         || !sameQuestion(proof.question, question) || !str(proof.answer)
         || sources.some((a) => (ms(a!.givenAt) ?? Infinity) >= ms(proof.answeredAt)!))
         return { error: "relay did not prove exact predecessor context at human answer time" };
-    }
-    if (d.presentation?.question.kind === "list" && !seen && input.via.kind !== "revision-relay")
-      return { error: "list revision needs the exact shown context receipt" };
-    if ((seen || sources.some((a) => a!.by.principal !== actor.principal)) && input.via.kind !== "revision-relay") {
-      const shown = events.find((e) => e.id === seen?.presentation && e.kind === "decision.revision.presented");
-      const expected = shown && revisionPresentation(d, sources as FoldedAnswer[], actor.principal,
-        { findings, ...(issues.length ? { issues } : {}) }, str((shown.data as any)?.sourceReceipt) ?? "");
-      if (!shown || isAgentActor(shown.actor) || shown.actor.principal !== actor.principal
-        || !str((shown.data as any)?.sourceReceipt) || shown.subject !== d.id
-        || shown.id !== seen?.presentation || expected?.contextHash !== seen?.contextHash
-        || canonical(shown.data) !== canonical(expected))
-        return { error: "revision needs an exact human presentation receipt for its selected scope" };
     }
     return { kind: "decision.answer.revised", subject: d.id, data: input };
   });

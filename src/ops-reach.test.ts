@@ -99,7 +99,7 @@ const MCP_FORBIDDEN = [
   "answerDirect",
   // The person's own acts on a question; an agent's way in is the relayed variant, whose
   // proof the fold checks. The folds refuse an agent actor here too.
-  "submitQuestionnaire", "approveDecisionWithdrawal", "presentDecisionRevision", "reviseDecision",
+  "submitQuestionnaire", "approveDecisionWithdrawal", "reviseDecision",
 ];
 
 test("the join and recover flows are reachable from the web, not just a terminal", () => {

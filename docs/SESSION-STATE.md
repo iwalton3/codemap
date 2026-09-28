@@ -11,7 +11,7 @@ The core now records human rulings separately from carrying them out. It support
 published questionnaires, device-local drafts, partial submissions, exact publication
 identity, scoped revisions, explicit withdrawal, independent answer comparison, and
 reader-validated one-shot invalidity closure for both findings and bugs. The last
-repair preserves earlier per-item corrections in revision presentations and derives
+repair preserves earlier per-item corrections in revisions and derives
 relayed list corrections from the human's transcript answer.
 
 Read [rulings-workflow.md](rulings-workflow.md) for current operations and

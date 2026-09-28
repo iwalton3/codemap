@@ -38,7 +38,7 @@ export const comparisonUrl = (u, id) => href(decisionsUrl(u), { comparison: id }
  * @typedef {{ params: { universe: string, round?: string }, query: Record<string, string> }} DecProps
  * @typedef {{ d: ApiMap['/api/decisions']|null, r: ApiMap['/api/decisions/round']|null, qlist: ApiMap['/api/decisions/questionnaires']|null, qdetail: ApiMap['/api/decisions/questionnaire']|null, comparison: ApiMap['/api/decisions/comparison']|null, resolutionBrief: ApiMap['/api/decisions/comparison/resolution']|null, busy: string|null, err: string|null, rationale: string, preserve: string, revises: string,
  *   words: Record<string,string>, reasons: Record<string,string>, checked: Record<string,string[]>, revisionFindings: Record<string,string[]>, revisionIssues: Record<string,string[]>,
- *   revisionPresentations: Record<string,{presentation:string,contextHash:string,displayed:any,scopeKey:string}>,
+ *   revisionPresentations: Record<string,{displayed:any,scopeKey:string}>,
  *   revisionMarked: Record<string,string[]>, revisionCorrections: Record<string,Record<string,string>>,
  *   withdrawalApprovals: Record<string,string> }} DecState
  * @extends {Component<DecProps, DecState>}
@@ -284,20 +284,15 @@ class DecisionsPage extends Component {
       || (effect.issues || []).some((issue) => issues.has(issueKey(issue)))));
   }
 
-  async presentRevision(d) {
-    if (this.state.busy) return;
+  /** Show the answers being revised and the scope before a new answer can be chosen. Local:
+   *  nothing is recorded, because another person's revision needs only that the old answer was
+   *  in their store (plan Phase 3.2). */
+  presentRevision(d) {
     const scope = this.revisionScope(d);
     if ((!scope.findings.length && !scope.issues.length) || !scope.revises.length) return;
-    this.state.busy = d.id; this.state.err = null;
-    try {
-      const r = await attestedPost('/api/decisions/revise/present', {
-        u: this.props.params.universe, decision: d.id, revises: scope.revises,
-        findings: scope.findings, issues: scope.issues,
-      });
-      if (r?.error) { this.state.err = r.error; return; }
-      this.state.revisionPresentations = { ...this.state.revisionPresentations,
-        [d.id]: { presentation: r.presentation, contextHash: r.contextHash, displayed: r.displayed, scopeKey: scope.scopeKey } };
-    } catch (e) { this.state.err = errText(e); } finally { this.state.busy = null; }
+    const displayed = { question: d.payload.question, scope: { findings: scope.findings, issues: scope.issues },
+      revising: d.answers.filter((a) => scope.revises.includes(a.id)).map((a) => ({ id: a.id, by: a.by.principal, words: a.words })) };
+    this.state.revisionPresentations = { ...this.state.revisionPresentations, [d.id]: { displayed, scopeKey: scope.scopeKey } };
   }
 
   async revise(d, option) {
@@ -316,7 +311,6 @@ class DecisionsPage extends Component {
       const r = await attestedPost('/api/decisions/revise', {
         u: this.props.params.universe, decision: d.id, revises: scope.revises,
         findings: scope.findings, issues: scope.issues,
-        seen: { presentation: shown.presentation, contextHash: shown.contextHash },
         ...(isList ? { list: { items: items.map((item) => item.id), approveUnmarked: true,
           marked: items.filter((item) => marked.includes(item.id)).map((item) => ({ itemId: item.id, correction: corrections[item.id] })) } }
           : option ? { option } : { words: this.state.words[d.id] || '' }),
@@ -395,8 +389,8 @@ class DecisionsPage extends Component {
           checked="${(this.state.revisionIssues[d.id] || []).includes(JSON.stringify(entry.issue))}"
           on-change="${() => this.toggleRevisionIssue(d.id, entry.issue)}"> ${entry.issue.kind} ${entry.issue.id} (current: ${entry.answer || 'unanswered'})</label>`, (entry) => JSON.stringify(entry.issue))}
         <button class="pullbtn" disabled="${busy || (!revisionScope.findings.length && !revisionScope.issues.length) || !revisionScope.revises.length}"
-          on-click="${() => this.presentRevision(d)}">review exact revision context</button>
-        ${when(reviewed, () => html`<div class="fs dim">Revision context shown for ${revisionScope.revises.join(', ')}. Receipt ${presentation.presentation}. Review the question and sources before choosing a new answer.</div>
+          on-click="${() => this.presentRevision(d)}">review what you are revising</button>
+        ${when(reviewed, () => html`<div class="fs dim">Revising ${revisionScope.revises.join(', ')}. Review the question and the answers before choosing a new one.</div>
           <pre class="fs">${JSON.stringify(presentation.displayed, null, 2)}</pre>`)}
         ${when(d.presentation?.question.kind === 'list' && reviewed, () => html`
           <div class="fs dim">Review every item in this scope. Unmarked items are approved; each marked item needs a correction.</div>
@@ -421,7 +415,7 @@ class DecisionsPage extends Component {
       ${when(!inactive && d.kind === 'words' && !!s, () => html`<div class="op-actions">
         <input placeholder="revised answer" value="${this.state.words[d.id] || ''}"
           on-change="${(e, v) => { this.state.words = { ...this.state.words, [d.id]: v }; }}">
-        <button class="pullbtn" disabled="${busy}" on-click="${() => this.presentRevision(d)}">review exact revision context</button>
+        <button class="pullbtn" disabled="${busy}" on-click="${() => this.presentRevision(d)}">review what you are revising</button>
         ${when(reviewed, () => html`<pre class="fs">${JSON.stringify(presentation.displayed, null, 2)}</pre>`)}
         <button class="pullbtn" disabled="${busy || !reviewed || !(this.state.words[d.id] || '').trim()}"
           on-click="${() => this.revise(d)}">revise answer</button>

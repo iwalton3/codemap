@@ -195,7 +195,7 @@ test("the decisions fold's event vocabulary is pinned to a materializer version"
   const kinds = [...new Set([...fold.matchAll(/case "(decision\.[a-zA-Z.]+)"|kind [!=]== "(decision\.[a-zA-Z.]+)"/g)]
     .map((m) => m[1] ?? m[2]!))].sort();
   assert.deepEqual(kinds, [
-    "decision.answer.recorded", "decision.answer.revised", "decision.comparison.judged", "decision.comparison.nominated", "decision.comparison.requested", "decision.comparison.resolved", "decision.confirm.posted", "decision.question.logged", "decision.questionnaire.submitted", "decision.reading.recorded", "decision.revision.presented", "decision.round.posted", "decision.withdrawal.approved", "decision.withdrawn",
+    "decision.answer.recorded", "decision.answer.revised", "decision.comparison.judged", "decision.comparison.nominated", "decision.comparison.requested", "decision.comparison.resolved", "decision.confirm.posted", "decision.question.logged", "decision.questionnaire.submitted", "decision.reading.recorded", "decision.round.posted", "decision.withdrawal.approved", "decision.withdrawn",
   ], "the decisions fold learned or forgot an event — bump MATERIALIZER_VERSION with it");
   const proj = readFileSync("src/shared-projections.ts", "utf8");
   const block = proj.slice(proj.indexOf("export const decisionsProjection"), proj.indexOf("/** Shared notes"));

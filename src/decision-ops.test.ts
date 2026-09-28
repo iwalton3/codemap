@@ -1740,3 +1740,22 @@ test("round five: interpretation request identity changes with source and shown 
   assert.notEqual(interpretationRequestId({ ...base, brief: "changed exact reader prompt" }), first);
   assert.notEqual(interpretationRequestId({ ...base, manifest: [{ id: "d1", hash: "question-v2", ref: "D1" }] }), first);
 });
+
+test("asking again about a finding already ruled on tells the agent the standing ruling", async () => {
+  const u = await universe();
+  try {
+    const f = await withFinding(u);
+    await asAgent(async () => { assert.equal((await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f)] }) as any).ok, true); });
+    await asPerson(async () => { assert.equal((await answerDirect(u.root, { decision: "d1", option: "Real, fix it" }) as any).recorded, true); });
+    await asAgent(async () => {
+      const again = await postRound(u.root, { round: { id: "R2", source: "y" }, decisions: [decision("d1", f, {}, "D1", "R2")] }) as any;
+      assert.equal(again.ok, true, JSON.stringify(again));
+      assert.equal(again.alreadyRuled?.length, 1, JSON.stringify(again));
+      assert.equal(again.alreadyRuled[0].issue, f);
+      assert.equal(again.alreadyRuled[0].words, "Real, fix it");
+      const fresh = await withFinding(u);
+      const unrelated = await postRound(u.root, { round: { id: "R3", source: "z" }, decisions: [decision("d1", fresh, {}, "D1", "R3")] }) as any;
+      assert.equal(unrelated.alreadyRuled, undefined);
+    });
+  } finally { u.cleanup(); }
+});

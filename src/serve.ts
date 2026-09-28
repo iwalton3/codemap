@@ -442,19 +442,6 @@ const server = createServer(async (req, res) => {
       res.end(JSON.stringify(out));
       return;
     }
-    if (req.method === "POST" && url.pathname === "/api/decisions/revise/present") {
-      const chunks: Buffer[] = [];
-      for await (const c of req) chunks.push(c as Buffer);
-      const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
-      if (!attested(body, "present decision revision")) return;
-      const root = rootFor(body.u ?? null);
-      const out = await withLock<unknown>(root, () => ops.presentDecisionRevision(root, {
-        decision: String(body.decision ?? ""), revises: body.revises, findings: body.findings, issues: body.issues,
-      }));
-      res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
-      res.end(JSON.stringify(out));
-      return;
-    }
     if (req.method === "POST" && url.pathname === "/api/decisions/withdraw") {
       const chunks: Buffer[] = [];
       for await (const c of req) chunks.push(c as Buffer);
@@ -476,7 +463,7 @@ const server = createServer(async (req, res) => {
       const root = rootFor(body.u ?? null);
       const out = await withLock<unknown>(root, () => ops.reviseDecision(root, {
         decision: String(body.decision ?? ""), revises: body.revises, findings: body.findings, issues: body.issues,
-        seen: body.seen, resolves: body.resolves, option: body.option, words: body.words, list: body.list,
+        resolves: body.resolves, option: body.option, words: body.words, list: body.list,
       }));
       res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
       res.end(JSON.stringify(out));

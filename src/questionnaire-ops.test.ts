@@ -7,7 +7,7 @@ import { spawnSync } from "node:child_process";
 import { indexBlob } from "./repo.js";
 import { writeStore } from "./store.js";
 import { shareFinding } from "./ops-shared.js";
-import { postRound, questionnaireDetail, submitQuestionnaire, presentDecisionRevision, reviseDecision, revisionRelayBrief, reviseDecisionRelayed, withdrawDecision } from "./ops/decisions.js";
+import { postRound, questionnaireDetail, submitQuestionnaire, reviseDecision, revisionRelayBrief, reviseDecisionRelayed, withdrawDecision } from "./ops/decisions.js";
 import { decisionScope, foldDecisions, currentAnswersForIssue } from "./shared-decisions.js";
 import { readScope } from "./eventlog.js";
 import { questionnaireVersion, type Questionnaire, type QuestionnaireAnswer } from "./questionnaire.js";
@@ -231,25 +231,18 @@ test("a list revision keeps per-item corrections and refuses incomplete or misma
     const scope = { decision: decision.id, revises: [source], findings: [u.finding] };
     const reviewed = { items: ["fix-item", "reject-item"], approveUnmarked: true as const,
       marked: [{ itemId: "reject-item", correction: "The claim needs qualification" }] };
-    let seen: { presentation: string; contextHash: string };
-    await env("alice@x.com", false, async () => {
-      const shown = await presentDecisionRevision(u.root, scope) as any;
-      assert.equal(shown.ok, true, JSON.stringify(shown));
-      seen = { presentation: shown.presentation, contextHash: shown.contextHash };
-    });
     const count = async () => (await readScope(u.side, decisionScope(universeKey(u.root)))
       ).filter((e) => e.kind === "decision.answer.revised").length;
     await env("alice@x.com", false, async () => {
       for (const bad of [
         { ...scope, option: "Reject item" },
-        { ...scope, seen, list: reviewed, option: "Reject item" },
-        { ...scope, seen: { ...seen, contextHash: "wrong" }, list: reviewed },
-        { ...scope, seen, list: { ...reviewed, marked: [{ itemId: "reject-item", correction: " " }] } },
-        { ...scope, seen, list: { ...reviewed, items: ["fix-item"] } },
-        { ...scope, seen, list: { ...reviewed, marked: [{ itemId: "unknown", correction: "Wrong" }] } },
+        { ...scope, list: reviewed, option: "Reject item" },
+        { ...scope, list: { ...reviewed, marked: [{ itemId: "reject-item", correction: " " }] } },
+        { ...scope, list: { ...reviewed, items: ["fix-item"] } },
+        { ...scope, list: { ...reviewed, marked: [{ itemId: "unknown", correction: "Wrong" }] } },
       ]) assert.ok((await reviseDecision(u.root, bad as any) as any).error);
       assert.equal(await count(), 0);
-      const revised = await reviseDecision(u.root, { ...scope, seen, list: reviewed }) as any;
+      const revised = await reviseDecision(u.root, { ...scope, list: reviewed }) as any;
       assert.equal(revised.ok, true, JSON.stringify(revised));
     });
     const after = (await decisionsView(u.root)).s.decisions.find((d) => d.id === decision.id)!;
@@ -292,10 +285,6 @@ test("a list relay shows source corrections and records only the person's exact 
     });
     const d = (await decisionsView(u.root)).s.decisions.find((item) => (item.label ?? item.id) === "list")!;
     const scope = { decision: d.id, revises: [source], findings: [u.finding] };
-    const shown = await env("bob@x.com", false, async () => presentDecisionRevision(u.root, scope)) as any;
-    assert.equal(shown.ok, true, JSON.stringify(shown));
-    assert.match(JSON.stringify(shown.displayed), /The claim needs a narrower scope/);
-    assert.match(JSON.stringify(shown.displayed), /alice@x.com/);
 
     await env("bob@x.com", true, async () => {
       const brief = await revisionRelayBrief(u.root, scope) as any;
@@ -381,10 +370,7 @@ test("a list correction survives two-clone sync and cached refold", async () => 
     await settle(t);
     await env("alice@acme.test", false, async () => {
       const scope = { decision: posted.ask[0].decision, revises: [source], findings: [finding] };
-      const shown = await presentDecisionRevision(alice!.repo, scope) as any;
-      assert.equal(shown.ok, true, JSON.stringify(shown));
       const revised = await reviseDecision(alice!.repo, { ...scope,
-        seen: { presentation: shown.presentation, contextHash: shown.contextHash },
         list: { items: ["a", "b"], approveUnmarked: true,
           marked: [{ itemId: "b", correction: "B is incomplete" }] } }) as any;
       assert.equal(revised.ok, true, JSON.stringify(revised));

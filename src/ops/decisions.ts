@@ -19,7 +19,7 @@ import { canonicalIssueKey, resolveDecisionIssue, type CanonicalIssueReference }
 import {
   CONFIRM_NO, CONFIRM_YES, NONE, canonicalMaps, briefManifest, briefListing, briefRefusal, readingRefusal, readerBrief as briefFor, bindRefusal, checkDecision, checkQuestionnaireDecisions, confirmPayload, confirmState, confirmedWords, decisionHash, logQuestionEvent,
   mapsKey, named, namedIssues, possiblySuperseded, postConfirmEvent, postRoundEvent, validMaps, loggedQuestionOnce,
-  approveDecisionWithdrawalEvent, presentDecisionRevisionEvent, revisionRelayQuestion, withdrawalScope, standingForIssue, checkListRevision, listRevisionItemIds, parseListRelayAnswer, type ListRevision,
+  approveDecisionWithdrawalEvent, revisionRelayQuestion, withdrawalScope, standingForIssue, checkListRevision, listRevisionItemIds, parseListRelayAnswer, type ListRevision,
   readingsInDispute, intentCandidates, nominateComparisonEvent, recordAnswerEvent, submitQuestionnaireEvent, recordReadingEvent, ruledNotCarriedOut, standing, standingForFinding, waitingOnMe, awaitingReading, parked, withdrawDecisionEvent, reviseAnswerEvent,
   type AnswerVia, type BriefEntry, type FoldedDecision, type Mapping, type SharedDecisions,
 } from "../shared-decisions.js";
@@ -152,7 +152,34 @@ export async function postRound(root: string, r: NewRound, via: Via = {}, dir: s
     // What to ask with, verbatim — a paraphrase reads as unverified (C14).
     ask: r.decisions.map((d) => ({ decision: `${event.id}:${d.id}`, label: d.id, ref: d.ref,
       payload: s.decisions.find((x) => x.id === `${event.id}:${d.id}`)?.payload ?? d.payload })),
+    ...alreadyRuled(before, decisions),
   };
+}
+
+/**
+ * The standing rulings on anything these new questions act on — so an agent asking again
+ * knows it was already ruled on before the person is asked (owner, R1: "I want an agent to
+ * know the question had already been ruled on when asking the user again").
+ */
+function alreadyRuled(s: SharedDecisions, posted: Decision[]) {
+  const out: { issue: string; decision: string; ref: string; answer: string; by: string; words: string }[] = [];
+  const seen = new Set<string>();
+  for (const p of posted) {
+    for (const d of s.decisions) {
+      if (d.withdrawn) continue;
+      const rulings = [
+        ...named(p).filter((f) => named(d).includes(f)).map((f) => ({ issue: f, a: standingForFinding(d, f) })),
+        ...namedIssues(p).filter((i) => namedIssues(d).some((x) => canonicalIssueKey(x) === canonicalIssueKey(i)))
+          .map((i) => ({ issue: `${i.kind} ${i.id}`, a: standingForIssue(d, i) })),
+      ];
+      for (const { issue, a } of rulings) {
+        if (!a || !a.verified || seen.has(`${issue}\0${a.id}`)) continue;
+        seen.add(`${issue}\0${a.id}`);
+        out.push({ issue, decision: d.id, ref: d.ref, answer: a.id, by: a.by.principal, words: a.words });
+      }
+    }
+  }
+  return out.length ? { alreadyRuled: out, note: "these issues already have a standing ruling; asking again does not replace it unless the person revises or withdraws it" } : {};
 }
 
 const comparisonSummaries = (s: SharedDecisions) => s.comparisons.map((comparison) => ({
@@ -1006,27 +1033,6 @@ export async function approveDecisionWithdrawal(root: string,
   return { ok: true as const, approval: e.id, decision: d.id, scope: withdrawalScope(d) };
 }
 
-/** Freeze exactly which earlier source and action this principal saw before revising it. */
-export async function presentDecisionRevision(root: string,
-  input: { decision: string; revises: string[]; findings: string[]; issues?: CanonicalIssueReference[] }, via: Via = {}) {
-  const b = bindDecisions(root, via);
-  if ("error" in b) return b;
-  if (isAgentActor(b.actor)) return { error: "revision presentation needs the principal's own act" };
-  const w = await writable(root);
-  if ("error" in w) return w;
-  const matches = decisionMatches(w.s, input.decision);
-  if (matches.length > 1) return { error: ambiguous("decision", input.decision, matches) };
-  const d = matches[0];
-  if (!d) return { error: `no decision ${input.decision}` };
-  const e = await presentDecisionRevisionEvent(b.cfg.path, b.cfg.universe, b.actor, {
-    decision: d.id, revises: input.revises, scope: { findings: input.findings, ...(input.issues?.length ? { issues: input.issues } : {}) },
-    sourceReceipt: randomUUID(),
-  });
-  if ("error" in e) return e;
-  return { ok: true as const, presentation: e.id,
-    contextHash: (e.data as any).contextHash as string, displayed: e.data };
-}
-
 /** Give an agent the exact question that a later transcript must prove was shown. */
 export async function revisionRelayBrief(root: string,
   input: { decision: string; revises: string[]; findings: string[]; issues?: CanonicalIssueReference[] }, via: Via = {}) {
@@ -1101,7 +1107,6 @@ export async function reviseDecisionRelayed(root: string,
  * their earlier answer. Other principals' answers require a conflict resolution act. */
 export async function reviseDecision(root: string, input: { decision: string; revises: string[];
   findings: string[]; issues?: CanonicalIssueReference[];
-  seen?: { presentation: string; contextHash: string };
   resolves?: { answers: [string, string]; priorResolution: string; shownHash: string };
   option?: string; words?: string; list?: ListRevision }, via: Via = {}) {
   const b = bindDecisions(root, via);
@@ -1125,13 +1130,10 @@ export async function reviseDecision(root: string, input: { decision: string; re
   const sources = input.revises.map((id) => d.answers.find((a) => a.id === id));
   if (sources.some((a) => !a?.verified || a.sourceAnswer || (a.via !== "direct" && a.via !== "questionnaire") || a.cancelled))
     return { error: "revision sources must be current verified direct or questionnaire answers" };
-  if (sources.some((a) => a!.by.principal !== b.actor.principal) && !input.seen)
-    return { error: "cross-principal revision needs the exact presented source receipt" };
   const listError = checkListRevision(d, { findings: input.findings, issues }, input.list);
   if (listError) return { error: listError };
   const listQuestion = d.presentation?.question;
   const isList = listQuestion?.kind === "list";
-  if (isList && !input.seen) return { error: "list revision needs the exact shown context receipt" };
   if (isList ? input.option !== undefined || input.words !== undefined
     : !!input.option === !!input.words) return { error: "revision needs the exact list answer or one option or new words" };
   if (input.option && !d.options.some((o) => o.label === input.option)) return { error: `${input.option} is not an option of ${d.ref}` };
@@ -1145,7 +1147,7 @@ export async function reviseDecision(root: string, input: { decision: string; re
     { decision: d.id, hash: d.hash, via: viaAnswer,
       ...(isList ? { list: input.list } : {}),
       revision: { of: input.revises, findings: input.findings,
-        ...(issues.length ? { issues } : {}), ...(input.seen ? { seen: input.seen } : {}),
+        ...(issues.length ? { issues } : {}),
         ...(input.resolves ? { resolves: input.resolves } : {}) } });
   if ("error" in event) return event;
   const result = await outcome(root, d, event.id);

@@ -1,7 +1,7 @@
 /** Acceptance probes for the remaining explicit lifecycle acts in plan §3. */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { decisionHash, foldDecisions, revisionPresentation, revisionRelayQuestion, standingForFinding, standingForIssue, waitingOnMe, heldFindings } from "./shared-decisions.js";
+import { decisionHash, foldDecisions, revisionRelayQuestion, standingForFinding, standingForIssue, waitingOnMe, heldFindings } from "./shared-decisions.js";
 
 const alice = { principal: "alice" };
 const bob = { principal: "bob" };
@@ -43,22 +43,18 @@ test("an agent can execute only the exact human-approved withdrawal, with approv
   assert.equal(forged.decisions.find((x) => x.id === "d1")?.answers[0]?.withdrawn, undefined);
 });
 
-test("cross-principal direct revision needs a matching prior presentation act; forged context grants nothing", () => {
+test("another person's revision stands when the old answer was in their store, and not when it was not", () => {
+  // The owner's rule; the shown-the-old-answer receipt was too strict (plan Phase 3.2).
   const p = post(findingDecision), first = answer("a2", findingDecision, "Settle", alice, [p.id]);
-  const foldedSource = foldDecisions([p, first]).decisions.find((x) => x.id === "d1")!;
-  const shownData = revisionPresentation(foldedSource, [foldedSource.answers[0]!], "bob",
-    { findings: ["F1"] }, "server-presentation-receipt");
-  const shown = event("s3", "decision.revision.presented", "d1", shownData, bob, [first.id]);
-  const revised = event("r4", "decision.answer.revised", "d1", {
+  const revise = (after: string[]) => event("r4", "decision.answer.revised", "d1", {
     decision: "d1", hash: decisionHash(findingDecision), via: { kind: "direct", option: "Keep open" },
-    revision: { of: [first.id], findings: ["F1"], seen: { presentation: shown.id, contextHash: shownData.contextHash } },
-  }, bob, [shown.id]);
-  const accepted = foldDecisions([p, first, shown, revised]);
-  assert.equal(accepted.decisions.find((x) => x.id === "d1")?.answers.find((x) => x.id === revised.id)?.revisionInvalid, undefined);
-  assert.equal(standingForFinding(accepted.decisions.find((x) => x.id === "d1")!, "F1")?.id, revised.id);
-  const forged = foldDecisions([p, first, shown, { ...revised, data: { ...revised.data,
-    revision: { ...revised.data.revision, seen: { presentation: shown.id, contextHash: "wrong" } } } }]);
-  assert.ok(forged.decisions.find((x) => x.id === "d1")?.answers.find((x) => x.id === revised.id)?.revisionInvalid);
+    revision: { of: [first.id], findings: ["F1"] },
+  }, bob, after);
+  const accepted = foldDecisions([p, first, revise([first.id])]).decisions.find((x) => x.id === "d1")!;
+  assert.equal(accepted.answers.find((x) => x.id === "r4")?.revisionInvalid, undefined);
+  assert.equal(standingForFinding(accepted, "F1")?.id, "r4");
+  const unseen = foldDecisions([p, first, revise([p.id])]).decisions.find((x) => x.id === "d1")!;
+  assert.ok(unseen.answers.find((x) => x.id === "r4")?.revisionInvalid, "a revision of an answer its writer never had revises nothing");
 });
 
 test("a scoped revision can change one canonical bug without changing an unrelated finding", () => {
