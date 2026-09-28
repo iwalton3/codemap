@@ -113,7 +113,6 @@ export async function apiPost(path, body) {
  *   '/api/findings/backlog':    Awaited<ReturnType<Shared['findingBacklog']>>,
  *   '/api/decisions':           Awaited<ReturnType<Ops['decisionRounds']>>,
  *   '/api/decisions/round':     Awaited<ReturnType<Ops['decisionRound']>>,
- *   '/api/decisions/status':    Awaited<ReturnType<Ops['decisionStatus']>>,
  *   '/api/decisions/questionnaires': Awaited<ReturnType<Ops['questionnaireList']>> & {currentPrincipal: string|null},
  *   '/api/decisions/questionnaire': Awaited<ReturnType<Ops['questionnaireDetail']>> & {currentPrincipal: string|null},
  *   '/api/decisions/comparison': Awaited<ReturnType<typeof import('../dist/ops/comparisons.js').comparisonDetail>>,

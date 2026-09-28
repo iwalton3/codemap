@@ -13,7 +13,7 @@ import { findingRepairPresentations } from "./repair-presentation.js";
 import { createHash, randomUUID } from "node:crypto";
 import { isAgentActor } from "../identity.js";
 import { bindDecisions, type Bound, type Via } from "../ops-shared.js";
-import { lookupFinding, readStoreMeta, rulingApplicationsForAnswer, SIDECAR_LINEAGE, type SidecarMark } from "../store.js";
+import { lookupFinding, rulingApplicationsForAnswer } from "../store.js";
 import { resolveSidecar } from "../sidecar-config.js";
 import { canonicalIssueKey, resolveDecisionIssue, type CanonicalIssueReference } from "../decision-issues.js";
 import {
@@ -358,35 +358,6 @@ export async function decisionRound(root: string, id: string) {
     parked: parked(s, now).filter(mine),
     awaitingReading: withHeld(root, awaitingReading(s).filter(mine)),
   };
-}
-
-/** An opaque content cursor. Returning the whole projected record on change means a late
- * arrival cannot be skipped because its given time precedes the last response. */
-export async function decisionStatus(root: string, id: string, cursor?: string) {
-  const detail = await decisionRound(root, id);
-  if ("error" in detail) return detail;
-  const cfg = resolveSidecar(root);
-  const lineage = readStoreMeta<SidecarMark>(root, SIDECAR_LINEAGE)?.lineage;
-  const stored = cfg && readStoreMeta<{ at: string; lineage?: string; mode: string; blocked: unknown[] }>(root, `sidecar_sync:${cfg.universe}`);
-  const lastSync = stored && lineage && stored.lineage === lineage ? stored : null;
-  const { status, diagnostic, ...content } = detail;
-  const nextCursor = createHash("sha256").update(JSON.stringify({ status, diagnostic, content })).digest("hex");
-  return { ok: true as const, id, cursor: nextCursor, changed: cursor !== nextCursor,
-    lastSync, requiresSync: true as const, ...detail };
-}
-
-/** Wait only for a LOCAL projected change. Remote answers arrive through explicit sync. */
-export async function waitDecisionStatus(root: string, id: string, cursor: string, timeoutMs: number) {
-  if (!/^[a-f0-9]{64}$/.test(cursor)) return { error: "wait needs the cursor returned by decision status" };
-  if (!Number.isInteger(timeoutMs) || timeoutMs < 0 || timeoutMs > 60_000) return { error: "wait must be between 0 and 60000 milliseconds" };
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const status = await decisionStatus(root, id, cursor);
-    if ("error" in status || status.status === "blocked" || status.changed) return status;
-    const remaining = deadline - Date.now();
-    if (remaining <= 0) return { ...status, timedOut: true as const };
-    await new Promise((resolve) => setTimeout(resolve, Math.min(500, remaining)));
-  }
 }
 
 /** Nominate a pair whose semantic overlap the declared question/finding links miss.

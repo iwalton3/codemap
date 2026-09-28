@@ -52,7 +52,6 @@ test("questionnaire CLI retrieves JSON after explicit sync, resumes by content c
     const initial = await questionnaireStatus(b!.repo, questionnaireId) as any;
     assert.equal(initial.ok, true);
     assert.match(initial.cursor, /^[a-f0-9]{64}$/);
-    assert.equal(initial.remoteFreshness, "unknown-until-sync");
     assert.equal(initial.requiresSync, true);
     const unchanged = await waitQuestionnaireStatus(b!.repo, questionnaireId, initial.cursor, 0) as any;
     assert.equal(unchanged.timedOut, true);
@@ -77,11 +76,10 @@ test("questionnaire CLI retrieves JSON after explicit sync, resumes by content c
     assert.equal(arrived.progress.find((p: any) => p.principal === Q.recipient).counts.submitted, 0,
       "another principal's answer never completes the recipient's form");
     assert.equal(arrived.progress.find((p: any) => p.principal === "ana@acme.test").counts.submitted, 1);
-    assert.ok(arrived.lastSync?.at);
     assert.equal((await questionnaireStatus(b!.repo, questionnaireId, arrived.cursor) as any).changed, false);
     assert.equal((await sharedSync(b!.repo) as any).ok, true);
     assert.equal((await questionnaireStatus(b!.repo, questionnaireId, arrived.cursor) as any).changed, false,
-      "a no-op sync updates metadata without moving the projected-content cursor");
+      "a no-op sync does not move the projected-content cursor");
     assert.equal((await questionnaireRead(b!.repo, questionnaireId) as any).questions[0].answers.length, 1);
 
     const withdrawn = await withdrawDecision(a!.repo, { decision: firstDecision, answer: submission.answers[0].id, reason: "Reconsider this answer" }) as any;
@@ -103,7 +101,6 @@ test("questionnaire CLI retrieves JSON after explicit sync, resumes by content c
     renameSync(b!.sidecar, `${b!.sidecar}-missing`); moved = true;
     const blocked = await questionnaireStatus(b!.repo, questionnaireId, revised.cursor) as any;
     assert.equal(blocked.status.status, "blocked");
-    assert.equal(blocked.syncState, "blocked");
     assert.equal((await waitQuestionnaireStatus(b!.repo, questionnaireId, blocked.cursor, 0) as any).status.status, "blocked");
   } finally {
     if (moved) renameSync(`${b!.sidecar}-missing`, b!.sidecar);

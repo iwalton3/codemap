@@ -1409,20 +1409,6 @@ const tools: Tool[] = [
     handler: (a, c) => ops.nominateComparison(c.universe.path, a as never),
   },
   {
-    name: "decision_status",
-    description: "Read one posted round by stable id, including its exact questions, answer history, pending readings/conflicts, local log status, last successful local sync, and an opaque content cursor. Run `codemap sync` explicitly to receive remote answers. A matching cursor returns `changed: false`; the full record is still included, so a later session can resume from id without transcription.",
-    inputSchema: obj({ id: { type: "string" }, cursor: { type: "string", description: "Optional cursor from the prior status response." } }, ["id"]),
-    mutates: false,
-    handler: (a, c) => ops.decisionStatus(c.universe.path, String(a.id), typeof a.cursor === "string" ? a.cursor : undefined),
-  },
-  {
-    name: "decision_wait",
-    description: "Wait up to 60 seconds for the LOCAL projected round to change from a prior content cursor. This does not fetch or push: another process must run `codemap sync` for remote answers to arrive. Returns the full changed record or a clean `timedOut: true`; blocked status returns immediately.",
-    inputSchema: obj({ id: { type: "string" }, cursor: { type: "string" }, timeoutMs: { type: "integer", description: "Finite local wait, 0 to 60000 milliseconds." } }, ["id", "cursor", "timeoutMs"]),
-    mutates: false,
-    handler: (a, c) => ops.waitDecisionStatus(c.universe.path, String(a.id), String(a.cursor), Number(a.timeoutMs)),
-  },
-  {
     name: "revise_finding",
     description:
       "Correct a finding — yours or somebody else's — without losing what it used to say.\n\n"

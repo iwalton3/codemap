@@ -1,7 +1,5 @@
 /** Projected questionnaire retrieval. Remote arrival is an explicit sidecar sync. */
 import { createHash } from "node:crypto";
-import { readStoreMeta, SIDECAR_LINEAGE, type SidecarMark } from "../store.js";
-import { resolveSidecar } from "../sidecar-config.js";
 import { questionnaireList, questionnaireDetail, decisionRound } from "./decisions.js";
 
 export async function questionnaireRead(root: string, id: string, principal?: string) {
@@ -25,19 +23,14 @@ export async function questionnaireRead(root: string, id: string, principal?: st
 
 export { questionnaireList };
 
-/** The cursor hashes projected content and scope health, never wall-clock or sync metadata. */
+/** The cursor hashes projected content and scope health, never wall-clock. Answers from other
+ *  machines arrive only through an explicit sync. */
 export async function questionnaireStatus(root: string, id: string, cursor?: string, principal?: string) {
   const detail = await questionnaireRead(root, id, principal);
   if ("error" in detail && detail.error) return { error: detail.error, status: detail.status };
   const read = detail as Exclude<typeof detail, { error: string }>;
-  const cfg = resolveSidecar(root);
-  const lineage = readStoreMeta<SidecarMark>(root, SIDECAR_LINEAGE)?.lineage;
-  const stored = cfg && readStoreMeta<{ at: string; lineage?: string; mode: string; blocked: unknown[] }>(root, `sidecar_sync:${cfg.universe}`);
-  const lastSync = stored && lineage && stored.lineage === lineage ? stored : null;
   const nextCursor = createHash("sha256").update(JSON.stringify(read)).digest("hex");
-  return { ok: true as const, cursor: nextCursor, changed: cursor !== nextCursor,
-    lastSync, syncState: read.status.status === "blocked" ? "blocked" as const : lastSync ? "last-synced" as const : "stale" as const,
-    remoteFreshness: "unknown-until-sync" as const, requiresSync: true as const, ...read };
+  return { ok: true as const, cursor: nextCursor, changed: cursor !== nextCursor, requiresSync: true as const, ...read };
 }
 
 /** Bounded LOCAL observation; it never starts a pull, push, or background job. */

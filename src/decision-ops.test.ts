@@ -21,7 +21,7 @@ import { readerReceipts, readerRequests } from "./reader-local.js";
 import type { State } from "./schema.js";
 import { shareFinding, closeFinding, bindDecisions, reassignFinding, sharedFindings, sharedSync } from "./ops-shared.js";
 import { reviewQueue } from "./ops/annotations.js";
-import { postRound, logQuestion, relayAnswer, answerDirect, decisionRounds, decisionRound, decisionStatus, waitDecisionStatus, nominateComparison, readerBrief, recordReading, submitVerdict as submitVerdictOp, confirmReading, parseVerdict, confirmId, withdrawDecision, reviseDecision, revisionRelayBrief, reviseDecisionRelayed, interpretationRequestId } from "./ops/decisions.js";
+import { postRound, logQuestion, relayAnswer, answerDirect, decisionRounds, decisionRound, nominateComparison, readerBrief, recordReading, submitVerdict as submitVerdictOp, confirmReading, parseVerdict, confirmId, withdrawDecision, reviseDecision, revisionRelayBrief, reviseDecisionRelayed, interpretationRequestId } from "./ops/decisions.js";
 import { discard } from "./test-tmp.js";
 import { decisionsView, holdBuilds } from "./ops/decision-holds.js";
 import { decisionScope, foldDecisions, postRoundEvent, logQuestionEvent, postConfirmEvent, recordReadingEvent } from "./shared-decisions.js";
@@ -1392,12 +1392,9 @@ test("round five: changed response cancels a completed reading and its pending c
       t.typed("original", "not a defect, keep the explanation", later(1));
       const original = await relayAnswer(u.root, { round: "R1", decision: "d1", session: SESSION, entryId: "original" }, {}, u.transcripts) as any;
       const maps = [{ decision: "d1", option: "Not a defect" }];
-      const unreadCursor = (await decisionStatus(u.root, "R1") as any).cursor;
       const prompt = await briefOf(u.root, original.answer, maps);
       const read = await reads(u, t, original.answer, "D1 → Real, fix it", { prompt });
-      const readStatus = await decisionStatus(u.root, "R1", unreadCursor) as any;
-      assert.equal(readStatus.changed, true, "reading evidence changes the cursor without adding an answer");
-      assert.equal(readStatus.decisions[0].answers.length, 1);
+      assert.equal((await decisionRound(u.root, "R1") as any).decisions[0].answers.length, 1, "reading evidence adds no answer");
       assert.equal(read.rec.recorded, true);
       assert.equal(read.rec.agree, false);
       const confirmation = await confirmReading(u.root, { answer: original.answer }, {}, u.transcripts) as any;
@@ -1423,38 +1420,6 @@ test("round five: changed response cancels a completed reading and its pending c
         assert.match(String(err(await answerDirect(u.root, { decision: confirmation.confirm, option: "Reading 1" }))), /response changed/);
       });
     });
-  } finally { u.cleanup(); }
-});
-
-
-test("round five: status cursor returns late answers, timeout is local, CLI resumes by id", async () => {
-  const u = await universe();
-  try {
-    const f = await withFinding(u);
-    await asAgent(async () => {
-      await postRound(u.root, { round: { id: "R1", source: "round-five" }, decisions: [decision("d1", f)] });
-    });
-    const initial = await decisionStatus(u.root, "R1") as any;
-    assert.equal(initial.changed, true);
-    assert.equal(initial.decisions[0].answers.length, 0);
-    const quiet = await waitDecisionStatus(u.root, "R1", initial.cursor, 0) as any;
-    assert.equal(quiet.changed, false);
-    assert.equal(quiet.timedOut, true);
-    await asPerson(async () => { await answerDirect(u.root, { decision: "d1", option: "Not a defect" }); });
-    const changed = await waitDecisionStatus(u.root, "R1", initial.cursor, 0) as any;
-    assert.equal(changed.changed, true);
-    assert.equal(changed.decisions[0].answers.length, 1);
-    assert.equal((await decisionStatus(u.root, "R1", changed.cursor) as any).changed, false);
-    await asAgent(async () => { assert.equal((await sharedSync(u.root) as any).ok, true); });
-    const synced = await decisionStatus(u.root, "R1", changed.cursor) as any;
-    assert.ok(synced.lastSync?.at);
-    assert.equal(synced.changed, false, "sync with no new answer does not move the content cursor");
-    const cli = spawnSync(process.execPath, [join(process.cwd(), "dist/cli.js"), "decisions", "status", "R1", "--repo", u.root, "--cursor", initial.cursor], { encoding: "utf8" });
-    assert.equal(cli.status, 0, cli.stderr);
-    const resumed = JSON.parse(cli.stdout);
-    assert.equal(resumed.changed, true);
-    assert.equal(resumed.decisions[0].answers[0].id, changed.decisions[0].answers[0].id);
-    assert.match(String(err(await waitDecisionStatus(u.root, "R1", initial.cursor, 60_001))), /60000/);
   } finally { u.cleanup(); }
 });
 

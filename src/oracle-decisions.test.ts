@@ -4,7 +4,7 @@ import { team, settle } from "./oracle.js";
 import { Ledger, checkAlways, checkSettled } from "./oracle-properties.js";
 import { shareFinding, reassignFinding, reportOnFinding } from "./ops-shared.js";
 import { reviewQueue } from "./ops/annotations.js";
-import { postRound, answerDirect, confirmReading, decisionRound, decisionStatus, nominateComparison, withdrawDecision, CONFIRM_YES } from "./ops/decisions.js";
+import { postRound, answerDirect, confirmReading, decisionRound, nominateComparison, withdrawDecision, CONFIRM_YES } from "./ops/decisions.js";
 
 test("a changed response and a stale clone's confirmation converge without reviving its old reading", async () => {
   const previous = process.env.CODEMAP_AGENT_MODEL;
@@ -86,7 +86,7 @@ test("two clones retain a nominated comparison and its local retrieval cursor", 
     await checkAlways(t, ledger);
     await settle(t);
     await checkSettled(t, ledger);
-    const before = await decisionStatus(bob!.repo, "R1") as any;
+    const before = await decisionRound(bob!.repo, "R1") as any;
     assert.equal(before.intentCandidates.length, 0);
     const nominated = await nominateComparison(alice!.repo, { answers: [a.answer, b.answer], findings: [f.id],
       reason: "the rounding answer may qualify the currency policy" }) as any;
@@ -95,8 +95,7 @@ test("two clones retain a nominated comparison and its local retrieval cursor", 
     await settle(t);
     await checkSettled(t, ledger);
     for (const member of t.all) {
-      const status = await decisionStatus(member.repo, "R1", before.cursor) as any;
-      assert.equal(status.changed, true);
+      const status = await decisionRound(member.repo, "R1") as any;
       assert.ok(status.intentCandidates.some((x: any) => x.nomination?.id === nominated.nomination));
       assert.ok(status.held.some((x: any) => x.finding === f.id && x.held?.some((h: any) => h.why === "comparison")));
     }
