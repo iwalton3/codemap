@@ -1187,3 +1187,73 @@ counts/types, missing launch prompts and command-output-only plaintext occurrenc
 a scan of 39 private identity literals found no matches in the changed durable
 files. The digest field explicitly names retained file bytes to distinguish these
 observations from exact native MCP result serialization. git diff --check passed.
+
+### Owner-directed continuation: web popup preference (2026-09-28)
+
+The owner explicitly deferred further native Codex binding work and chose
+Codemap web UI popup questions as the preferred human-question path. Existing
+native admission checks and held-receipt refusals remain intact; the earlier
+native repair measurement and Claude/browser P3/P5 successes remain historical
+results. Native exact-purpose launch binding, synchronous native-answer
+measurement and account-to-principal mapping are now deferred continuation
+items, rather than prerequisites for this web delivery follow-up.
+
+The previously recorded popup suggestion is now authorized follow-up work. It
+uses published frozen questionnaires, the existing Git principal identity,
+local drafts and the attested questionnaire submission endpoint. Notification
+and dismissal are UI state, not answers or shared acts. The finalized original
+plan remains unchanged. No policy decision currently needs a human answer;
+implementation validation uses isolated synthetic questions rather than asking
+the owner to answer an unnecessary question. Downstream measurements remain
+deferred.
+
+Implemented global popup delivery over the existing questionnaire read APIs. It
+checks the current universe every 15 seconds without syncing or publishing;
+questions must already exist locally or arrive through normal explicit sync.
+New unanswered questionnaires addressed to the current principal (or unaddressed)
+automatically open outside decision pages. A persistent button reopens the form;
+other recipients remain accessible on the decisions page. Escape and Close retain
+the draft and pending questions. Polling preserves the mounted form and receipts,
+and partial submission keeps remaining drafts and per-principal progress visible.
+Additional publications notify without replacing an active draft. The existing
+frozen full-text form and attested submission endpoint remain the only answer
+path; the popup rechecks identity, version and availability before submission.
+
+The controller disables the retained form when the log becomes blocked, rejects
+late loads after a universe switch, and preserves delivery after browser bfcache
+restoration. No backend event vocabulary, authority gate, dependency or installed
+skill changed. This UI delivery does not grant reader/application authority.
+
+Typechecking and four real-browser checks passed. Independent review found a
+bfcache disposal defect; it was corrected before final validation. The reviewer
+independently reran all four browser checks with zero failures or skips. Coverage
+includes publication after the page opens, dismissal without an answer, no repeated
+popup for the same publication in the tab, retained drafts, partial and complete
+submission receipts, recipient filtering, duplicate-form suppression on decision
+pages, narrow layout, blocked refresh, changed-identity submission refusal and a
+late detail response after switching to no active universe. The last check is not
+a live two-configured-universe measurement. Initial focused attempts exposed two
+synthetic setup errors (uninitialized sidecar and missing D1/D2 prompt references);
+the fixtures were corrected. Sandbox local-server bind EPERM prevented browser
+execution there; approved outside-sandbox browser runs passed. Full npm test is
+running separately; its result will be recorded below.
+
+The server restarted during the first full run. The npm process survived; the
+original tool session handle did not. Its retained log showed unit completion
+with 2,264 passes and one failure, zero cancellations/skips; e2e did not start.
+The failure was an earlier MCP test's obsolete expectation for the native reader
+unsupported diagnostic, missed by the preceding focused wording checks. Updated
+only that assertion to expect purpose-specific host binding; supported:false
+and identity-refusal checks remain. Independent review confirmed no admission
+change. Typechecking and the focused MCP test then passed. The full suite was
+restarted with an exit marker in its log to survive further session interruption.
+First log: /tmp/codemap-web-popup-full-test-2026-09-28.log.
+
+The final full npm test completed with exit code 0: 2,265 unit tests and
+175 e2e tests passed, with zero failures, cancellations or skips. Unit duration
+801.231s; e2e duration 241.310s. Log:
+/tmp/codemap-web-popup-full-test-2026-09-28-final.log, including the explicit
+CODEMAP_TEST_EXIT=0 marker. git diff --check passed. This result includes the
+four popup browser tests and corrected MCP refusal-wording assertion. Independent
+review completed with no remaining findings. No owner question was manufactured,
+no historical closure changed, and no push, merge or deployment occurred.

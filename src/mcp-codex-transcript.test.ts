@@ -34,7 +34,7 @@ test("MCP selects the native transcript adapter without accepting caller identit
     assert.equal(first.ok, true, JSON.stringify(first));
     assert.equal(first.answered[0].recorded, true);
     assert.equal(first.readerSupport.supported, false);
-    assert.match(first.readerSupport.reason, /native verdict receipt recording/);
+    assert.match(first.readerSupport.reason, /purpose-specific host binding/);
     assert.match(out[1]!, /unknown parameter.*sessionIdentity/);
     assert.match(out[2]!, /harness.*codex|harness.*enum/);
     const view = await decisionRound(root, "R1") as any;

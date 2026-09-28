@@ -399,3 +399,14 @@ converged on the operation witness and refuted finding. See
 This validates the existing Claude human-ruling application and exact-operation
 sign-off paths. It does not certify native Codex readers, synchronous answers,
 native account-to-git-principal mapping or Codex-only repair-verifier closure.
+
+## Preferred human-question delivery (2026-09-28)
+
+The owner chose Codemap web UI popup questionnaires for further decision work
+and deferred additional native Codex binding investigation. Publish the actual
+operative questions as a frozen questionnaire and retain the publication ID.
+Only an explicit browser submission creates an answer; showing or dismissing a
+popup, saving a draft or receiving ordinary chat consent does not. Existing
+native refusal boundaries and pending native receipts retain their meaning.
+The web answer source does not itself authenticate an independent reader or
+prove that an operation or repair has been applied.

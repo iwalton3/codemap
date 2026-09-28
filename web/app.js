@@ -1,3 +1,4 @@
+import { mountQuestionnairePopup } from './questionnaire-popup.js';
 import { repairPresentation } from './repair-presentation.js';
 /**
  * codemap web UI — router-driven pages over the JSON API (src/serve.ts).
@@ -4991,3 +4992,6 @@ setRouter(enableRouting(document.querySelector('router-outlet'), {
   '/u/:universe/standard/conformance/': { component: 'conformance-page' },
   '/u/:universe/standard/audit/': { component: 'audit-plan-page' },
 }));
+
+const disposeQuestionnairePopup = mountQuestionnairePopup(document.querySelector('[data-questionnaire-popup]'));
+window.addEventListener('pagehide', (event) => { if (!event.persisted) disposeQuestionnairePopup(); });
