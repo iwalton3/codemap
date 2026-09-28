@@ -73,11 +73,14 @@ describe("questionnaire form in a browser", { skip: pw ? false : "playwright not
       await page.waitForFunction(() => (window as any).calls.length === 2);
       assert.deepEqual(await page.evaluate(() => (window as any).calls[1].answers),
         [{ questionId: "short", kind: "short", text: "Because the current behavior is relied on" }]);
+      assert.equal(await short.locator("textarea").inputValue(), "Because the current behavior is relied on", "a submitted answer stays in its card");
+      assert.equal(await short.locator("textarea").isDisabled(), true);
+      assert.equal(await choice.getByLabel("Yes").isChecked(), true);
 
       const list = page.locator('[data-question-id="list"]');
-      await list.getByLabel("Mark wrong").first().check();
-      assert.equal(await state("list"), "draft", "a list is never ready until it is reviewed");
       await list.getByPlaceholder("Correction for Keep A").fill("A must change");
+      assert.equal(await list.getByLabel("Mark wrong").first().isChecked(), true, "typing a correction marks the item wrong");
+      assert.equal(await state("list"), "draft", "a list is never ready until it is reviewed");
       await list.getByLabel("I have reviewed every item in this list").check();
       assert.equal(await state("list"), "ready");
       assert.equal(await fits(page), true, "an open correction box still fits");
@@ -85,6 +88,7 @@ describe("questionnaire form in a browser", { skip: pw ? false : "playwright not
       await page.waitForFunction(() => (window as any).calls.length === 3);
       assert.deepEqual(await page.evaluate(() => (window as any).calls[2].answers),
         [{ questionId: "list", kind: "list", approveUnmarked: true, marked: [{ itemId: "a", correction: "A must change" }] }]);
+      assert.equal(await list.getByPlaceholder("Correction for Keep A").inputValue(), "A must change");
       assert.match(await page.locator(".q-message").innerText(), /Receipt: receipt-1/);
       assert.deepEqual(errors, []);
       await page.close();

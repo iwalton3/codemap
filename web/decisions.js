@@ -15,7 +15,7 @@ import { repairPresentation } from './repair-presentation.js';
 
 import { Component, defineComponent, html, when, each } from './vendor/vdx/framework.js';
 import { api, attestedPost, pageShell, nav, href, errText, taskError } from './core.js';
-import { mountQuestionnaire, loadQuestionnaireDraft } from './questionnaire.js';
+import { mountQuestionnaire, loadQuestionnaireDraft, submittedAnswers } from './questionnaire.js';
 
 /** What an empty list says when the log could not be read: not "nothing" (P3.1 (4)). */
 const UNKNOWN = 'unknown — the log can\'t be read';
@@ -72,6 +72,8 @@ class DecisionsPage extends Component {
       const host = this.querySelector('[data-questionnaire-host]');
       if (host instanceof HTMLElement) this.qUnmount = mountQuestionnaire(host, {
         questionnaire: qdetail.questionnaire, publicationId: qdetail.id, version: qdetail.version, principal: qdetail.currentPrincipal,
+        submitted: submittedAnswers(qdetail, qdetail.currentPrincipal),
+        changeHint: 'To change it, use Revise or Withdraw under “revise or withdraw” below.',
         onSubmit: async (submission) => {
           const out = await attestedPost('/api/decisions/questionnaire/submit', { u, round: qdetail.round, submission });
           if (!out || out.error || out.ok !== true) return { error: out?.error ?? 'Submission was not confirmed.' };
@@ -488,7 +490,7 @@ class DecisionsPage extends Component {
           ${when(questionnaire.currentPrincipal && questionnaire.status.status !== 'blocked', () => html`<div data-questionnaire-host></div>`)}
           ${when(!questionnaire.currentPrincipal || questionnaire.status.status === 'blocked', () => this.questionnaireReadOnly(questionnaire.questionnaire))}
           ${this.questionnaireProgress(questionnaire)}
-          <div class="sec">submitted rulings and revisions</div>
+          <div class="sec">revise or withdraw</div>
           ${each(one.decisions, (x) => this.decision(x, one.status === 'blocked' || !questionnaire.currentPrincipal, true), (x) => x.id)}`)}
         ${when(!questionnaire, () => html`${each(one.decisions, (x) => this.decision(x, one.status === 'blocked'), (x) => x.id)}`)}
         ${each(one.repairs || [], (repair) => repairPresentation(repair), (repair) => repair.key)}

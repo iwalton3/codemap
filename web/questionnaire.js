@@ -16,6 +16,8 @@
  *  @typedef {{selected: string[], answers: Record<string, any>}} LocalDraft */
 /** @typedef {{questionnaire: Questionnaire, publicationId: string, version: string, principal: string,
  *   onSubmit: (payload: {questionnaireId: string, version: string, attemptId: string, answers: QuestionnaireAnswer[]}) => Promise<{ok: true, receipt: string} | {error: string}>,
+ *   submitted?: Record<string, {answer?: QuestionnaireAnswer, words: string}>,
+ *   changeHint?: string,
  *   storage?: Storage }} FormOptions */
 
 /** Publication ID, version and principal isolate each local draft. */
@@ -131,6 +133,7 @@ const STYLE = `
   .questionnaire-form .q-bottom{position:sticky;bottom:0;display:flex;flex-wrap:wrap;gap:.5rem;align-items:center;justify-content:space-between;padding:.75rem;background:var(--panel,#161b22);border:1px solid var(--border,#2a313c);border-radius:.6rem}
   .questionnaire-form .q-message{margin:0}
   .questionnaire-form .q-error{color:var(--bad,#f27b7b)}
+  .questionnaire-form .q-card[data-state="submitted"] :is(input,textarea):disabled{opacity:.85;cursor:default}
   @media (max-width:600px){
     .questionnaire-form{--q-gap:.75rem}
     .questionnaire-form .q-card{padding:.8rem}
@@ -139,6 +142,25 @@ const STYLE = `
     .questionnaire-form .q-bottom button{width:100%}
   }
 `;
+
+/**
+ * This principal's live answer per question, from a questionnaire detail, so a submitted card
+ * keeps showing what was said. A withdrawn question is left out: it is open again.
+ * @param {{questions: {questionId: string, withdrawn: boolean, answers: {principal: string, at: string, cancelled?: unknown, withdrawn?: unknown,
+ *   source: {answer?: QuestionnaireAnswer, words?: string}}[]}[]}} detail
+ * @param {string} principal
+ */
+export function submittedAnswers(detail, principal) {
+  /** @type {Record<string, {answer?: QuestionnaireAnswer, words: string}>} */
+  const out = {};
+  for (const q of detail.questions) {
+    if (q.withdrawn) continue;
+    const live = q.answers.filter((a) => a.principal === principal && !a.cancelled && !a.withdrawn)
+      .sort((a, b) => a.at.localeCompare(b.at)).at(-1);
+    if (live) out[q.questionId] = { answer: live.source.answer, words: live.source.words ?? '' };
+  }
+  return out;
+}
 
 /**
  * Mounts a form and returns a disposer. Drafts save on this device as you type; only a submit
@@ -156,7 +178,8 @@ export function mountQuestionnaire(host, options) {
   /** @type {{attemptId: string, payload: string}|null} */
   let pending = null;
   let busy = false;
-  const submitted = new Set();
+  const submitted = new Set(Object.keys(options.submitted ?? {}));
+  const changeHint = options.changeHint ?? 'To change it, revise or withdraw it on the decisions page.';
   const questions = q.sections.flatMap((section) => section.questions);
   const persisted = node('span', 'q-muted', 'Draft saves on this device as you type. Nothing is sent until you submit.');
   const persist = () => {
@@ -173,7 +196,8 @@ export function mountQuestionnaire(host, options) {
 
   const root = node('div', 'questionnaire-form');
   append(root, node('style', '', STYLE));
-  const head = append(node('header', 'q-head'), node('h2', '', q.title), q.context ? node('p', '', q.context) : null,
+  // Not a <header>: the app styles every header element as its sticky page header.
+  const head = append(node('div', 'q-head'), node('h2', '', q.title), q.context ? node('p', '', q.context) : null,
     node('p', 'q-muted', q.recipient ? `Asked of ${q.recipient}. Anyone on the team may answer, as themselves.` : 'Anyone on the team may answer, as themselves.'));
   append(root, head);
 
@@ -191,7 +215,7 @@ export function mountQuestionnaire(host, options) {
     append(root, nav);
   }
 
-  /** @type {Map<string, {card: HTMLElement, chip: HTMLElement, one: HTMLButtonElement, clear: () => void}>} */
+  /** @type {Map<string, {card: HTMLElement, chip: HTMLElement, one: HTMLButtonElement, show: (answer: QuestionnaireAnswer|undefined, words: string) => void}>} */
   const cards = new Map();
   const sendAll = /** @type {HTMLButtonElement} */ (node('button', 'pullbtn q-primary'));
   sendAll.type = 'button';
@@ -236,7 +260,10 @@ export function mountQuestionnaire(host, options) {
       if (!result || !('ok' in result) || result.ok !== true) throw new Error(result && 'error' in result ? result.error : 'Submission was not confirmed.');
       message.textContent = `Submitted ${ids.length} answer${ids.length === 1 ? '' : 's'}. Receipt: ${result.receipt}. To change one later, revise or withdraw it on the decisions page.`;
       draft.selected = draft.selected.filter((id) => !ids.includes(id));
-      for (const id of ids) { delete draft.answers[id]; submitted.add(id); cards.get(id)?.clear(); }
+      for (const id of ids) {
+        const answer = staged.value.answers.find((a) => a.questionId === id);
+        delete draft.answers[id]; submitted.add(id); cards.get(id)?.show(answer, '');
+      }
       persist(); pending = null;
     } catch (e) { message.className = 'q-message q-error'; message.textContent = e instanceof Error ? e.message : String(e); }
     finally { busy = false; refresh(); }
@@ -270,6 +297,7 @@ export function mountQuestionnaire(host, options) {
             option.description ? node('span', 'q-muted', option.description) : null,
             option.action ? node('span', 'q-muted', `Does: ${option.action}`) : null);
           append(options, append(node('label', 'q-option'), radio, text));
+          radio.dataset.optionId = option.id;
           inputs.push(radio);
         }
         if (question.allowOther) {
@@ -281,13 +309,14 @@ export function mountQuestionnaire(host, options) {
           otherRadio.addEventListener('change', () => { otherText.hidden = false; otherText.focus(); setAnswer(question.id, { kind: 'choice', other: otherText.value }); });
           otherText.addEventListener('input', () => { otherRadio.checked = true; setAnswer(question.id, { kind: 'choice', other: otherText.value }); });
           for (const radio of inputs) radio.addEventListener('change', () => { otherText.hidden = true; });
+          otherRadio.dataset.other = ''; otherText.dataset.other = '';
           append(options, append(node('label', 'q-option'), otherRadio, append(node('span', 'q-option-text'), node('b', '', 'Other'), node('span', 'q-muted', 'Answer in your own words'))), otherText);
           inputs.push(otherRadio, otherText);
         }
         append(card, options);
       } else if (question.kind === 'short') {
         const text = node('textarea'); text.value = draft.answers[question.id]?.text ?? '';
-        text.setAttribute('aria-label', `Answer to question ${number}`);
+        text.setAttribute('aria-label', `Answer to question ${number}`); text.dataset.short = '';
         text.addEventListener('input', () => setAnswer(question.id, { kind: 'short', text: text.value }));
         append(card, text); inputs.push(text);
       } else {
@@ -300,18 +329,22 @@ export function mountQuestionnaire(host, options) {
           marked.checked = existing().some((m) => m.itemId === item.id);
           const correction = node('textarea'); correction.placeholder = `Correction for ${item.text}`;
           correction.value = existing().find((m) => m.itemId === item.id)?.correction ?? '';
-          correction.hidden = !marked.checked; correction.disabled = !marked.checked;
+          correction.dataset.itemId = item.id; marked.dataset.itemId = item.id;
           if (marked.checked) row.dataset.marked = '';
           const update = () => {
             const rest = existing().filter((m) => m.itemId !== item.id);
             setAnswer(question.id, { kind: 'list', marked: marked.checked ? [...rest, { itemId: item.id, correction: correction.value }] : rest });
           };
           marked.addEventListener('change', () => {
-            correction.hidden = !marked.checked; correction.disabled = !marked.checked;
             if (marked.checked) { row.dataset.marked = ''; correction.focus(); } else delete row.dataset.marked;
             update();
           });
-          correction.addEventListener('input', update);
+          // Writing a correction is marking the item wrong; clearing it un-marks it.
+          correction.addEventListener('input', () => {
+            marked.checked = !!correction.value.trim();
+            if (marked.checked) row.dataset.marked = ''; else delete row.dataset.marked;
+            update();
+          });
           const text = append(node('span', 'q-option-text'), node('span', '', item.text),
             item.context ? node('span', 'q-muted', item.context) : null, item.action ? node('span', 'q-muted', `Does: ${item.action}`) : null);
           append(row, append(node('div', 'q-item-head'), text, append(node('label', 'q-toggle'), marked, document.createTextNode(' Mark wrong'))), correction);
@@ -324,19 +357,39 @@ export function mountQuestionnaire(host, options) {
           setReviewed(question.id, reviewed.checked);
         });
         append(card, append(node('label', 'q-reviewed'), reviewed, document.createTextNode(' I have reviewed every item in this list')));
+        reviewed.dataset.reviewed = '';
         inputs.push(reviewed);
       }
       const one = /** @type {HTMLButtonElement} */ (node('button', 'pullbtn', question.kind === 'list'
         ? 'Submit this list (approves unmarked items)' : 'Submit this answer'));
       one.type = 'button'; one.addEventListener('click', () => submit([question.id]));
       append(card, append(node('div', 'q-card-foot'), one));
-      cards.set(question.id, { card, chip, one, clear: () => {
+      const note = node('p', 'q-muted');
+      /** The submitted answer stays in the card, read-only (owner, 2026-09-28). */
+      const show = (answer, words) => {
         for (const input of inputs) {
-          if (input instanceof HTMLInputElement) input.checked = false;
-          else if (input instanceof HTMLTextAreaElement) { input.value = ''; if (input.placeholder.startsWith('Correction for')) { input.hidden = true; input.disabled = true; } }
+          if (!(input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement)) continue;
+          if (answer?.kind === 'choice' && input instanceof HTMLInputElement) {
+            input.checked = 'optionId' in answer ? input.dataset.optionId === answer.optionId : 'other' in input.dataset;
+          } else if (answer?.kind === 'choice' && 'other' in input.dataset && input instanceof HTMLTextAreaElement) {
+            input.value = 'other' in answer ? answer.other : ''; input.hidden = !('other' in answer);
+          } else if (answer?.kind === 'short' && 'short' in input.dataset) input.value = answer.text;
+          else if (answer?.kind === 'list') {
+            const mark = answer.marked.find((m) => m.itemId === input.dataset.itemId);
+            if (input instanceof HTMLInputElement) input.checked = 'reviewed' in input.dataset || !!mark;
+            else input.value = mark?.correction ?? '';
+            const row = input.closest('.q-item');
+            if (row instanceof HTMLElement) { if (mark) row.dataset.marked = ''; else delete row.dataset.marked; }
+          }
+          input.disabled = true;
         }
-        for (const row of card.querySelectorAll('[data-marked]')) delete (/** @type {HTMLElement} */ (row)).dataset.marked;
-      } });
+        note.textContent = `${answer ? 'Submitted.' : `Submitted: ${words}.`} ${changeHint}`;
+        one.hidden = true;
+      };
+      append(card, note);
+      cards.set(question.id, { card, chip, one, show });
+      const prior = options.submitted?.[question.id];
+      if (prior) show(prior.answer, prior.words);
       append(sectionNode, card);
     }
     append(sections, sectionNode);

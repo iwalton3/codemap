@@ -1,6 +1,6 @@
 import { watch } from './vendor/vdx/framework.js';
 import { api, attestedPost, errText, nav } from './core.js';
-import { mountQuestionnaire } from './questionnaire.js';
+import { mountQuestionnaire, submittedAnswers } from './questionnaire.js';
 
 /** @typedef {import('./core.js').ApiMap} ApiMap */
 /** @typedef {ApiMap['/api/decisions/questionnaires']['questionnaires'][number]} Entry */
@@ -93,6 +93,7 @@ export function mountQuestionnairePopup(host, interval = 15000) {
       unmount?.(); active = { key: wanted, entry, principal: person }; remember(wanted);
       unmount = mountQuestionnaire(form, {
         questionnaire: detail.questionnaire, publicationId: detail.id, version: detail.version, principal: person,
+        submitted: submittedAnswers(detail, person),
         onSubmit: async (submission) => {
           if (!valid(generation) || blocked || principal !== person || active?.key !== wanted)
             return { error: 'This questionnaire is no longer active. Reopen it in its universe before submitting.' };

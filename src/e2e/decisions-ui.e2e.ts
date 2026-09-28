@@ -208,7 +208,6 @@ describe("the decisions UI", { skip: pw ? false : "playwright not resolvable (se
     assert.equal(partial.progress.find((x: any) => x.principal === 'izzie@x.com').counts.unanswered, 1);
     await page.waitForSelector('[data-question-id="q-list"]');
     const list = page.locator('[data-question-id="q-list"]');
-    await list.getByLabel('Mark wrong').nth(1).check();
     await list.getByPlaceholder('Correction for Keep B').fill('Change B');
     await list.getByLabel('I have reviewed every item in this list').check();
     await list.getByRole('button', { name: /Submit this list/ }).click();
@@ -217,7 +216,13 @@ describe("the decisions UI", { skip: pw ? false : "playwright not resolvable (se
     assert.equal(done.progress.find((x: any) => x.principal === 'izzie@x.com').counts.unanswered, 0);
     assert.equal(done.questions.find((x: any) => x.questionId === 'q-list').answers.length, 1);
     await page.reload({ waitUntil: 'networkidle' });
-    await page.waitForSelector('text=submitted rulings and revisions');
+    await page.waitForSelector('text=revise or withdraw');
+    // Submitted answers stay in their cards across a reload, and the form's title does not
+    // pick up the app's sticky page-header styling.
+    assert.equal(await short.locator('textarea').inputValue(), 'Keep behavior A');
+    assert.equal(await list.getByPlaceholder('Correction for Keep B').inputValue(), 'Change B');
+    assert.equal(await list.getByLabel('Mark wrong').nth(1).isChecked(), true);
+    assert.equal(await page.locator('.questionnaire-form .q-head').evaluate((el: Element) => getComputedStyle(el).position), 'static');
     const shortRuling = page.locator('.op-card').filter({ hasText: 'D20: explain the intended behavior?' }).last();
     assert.match((await shortRuling.textContent())!, /answer history \(1\)/);
     await shortRuling.getByRole('button', { name: 'review what you are revising' }).click();
