@@ -1,6 +1,6 @@
 # Remaining decision work: what was built
 
-The branch `codex/remaining-decision-work` (planned in
+The branch `questionnaires-and-repair-verification` (cut as `codex/remaining-decision-work`; planned in
 `.git/plan/2026-09-25-remaining-decision-work/plan.md`) was implemented by Codex between 2026-09-24
 and 2026-09-28, then reviewed and recovered (`.git/plan/2026-09-28-codex-recovery/`). This file used
 to narrate every session of that work (1,259 lines); the narrative is in git history at `ff3bef3`.
