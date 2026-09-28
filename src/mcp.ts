@@ -1375,7 +1375,7 @@ const tools: Tool[] = [
   },
   {
     name: "questionnaire_list",
-    description: "List published stakeholder questionnaires by stable ID, with recipient routing and per-principal submitted, withdrawn and unanswered progress. Drafts live only in each browser and are not shared answers. Run codemap sync explicitly before expecting remote submissions.",
+    description: "List published stakeholder questionnaires by stable ID, with recipient routing and per-principal submitted, withdrawn and unanswered progress, and codemapOpen: whether someone has the codemap web UI open on this machine now (its page polled in the last 45 seconds) — the cue to send questions there rather than ask in this session. Drafts live only in each browser. Run codemap sync explicitly before expecting remote submissions.",
     inputSchema: obj({}),
     mutates: false,
     handler: (a, c) => ops.questionnaireList(c.universe.path),

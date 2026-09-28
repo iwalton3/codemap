@@ -13,7 +13,7 @@ import { findingRepairPresentations } from "./repair-presentation.js";
 import { createHash, randomUUID } from "node:crypto";
 import { isAgentActor } from "../identity.js";
 import { bindDecisions, type Bound, type Via } from "../ops-shared.js";
-import { lookupFinding, rulingApplicationsForAnswer } from "../store.js";
+import { lookupFinding, readStoreMeta, rulingApplicationsForAnswer, writeStoreMeta } from "../store.js";
 import { resolveSidecar } from "../sidecar-config.js";
 import { canonicalIssueKey, resolveDecisionIssue, type CanonicalIssueReference } from "../decision-issues.js";
 import {
@@ -199,8 +199,14 @@ export async function questionnaireDetail(root: string, id: string, principal?: 
   const matches = exact ? [exact] : questionnaires.filter((r) => r.label === id || r.questionnaire?.id === id);
   if (matches.length > 1) return { error: ambiguous("questionnaire", id, matches), status: v.status };
   const round = matches[0];
-  const q = round?.questionnaire;
-  if (!round || !q) return { error: `no questionnaire ${id}`, status: v.status };
+  if (!round?.questionnaire) return { error: `no questionnaire ${id}`, status: v.status };
+  return detailOf(v, round, principal);
+}
+
+/** One questionnaire's detail from a view already built — the list reads every questionnaire
+ *  from ONE view rather than a view per questionnaire. */
+function detailOf(v: Awaited<ReturnType<typeof decisionsView>>, round: DecisionRound, principal?: string) {
+  const q = round.questionnaire!;
   const questions = q.sections.flatMap((section) => section.questions);
   const records = questions.map((question) => {
     const d = v.s.decisions.find((x) => x.round === round.id && (x.label ?? x.id) === question.id);
@@ -231,15 +237,27 @@ export async function questionnaireDetail(root: string, id: string, principal?: 
       v.s.decisions.find((d) => d.id === decision)?.round === round.id)) };
 }
 
+const PRESENCE = "web_presence";
+/** How recent a page poll must be to count as "open": three of its 15-second polls. */
+const OPEN_WITHIN_MS = 45_000;
+/** The page polls the questionnaire list; that poll is the presence signal (plan Phase 4.4). */
+export function noteWebPresence(root: string, principal: string | null): void {
+  writeStoreMeta(root, PRESENCE, { at: new Date().toISOString(), principal });
+}
+export function webPresence(root: string): { open: boolean; lastSeen?: string; principal?: string | null } {
+  const seen = readStoreMeta<{ at: string; principal: string | null }>(root, PRESENCE);
+  if (!seen) return { open: false };
+  return { open: Date.now() - Date.parse(seen.at) < OPEN_WITHIN_MS, lastSeen: seen.at, principal: seen.principal };
+}
+
 export async function questionnaireList(root: string, principal?: string) {
   const v = await decisionsView(root);
-  const entries = await Promise.all(v.s.rounds.filter((r) => r.questionnaire).map(async (r) => {
-    const detail = await questionnaireDetail(root, r.id, principal);
-    if ("error" in detail) return null;
+  const questionnaires = v.s.rounds.filter((r) => r.questionnaire).map((r) => {
+    const detail = detailOf(v, r, principal);
     return { id: detail.id, label: detail.label, round: detail.round, title: detail.questionnaire.title,
       recipient: detail.questionnaire.recipient, version: detail.version, progress: detail.progress };
-  }));
-  return { status: v.status, questionnaires: entries.filter((x) => x !== null) };
+  });
+  return { status: v.status, questionnaires, codemapOpen: webPresence(root) };
 }
 
 /** Selected answers are staged together, then admitted under the sidecar append lock. */

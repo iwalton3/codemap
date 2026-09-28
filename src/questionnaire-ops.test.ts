@@ -5,9 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { indexBlob } from "./repo.js";
-import { writeStore } from "./store.js";
+import { writeStore, writeStoreMeta } from "./store.js";
 import { shareFinding } from "./ops-shared.js";
-import { postRound, questionnaireDetail, submitQuestionnaire, reviseDecision, revisionRelayBrief, reviseDecisionRelayed, withdrawDecision } from "./ops/decisions.js";
+import { postRound, questionnaireDetail, questionnaireList, noteWebPresence, submitQuestionnaire, reviseDecision, revisionRelayBrief, reviseDecisionRelayed, withdrawDecision } from "./ops/decisions.js";
 import { decisionScope, foldDecisions, currentAnswersForIssue } from "./shared-decisions.js";
 import { readScope } from "./eventlog.js";
 import { questionnaireVersion, type Questionnaire, type QuestionnaireAnswer } from "./questionnaire.js";
@@ -388,4 +388,17 @@ test("a list correction survives two-clone sync and cached refold", async () => 
       assert.equal(view.work(other).allowed, false, "the unmentioned correction still holds its issue");
     }
   } finally { t?.dispose(); }
+});
+
+test("the list tells an agent whether the web UI is open, from the page's own poll", async () => {
+  const u = await fixture();
+  try {
+    assert.equal((await questionnaireList(u.root) as any).codemapOpen.open, false, "never polled: not open");
+    noteWebPresence(u.root, "alice@x.com");
+    const open = (await questionnaireList(u.root) as any).codemapOpen;
+    assert.equal(open.open, true);
+    assert.equal(open.principal, "alice@x.com");
+    writeStoreMeta(u.root, "web_presence", { at: new Date(Date.now() - 60_000).toISOString(), principal: "alice@x.com" });
+    assert.equal((await questionnaireList(u.root) as any).codemapOpen.open, false, "a poll a minute old is a closed page");
+  } finally { u.cleanup(); }
 });

@@ -39,21 +39,32 @@ describe("pending questionnaire popup", { skip: pw ? false : "playwright not res
       assert.equal("ok" in result && result.ok, true, JSON.stringify(result));
     } finally { if (prev === undefined) delete process.env.CODEMAP_AGENT_MODEL; else process.env.CODEMAP_AGENT_MODEL = prev; }
   }
-  test("publication after opening is delivered; Escape retains draft; partial and complete answers preserve receipts", async () => {
+  test("a new questionnaire shows as a badge without taking focus; Escape keeps the draft; a dismissal survives reload", async () => {
     const page = await browser.newPage({ viewport: { width: 390, height: 700 } });
     const errors: string[] = []; page.on("pageerror", (e: Error) => errors.push(e.message));
     await page.goto(`${server.url}/#/u/${universe}/`, { waitUntil: "networkidle" });
     assert.equal(await page.locator('.questionnaire-popup[open]').count(), 0);
+    await page.locator('main').click();
     await publish("popup-first", "popup@example.test");
-    await page.locator('.questionnaire-popup[open]').waitFor({ timeout: 22000 });
+    await page.locator('.questionnaire-notice.is-new').waitFor({ timeout: 22000 });
+    assert.match(await page.locator('.questionnaire-notice').innerText(), /New questionnaire: Review popup-first/);
+    assert.equal(await page.locator('.questionnaire-popup[open]').count(), 0, "a poll never opens the dialog");
+    assert.equal(await page.evaluate(() => !!document.activeElement?.closest('.questionnaire-popup,.questionnaire-notice')), false,
+      "and never takes focus");
+    await page.locator('.questionnaire-notice').click();
+    await page.locator('.questionnaire-popup[open]').waitFor();
     const first = page.locator('[data-question-id="popup-first-a"]');
     await first.locator('textarea').fill("This draft survives dismissal");
     await page.keyboard.press("Escape");
     assert.equal(await page.locator('.questionnaire-popup[open]').count(), 0);
     assert.equal((await ops.questionnaireDetail(root, "popup-first", "popup@example.test") as any).progress[0].counts.submitted, 0);
-    // A poll must not pop the same publication again.
+    // A poll must not pop the same publication again, and nor must a reload.
     await page.waitForTimeout(15500);
     assert.equal(await page.locator('.questionnaire-popup[open]').count(), 0);
+    await page.reload({ waitUntil: "networkidle" });
+    await page.locator('.questionnaire-notice').waitFor();
+    assert.equal(await page.locator('.questionnaire-popup[open]').count(), 0);
+    assert.equal(await page.locator('.questionnaire-notice.is-new').count(), 0, "a dismissed questionnaire is not new after reload");
     await page.locator('.questionnaire-notice').click();
     assert.equal(await first.locator('textarea').inputValue(), "This draft survives dismissal");
     const second = page.locator('[data-question-id="popup-first-b"]');
@@ -84,6 +95,7 @@ describe("pending questionnaire popup", { skip: pw ? false : "playwright not res
   test("blocked refresh retains draft; identity changed before submit refuses a POST", async () => {
     const page = await browser.newPage();
     await page.goto(`${server.url}/#/u/${universe}/`, { waitUntil: "networkidle" });
+    await page.locator('.questionnaire-notice').click();
     await page.locator('.questionnaire-popup[open]').waitFor();
     const draft = page.locator('.questionnaire-popup textarea').first();
     await draft.fill("Retain through unavailable state");
@@ -116,6 +128,7 @@ describe("pending questionnaire popup", { skip: pw ? false : "playwright not res
       const response = await route.fetch(); received(); await held; await route.fulfill({ response });
     });
     await page.goto(`${server.url}/#/u/${universe}/`, { waitUntil: 'domcontentloaded' });
+    await page.locator('.questionnaire-notice').click();
     await requested;
     await page.evaluate(async () => { const modulePath = '/core.js'; const { nav } = await import(modulePath); nav.current = null; });
     release(); await page.waitForTimeout(300);

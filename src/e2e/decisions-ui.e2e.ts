@@ -208,8 +208,9 @@ describe("the decisions UI", { skip: pw ? false : "playwright not resolvable (se
     assert.equal(partial.progress.find((x: any) => x.principal === 'izzie@x.com').counts.unanswered, 1);
     await page.waitForSelector('[data-question-id="q-list"]');
     const list = page.locator('[data-question-id="q-list"]');
-    await list.locator('input[type="checkbox"]').nth(2).check();
-    await list.locator('textarea').nth(1).fill('Change B');
+    await list.getByLabel('Mark wrong').nth(1).check();
+    await list.getByPlaceholder('Correction for Keep B').fill('Change B');
+    await list.getByLabel('I have reviewed every item in this list').check();
     await list.getByRole('button', { name: /Submit this list/ }).click();
     await page.waitForFunction(() => document.body.textContent?.includes('2 submitted'));
     const done = await ops.questionnaireDetail(root, 'RQ-browser', 'izzie@x.com') as any;

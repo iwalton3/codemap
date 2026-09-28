@@ -46,63 +46,74 @@ describe("questionnaire form in a browser", { skip: pw ? false : "playwright not
   });
   after(async () => { await browser?.close(); await new Promise<void>((resolve) => server?.close(() => resolve())); });
 
-  test("draft survives reload; incomplete list cannot submit; receipt clears submitted controls", async () => {
+  /** No horizontal scrolling anywhere on the page: the phone layout must fit. */
+  const fits = (page: any) => page.evaluate(() => document.scrollingElement!.scrollWidth <= document.scrollingElement!.clientWidth + 1);
+
+  for (const [label, viewport] of [["desktop", { width: 1280, height: 800 }], ["phone", { width: 390, height: 844 }]] as const) {
+    test(`${label}: one question of each format is answered and submitted end to end`, async () => {
+      const page = await browser.newPage({ viewport });
+      const errors: string[] = [];
+      page.on("pageerror", (e: Error) => errors.push(e.message));
+      await page.goto(`${base}/?publication=${label}`);
+      assert.equal(await fits(page), true, "the form fits the width");
+      const state = (id: string) => page.locator(`[data-question-id="${id}"]`).getAttribute("data-state");
+
+      const choice = page.locator('[data-question-id="choice"]');
+      assert.equal(await state("choice"), "draft");
+      await choice.getByText("Yes", { exact: true }).click();
+      assert.equal(await state("choice"), "ready");
+      await choice.getByRole("button", { name: "Submit this answer" }).click();
+      await page.waitForFunction(() => (window as any).calls.length === 1);
+      assert.deepEqual(await page.evaluate(() => (window as any).calls[0].answers), [{ questionId: "choice", kind: "choice", optionId: "yes" }]);
+      assert.equal(await state("choice"), "submitted");
+
+      const short = page.locator('[data-question-id="short"]');
+      await short.locator("textarea").fill("Because the current behavior is relied on");
+      await short.getByRole("button", { name: "Submit this answer" }).click();
+      await page.waitForFunction(() => (window as any).calls.length === 2);
+      assert.deepEqual(await page.evaluate(() => (window as any).calls[1].answers),
+        [{ questionId: "short", kind: "short", text: "Because the current behavior is relied on" }]);
+
+      const list = page.locator('[data-question-id="list"]');
+      await list.getByLabel("Mark wrong").first().check();
+      assert.equal(await state("list"), "draft", "a list is never ready until it is reviewed");
+      await list.getByPlaceholder("Correction for Keep A").fill("A must change");
+      await list.getByLabel("I have reviewed every item in this list").check();
+      assert.equal(await state("list"), "ready");
+      assert.equal(await fits(page), true, "an open correction box still fits");
+      await list.getByRole("button", { name: /Submit this list/ }).click();
+      await page.waitForFunction(() => (window as any).calls.length === 3);
+      assert.deepEqual(await page.evaluate(() => (window as any).calls[2].answers),
+        [{ questionId: "list", kind: "list", approveUnmarked: true, marked: [{ itemId: "a", correction: "A must change" }] }]);
+      assert.match(await page.locator(".q-message").innerText(), /Receipt: receipt-1/);
+      assert.deepEqual(errors, []);
+      await page.close();
+    });
+  }
+
+  test("a draft survives reload, a marked item without a correction is not ready, and a failed submit keeps everything", async () => {
     const page = await browser.newPage();
-    const errors: string[] = [];
-    page.on("pageerror", (e: Error) => errors.push(e.message));
-    await page.goto(base);
-    const short = page.locator('[data-question-id="short"]');
-    await short.locator('textarea').fill("Because it matters");
-    await short.locator('input[data-select-question]').check();
+    await page.goto(`${base}/?publication=drafts`);
+    await page.locator('[data-question-id="short"] textarea').fill("Because it matters");
+    await page.locator('[data-question-id="choice"]').getByText("Yes", { exact: true }).click();
     await page.reload();
     assert.equal(await page.locator('[data-question-id="short"] textarea').inputValue(), "Because it matters");
-    assert.equal(await page.locator('[data-question-id="short"] input[data-select-question]').isChecked(), true);
     const list = page.locator('[data-question-id="list"]');
-    await list.locator('input[type="checkbox"]').nth(2).check();
-    await list.getByRole('button', { name: /Submit this list/ }).click();
-    assert.match(await page.locator('.q-error').innerText(), /correction/);
-    assert.equal(await page.evaluate(() => (window as any).calls.length), 0);
-    await list.locator('textarea').nth(1).fill("Change B");
-    await list.locator('input[data-select-question]').check();
-    await page.getByRole('button', { name: /Submit selected questions — approve unmarked/ }).click();
-    const calls = await page.evaluate(() => (window as any).calls);
-    assert.equal(calls.length, 1);
-    assert.deepEqual(calls[0].answers.map((a: any) => a.questionId), ["short", "list"]);
-    assert.deepEqual(calls[0].answers[1], { questionId: "list", kind: "list", approveUnmarked: true,
-      marked: [{ itemId: "b", correction: "Change B" }] });
-    assert.match(await page.locator('.q-message').innerText(), /receipt-1/);
-    assert.equal(await page.locator('[data-question-id="short"] textarea').inputValue(), "");
-    assert.equal(await page.locator('[data-question-id="list"] input[data-select-question]').isChecked(), false);
-    assert.deepEqual(errors, []);
-    await page.close();
-  });
-
-  test("the mounted form isolates drafts by exact publication", async () => {
-    const page = await browser.newPage();
-    await page.goto(`${base}/?publication=first`);
-    await page.locator('[data-question-id="short"] textarea').fill("Only first publication");
-    await page.goto(`${base}/?publication=second`);
-    assert.equal(await page.locator('[data-question-id="short"] textarea').inputValue(), "");
-    await page.goto(`${base}/?publication=first`);
-    assert.equal(await page.locator('[data-question-id="short"] textarea').inputValue(), "Only first publication");
-    await page.close();
-  });
-
-  test("failed submission retries the same attempt until its content changes", async () => {
-    const page = await browser.newPage();
-    await page.goto(base);
+    await list.getByLabel("Mark wrong").first().check();
+    await list.getByLabel("I have reviewed every item in this list").check();
+    assert.equal(await list.getAttribute("data-state"), "draft", "a marked item needs its correction");
+    const all = page.locator(".q-bottom button");
+    assert.match(await all.innerText(), /Submit 2 ready answers/);
     await page.evaluate(() => { (window as any).failSubmit = true; });
-    const short = page.locator('[data-question-id="short"]');
-    await short.locator('textarea').fill("First answer");
-    await short.getByRole('button', { name: 'Submit this answer' }).click();
-    assert.match(await page.locator('.q-error').innerText(), /temporarily unavailable/);
-    await short.getByRole('button', { name: 'Submit this answer' }).click();
-    await short.locator('textarea').fill("Changed answer");
-    await short.getByRole('button', { name: 'Submit this answer' }).click();
-    const calls = await page.evaluate(() => (window as any).calls);
-    assert.equal(calls.length, 3);
-    assert.equal(calls[0].attemptId, calls[1].attemptId);
-    assert.notEqual(calls[1].attemptId, calls[2].attemptId);
+    await all.click();
+    await page.locator(".q-error").filter({ hasText: "temporarily unavailable" }).waitFor();
+    assert.equal(await page.locator('[data-question-id="short"] textarea').inputValue(), "Because it matters");
+    await page.evaluate(() => { (window as any).failSubmit = false; });
+    await all.click();
+    await page.waitForFunction(() => (window as any).calls.length === 2);
+    const [failed, sent] = await page.evaluate(() => (window as any).calls);
+    assert.equal(failed.attemptId, sent.attemptId, "a retry of the same answers is the same attempt");
+    assert.deepEqual(sent.answers.map((a: any) => a.questionId), ["choice", "short"]);
     await page.close();
   });
 });

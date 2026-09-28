@@ -5,11 +5,16 @@ import { mountQuestionnaire } from './questionnaire.js';
 /** @typedef {import('./core.js').ApiMap} ApiMap */
 /** @typedef {ApiMap['/api/decisions/questionnaires']['questionnaires'][number]} Entry */
 
-/** Persistent chrome; polling observes local publications without syncing the sidecar. */
+/**
+ * Persistent chrome. Polling (one request) only updates the badge: the dialog opens when the
+ * person clicks it, never on its own, so a questionnaire arriving mid-task takes no focus.
+ * What they close stays closed across reloads on this device (plan Phase 4.1).
+ */
 export function mountQuestionnairePopup(host, interval = 15000) {
   const style = document.createElement('style');
   style.textContent = `
-    .questionnaire-notice{position:fixed;right:1rem;bottom:1rem;z-index:30;max-width:calc(100vw - 2rem)}
+    .questionnaire-notice{position:fixed;right:1rem;bottom:1rem;z-index:30;max-width:calc(100vw - 2rem);padding:.5rem .9rem;font-size:.9rem;box-shadow:0 2px 10px #0008}
+    .questionnaire-notice.is-new{border-color:var(--accent,#58a6ff);color:var(--text,#d7dde5)}
     .questionnaire-popup{background:var(--bg,#161b22);color:var(--text,#c9d1d9);border:1px solid #465064;border-radius:.5rem;width:min(850px,calc(100vw - 2rem));max-height:calc(100dvh - 2rem);padding:1rem;box-sizing:border-box;overflow:auto;overflow-wrap:anywhere}
     .questionnaire-popup::backdrop{background:#0009}
     .questionnaire-popup .popup-actions{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center}
@@ -33,18 +38,24 @@ export function mountQuestionnairePopup(host, interval = 15000) {
   /** @type {{key:string, entry:Entry, principal:string}|null} */
   let active = null;
   let unmount = null;
-  const seen = new Set();
+  const DISMISSED = 'codemap.questionnaire.dismissed';
+  /** @type {Set<string>} */
+  const seen = new Set((() => { try { const v = JSON.parse(localStorage.getItem(DISMISSED) || '[]'); return Array.isArray(v) ? v.filter((x) => typeof x === 'string') : []; } catch { return []; } })());
+  const remember = (k) => { seen.add(k); try { localStorage.setItem(DISMISSED, JSON.stringify([...seen].slice(-200))); } catch { /* per-device convenience only */ } };
   const key = (entry) => JSON.stringify([universe, principal, entry.id, entry.version]);
   const onDecisions = () => /^#\/u\/[^/]+\/decisions(?:\/|$)/.test(location.hash);
   const valid = (generation) => !disposed && generation === epoch;
   const close = () => {
     opening++;
-    if (active) seen.add(active.key);
+    if (active) remember(active.key);
     if (dialog.open) dialog.close();
   };
   const render = () => {
     badge.hidden = !universe || (!entries.length && !availability && !active);
-    badge.textContent = availability || `${entries.length} pending questionnaire${entries.length === 1 ? '' : 's'}`;
+    const fresh = entries.filter((entry) => !seen.has(key(entry)));
+    badge.classList.toggle('is-new', !!fresh.length);
+    badge.textContent = availability || (fresh.length === 1 && entries.length === 1 ? `New questionnaire: ${fresh[0].title} — answer`
+      : `${entries.length} questionnaire${entries.length === 1 ? '' : 's'} waiting for you${fresh.length ? ` (${fresh.length} new)` : ''} — answer`);
     link.href = `#/u/${encodeURIComponent(universe)}/decisions/`;
     status.textContent = availability || (entries.length > 1 ? `${entries.length} questionnaires are waiting. Opening another keeps this draft on this device.` : 'Only explicit submission records an answer. Closing submits nothing.');
     queue.replaceChildren();
@@ -79,7 +90,7 @@ export function mountQuestionnairePopup(host, interval = 15000) {
       if (!('questionnaire' in detail)) throw new Error(detail.error);
       if (detail.status.status === 'blocked' || detail.currentPrincipal !== person || detail.version !== entry.version)
         throw new Error('Questionnaire identity, version or availability changed. Refresh pending questions before submitting.');
-      unmount?.(); active = { key: wanted, entry, principal: person }; seen.add(wanted);
+      unmount?.(); active = { key: wanted, entry, principal: person }; remember(wanted);
       unmount = mountQuestionnaire(form, {
         questionnaire: detail.questionnaire, publicationId: detail.id, version: detail.version, principal: person,
         onSubmit: async (submission) => {
@@ -114,11 +125,6 @@ export function mountQuestionnairePopup(host, interval = 15000) {
       entries = allEntries.filter((entry) => (!entry.recipient || entry.recipient === principal)
         && (!principal || entry.progress.some((p) => p.principal === principal && p.counts.unanswered > 0)));
       render();
-      if (!blocked && principal && !dialog.open && !onDecisions()) {
-        const next = entries.find((entry) => !seen.has(key(entry)));
-        if (next && !active) await open(next);
-        else if (next) { badge.textContent = `${entries.length} pending questionnaires — new question`; }
-      }
     } catch (error) {
       if (valid(generation)) { blocked = true; availability = `Questions unavailable: ${errText(error)}`; render(); }
     } finally { if (valid(generation)) loading = false; }
@@ -134,7 +140,8 @@ export function mountQuestionnairePopup(host, interval = 15000) {
     else poll();
   };
   const onBadge = () => {
-    if (active) show(); else if (entries[0] && !blocked && principal) open(entries[0]); else show();
+    const next = entries.find((entry) => !seen.has(key(entry))) ?? entries[0];
+    if (active && (!next || active.key === key(next))) show(); else if (next && !blocked && principal) open(next); else show();
   };
   const cancel = (event) => { event.preventDefault(); close(); };
   badge.addEventListener('click', onBadge); dismiss.addEventListener('click', close);

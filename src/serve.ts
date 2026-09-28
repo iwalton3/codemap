@@ -254,6 +254,7 @@ async function api(path: string, q: URLSearchParams): Promise<unknown> {
       return ops.decisionRound(root, q.get("id") ?? "");
     case "/api/decisions/questionnaires": {
       const currentPrincipal = resolveActor(root)?.principal ?? null;
+      ops.noteWebPresence(root, currentPrincipal);
       return { ...await ops.questionnaireList(root, currentPrincipal ?? undefined), currentPrincipal };
     }
     case "/api/decisions/questionnaire": {
