@@ -387,6 +387,33 @@ to land, before a release — and can be asked for by name. **It needs the codem
 MCP server attached to that repo**, because every step it takes is a tool call;
 without the server it has nothing to run.
 
+### The `triage-review` and `ez-plan` skills
+
+Ship in this repo under **`skills/`**. `/triage-review` sorts a pile of review
+findings (implementation defect, design defect, assumption, suggestion, or invalid
+with the reason) with a second agent sorting blind, lands only the trivial fixes,
+and hands the rest to `/ez-plan`, which puts the decisions to you at the altitude
+you rule at and writes one plan from your answers. When fixes keep landing on
+fixes, `/triage-review` can instead diagnose the hole underneath.
+
+With the codemap MCP server attached they post their rounds, questions and repair
+verification into codemap, so questions are answered on the decisions page and
+rulings are shared records. Without it they fall back to markdown files in the
+repository and questions in the session. Each skill's
+`references/codemap-workflow.md` says which is which.
+
+They need git, Python 3 on your `PATH` (standard library only), and the model each
+`SKILL.md` calls the Delegate Model. Install both together — `/triage-review`
+hands its rounds to `/ez-plan`:
+
+```sh
+mkdir -p ~/.claude/skills
+cp -r ~/codemap/skills/triage-review ~/codemap/skills/ez-plan ~/.claude/skills/
+```
+
+(`~/.agents/skills` for harnesses that read the vendor-neutral location.) They
+use the same names as the standalone versions and replace them.
+
 ### The `codemap-explore` agent
 
 A subagent for the other half of the loop: exploration that uses the map as a
