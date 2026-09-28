@@ -356,9 +356,8 @@ standard (`draft_spec`, `add_operation`, `sign_off_operation`, `ratify_spec`,
 
 ### The `codemap-audit` skill
 
-Ships in this repo at **`.claude/skills/codemap-audit/SKILL.md`**, with a
-byte-identical copy at `.agents/skills/codemap-audit/SKILL.md` for harnesses that
-read the vendor-neutral location.
+Ships in this repo at **`skills/codemap-audit/SKILL.md`**, beside the other
+skills.
 
 It exists because of an asymmetry that is easy to miss: the requirements
 subsystem **records what a caller reports — nothing runs a lint and nothing runs
@@ -371,15 +370,18 @@ ratifying, withdrawing, granting debt and adjudicating a problem are a person's.
 
 ```sh
 mkdir -p /path/to/your-repo/.claude/skills
-cp -r ~/codemap/.claude/skills/codemap-audit /path/to/your-repo/.claude/skills/
+cp -r ~/codemap/skills/codemap-audit /path/to/your-repo/.claude/skills/
 ```
 
 **Or for every project** on your machine:
 
 ```sh
 mkdir -p ~/.claude/skills
-cp -r ~/codemap/.claude/skills/codemap-audit ~/.claude/skills/
+cp -r ~/codemap/skills/codemap-audit ~/.claude/skills/
 ```
+
+(`.agents/skills` in place of `.claude/skills` for harnesses that read the
+vendor-neutral location.)
 
 Either way it is picked up at the start of the next session. It is selected by
 its description — when the hub says something is overdue, when a branch is about

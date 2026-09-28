@@ -38,6 +38,8 @@ const SKILL_VOCAB = new Set([
   "scrub", "differential", "baseline", "ad-hoc",           // audit triggers
   "conformant", "nonconformant", "indeterminate",          // audit outcomes
   "prior", "evidence", "observations", "assertedby",       // record fields
+  "fork", "launch", "follows",                              // triage-review / ez-plan prose
+  "available", "unavailable", "unknown", "unmeasured",      // codemap-workflow capability states
 ]);
 
 /** `use \`x\``, `see \`x\``, `with \`x\`` … — a reference to something callable. */
@@ -122,9 +124,11 @@ test("the explore agent names only tools that exist", () => {
  * `report_bug` sat in the explore agent after the verb was renamed.
  */
 test("the skills name only tools that exist", () => {
-  const dir = ".claude/skills";
+  const dir = "skills";
   const files = readdirSync(dir, { withFileTypes: true })
-    .filter((d) => d.isDirectory()).map((d) => join(dir, d.name, "SKILL.md"))
+    .filter((d) => d.isDirectory())
+    // codemap-workflow.md is where triage-review and ez-plan name codemap's tools.
+    .flatMap((d) => [join(dir, d.name, "SKILL.md"), join(dir, d.name, "references", "codemap-workflow.md")])
     .filter((f) => existsSync(f));
   assert.ok(files.length, "no skills found — if they moved, this sweep is now vacuous");
 
