@@ -68,8 +68,6 @@ export interface FoldedAnswer {
   givenAt: string;
   /** Log position of the event that made it: breaks a tie in `givenAt` (S0.5). */
   seq: number;
-  /** Retired posting metadata, retained for historical event compatibility. */
-  knownReplacements: string[];
   /** Original answer event for a reading copied onto another question. */
   sourceAnswer?: string;
   /** Original answer events this writer had not yet received. Human knowledge may differ. */
@@ -121,7 +119,6 @@ export interface FoldedAnswer {
   /** The reader's verdict, parsed by codemap from the reader's own `submit_verdict` call (plan B1, Q2.2). */
   reading?: {
     id: string; agree: boolean;
-    knownReplacements: string[];
     reader: { agent: string; maps: Mapping[]; launchedAt: string };
     session: { reading: string; maps: Mapping[] };
     asks?: string;
@@ -380,7 +377,7 @@ export const NONE = "(none)";
 const READING = /^Reading ([12])$/;
 
 /** What a confirm asks about: the words (an answer id) and the one or two readings offered. */
-export interface Confirms { answer: string; readings: Mapping[][]; knownReplacements?: string[] }
+export interface Confirms { answer: string; readings: Mapping[][] }
 
 const effectText = (o: DecisionOption): string => o.effects.map((e) => {
   const targets = [...e.findings, ...effectIssues(e).map((issue) => `${issue.kind} ${issue.id}`)];
@@ -867,7 +864,7 @@ function foldDecisionsOnce(events: LogEvent[]): SharedDecisions {
     const a: FoldedAnswer = {
       id: answerId, by: e.actor, at: e.at,
       via: data.questionnaireMeta ? "questionnaire" : (data.via as AnswerVia).kind,
-      verified: r.verified, givenAt, seq: pos, knownReplacements: [],
+      verified: r.verified, givenAt, seq: pos,
       ...(r.once ? { once: r.once } : {}),
       responseHash: createHash("sha256").update(canonical({ words: r.words, free: r.free, picked: r.picked.map((o) => o.label), park: r.park ?? null,
         ...(data.questionnaireMeta ? { submittedAnswer: data.questionnaireMeta.answer } : {}) })).digest("hex"),
@@ -955,8 +952,7 @@ function foldDecisionsOnce(events: LogEvent[]): SharedDecisions {
         decisions.set(confirmId, {
           id: confirmId, ...(data?.publication ? { label: raw.id } : {}), round: r.id, ref: raw.ref, kind: raw.kind, payload: normalizeQuestion(raw.payload), options: raw.options,
           hash: decisionHash(raw), postedAt: typeof e.at === "string" ? e.at : "", postingEvent: e.id, answers: [],
-          confirms: { answer: str(cf?.answer) ?? "", readings: Array.isArray(cf?.readings) ? cf.readings as Mapping[][] : [],
-            ...(Array.isArray(cf?.knownReplacements) && cf.knownReplacements.every((x) => typeof x === "string") ? { knownReplacements: cf.knownReplacements as string[] } : {}) },
+          confirms: { answer: str(cf?.answer) ?? "", readings: Array.isArray(cf?.readings) ? cf.readings as Mapping[][] : [] },
         });
         postedPos.set(confirmId, pos);
         break;
@@ -1079,8 +1075,6 @@ function foldDecisionsOnce(events: LogEvent[]): SharedDecisions {
 
   // --- what the log says, applied to the set -------------------------------------------
 
-  // Retired replacement metadata in old events has no authority over either question.
-  for (const { a } of answersById.values()) a.knownReplacements = [];
   const kept = (id: string) => { const x = answersById.get(id); return x && x.d.answers.includes(x.a) ? x : undefined; };
   const sourceEventId = (id: string) => answerEvents.get(id)?.id ?? id;
 
@@ -1104,14 +1098,13 @@ function foldDecisionsOnce(events: LogEvent[]): SharedDecisions {
 
   // Which readings count: in log order, one per answer and one answer per reader (S0.8(c)),
   // and only an ACCEPTED reading claims either slot (owner, P1.2): a rejected one never counted.
-  const readings = new Map<string, { e: LogEvent; pos: number; knownReplacements: string[] }>();
+  const readings = new Map<string, { e: LogEvent; pos: number }>();
   const readerUsed = new Map<string, string>();
   for (const r of readingEvents) {
     const data = r.e.data as any, x = kept(data.answer), agent = data.reader.agent as string;
     if (!x || readings.has(data.answer) || readerUsed.has(agent)) continue;
-    const knownReplacements: string[] = [];
-    if (readingRefusal(decisions, x.d, x.a, { verdict: data.reader.verdict, unclear: data.reader.unclear, session: data.session.maps, launchedAt: data.reader.launchedAt, brief: data.reader.brief, manifest: data.reader.manifest, knownReplacements })) continue;
-    readings.set(data.answer, { ...r, knownReplacements });
+    if (readingRefusal(decisions, x.d, x.a, { verdict: data.reader.verdict, unclear: data.reader.unclear, session: data.session.maps, launchedAt: data.reader.launchedAt, brief: data.reader.brief, manifest: data.reader.manifest })) continue;
+    readings.set(data.answer, r);
     readerUsed.set(agent, data.answer);
   }
 
@@ -1125,7 +1118,7 @@ function foldDecisionsOnce(events: LogEvent[]): SharedDecisions {
       const unclear = str(rd.unclear);
       const maps = validVerdict(rd.verdict, rd.unclear)!, sm = validMaps(ses.maps)!;
       a.reading = {
-        id: r.e.id, agree: !unclear && mapsKey(maps) === mapsKey(sm), knownReplacements: r.knownReplacements,
+        id: r.e.id, agree: !unclear && mapsKey(maps) === mapsKey(sm),
         reader: { agent: rd.agent, maps, launchedAt: rd.launchedAt },
         session: { reading: str(ses.reading) ?? "", maps: sm },
         ...(str((r.e.data as any).asks) ? { asks: (r.e.data as any).asks } : {}),
@@ -1438,7 +1431,7 @@ const canBind = (decisions: Map<string, FoldedDecision>, d: FoldedDecision, a: F
  * event reaches it.
  */
 export function readingRefusal(decisions: Map<string, FoldedDecision>, d: FoldedDecision, a: FoldedAnswer,
-  r: { verdict: unknown; unclear?: unknown; session: unknown; launchedAt: unknown; brief: unknown; manifest?: BriefEntry[]; knownReplacements?: string[] }): string | null {
+  r: { verdict: unknown; unclear?: unknown; session: unknown; launchedAt: unknown; brief: unknown; manifest?: BriefEntry[] }): string | null {
   if (d.kind === "words") return `${d.ref} takes words: they are the answer, never read onto options`;
   if (!a.free || a.elsewhere) return `answer ${a.id} is not words waiting for a reading`;
   const launched = ms(typeof r.launchedAt === "string" ? r.launchedAt : undefined);
@@ -2221,7 +2214,7 @@ function holdsWith(d: FoldedDecision, a: FoldedAnswer | undefined, finding: stri
  * When `d`'s hold on `finding` last began: walked over the answers in the order they were
  * GIVEN, as the ranking reads them.
  */
-function holdSince(_s: SharedDecisions, _byId: Map<string, FoldedDecision>, d: FoldedDecision, finding: string): string | undefined {
+function holdSince(d: FoldedDecision, finding: string): string | undefined {
   const given = d.answers.filter((a) => ranks(a) && !lostOn(a, { kind: "finding", id: finding })
     && (!a.revision || a.revision.findings.includes(finding)))
     .sort((x, y) => outranksByTime(x, y) ? 1 : -1);
@@ -2250,7 +2243,7 @@ export function heldFindings(s: SharedDecisions, isOpen: (finding: string) => bo
     if (!isOpen(f)) return;
     const list = out.get(f) ?? [];
     if (list.some((x) => x.decision === d.id && x.why === why)) return;
-    list.push({ decision: d.id, why, since: holdSince(s, byId, d, f) ?? d.postedAt });
+    list.push({ decision: d.id, why, since: holdSince(d, f) ?? d.postedAt });
     out.set(f, list);
   };
   const byAnswer = new Map(s.decisions.flatMap((d) => d.answers.map((a) => [a.sourceAnswer ?? a.id, a] as const)));
@@ -2394,7 +2387,7 @@ export const postConfirmEvent = (logRoot: string, universe: string, actor: Actor
 export const logQuestionEvent = (logRoot: string, universe: string, actor: Actor, q: Omit<LoggedQuestion, "id" | "loggedBy" | "at">) =>
   emitEvent(logRoot, decisionScope(universe), actor, "decision.question.logged", q.toolUseId, q as unknown as Record<string, unknown>);
 
-export const recordAnswerEvent = (logRoot: string, universe: string, actor: Actor, a: { decision: string; hash: string; via: AnswerVia; relayedBy?: string; knownReplacements?: string[] }) =>
+export const recordAnswerEvent = (logRoot: string, universe: string, actor: Actor, a: { decision: string; hash: string; via: AnswerVia; relayedBy?: string }) =>
   emitEvent(logRoot, decisionScope(universe), actor, "decision.answer.recorded", a.decision, a as unknown as Record<string, unknown>);
 
 /** One locked append is the whole selected batch. A retry is the original receipt. */
@@ -2432,7 +2425,6 @@ export const submitQuestionnaireEvent = (
 
 export interface ReadingEvent {
   answer: string;
-  knownReplacements?: string[];
   /** Codemap's parse of the reader's own `submit_verdict` call, never the session's copy of it
    *  (plan B1, Q2.2). `brief`: the prompt it was launched with, which is codemap's own (P1.4);
    *  `verified.toolUseId` its launch, `verified.call` its submit. */

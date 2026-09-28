@@ -382,75 +382,35 @@ const server = createServer(async (req, res) => {
       }));
       return false;
     };
-    // Answering a decision on the page: the person's direct door, and the only one besides a
-    // verified relay (owner, R18: "answering happens either via MCP verified channels or the
-    // web app via the human attestation guardrail"). A sixth principal act.
-    if (req.method === "POST" && url.pathname === "/api/decisions/answer") {
-      const chunks: Buffer[] = [];
-      for await (const c of req) chunks.push(c as Buffer);
-      const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
-      if (!attested(body, "answer")) return;
-      const root = rootFor(body.u ?? null);
-      const out = await withLock<unknown>(root, () => ops.answerDirect(root, {
-        decision: String(body.decision ?? ""), option: body.option, park: body.park, words: body.words, checked: body.checked,
-      }));
-      res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
-      res.end(JSON.stringify(out));
-      return;
-    }
-    if (req.method === "POST" && url.pathname === "/api/decisions/questionnaire/submit") {
-      const chunks: Buffer[] = [];
-      for await (const c of req) chunks.push(c as Buffer);
-      const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
-      if (!attested(body, "submit questionnaire")) return;
-      const root = rootFor(body.u ?? null);
-      const out = await withLock<unknown>(root, () => ops.submitQuestionnaire(root, {
-        round: String(body.round ?? ""), submission: body.submission,
-      }));
-      res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
-      res.end(JSON.stringify(out));
-      return;
-    }
-    if (req.method === "POST" && url.pathname === "/api/decisions/comparison/resolve") {
-      const chunks: Buffer[] = [];
-      for await (const c of req) chunks.push(c as Buffer);
-      const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
-      if (!attested(body, "resolve comparison")) return;
-      const root = rootFor(body.u ?? null);
-      const out = await withLock<unknown>(root, () => resolveComparison(root, {
+    // The page's decision acts, each one person's act behind the notice, under the universe
+    // lock. Answering is the person's direct door, the only one besides a verified relay
+    // (owner, R18: "answering happens either via MCP verified channels or the web app via the
+    // human attestation guardrail").
+    const decisionActs: Record<string, [act: string, run: (root: string, body: any) => Promise<unknown>]> = {
+      "/api/decisions/answer": ["answer", (root, body) => ops.answerDirect(root, {
+        decision: String(body.decision ?? ""), option: body.option, park: body.park, words: body.words, checked: body.checked })],
+      "/api/decisions/questionnaire/submit": ["submit questionnaire", (root, body) => ops.submitQuestionnaire(root, {
+        round: String(body.round ?? ""), submission: body.submission })],
+      "/api/decisions/comparison/resolve": ["resolve comparison", (root, body) => resolveComparison(root, {
         request: String(body.request ?? ""), preserve: String(body.preserve ?? ""),
         rationale: String(body.rationale ?? ""), shownHash: String(body.shownHash ?? ""),
         executionsHash: String(body.executionsHash ?? ""),
         ...(body.revises ? { revises: String(body.revises), shownResolution: body.shownResolution } : {}),
-        source: "web",
-      }));
-      res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
-      res.end(JSON.stringify(out));
-      return;
-    }
-    if (req.method === "POST" && url.pathname === "/api/decisions/withdraw") {
-      const chunks: Buffer[] = [];
-      for await (const c of req) chunks.push(c as Buffer);
-      const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
-      if (!attested(body, "withdraw decision")) return;
-      const root = rootFor(body.u ?? null);
-      const out = await withLock<unknown>(root, () => ops.withdrawDecision(root, {
-        decision: String(body.decision ?? ""), answer: body.answer, reason: String(body.reason ?? ""),
-      }));
-      res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
-      res.end(JSON.stringify(out));
-      return;
-    }
-    if (req.method === "POST" && url.pathname === "/api/decisions/revise") {
-      const chunks: Buffer[] = [];
-      for await (const c of req) chunks.push(c as Buffer);
-      const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
-      if (!attested(body, "revise decision")) return;
-      const root = rootFor(body.u ?? null);
-      const out = await withLock<unknown>(root, () => ops.reviseDecision(root, {
+        source: "web" })],
+      "/api/decisions/withdraw": ["withdraw decision", (root, body) => ops.withdrawDecision(root, {
+        decision: String(body.decision ?? ""), answer: body.answer, reason: String(body.reason ?? "") })],
+      "/api/decisions/revise": ["revise decision", (root, body) => ops.reviseDecision(root, {
         decision: String(body.decision ?? ""), revises: body.revises, findings: body.findings, issues: body.issues,
-        resolves: body.resolves, option: body.option, words: body.words, list: body.list,
-      }));
+        resolves: body.resolves, option: body.option, words: body.words, list: body.list })],
+    };
+    const decisionAct = req.method === "POST" ? decisionActs[url.pathname] : undefined;
+    if (decisionAct) {
+      const chunks: Buffer[] = [];
+      for await (const c of req) chunks.push(c as Buffer);
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+      if (!attested(body, decisionAct[0])) return;
+      const root = rootFor(body.u ?? null);
+      const out = await withLock<unknown>(root, () => decisionAct[1](root, body));
       res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
       res.end(JSON.stringify(out));
       return;

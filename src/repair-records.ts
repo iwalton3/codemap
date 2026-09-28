@@ -94,7 +94,10 @@ export function foldRepairRecords(input: LogEvent[]): RepairRecords {
         if (!error && !unique(data.rulingIds)) error = "ruling IDs must be unique";
         if (!error && data.rulingIds.some(x => !nonempty(x))) error = "ruling IDs must be nonempty";
         if (!error && data.attribution.some(x => !nonempty(x.file) || !nonempty(x.hunk) || !Array.isArray(x.claimIds) || x.claimIds.some(id => !data.coverage.some(c => c.claimIds.includes(id))))) error = "attribution must cite covered claims";
-        if (!error && data.patternEnumeration && (!nonempty(data.patternEnumeration.method) || !Array.isArray(data.patternEnumeration.expected) || !Array.isArray(data.patternEnumeration.actual) || !unique(data.patternEnumeration.expected) || !unique(data.patternEnumeration.actual) || [...data.patternEnumeration.expected, ...data.patternEnumeration.actual].some(x => !nonempty(x)))) error = "pattern enumeration needs method and unique sites";
+        const pe = data.patternEnumeration;
+        if (!error && pe && (!nonempty(pe.method) || !Array.isArray(pe.expected) || !Array.isArray(pe.actual)
+          || !unique(pe.expected) || !unique(pe.actual) || [...pe.expected, ...pe.actual].some(x => !nonempty(x))))
+          error = "pattern enumeration needs method and unique sites";
         if (!error && data.noCheckReason !== undefined && !nonempty(data.noCheckReason)) error = "no-check reason must be explicit";
         if (!error && data.inspected.some(x => !nonempty(x.source) || !commit(x.commit) || !nonempty(x.reasoning))) error = "inspection needs pinned source and reasoning";
         if (!error) out.evidence.push({ ...record(e, data), staleReasons: [] });

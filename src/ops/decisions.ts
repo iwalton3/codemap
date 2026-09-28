@@ -836,7 +836,7 @@ async function settleAnswer(root: string, b: Bound, answer: string, dir: string)
       launchedAt: r.launchedAt, brief: req.brief, manifest: req.manifest });
     if (why) { bad(why); continue; }
     await recordReadingEvent(b.cfg.path, b.cfg.universe, b.actor, {
-      answer, ...(h.knownReplacements ? { knownReplacements: h.knownReplacements } : {}), session: { ...(req.reading ? { reading: req.reading } : {}), maps: req.maps },
+      answer, session: { ...(req.reading ? { reading: req.reading } : {}), maps: req.maps },
       reader: { agent: r.agentId, verdict: v.maps, ...(v.unclear ? { unclear: v.unclear } : {}), launchedAt: r.launchedAt, brief: req.brief, manifest: req.manifest, verified: { session: r.session, toolUseId: r.toolUseId, call: call.callId,
         ...(h.requestId ? { requestId: h.requestId } : {}), ...(h.receipt ? { receipt: h.receipt } : {}) } },
       ...(req.asks ? { asks: req.asks } : {}),

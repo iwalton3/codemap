@@ -52,5 +52,8 @@ export function validateOperationSignoff(value: unknown, op: Operation, spec: Sp
   }
 }
 export function operationSignoffReaderPrompt(requestId: string, context: Pick<OperationSignoffCapsule, 'operationId' | 'specId' | 'content' | 'framing' | 'ruling'>): string {
-  return JSON.stringify({ purpose: 'operation-signoff', requestId, ...context, task: 'Independently decide whether this exact human answer signs off the complete shown operation and context. Plan-only approval, matching labels with contradictory text, or partial approval are unsound. Do not approve framing, other operations, or ratification. Call submit_operation_signoff_verdict with sound or unsound and your rationale.' });
+  return JSON.stringify({ purpose: 'operation-signoff', requestId, ...context,
+    task: 'Independently decide whether this exact human answer signs off the complete shown operation and context. '
+      + 'Plan-only approval, matching labels with contradictory text, or partial approval are unsound. Do not approve '
+      + 'framing, other operations, or ratification. Call submit_operation_signoff_verdict with sound or unsound and your rationale.' });
 }

@@ -201,7 +201,12 @@ export async function repairVerificationBrief(root: string, review: number | str
     rulingContext: c.rulingContext };
   return { requestId: request.id, capsuleHash: request.capsuleHash, capsule: neutral, launch,
     ...(job.role === "arbitrator" ? { runs } : {}),
-    instruction: `Independently assess only the original claims against the pinned code. For "fixed", run each check yourself: it must FAIL at the witness commit (phase witness) and PASS at the fix commit (phase fix), and you record both results. For "factually-refuted", run it at the witness commit and record it passing. If no check can be run, grade "inspection" with a no-check reason. A requirement or scope judgment is decision-needed. Then call ${job.role === "verifier" ? "repair_verification" : "repair_arbitration"}. To hand this job to a subagent instead, launch it with exactly: ${launch}` };
+    instruction: "Independently assess only the original claims against the pinned code. For \"fixed\", run each "
+      + "check yourself: it must FAIL at the witness commit (phase witness) and PASS at the fix commit (phase fix), and "
+      + "you record both results. For \"factually-refuted\", run it at the witness commit and record it passing. If no "
+      + "check can be run, grade \"inspection\" with a no-check reason. A requirement or scope judgment is "
+      + `decision-needed. Then call ${job.role === "verifier" ? "repair_verification" : "repair_arbitration"}. `
+      + `To hand this job to a subagent instead, launch it with exactly: ${launch}` };
 }
 
 /** A claimed connection's own work, or a subagent's held until its launcher records it. */

@@ -82,7 +82,12 @@ async function context(root: string, input: {
     return { error: 'answer awaits comparison or human resolution' };
   if (signoffHash(d.payload) !== signoffHash(operationSignoffDisplay(op.id, spec.id, content, framing, d.ref)) || a.options.length !== 1 || a.options[0] !== SIGN_OPERATION)
     return { error: 'answer does not sign the full exact operation presentation; plan-only answers sign nothing' };
-  const ruling: OperationSignoffCapsule['ruling'] = { answerId: a.id, decisionId: d.id, ref: d.ref, universe: cfg.universe, sourceScope: decisionScope(cfg.universe), via:a.via, ...(a.questionnaire?{questionnaire:a.questionnaire}:{}), principal: a.by.principal, responseHash: a.responseHash, display: d.payload, selected: a.options, words: a.words, verified: true, status: 'current', comparison: 'clear', sourceFingerprint: signoffHash(source.events), checkedAt: new Date().toISOString() };
+  const ruling: OperationSignoffCapsule['ruling'] = {
+    answerId: a.id, decisionId: d.id, ref: d.ref, universe: cfg.universe, sourceScope: decisionScope(cfg.universe), via: a.via,
+    ...(a.questionnaire ? { questionnaire: a.questionnaire } : {}), principal: a.by.principal, responseHash: a.responseHash,
+    display: d.payload, selected: a.options, words: a.words, verified: true, status: 'current', comparison: 'clear',
+    sourceFingerprint: signoffHash(source.events), checkedAt: new Date().toISOString(),
+  };
   return { cfg, op, spec, content, framing, payload, ruling };
 }
 export async function operationSignoffQuestion(root: string, input: {
@@ -261,7 +266,10 @@ export async function applyOperationSignoff(root: string, input: {
     c.ruling!.checkedAt = frozen.ruling.checkedAt;
     if (signoffHash(frozen) !== signoffHash({ operationId: op.id, specId: spec.id, content: c.content, framing: c.framing, ruling: c.ruling }))
       return { error: 'operation, context, or answer changed since the independent reading' };
-    const capsule: OperationSignoffCapsule = { version: 1, key: operationSignoffKey(op.id, input.answerId), ...frozen, executor: actor, reader: { id: input.reader.receipt, requestId: input.reader.requestId, session: checked.call.session, launch: checked.call.launch, callId: input.reader.callId, prompt: checked.brief.prompt, displayHash: signoffHash(frozen.ruling), verdict: checked.body.verdict as 'sound', rationale: checked.body.rationale } };
+    const capsule: OperationSignoffCapsule = { version: 1, key: operationSignoffKey(op.id, input.answerId), ...frozen, executor: actor,
+      reader: { id: input.reader.receipt, requestId: input.reader.requestId, session: checked.call.session, launch: checked.call.launch,
+        callId: input.reader.callId, prompt: checked.brief.prompt, displayHash: signoffHash(frozen.ruling),
+        verdict: checked.body.verdict as 'sound', rationale: checked.body.rationale } };
     const valid = validateOperationSignoff(capsule, op, spec, actor);
     if ('error' in valid)
       return valid;
