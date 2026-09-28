@@ -23,13 +23,11 @@ Record the exact source for each independent authority classification and each
 second-pass audit. Preserve source snapshots and classification disagreements;
 an unresolved disagreement is unknown, never valid authority or a sound close.
 
-The input contract is [the versioned JSON Schema](decision-measurement.schema.json)
-and `DecisionMeasurementInput` in `src/decision-measurement.ts`. Validate input
-against the schema before calling `extractDecisionMeasurement`; the extractor
-also refuses duplicate raw IDs, out-of-cohort repositories, invalid windows,
-unsupported versions, impossible rerun claims and undated parking. It returns
-included/excluded IDs as well as counts. No extractor operation changes a
-finding, runs a command or grants authority.
+An extractor for this protocol (a JSON Schema and `extractDecisionMeasurement`)
+was built and removed on 2026-09-28 with no use; it is in git history if a
+measurement is ever run. It refused duplicate raw IDs, out-of-cohort
+repositories, invalid windows, unsupported versions, impossible rerun claims and
+undated parking, and returned included/excluded IDs as well as counts.
 
 ## Authority taken without a ruling
 
