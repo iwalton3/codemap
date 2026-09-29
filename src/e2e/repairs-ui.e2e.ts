@@ -90,7 +90,7 @@ test("repair page retains original scope, separate evidence outcomes and the clo
     const verificationTarget = (await readFinding(root, verificationFinding.id))!;
     const capsule: RepairVerificationCapsule = { scope: records.scope,
       targets: [{ findingId: verificationFinding.id, openEpoch: verificationTarget.openEpoch!, claimHash: issueClaimHash("finding", verificationTarget) }],
-      code: { witnessCommit: commit, baseCommit: commit, fixCommit: commit, diff: "", availability: "available" },
+      code: { witnessCommit: commit, baseCommit: commit, fixCommit: commit, touched: [], availability: "available" },
       claims: records.records.claims.filter(claim => claim.findingId === verificationFinding.id), sort: { ...independentSort, id: independentSortId }, evidence: { ...independentEvidence, id: independentEvidenceId },
       rulingContext: JSON.stringify({ decisions: (await decisionsView(root)).s, eligibility: [] }), orchestrator };
     const request = { id: "browser-request", capsule, capsuleHash: repairVerificationHash(capsule) };
@@ -183,6 +183,8 @@ test("repair page retains original scope, separate evidence outcomes and the clo
     assert.ok((await page.textContent("main")).includes("Verified repair landed"));
     await page.goto(`${server.url}/#/u/${universe}/repairs/7/`, { waitUntil: "networkidle" });
     writeFileSync(join(root, "src", "credits.ts"), "export function credit(n: number) { return n + 1; }\n");
+    // Committed: the lifecycle compares commits, never the working tree (F29).
+    git("commit", "-qam", "the verified source moves");
     await page.reload({ waitUntil: "networkidle" });
     await page.waitForSelector(".repair-lifecycle-attention", { timeout: 10_000 });
     const driftLifecycle = await page.locator(".repair-lifecycle").filter({ hasText: closureFinding.id }).textContent();

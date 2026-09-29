@@ -88,3 +88,26 @@ test("over MCP a connection that has worked cannot claim the verifier role; a cl
     assert.match(verifier[1]!, /verifier role does not allow repair_records/);
   } finally { t.dispose(); }
 });
+
+test("B16: the same sort posted by an agent and then by its person are two records, so the person's authorship enters the log", async () => {
+  const t = await team(["alice@acme.test"]);
+  const before = process.env.CODEMAP_AGENT_MODEL;
+  try {
+    const root = t.all[0]!.repo;
+    const f = await shareFinding(root, 7, { targetKind: "anchor", targetId: "src/pay.ts#transfer", text: "one obligation" }) as { id: string };
+    ok(f);
+    const same = sort(f.id, []);
+    process.env.CODEMAP_AGENT_MODEL = "claude-opus-5";
+    const byAgent = await postRepairSort(root, 7, same) as { id: string; records: { sorts: { input: { id: string }; holds: string[] }[] } };
+    ok(byAgent);
+    assert.ok(byAgent.records.sorts.find(s => s.input.id === byAgent.id)!.holds.some(h => /principal authorship/.test(h)), "an agent's owner-reviewed sort is held");
+    delete process.env.CODEMAP_AGENT_MODEL;
+    const byPerson = await postRepairSort(root, 7, same) as { id: string; alreadyRecorded?: boolean };
+    ok(byPerson);
+    assert.notEqual(byPerson.id, byAgent.id, "not collapsed into the agent's record");
+    assert.equal(byPerson.alreadyRecorded, undefined);
+  } finally {
+    if (before === undefined) delete process.env.CODEMAP_AGENT_MODEL; else process.env.CODEMAP_AGENT_MODEL = before;
+    t.dispose();
+  }
+});

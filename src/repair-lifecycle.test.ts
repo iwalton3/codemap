@@ -27,10 +27,12 @@ function fixture() {
 }
 test("repair adequacy on a branch is distinct from landing, and drift retains historical boundary", async () => {
   const f = fixture(); try {
-    const branch = await repairCodeLifecycle(f.root, f.finding, f.evidence, "fixed");
+    const onBranch = { ...f.finding, branch: "repair" } as SharedFinding;
+    const branch = await repairCodeLifecycle(f.root, onBranch, f.evidence, "fixed");
     assert.equal(branch.landing, "open"); assert.equal(branch.source, "unchanged"); assert.equal(branch.checkedCommit, f.fix);
     writeFileSync(join(f.root, "guard.js"), "export const guard = x => x;\n");
-    const moved = await repairCodeLifecycle(f.root, f.finding, f.evidence, "fixed");
+    f.git("commit", "-qam", "the branch undoes the guard");
+    const moved = await repairCodeLifecycle(f.root, onBranch, f.evidence, "fixed");
     assert.equal(moved.source, "moved"); assert.equal(moved.checkedCommit, f.fix);
     assert.match(moved.reasons.join(" "), /historical success remains/);
   } finally { discard(f.root); }
@@ -55,13 +57,16 @@ test("missing commit stays unknown and an unchanged empty scope is never vacuous
     assert.equal(empty.landing, "open"); assert.equal(empty.source, "unknown");
   } finally { discard(f.root); }
 });
-test("deleted verified file reappearing untracked raises movement attention", async () => {
+test("F29: the working tree never moves a repair's source, whatever is checked out; an unlanded repair with no branch has none", async () => {
   const f = fixture(); try {
-    rmSync(join(f.root, "guard.js")); f.git("add", "-u"); f.git("commit", "-m", "delete guard");
-    const evidence = { ...f.evidence, fixCommit: f.git("rev-parse", "HEAD") };
-    assert.equal((await repairCodeLifecycle(f.root, f.finding, evidence, "fixed")).source, "unchanged");
-    writeFileSync(join(f.root, "guard.js"), "restored\n");
-    assert.equal((await repairCodeLifecycle(f.root, f.finding, evidence, "fixed")).source, "moved");
+    const onBranch = { ...f.finding, branch: "repair" } as SharedFinding;
+    writeFileSync(join(f.root, "guard.js"), "an uncommitted edit\n");
+    assert.equal((await repairCodeLifecycle(f.root, onBranch, f.evidence, "fixed")).source, "unchanged");
+    f.git("checkout", "-f", "main");
+    assert.equal((await repairCodeLifecycle(f.root, onBranch, f.evidence, "fixed")).source, "unchanged", "checking out main changes nothing");
+    const noBranch = await repairCodeLifecycle(f.root, f.finding, f.evidence, "fixed");
+    assert.equal(noBranch.source, "unknown");
+    assert.match(noBranch.reasons.join(" "), /names no branch/);
   } finally { discard(f.root); }
 });
 
@@ -71,7 +76,7 @@ test("default source drift is visible even with unchanged verified branch worksp
     writeFileSync(join(f.root, "guard.js"), "export const guard = x => x;\n");
     f.git("add", "."); f.git("commit", "-m", "later regression");
     f.git("checkout", "repair");
-    const view = await repairCodeLifecycle(f.root, f.finding, f.evidence, "fixed");
+    const view = await repairCodeLifecycle(f.root, { ...f.finding, branch: "repair" } as SharedFinding, f.evidence, "fixed");
     assert.equal(view.source, "unchanged"); assert.equal(view.landing, "landed"); assert.equal(view.defaultSource, "moved");
     assert.match(view.reasons.join(" "), /default branch source moved/);
   } finally { discard(f.root); }
@@ -79,7 +84,7 @@ test("default source drift is visible even with unchanged verified branch worksp
 test("inspection on exact existing source supplies boundary without diff or anchor", async () => {
   const f = fixture(); try {
     const evidence = { ...f.evidence, baseCommit: f.fix, inspected: [{ source: "guard.js", commit: f.fix, reasoning: "negative input returns zero" }] };
-    const view = await repairCodeLifecycle(f.root, { ...f.finding, target: {kind: "node", id: "n"} }, evidence, "fixed");
+    const view = await repairCodeLifecycle(f.root, { ...f.finding, branch: "repair", target: {kind: "node", id: "n"} }, evidence, "fixed");
     assert.equal(view.source, "unchanged"); assert.deepEqual(view.files, ["guard.js"]);
     const opaque = await repairCodeLifecycle(f.root, f.finding, { ...evidence, inspected: [{source:"guard inspection narrative",commit:f.fix,reasoning:"read"}] }, "fixed");
     assert.equal(opaque.source, "unknown");

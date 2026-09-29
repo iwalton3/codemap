@@ -41,7 +41,9 @@ export class RepairConnection {
 
   constructor(readonly principal: string) {}
 
-  identity(): VerifierIdentity { return { principal: this.principal, harness: "mcp", session: this.session }; }
+  /** The connection's identity in one universe. The session and the claim span every universe the
+   *  connection serves; the principal is that universe's own (F36: two repos, two git identities). */
+  identity(principal: string = this.principal): VerifierIdentity { return { principal, harness: "mcp", session: this.session }; }
   claimed(): boolean { return this.#claimed; }
 
   claim(): BoundaryResult {

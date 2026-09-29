@@ -57,11 +57,31 @@ function linkedRepairLanded(root: string, finding: SharedFinding, checked: strin
   return false;
 }
 
+/** Finished lifecycles, keyed on every SHA they read (F26): this runs on every findings read. */
+const lifecycles = new Map<string, RepairCodeLifecycle>();
+
 /** File movement is conservative: unrelated edits in a touched file also need attention. */
 export async function repairCodeLifecycle(root: string, finding: SharedFinding, evidence: RepairEvidenceInput,
   outcome: "fixed" | "factually-refuted" | "invalid"): Promise<RepairCodeLifecycle> {
   const checkedCommit = outcome === "fixed" ? evidence.fixCommit : evidence.witnessCommit;
   const trunk = trunkRef(root);
+  // What the repair is compared against: the finding's own branch while it has one, else the
+  // default branch — a COMMIT either way, never the working tree (F29), so the answer does not
+  // depend on what happens to be checked out.
+  const branchSha = finding.branch ? revParse(root, `origin/${finding.branch}`) ?? revParse(root, finding.branch) : null;
+  const key = JSON.stringify([root, finding.id, finding.target, checkedCommit, evidence.baseCommit, trunk?.sha ?? null, branchSha,
+    evidence.attribution.map((a) => a.file), evidence.inspected.map((i) => i.source)]);
+  const memo = lifecycles.get(key);
+  if (memo) return structuredClone(memo);
+  const done = await computeLifecycle(root, finding, evidence, checkedCommit, trunk, branchSha);
+  // Only a LANDED answer is final for these SHAs: an open repair can still land through a merged
+  // pull request, which only GitHub can say, and an unknown one can be proven by deepening history.
+  if (done.landing === "landed") lifecycles.set(key, structuredClone(done));
+  return done;
+}
+
+async function computeLifecycle(root: string, finding: SharedFinding, evidence: RepairEvidenceInput, checkedCommit: string,
+  trunk: { name: string; sha: string } | null, branchSha: string | null): Promise<RepairCodeLifecycle> {
   const result: RepairCodeLifecycle = { checkedCommit, defaultCommit: trunk?.sha, landing: "unknown", source: "unknown", files: [], reasons: [] };
   if (revParse(root, checkedCommit) !== checkedCommit || revParse(root, evidence.baseCommit) !== evidence.baseCommit) {
     result.reasons.push("exact checked or base commit is unavailable");
@@ -83,14 +103,18 @@ export async function repairCodeLifecycle(root: string, finding: SharedFinding, 
     if (exists.status === 0 && exists.stdout.split("\0").includes(file)) result.files.push(file);
   }
   result.files = [...new Set(result.files)];
-  if (result.files.length) {
-    const live = git(root, ["diff", "--no-ext-diff", "--no-textconv", "--quiet", checkedCommit, "--", ...result.files]);
-    const untracked = git(root, ["ls-files", "--others", "-z", "--", ...result.files]);
-    result.source = live.status === 1 || untracked.status === 0 && untracked.stdout.length > 0 ? "moved"
-      : live.status === 0 && untracked.status === 0 ? "unchanged" : "unknown";
+  if (!result.files.length) result.reasons.push("no comparable repair file boundary is available");
+  // Source is judged where the repair LIVES, as a commit (F29): the finding's branch when it
+  // names one, the default branch once the repair has landed, and otherwise nothing to judge.
+  const judgeSource = () => {
+    const against = branchSha ?? (result.landing === "landed" ? trunk?.sha : undefined);
+    if (!result.files.length) return;
+    if (!against) { result.reasons.push("the repair has not landed and names no branch to compare it against"); return; }
+    const moved = git(root, ["diff", "--no-ext-diff", "--no-textconv", "--quiet", checkedCommit, against, "--", ...result.files]);
+    result.source = moved.status === 1 ? "moved" : moved.status === 0 ? "unchanged" : "unknown";
     if (result.source === "moved") result.reasons.push("verified source moved in a checked file since the exact checked commit; historical success remains");
-  } else result.reasons.push("no comparable repair file boundary is available");
-  if (!trunk) { result.reasons.push("default branch commit is unavailable"); return result; }
+  };
+  if (!trunk) { judgeSource(); result.reasons.push("default branch commit is unavailable"); return result; }
   const descended = lineage(root, checkedCommit, trunk.sha);
   // Comparing all touched files also detects cherry-picks and squash merges. An empty
   // diff has no body proof; it must use ancestry instead of vacuous equality.
@@ -103,5 +127,6 @@ export async function repairCodeLifecycle(root: string, finding: SharedFinding, 
     result.defaultSource = same?.status === 0 ? "unchanged" : same?.status === 1 ? "moved" : "unknown";
     if (result.defaultSource === "moved") result.reasons.push("default branch source moved after the verified repair landed; historical landing remains");
   }
+  judgeSource();
   return result;
 }

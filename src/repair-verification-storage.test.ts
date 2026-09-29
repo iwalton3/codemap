@@ -63,7 +63,7 @@ test("repair verification replays unchanged shards after an upgrade and retains 
     const capsule: RepairVerificationCapsule = { scope, claims: source.records.claims, sort: source.records.sorts[0]!.input,
       evidence: source.records.evidence[0]!.input, rulingContext: "no ruling required by this mechanical fixture", orchestrator,
       targets: [{ findingId: finding.id, openEpoch: target.openEpoch!, claimHash: issueClaimHash("finding", target) }],
-      code: { witnessCommit: sha, baseCommit: sha, fixCommit: sha, diff: "", availability: "unknown", reason: "commit unavailable" } };
+      code: { witnessCommit: sha, baseCommit: sha, fixCommit: sha, touched: [], availability: "unknown", reason: "commit unavailable" } };
     const request = { id: "upgrade-request", capsule, capsuleHash: repairVerificationHash(capsule) };
     await emitEvent(cfg.path, scope, { principal: "alice@acme.test" }, "repair.verification-requested", request.id, { ...request });
     const attempt = await emitEvent(cfg.path, scope, { principal: "alice@acme.test" }, "repair.verification-recorded", "anonymous", { id: "anonymous" });

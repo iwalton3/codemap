@@ -18,7 +18,7 @@ function fixture(verdict: "fixed" | "factually-refuted" | "invalid" | "unknown" 
  {id:"evidence-event",actor,kind:"repair.evidence-recorded",subject:evidence.id,data:{...evidence}},
  ]);
  const finding=foldFindings(events).get("f")!;
- const c:RepairVerificationCapsule={scope:"findings/acme/1",claims:foldRepairRecords(events).claims,sort,evidence,targets:[{findingId:"f",openEpoch:finding.openEpoch!,claimHash:issueClaimHash("finding",finding)}],code:{witnessCommit:evidence.witnessCommit,baseCommit:evidence.baseCommit,fixCommit:evidence.fixCommit,diff:"added negative guard",availability:"available"},rulingContext:"no holds",orchestrator:identity("orchestrator")};
+ const c:RepairVerificationCapsule={scope:"findings/acme/1",claims:foldRepairRecords(events).claims,sort,evidence,targets:[{findingId:"f",openEpoch:finding.openEpoch!,claimHash:issueClaimHash("finding",finding)}],code:{witnessCommit:evidence.witnessCommit,baseCommit:evidence.baseCommit,fixCommit:evidence.fixCommit,touched:[],availability:"available"},rulingContext:"no holds",orchestrator:identity("orchestrator")};
  function append(kind:string,subject:string,data:Record<string,unknown>,by:{principal:string}=actor) {
   const id=`event-${events.length}`;
   events.push(...testChain("writer",[{id,kind,subject,actor:by,data,writerPrev:events.at(-1)!.id,after:[events.at(-1)!.id]}]));
@@ -62,4 +62,14 @@ test("a retired participant record changes nothing about a closure",()=>{
 test("a new preserved claim makes otherwise complete evidence partial",()=>{
  const f=fixture();f.append("repair.claims-recorded","f",{findingId:"f",parentId:"f:original",reason:"split omitted obligation",claims:[{id:"f:second",text:"second guard required"}]});f.apply();
  assert.equal(foldFindings(f.events).get("f")!.state,"created");
+});
+test("F34: an application that closed nothing does not spend the verdict; a later one can close",()=>{
+ const f=fixture();
+ f.append("finding.revised","f",{now:{text:"missing guard, and a second condition"},was:{text:"missing guard"}});
+ f.apply();
+ assert.equal(foldFindings(f.events).get("f")!.state,"created","the claim moved under it, so nothing closed");
+ f.append("finding.revised","f",{now:{text:"missing guard"},was:{text:"missing guard, and a second condition"}});
+ const second=f.apply();
+ const closed=foldFindings(f.events).get("f")!;
+ assert.equal(closed.state,"resolved");assert.equal(closed.closed!.eventId,second);
 });

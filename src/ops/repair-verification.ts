@@ -13,7 +13,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { requireActor } from "../identity.js";
+import { requireActor, resolvePrincipal } from "../identity.js";
 import { sidecarWriteDoor, resolveSidecar, sidecarIdentity } from "../sidecar-config.js";
 import { findingKeyScope } from "../review-target.js";
 import { findingScope, foldFindings, isClosed, isStandingBehind, type SharedFinding } from "../shared-findings.js";
@@ -22,18 +22,18 @@ import { readAnchorStore } from "../store.js";
 import { findingsProjection } from "../shared-projections.js";
 import { readCached } from "../materialize.js";
 import { emitEventChecked, readScopeChecked, type LogEvent } from "../eventlog.js";
-import { foldRepairRecords } from "../repair-records.js";
+import { foldRepairRecords, type RepairFindingMap } from "../repair-records.js";
 import { decisionScope, foldDecisions, answerHasCurrentAuthority, intentCandidates, comparisonRestricts, heldFindings, heldIssues } from "../shared-decisions.js";
 import { canonicalIssueKey } from "../decision-issues.js";
 import { workEligibility } from "./decision-holds.js";
 import { issueClaimHash } from "../ruling-application.js";
 import { gitBin } from "../git.js";
-import { readRepairVerification } from "../store.js";
 import { canonical, isUnverified, readSubagentCall, transcriptDir } from "../transcript.js";
 import { saveReaderRequest, readerRequest, holdReaderReceipt, readerReceipts, settleReaderReceipt, type ReaderPurpose } from "../reader-local.js";
 import { verifierIdentityKey, type RepairConnection, type VerifierIdentity } from "../verifier-boundary.js";
 import {
   foldRepairVerification, repairVerificationHash, repairVerificationDecision, repairVerificationDisagreements,
+  isRepairVerificationState, emptyRepairVerificationState, resultError,
   type RepairVerificationCapsule, type RepairVerificationRun, type RepairVerificationArbitration,
   type RepairVerificationApplication, type RepairClaimVerdict,
 } from "../repair-verification.js";
@@ -41,13 +41,19 @@ import {
 const runGit = promisify(execFile);
 /** A dedicated verifier connection holds one job; asking for another is refused. */
 const jobs = new WeakMap<RepairConnection, string>();
+/** This connection as it acts in `root`'s universe (F36). */
+const identityIn = (connection: RepairConnection, root: string): VerifierIdentity => connection.identity(resolvePrincipal(root) ?? connection.principal);
 
 export async function repairVerificationRecords(root: string, review: number | string) {
   const cfg = resolveSidecar(root);
   if (!cfg) return { error: "repair verification requires a configured sidecar" };
   const scope = findingScope(findingKeyScope(cfg, review));
   const cached = await readCached(root, cfg.path, scope, sidecarIdentity(cfg), foldFindings, findingsProjection);
-  return { scope, status: cached.status, diagnostic: cached.diagnostic, records: readRepairVerification(root, scope) };
+  // The value readCached SERVED, never a separate DB read (B5: F31): when it declines to write —
+  // a missing or re-pointed sidecar — there is no row, and the read threw.
+  const served = (cached.value as RepairFindingMap<SharedFinding>).repairVerification;
+  return { scope, status: cached.status, diagnostic: cached.diagnostic,
+    records: isRepairVerificationState(served) ? served : emptyRepairVerificationState() };
 }
 
 async function rulingContext(root: string, review: number | string, findings: SharedFinding[], rulingIds: string[]): Promise<{ value: string } | { error: string }> {
@@ -84,8 +90,36 @@ async function rulingContext(root: string, review: number | string, findings: Sh
         || candidates.some((c) => c.answers.includes(id) && comparisonRestricts(state, c, ref))) return { error: `ruling ${id} is held or does not govern ${ref.id}` };
     }
   }
-  // Conservative: any change to the decisions projection invalidates an application.
-  return { value: JSON.stringify({ decisions: state, eligibility }) };
+  // Only the rulings this repair CITES (D4: F19, F46). The whole decisions state made any decision
+  // anywhere in the universe stale every verification. Holds and eligibility are left out on
+  // purpose: `capsule` re-runs this at application and refuses on a new hold above, so freezing
+  // them bought nothing but staleness. Do not put them back.
+  return { value: JSON.stringify({ rulings: citedRulings(state, rulingIds) }) };
+}
+
+/** What a capsule freezes about each ruling it cites: the exact answer to the exact question. */
+export function citedRulings(state: { decisions: { id: string; hash: string; answers: { id: string; responseHash: string }[] }[] }, ids: readonly string[]) {
+  return [...ids].sort().map((id) => {
+    const d = state.decisions.find((x) => x.answers.some((a) => a.id === id));
+    const a = d?.answers.find((x) => x.id === id);
+    return { id, decision: d?.id ?? null, questionHash: d?.hash ?? null, responseHash: a?.responseHash ?? null };
+  });
+}
+
+/**
+ * What the capsule freezes of the code (B12: F23, F49): the commit pair and the touched blob ids,
+ * never diff bytes — those depend on the clone's git config and object count (abbreviation), so
+ * a capsule made on one clone could never be applied on another.
+ */
+async function touchedBlobs(root: string, base: string, fix: string): Promise<{ path: string; before: string; after: string }[]> {
+  const out = (await runGit(gitBin(), ["diff", "--raw", "--no-abbrev", "-z", "--no-renames", base, fix, "--"], { cwd: root, maxBuffer: 16 * 1024 * 1024 })).stdout;
+  const parts = out.split("\0").filter((x) => x.length);
+  const touched: { path: string; before: string; after: string }[] = [];
+  for (let i = 0; i + 1 < parts.length; i += 2) {
+    const [, , before, after] = parts[i]!.replace(/^:/, "").split(" ");
+    touched.push({ path: parts[i + 1]!, before: before!, after: after! });
+  }
+  return touched.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
 }
 
 async function capsule(root: string, review: number | string, events: LogEvent[], input: { sortId: string; evidenceId: string }, orchestrator: VerifierIdentity, applyingRequest?: string): Promise<RepairVerificationCapsule | { error: string }> {
@@ -106,11 +140,11 @@ async function capsule(root: string, review: number | string, events: LogEvent[]
   if ("error" in context) return context;
   const cfg = resolveSidecar(root)!;
   const code: RepairVerificationCapsule["code"] = { witnessCommit: evidence.input.witnessCommit, baseCommit: evidence.input.baseCommit,
-    fixCommit: evidence.input.fixCommit, diff: "", availability: "available" };
+    fixCommit: evidence.input.fixCommit, touched: [], availability: "available" };
   try {
     for (const sha of [code.witnessCommit, code.baseCommit, code.fixCommit]) await runGit(gitBin(), ["cat-file", "-e", `${sha}^{commit}`], { cwd: root });
-    code.diff = (await runGit(gitBin(), ["diff", "--no-color", "--no-ext-diff", "--no-textconv", code.baseCommit, code.fixCommit, "--"], { cwd: root, maxBuffer: 16 * 1024 * 1024 })).stdout;
-  } catch { code.availability = "unknown"; code.reason = "one or more pinned commits or their diff are unavailable in this clone"; }
+    code.touched = await touchedBlobs(root, code.baseCommit, code.fixCommit);
+  } catch { code.availability = "unknown"; code.reason = "one or more pinned commits are unavailable in this clone"; }
   return { scope: findingScope(findingKeyScope(cfg, review)), targets, code,
     claims: repairs.claims.filter((c) => targets.some((t) => t.findingId === c.findingId)), sort: structuredClone(sort.input),
     evidence: structuredClone(evidence.input), rulingContext: context.value, orchestrator: structuredClone(orchestrator) };
@@ -149,7 +183,7 @@ async function append(root: string, review: number | string, identity: VerifierI
 
 export async function requestRepairVerification(root: string, review: number | string, input: { sortId: string; evidenceId: string }, connection: RepairConnection) {
   input = structuredClone(input);
-  const identity = connection.identity();
+  const identity = identityIn(connection, root);
   const id = `rv_${randomUUID()}`;
   return append(root, review, identity, async (events) => {
     const frozen = await capsule(root, review, events, input, identity);
@@ -263,7 +297,7 @@ async function submit(root: string, review: number | string, job: Job, body: Rec
   produce: (identity: VerifierIdentity) => (events: LogEvent[]) => Promise<{ kind: string; subject: string; data: Record<string, unknown> } | { error: string }>) {
   if (connection.claimed()) {
     if (jobs.get(connection) !== jobKey(job)) return { error: "read this job's brief (repair_brief) on this connection first" };
-    return append(root, review, connection.identity(), produce(connection.identity()));
+    return append(root, review, identityIn(connection, root), produce(identityIn(connection, root)));
   }
   if (!readerRequest(root, { purpose: purposeOf(job), requestId: jobKey(job) })) return { error: "no brief was issued for this job; call repair_brief first" };
   const receipt = randomUUID();
@@ -275,6 +309,15 @@ async function submit(root: string, review: number | string, job: Job, body: Rec
 
 export async function submitRepairVerification(root: string, review: number | string, input: { requestId: string; slot: 1 | 2; results: RepairClaimVerdict[] }, connection: RepairConnection) {
   input = structuredClone(input);
+  // Validated BEFORE holding (G8: F37): a subagent otherwise got a held receipt for results the
+  // fold would reject, and learned it only when its launcher tried to record them.
+  if (!Array.isArray(input?.results) || !input.results.length) return { error: "results: one verdict per claim you checked" };
+  const source = await repairVerificationRecords(root, review);
+  if ("error" in source) return source;
+  const request = source.records.requests.find((r) => r.id === input.requestId);
+  if (!request) return { error: "unknown repair verification request" };
+  const invalid = input.results.map((r) => resultError(r, request.capsule)).find(Boolean);
+  if (invalid) return { error: invalid };
   const job: Job = { requestId: input.requestId, role: "verifier", slot: input.slot };
   return submit(root, review, job, { results: input.results }, connection, (identity) => async (events) => {
     const request = foldRepairVerification(events).requests.find((r) => r.id === input.requestId);
@@ -342,7 +385,7 @@ export async function recordRepairVerification(root: string, review: number | st
 
 export async function applyRepairVerification(root: string, review: number | string, input: { requestId: string; findingId: string; reason: string }, connection: RepairConnection) {
   input = structuredClone(input);
-  const identity = connection.identity();
+  const identity = identityIn(connection, root);
   return append(root, review, identity, async (events) => {
     const records = foldRepairVerification(events);
     const request = records.requests.find((r) => r.id === input.requestId);

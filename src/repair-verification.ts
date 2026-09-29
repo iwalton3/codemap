@@ -9,7 +9,7 @@ export type RepairVerdict = "fixed" | "factually-refuted" | "invalid" | "decisio
 export interface RepairVerificationCapsule {
   scope: string;
   targets: { findingId: string; openEpoch: string; claimHash: string }[];
-  code: { witnessCommit: string; baseCommit: string; fixCommit: string; diff: string; availability: "available" | "unknown"; reason?: string };
+  code: { witnessCommit: string; baseCommit: string; fixCommit: string; touched: { path: string; before: string; after: string }[]; availability: "available" | "unknown"; reason?: string };
   claims: RepairClaim[];
   sort: RepairSortInput;
   evidence: RepairEvidenceInput;
@@ -61,7 +61,7 @@ const coverageKeys = (coverage: RepairCoverage[]) => coverage.flatMap((c) => c.c
  * the verifier, never an echo of the fixer's outcomes. Every check the fixer pinned is one the
  * verifier must run that way. A factual refutation needs an execution at the witness that passes.
  */
-function resultError(r: RepairClaimVerdict, c: RepairVerificationCapsule): string | undefined {
+export function resultError(r: RepairClaimVerdict, c: RepairVerificationCapsule): string | undefined {
   if (!r || !text(r.reason) || !verdicts.includes(r.verdict) || !["executable", "inspection", "none"].includes(r.grade)
     || !Array.isArray(r.executions) || !Array.isArray(r.inspected)) return "invalid claim verdict";
   if (!coverageKeys(c.sort.coverage).includes(key(r))) return "verdict exceeds immutable coverage";
@@ -130,7 +130,7 @@ export function foldRepairVerification(events: LogEvent[]): RepairVerificationRe
         if (!text(c.scope) || !text(c.rulingContext) || !Array.isArray(c.claims) || !c.claims.length
           || !Array.isArray(c.targets) || !c.targets.length || c.targets.some((t) => !text(t.findingId) || !text(t.openEpoch) || !text(t.claimHash))
           || !c.code || c.code.witnessCommit !== c.evidence?.witnessCommit || c.code.baseCommit !== c.evidence.baseCommit || c.code.fixCommit !== c.evidence.fixCommit
-          || typeof c.code.diff !== "string" || !["available", "unknown"].includes(c.code.availability) || (c.code.availability === "unknown" && !text(c.code.reason))
+          || !Array.isArray(c.code.touched) || c.code.touched.some((x) => !text(x?.path) || !sha(x.before) || !sha(x.after)) || !["available", "unknown"].includes(c.code.availability) || (c.code.availability === "unknown" && !text(c.code.reason))
           || !c.sort || c.evidence.sortId !== c.sort.id || !Array.isArray(c.sort.coverage) || !c.sort.coverage.length
           || ![c.evidence.witnessCommit, c.evidence.baseCommit, c.evidence.fixCommit].every(sha)
           || d.capsuleHash !== repairVerificationHash(c)) error = "invalid immutable request capsule";
@@ -146,7 +146,8 @@ export function foldRepairVerification(events: LogEvent[]): RepairVerificationRe
           const workers = [...out.runs.filter((x) => x.requestId === d.requestId), ...out.arbitrations.filter((x) => x.requestId === d.requestId)];
           if (workers.some((x) => verifierIdentityKey(x.identity) === verifierIdentityKey(d.identity))) error = "a verifier cannot apply the verdict it gave";
           else error = repairVerificationApplicationError(out, d) ?? repairVerificationSnapshotError(ordered.slice(0, at), request.capsule);
-          if (!error && out.applications.some((a) => a.requestId === d.requestId && a.findingId === d.findingId && a.openEpoch === d.openEpoch)) error = "verification application is one-shot per finding epoch";
+          // One-shot is spent in the FINDINGS arm, only when a closure actually happens (F34):
+          // this fold cannot see whether the finding closed, and must not call that fold.
           if (!error) out.applications.push(structuredClone(d));
         } else {
           // What the fold can see (R2): the requester never verifies, and the two runs are distinct.
@@ -240,7 +241,7 @@ export function isRepairVerificationState(value: unknown): value is RepairVerifi
     return !!v && [v.requests, v.runs, v.arbitrations, v.applications, v.rejected].every(Array.isArray)
       && v.requests.every((r) => text(r.id) && !!r.capsule && identityValid(r.capsule.orchestrator)
         && Array.isArray(r.capsule.claims) && Array.isArray(r.capsule.sort?.coverage) && Array.isArray(r.capsule.evidence?.coverage)
-        && Array.isArray(r.capsule.targets) && !!r.capsule.code && typeof r.capsule.code.diff === "string"
+        && Array.isArray(r.capsule.targets) && !!r.capsule.code && Array.isArray(r.capsule.code.touched)
         && text(r.capsule.scope) && text(r.capsule.rulingContext) && r.capsuleHash === repairVerificationHash(r.capsule))
       && v.runs.every((r) => text(r.id) && text(r.requestId) && text(r.capsuleHash) && identityValid(r.identity) && [1, 2].includes(r.slot) && Array.isArray(r.results))
       && v.arbitrations.every((r) => text(r.id) && text(r.requestId) && identityValid(r.identity) && Array.isArray(r.runIds) && r.runIds.length === 2 && Array.isArray(r.addresses))
@@ -250,7 +251,12 @@ export function isRepairVerificationState(value: unknown): value is RepairVerifi
   } catch { return false; }
 }
 
-/** Checks immutable verification binding; the application fold also checks current authority and code. */
+/**
+ * Checks the immutable verification binding, the capsule's RECORDED code availability, and a
+ * complete matching verdict. Current ruling authority and the current code are checked only by the
+ * op (`applyRepairVerification` re-derives the capsule); the findings fold adds the open epoch,
+ * the claim hash and contest, and nothing about authority (B6: F30).
+ */
 export function repairVerificationApplicationError(records: RepairVerificationRecords, application: RepairVerificationApplication): string | undefined {
   const request = records.requests.find((x) => x.id === application.requestId);
   const target = request?.capsule.targets.find((x) => x.findingId === application.findingId);

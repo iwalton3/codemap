@@ -86,7 +86,9 @@ async function context(root: string, input: {
     answerId: a.id, decisionId: d.id, ref: d.ref, universe: cfg.universe, sourceScope: decisionScope(cfg.universe), via: a.via,
     ...(a.questionnaire ? { questionnaire: a.questionnaire } : {}), principal: rulerOf(a).principal, responseHash: a.responseHash,
     display: d.payload, selected: a.options, words: a.words, verified: true, status: 'current', comparison: 'clear',
-    sourceFingerprint: signoffHash(source.events), checkedAt: new Date().toISOString(),
+    // The cited ruling alone (D4: F19, F46): the whole decisions scope's events made any decision
+    // anywhere a new request id. Current authority is re-checked above on every call.
+    sourceFingerprint: signoffHash({ decision: d.id, questionHash: d.hash, answer: a.id, responseHash: a.responseHash }), checkedAt: new Date().toISOString(),
   };
   return { cfg, op, spec, content, framing, payload, ruling };
 }

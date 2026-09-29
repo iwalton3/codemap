@@ -12,6 +12,7 @@ import * as ops from "./ops.js";
 import type { RepairClaimVerdict } from "./repair-verification.js";
 import type { RepairSortInput, RepairEvidenceInput } from "./repair-records.js";
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { discard } from "./test-tmp.js";
@@ -317,5 +318,79 @@ test("plan 3.4: a pattern closes only with every sorted site fixed or filed as a
     const withBug = await submitRepairVerification(f.root, 7, { requestId: f.requestId, slot: 1,
       results: f.results().map((r) => ({ ...r, sites: [{ site: "src/pay.ts", bug: filed.id }] })) }, h);
     ok(withBug);
+  } finally { f.t.dispose(); }
+});
+
+test("D4 and B12: unrelated decisions do not stale a verification, and the capsule freezes blob ids, not diff bytes", async () => {
+  // A real fix commit, so the capsule has something touched to freeze.
+  const f = await fixture(1, false, (evidence, root) => {
+    const git = (...a: string[]) => { const r = spawnSync("git", a, { cwd: root, encoding: "utf8" }); assert.equal(r.status, 0, r.stderr); return r.stdout.trim(); };
+    writeFileSync(join(root, "fixed.txt"), "the guard\n");
+    git("add", "fixed.txt"); git("-c", "user.email=f@x", "-c", "user.name=f", "commit", "-qm", "fix");
+    evidence.fixCommit = git("rev-parse", "HEAD");
+  });
+  try {
+    await f.run(1); await f.run(2);
+    ok(await postRound(f.root, { round: { id: "R-elsewhere", source: "an unrelated question" }, decisions: [{ id: "D-else", round: "R-elsewhere", ref: "D1", kind: "words",
+      payload: { question: "D1: what should the release be called?", options: [{ label: "x" }, { label: "y" }] }, options: [{ label: "x", effects: [] }, { label: "y", effects: [] }] }] }));
+    const records = await repairVerificationRecords(f.root, 7);
+    assert.ok("records" in records && records.records);
+    const capsule = records.records.requests[0]!.capsule;
+    assert.ok(!("diff" in capsule.code), "no raw diff bytes");
+    assert.deepEqual(capsule.code.touched.map((x) => x.path), ["fixed.txt"]);
+    assert.ok(capsule.code.touched.every((x) => /^[0-9a-f]{40,64}$/.test(x.before) && /^[0-9a-f]{40,64}$/.test(x.after)), "full blob ids, never abbreviated");
+    assert.deepEqual(JSON.parse(capsule.rulingContext), { rulings: [] }, "only the rulings the repair cites");
+    ok(await applyRepairVerification(f.root, 7, { requestId: f.requestId, findingId: f.ids[0]!, reason: "two independent inspections" }, f.orchestrator));
+    assert.equal((await readFinding(f.root, f.ids[0]!, { pr: 7 }))!.state, "resolved");
+  } finally { f.t.dispose(); }
+});
+
+test("F36: one MCP connection acts in each universe as that universe's principal", async () => {
+  const f = await fixture();
+  try {
+    // A connection whose PRIMARY universe has another git identity, working in this one.
+    const elsewhere = new RepairConnection("someone@other.test");
+    assert.equal(elsewhere.claim().ok, true);
+    const brief = await repairVerificationBrief(f.root, 7, { requestId: f.requestId, role: "verifier", slot: 1 }, elsewhere);
+    ok(brief);
+    const run = await submitRepairVerification(f.root, 7, { requestId: f.requestId, slot: 1, results: f.results() }, elsewhere) as { run?: { identity: { principal: string; session: string } } };
+    ok(run);
+    assert.equal(run.run!.identity.principal, "owner@acme.test", "this universe's principal, not the primary's");
+    assert.equal(run.run!.identity.session, elsewhere.session, "the same connection");
+  } finally { f.t.dispose(); }
+});
+
+test("B5: verification records come from what readCached served, so a missing sidecar degrades instead of throwing", async () => {
+  const f = await fixture();
+  const pointer = join(f.root, ".codemap", "sidecar");
+  const original = (await import("node:fs")).readFileSync(pointer, "utf8");
+  try {
+    writeFileSync(pointer, join(f.root, "no-such-sidecar"));
+    // No projected row, as on a store that never folded this scope: the old separate read threw here.
+    (await import("./db.js")).db(f.root).prepare("DELETE FROM repair_verifications").run();
+    const records = await repairVerificationRecords(f.root, 7);
+    assert.ok("records" in records, JSON.stringify(records));
+    assert.notEqual(records.status, "complete");
+  } finally { writeFileSync(pointer, original); f.t.dispose(); }
+});
+
+/** B10 (F42), pinned at the source: the module needs a DOM, so it cannot be rendered here. */
+test("B10: a repair with no sidecar to read is not shown as blocked", async () => {
+  const src = (await import("node:fs")).readFileSync("web/repair-presentation.js", "utf8");
+  const banner = src.split("\n").find((l) => l.includes("Repair history is blocked"))!;
+  assert.ok(banner, "the banner exists");
+  assert.doesNotMatch(banner, /unavailable/, "`unavailable` means there is nothing to block, not a blocked scope");
+});
+
+test("G8: a subagent's submission is validated before it is held, not when its launcher records it", async () => {
+  const f = await fixture();
+  try {
+    ok(await repairVerificationBrief(f.root, 7, { requestId: f.requestId, role: "verifier", slot: 1 }, f.orchestrator));
+    const bad = f.results().map((r) => ({ ...r, grade: "inspection" as const, inspected: [], noCheckReason: undefined }));
+    const refused = await submitRepairVerification(f.root, 7, { requestId: f.requestId, slot: 1, results: bad }, f.orchestrator) as { error?: string; held?: boolean };
+    assert.match(String(refused.error), /inspection closure needs/);
+    assert.equal(refused.held, undefined, "nothing was held for a record that would be rejected");
+    const schema = (await import("node:fs")).readFileSync("src/mcp.ts", "utf8");
+    assert.match(schema, /results: \{ type: "array", items: repairClaimVerdictSchema \}/, "the tool advertises the item shape");
   } finally { f.t.dispose(); }
 });

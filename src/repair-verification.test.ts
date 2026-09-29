@@ -41,7 +41,7 @@ function fixture(opts: { pinned?: RepairExecution[]; classification?: string; re
   const finding = foldFindings(events).get("f")!;
   const capsule: RepairVerificationCapsule = { scope: "findings/acme/1", claims: foldRepairRecords(events).claims, sort, evidence,
     targets: [{ findingId: "f", openEpoch: finding.openEpoch!, claimHash: issueClaimHash("finding", finding) }],
-    code: { witnessCommit: W, baseCommit: evidence.baseCommit, fixCommit: F, diff: "guard", availability: "available" }, rulingContext: "ctx", orchestrator: conn("fixer") };
+    code: { witnessCommit: W, baseCommit: evidence.baseCommit, fixCommit: F, touched: [], availability: "available" }, rulingContext: "ctx", orchestrator: conn("fixer") };
   const add = (id: string, kind: string, subject: string, data: Record<string, unknown>) => {
     events.push(...testChain("w", [{ id, kind, subject, actor: owner, data, writerPrev: events.at(-1)!.id, after: [events.at(-1)!.id] }]));
     return id;
@@ -163,7 +163,9 @@ test("a verdict closes its finding once per opening, never by a verifier, and ne
   assert.match(f.rejected(f.apply(conn("v1"))) ?? "", /cannot apply the verdict it gave/);
   const applied = f.apply(conn("fixer"));
   assert.equal(foldFindings(f.events).get("f")!.closed?.eventId, applied);
-  assert.match(f.rejected(f.apply(conn("fixer"))) ?? "", /one-shot/);
+  const again = f.apply(conn("fixer"));
+  assert.equal(f.rejected(again), undefined, "the verification fold no longer spends it (F34)");
+  assert.equal(foldFindings(f.events).get("f")!.closed?.eventId, applied, "the findings arm closed once; the second closed nothing");
   const unknown = fixture(); unknown.request();
   unknown.verify(1, conn("v1"), unknown.verdict("unknown", [], "none"));
   unknown.verify(2, conn("v2"), unknown.verdict("unknown", [], "none"));

@@ -14,7 +14,7 @@ export const repairStateLabel = (state) => ({
 export function repairPresentation(repair) {
   if (!repair) return html``;
   return html`<div class="repair-presentation">
-    ${when(repair.status === 'blocked' || repair.status === 'unavailable', () => html`<div class="repair-lifecycle-attention">Repair history is blocked; current proof is unknown: ${repair.diagnostic || 'unreadable scope'}</div>`)}
+    ${when(repair.status === 'blocked', () => html`<div class="repair-lifecycle-attention">Repair history is blocked; current proof is unknown: ${repair.diagnostic || 'unreadable scope'}</div>`)}
     <div class="repair-status fs">Current finding: ${repairStateLabel(repair.state)}</div>
     ${each(repair.lifecycles || [], (l) => html`<div class="repair-lifecycle"><b>${repairStateLabel(l.state)}</b> · ${l.grade} grade · ${l.applied ? 'historical closure applied' : 'not applied'}
       <div class="fs">Checked commit ${l.code?.checkedCommit || 'unknown'} · landing ${l.code?.landing || 'unknown'} · ${l.currentProof ? 'current proof' : 'historical or incomplete proof'}</div>

@@ -690,6 +690,9 @@ function foldFindingsInternal(events: LogEvent[], replay: ApplicationReplay): Ma
   // causality, so the fold and `causalHeads` cannot drift apart on it.
   const causal = causality(events);
   const spent = new Set<string>();
+  // A verification application is one-shot per finding epoch, spent only by a closure that
+  // happens here — like `spent` for ruling applications (F34).
+  const repairSpent = new Set<string>();
   const atAct = (e: LogEvent): SharedFinding | undefined => {
     let snapshot = replay.snapshots.get(e.id);
     if (!snapshot) {
@@ -1011,8 +1014,11 @@ function foldFindingsInternal(events: LogEvent[], replay: ApplicationReplay): Ma
         const act = atAct(e);
         if (!act || isClosed(act.state) || act.contested?.length || act.openEpoch !== application.openEpoch
           || issueClaimHash("finding", act) !== application.claimHash) break;
+        const once = `${application.requestId}\0${application.findingId}\0${application.openEpoch}`;
+        if (repairSpent.has(once)) break;
         if (!isClosed(f.state) && !f.contested?.length && f.openEpoch === application.openEpoch
           && issueClaimHash("finding", f) === application.claimHash) {
+          repairSpent.add(once);
           f.state = application.outcome === "fixed" ? "resolved" : application.outcome === "invalid" ? "invalid" : "refuted";
           f.closed = { eventId: e.id, at: e.at, by: e.actor, reason: application.reason };
           f.repairClosure = { requestId: application.requestId, applicationId: application.id, outcome: application.outcome, attention: [] };

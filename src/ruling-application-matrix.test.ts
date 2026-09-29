@@ -9,7 +9,7 @@ import { indexBlob } from "./repo.js";
 import { writeStore, readFinding, readBug } from "./store.js";
 import { shareFinding } from "./ops-shared.js";
 import { reportBug, updateBug } from "./ops/bugs.js";
-import { postRound, answerDirect } from "./ops/decisions.js";
+import { postRound, answerDirect, relayAnswer } from "./ops/decisions.js";
 import { applicationReaderBrief, submitApplicationVerdict, recordApplicationVerdict, applyRuling,
   type ApplicationReceiptRef } from "./ops/ruling-application.js";
 import { universeKey } from "./sidecar-config.js";
@@ -239,4 +239,23 @@ test("changed answer or bug claim after recorded reading refuses closure without
     assert.notEqual((await issueRow(changedClaim))?.state, "invalid");
     for (const u of [changedAnswer, changedClaim]) assert.equal((await applicationEvents(u)).length, 0);
   } finally { changedAnswer.cleanup(); changedClaim.cleanup(); }
+});
+
+test("plan 3.7: no decision closes an issue without a logged ruling", async () => {
+  const u = await fixture("finding", true);
+  try {
+    assert.equal(u.posted.ok, true, JSON.stringify(u.posted));
+    await withActor(true, async () => {
+      // Words an agent relays with no transcript to verify them: an answer, not a ruling.
+      const relayed = await relayAnswer(u.root, { round: "R1", decision: "d1", entryId: "no-such-entry", words: "Not a defect" }) as any;
+      const unverified = relayed.answer ?? relayed.id;
+      assert.ok(unverified, `the relay recorded an answer: ${JSON.stringify(relayed)}`);
+      for (const answerId of [unverified, "ans_that_was_never_logged"].filter(Boolean)) {
+        const refused = await applyRuling(u.root, { issue: u.issue, answerId, readers: [] }, u.transcripts) as any;
+        assert.notEqual(refused.ok, true, `${answerId}: ${JSON.stringify(refused)}`);
+      }
+    });
+    assert.equal((await applicationEvents(u)).length, 0, "nothing was applied");
+    assert.equal((await issueRow(u))?.state, "issued", "the finding is untouched");
+  } finally { u.cleanup(); }
 });

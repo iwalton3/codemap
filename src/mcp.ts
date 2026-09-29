@@ -271,6 +271,20 @@ const repairEvidenceSchema = obj({ sortId: repairString, witnessCommit: repairSt
   attribution: { type: "array", items: obj({ file: repairString, hunk: repairString, claimIds: repairStrings }, ["file", "hunk", "claimIds"], false) } },
   ["sortId", "witnessCommit", "baseCommit", "fixCommit", "coverage", "reproducer", "regression", "inspected", "rulingIds", "attribution"], false);
 
+/** What one verifier submits per claim — the shape `resultError` checks (G8: F37). */
+const repairClaimVerdictSchema = obj({
+  findingId: repairString, claimId: repairString,
+  verdict: { type: "string", enum: ["fixed", "factually-refuted", "invalid", "decision-needed", "unknown"] },
+  reason: repairString, grade: { type: "string", enum: ["executable", "inspection", "none"] },
+  executions: { type: "array", items: repairRun },
+  inspected: { type: "array", items: obj({ source: repairString, commit: repairString, reasoning: repairString }, ["source", "commit", "reasoning"], false) },
+  noCheckReason: repairString,
+  basis: obj({ tests: { type: "boolean" }, reason: repairString }, ["tests", "reason"], false),
+  sites: { type: "array", items: obj({ site: repairString, bug: repairString }, ["site"], false) },
+}, ["findingId", "claimId", "verdict", "reason", "grade", "executions", "inspected"], false);
+const repairAddressSchema = obj({ findingId: repairString, claimId: repairString, reason: repairString,
+  verdict: { type: "string", enum: ["fixed", "factually-refuted", "invalid", "decision-needed", "unknown"] } }, ["findingId", "claimId", "reason", "verdict"], false);
+
 const tools: Tool[] = [
   {
     name: "claim_verifier",
@@ -301,14 +315,14 @@ const tools: Tool[] = [
   {
     name: "repair_verification",
     description: "Submit your results for one verifier slot: your own run of each check (fails at the witness, passes at the fix), or an inspection with a no-check reason. A subagent's submission is held until its launcher records it.",
-    inputSchema: obj({ review: { type: "string" }, requestId: { type: "string" }, slot: { type: "integer", enum: [1, 2] }, results: { type: "array", items: { type: "object" } } }, ["review", "requestId", "slot", "results"]),
+    inputSchema: obj({ review: { type: "string" }, requestId: { type: "string" }, slot: { type: "integer", enum: [1, 2] }, results: { type: "array", items: repairClaimVerdictSchema } }, ["review", "requestId", "slot", "results"]),
     mutates: true,
     handler: (a, c) => ops.submitRepairVerification(c.universe.path, a.review, a, connection),
   },
   {
     name: "repair_arbitration",
     description: "A third verifier addresses each disagreement between the two runs, with reasons. Held like repair_verification when a subagent submits it.",
-    inputSchema: obj({ review: { type: "string" }, requestId: { type: "string" }, runIds: { type: "array", items: { type: "string" } }, addresses: { type: "array", items: { type: "object" } } }, ["review", "requestId", "runIds", "addresses"]),
+    inputSchema: obj({ review: { type: "string" }, requestId: { type: "string" }, runIds: { type: "array", items: { type: "string" } }, addresses: { type: "array", items: repairAddressSchema } }, ["review", "requestId", "runIds", "addresses"]),
     mutates: true,
     handler: (a, c) => ops.arbitrateRepairVerification(c.universe.path, a.review, a, connection),
   },
