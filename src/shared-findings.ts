@@ -358,7 +358,7 @@ export interface SharedFinding {
    * and the agent that did the work keeps its attribution.
    */
   applications?: ApplicationAttempt[];
-  repairClosure?: { requestId: string; applicationId: string; outcome: "fixed" | "factually-refuted"; attention: string[] };
+  repairClosure?: { requestId: string; applicationId: string; outcome: "fixed" | "factually-refuted" | "invalid"; attention: string[] };
   /** Last accepted opening act; captured by a ruling application. */
   openEpoch?: string;
   closed?: {
@@ -556,7 +556,8 @@ export function agentClosureNeedsAck(f: Ratcheted & { author?: Actor }): boolean
 }
 
 /**
- * Whether `actor` may move a finding to `next` right now.
+ * Whether `actor` may move a BUG to `next` right now — findings use `mayTransitionFinding`
+ * (plan 3.3), and this is the agent close path bugs keep until the bug follow-up.
  *
  * The whole ratchet, in one place, so the fold and the write path cannot drift apart.
  * A person may do anything.
@@ -581,6 +582,19 @@ export function agentClosureNeedsAck(f: Ratcheted & { author?: Actor }): boolean
  * rather than about the report), or `withdrawn` (retires a record somebody may still want).
  * Reopening uses a separate event naming the closure it observed.
  */
+/**
+ * A FINDING's ratchet (plan 3.3, R4: "one bar for every agent closure"). An agent never closes a
+ * finding directly — not `invalid`, not `refuted`, confirmed or not: its closure goes through
+ * repair verification (two blind runs, an arbitrator on disagreement), and anything else it
+ * concludes becomes a person's ask. It may still move one back to the open pile. Bugs keep
+ * `mayTransition`'s agent path until the bug follow-up.
+ */
+export function mayTransitionFinding(f: Ratcheted & { author?: Actor }, actor: Actor, next: FindingState): boolean {
+  if (!isAgentActor(actor)) return true;
+  void f;
+  return next === "created" || next === "issued";
+}
+
 export function mayTransition(f: Ratcheted & { author?: Actor }, actor: Actor, next: FindingState): boolean {
   if (!isAgentActor(actor)) return true;
   if (isClosed(f.state)) return next === "created" || next === "issued";
@@ -957,7 +971,7 @@ function foldFindingsInternal(events: LogEvent[], replay: ApplicationReplay): Ma
         // separate event with the closure it observed.
         // Legacy human reopens remain valid; agents use an observed-closure act.
         if (isClosed(f.state) && !isClosed(next) && isAgentActor(e.actor)) break;
-        if (!mayTransition(f, e.actor, next)) break;
+        if (!mayTransitionFinding(f, e.actor, next)) break;
         f.state = next;
         // An ask is answered by the act it asked for — and SETTLED, not erased. Clearing
         // `pending` alone took the rationale with it, so a finding closed on an agent's
@@ -999,7 +1013,7 @@ function foldFindingsInternal(events: LogEvent[], replay: ApplicationReplay): Ma
           || issueClaimHash("finding", act) !== application.claimHash) break;
         if (!isClosed(f.state) && !f.contested?.length && f.openEpoch === application.openEpoch
           && issueClaimHash("finding", f) === application.claimHash) {
-          f.state = application.outcome === "fixed" ? "resolved" : "refuted";
+          f.state = application.outcome === "fixed" ? "resolved" : application.outcome === "invalid" ? "invalid" : "refuted";
           f.closed = { eventId: e.id, at: e.at, by: e.actor, reason: application.reason };
           f.repairClosure = { requestId: application.requestId, applicationId: application.id, outcome: application.outcome, attention: [] };
           f.pending = undefined;
@@ -1275,7 +1289,7 @@ export async function setState(
       state: next, observedClosure: current.closed.eventId, ...(reason ? { reason } : {}),
     });
   }
-  if (!mayTransition(current, actor, next)) {
+  if (!mayTransitionFinding(current, actor, next)) {
     // ASKED, not refused. The agent has reached a conclusion and this is the moment it
     // says so; erroring here sent it looking for another verb, and what it reached for
     // was prose — 15 of 15 thread comments in the sidecar are state changes and

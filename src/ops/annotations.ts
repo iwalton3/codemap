@@ -10,7 +10,7 @@ import { linkedBranches, readAnchorStore, loadNodes, readAnnotations, writeAnnot
 import { readSnapshot } from "../snapshots.js";
 import { resolveSidecar, universeKey } from "../sidecar-config.js";
 import {
-  findingTier, isClosed, mayTransition, needsHumanAck, ASK_FOR_STATE, REOPEN_STATES,
+  findingTier, isClosed, mayTransitionFinding, needsHumanAck, ASK_FOR_STATE, REOPEN_STATES,
   type Ask, type FindingState, type FindingTier, type Remediation, type SharedFinding, type Verdict,
 } from "../shared-findings.js";
 import { requireActor, isAgentActor, actorLabel, reviewerKey, isIndependent, isErrorIndependent } from "../identity.js";
@@ -1327,7 +1327,7 @@ export async function rewitnessLocalFinding(root: string, id: string, witness: B
  * These are the row halves. They live here for the layering reason `closeLocalFinding`
  * gives, and `ops.ts` picks between them and the event ones.
  *
- * The RATCHET applies identically. `mayTransition` is the same function the fold uses,
+ * The RATCHET applies identically. `mayTransitionFinding` is the same function the fold uses,
  * so a local finding somebody has confirmed is no more closeable by an agent than a
  * shared one — the gate is about who stood behind the claim, not about where the row
  * happens to live.
@@ -1394,16 +1394,17 @@ const suggestId = (root: string, id: string): string => {
 
 export const setLocalFindingState = (root: string, id: string, state: FindingState, reason?: string) =>
   localFindingWrite(root, id, (f, actor, at) => {
-    if (!mayTransition(f, actor, state)) {
+    if (!mayTransitionFinding(f, actor, state)) {
       // Asked, not refused — the same rule the shared path follows, and for the same
       // reason: an agent told "no" goes looking for another verb, and the one it finds
-      // is prose. See `setState` in `shared-findings.ts`.
+      // is prose. See `setState` in `shared-findings.ts`. A local finding has no repair
+      // verification, so an agent's close here is always a person's ask (plan 3.3).
       const ask = isClosed(f.state) && REOPEN_STATES.includes(state) ? "reopen" as const : ASK_FOR_STATE[state];
       if (!ask) return { error: `an agent may not move ${id} from ${f.state} to ${state} — request it instead` };
       f.pending = { ask, by: actor, at, rationale: reason ?? `agent concluded ${state}` };
       return {
         asked: ask,
-        note: `${id} is confirmed or was filed by a person, so \`${state}\` is a person's to apply. `
+        note: `An agent does not close a finding, so \`${state}\` on ${id} is a person's to apply. `
           + `Recorded as a pending \`${ask}\` — it shows on the finding and in their queue.`,
       };
     }

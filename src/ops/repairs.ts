@@ -60,7 +60,7 @@ export async function repairRecords(root: string, review: number | string) {
   const lifecycles = await Promise.all(verificationResults.map(async result => {
     const request = verification.requests.find(r => r.id === result.requestId)!;
     const finding = cached.value.get(result.findingId);
-    const code = finding && result.complete && (result.verdict === "fixed" || result.verdict === "factually-refuted")
+    const code = finding && result.complete && (result.verdict === "fixed" || result.verdict === "factually-refuted" || result.verdict === "invalid")
       ? await repairCodeLifecycle(root, finding, { ...request.capsule.evidence,
         inspected: [...request.capsule.evidence.inspected,
           ...verification.runs.filter(r => r.requestId === result.requestId).flatMap(r => r.results
@@ -72,6 +72,7 @@ export async function repairRecords(root: string, review: number | string) {
     const state = result.verdict === "decision-needed" ? "decision-needed"
       : !result.complete ? (coverage[request.capsule.evidence.id]?.some(c => c.findingId === result.findingId && c.completeness === "partial") ? "partly-repaired" : "unknown")
       : result.verdict === "factually-refuted" ? "factually-refuted"
+      : result.verdict === "invalid" ? "invalid"
       : code?.landing === "landed" ? "verified-repair-landed" : "verified-at-commit";
     return { findingId: result.findingId, requestId: result.requestId, state, grade: result.grade,
       earlierUnfavourable: earlierUnfavourableRuns(verification, result.requestId).map(r => ({ requestId: r.requestId, runId: r.id,

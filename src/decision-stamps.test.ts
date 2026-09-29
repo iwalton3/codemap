@@ -71,9 +71,9 @@ const verdict = (id: string, v: string, model: string, prev: string) => testEven
   writerPrev: prev, after: [prev], data: { verdict: v, note: "sorter" },
 });
 
-test("an untriaged agent finding is an agent's to refute; one a sorter confirmed is held, stamp or no stamp", () => {
+test("an agent alone never refutes a finding, triaged or not, stamp or no stamp (plan 3.3)", () => {
   const untriaged = foldFindings([agentFiled, change("0000000002-b", "refuted", {}, agentFiled.id)]).get("f_1")!;
-  assert.equal(untriaged.state, "refuted", "nobody stood behind it, so refuting it is triage");
+  assert.notEqual(untriaged.state, "refuted", "one bar for every agent closure: repair verification");
 
   const c = verdict("0000000002-b", "confirm", "sorter", agentFiled.id);
   for (const data of [{}, { decision: stamp }]) {
@@ -83,7 +83,7 @@ test("an untriaged agent finding is an agent's to refute; one a sorter confirmed
 
   const r = verdict("0000000002-b", "refute", "sorter", agentFiled.id);
   const refutedBySort = foldFindings([agentFiled, r, change("0000000003-c", "refuted", {}, r.id)]).get("f_1")!;
-  assert.equal(refutedBySort.state, "refuted", "a sorter's refute stands behind nothing, so it holds nothing");
+  assert.notEqual(refutedBySort.state, "refuted", "a sorter's refute is not a verified closure either");
 });
 
 // --- the standard: untouched, a stamped sign-off waits for I9 --------------------------------

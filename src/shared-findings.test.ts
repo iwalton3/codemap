@@ -77,12 +77,13 @@ test("an agent may promote its own proposal to `created`", async () => {
   } finally { discard(root); }
 });
 
-test("an agent may kill a proposal nobody has stood behind", async () => {
+test("plan 3.3: an agent's close of a proposal nobody stood behind is a person's ask, not a close", async () => {
   const root = tmp();
   try {
     const id = await createFinding(root, 264, opus, NEW);
-    assert.ok(!("error" in (await setState(root, 264, fable, id, "invalid"))));
-    assert.equal((await one(root)).state, "invalid");
+    const r = await setState(root, 264, fable, id, "invalid", "premise is false") as { asked?: string };
+    assert.equal(r.asked, "invalidate");
+    assert.equal((await one(root)).state, "issued", "one bar for every agent closure: repair verification, or a person");
   } finally { discard(root); }
 });
 
@@ -117,16 +118,16 @@ test("once anything confirms it, an agent asks rather than closes", async () => 
   } finally { discard(root); }
 });
 
-/** An agent's OWN unconfirmed finding is still its own to close — that is triage. */
-test("an agent still closes its own unconfirmed finding outright", async () => {
+/** Not even its OWN unconfirmed finding: the August shortcut is gone (plan 3.3, R4). */
+test("plan 3.3: an agent asks even to refute its own unconfirmed finding", async () => {
   const root = tmp();
   try {
     const id = await createFinding(root, 264, opus, NEW);
     const r = await setState(root, 264, fable, id, "refuted", "not reachable") as { asked?: string };
-    assert.equal(r.asked, undefined, "no ask — it just happens");
+    assert.equal(r.asked, "refute");
     const f = await one(root);
-    assert.equal(f.state, "refuted");
-    assert.equal(f.pending, undefined);
+    assert.equal(f.state, "issued");
+    assert.equal(f.pending?.ask, "refute");
   } finally { discard(root); }
 });
 
@@ -712,7 +713,7 @@ test("an agent reopens a finding against the exact observed closure", async () =
   const root = tmp();
   try {
     const id = await createFinding(root, 264, opus, NEW);
-    const close = await setState(root, 264, opus, id, "invalid", "initial judgment");
+    const close = await setState(root, 264, izzie, id, "invalid", "initial judgment");
     assert.ok(!("error" in close));
     const reopened = await setState(root, 264, opus, id, "created", "new evidence");
     assert.ok(!("error" in reopened));
@@ -725,7 +726,7 @@ test("an agent reopens a finding against the exact observed closure", async () =
 test("finding replay rejects stale or context-free agent reopens", () => {
   const events = testChain("w", [
     { id: "1", kind: "finding.created", subject: "f", actor: opus, data: { targetKind: "anchor", targetId: "a", text: "claim" } },
-    { id: "2", kind: "finding.stateChanged", subject: "f", actor: opus, data: { state: "invalid" } },
+    { id: "2", kind: "finding.stateChanged", subject: "f", actor: izzie, data: { state: "invalid" } },
     { id: "3", kind: "finding.reopened", subject: "f", actor: opus, data: { state: "created", observedClosure: "2" } },
     { id: "4", kind: "finding.stateChanged", subject: "f", actor: izzie, data: { state: "refuted" } },
     { id: "5", kind: "finding.reopened", subject: "f", actor: opus, data: { state: "created", observedClosure: "2" } },

@@ -8,7 +8,7 @@ export interface ReportedSortReceipt { id: string; source: string; content: stri
 export interface RepairAssessment { identity: ReportedSorter; classification: string; reason: string; receipt?: ReportedSortReceipt }
 export interface RepairSortInput {
   id: string; prior?: string; reason?: string; classification: string; kind: "isolated" | "pattern";
-  coverage: RepairCoverage[]; predicate?: string; sites?: string[]; refutationSubtype?: "factual" | "scope";
+  coverage: RepairCoverage[]; predicate?: string; sites?: string[]; refutationSubtype?: "factual" | "scope" | "assumed";
   restsOn: string[]; source: string; provenance: "owner-reviewed" | "dual-sorted";
   assessments: RepairAssessment[]; disagreements: { id: string; text: string }[];
   arbitration?: { addresses: string[]; reason: string; identity: ReportedSorter; receipt?: ReportedSortReceipt };

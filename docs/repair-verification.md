@@ -55,9 +55,22 @@ The owner's bar ("Your approved bar only"):
   witness commit and passing at the fix commit** — both observations, the same command. Every
   check the fixer pinned with a known outcome must be run that way; the verifier's result is its
   own, never compared with the fixer's (an echo does not count).
-- **factually-refuted**, executable: the verifier's own run of the check passes at the witness.
+- **factually-refuted**, executable — the *real basis* (plan 3.3): the verifier first states in
+  `basis`, with a reason, whether the pinned check actually tests the claim. If it does not, the
+  verifier cannot refute on it. Then it runs every pinned check at the witness (the old code),
+  where each must pass. Any other passing command proves nothing. With no pinned check, a refutation
+  is an inspection with a written reason.
+- **invalid**: a reviewer's refuted assumption, sorted `refutationSubtype: "assumed"`. It closes
+  the same way (two runs, an arbitrator on disagreement), and each run may be executable or an
+  inspection with a written reason, because such a refutation is often shown by reading. An
+  assumption IN THE CODE is a real finding and never invalid.
 - **inspection** grade (weaker): only when no pinned check ran, with a no-check reason and the
   relevant commit inspected.
+
+**This is the only way an agent closes a finding** (R4, "one bar"). An agent's direct `refuted` or
+`invalid` close is gone, including on its own unconfirmed finding. It becomes a person's ask. Local
+findings have no repair verification, so an agent's close there is always an ask. Bugs keep their
+agent close path until the bug follow-up.
 
 Regression runs never close anything. Partial coverage never closes a whole finding; code
 evidence cannot settle a scope or requirement judgment (`decision-needed`).
@@ -66,8 +79,8 @@ evidence cannot settle a scope or requirement judgment (`decision-needed`).
 
 `repair_apply_verification` rechecks the current claim, epoch, sort, evidence, code availability
 and ruling context, and the findings fold checks the same (a stale claim or superseded sort
-refuses). Fixed closes `resolved`, a factual refutation `refuted`; unknown never closes or
-reopens. One application per finding per opening; a reopen starts a new epoch. Linked bugs are
+refuses). Fixed closes `resolved`, a factual refutation `refuted`, a refuted assumption `invalid`; unknown
+never closes or reopens. One application per finding per opening; a reopen starts a new epoch. Linked bugs are
 not closed.
 
 A later contradiction — the code the closure verified has moved — keeps the historical closure and

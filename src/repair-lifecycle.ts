@@ -59,7 +59,7 @@ function linkedRepairLanded(root: string, finding: SharedFinding, checked: strin
 
 /** File movement is conservative: unrelated edits in a touched file also need attention. */
 export async function repairCodeLifecycle(root: string, finding: SharedFinding, evidence: RepairEvidenceInput,
-  outcome: "fixed" | "factually-refuted"): Promise<RepairCodeLifecycle> {
+  outcome: "fixed" | "factually-refuted" | "invalid"): Promise<RepairCodeLifecycle> {
   const checkedCommit = outcome === "fixed" ? evidence.fixCommit : evidence.witnessCommit;
   const trunk = trunkRef(root);
   const result: RepairCodeLifecycle = { checkedCommit, defaultCommit: trunk?.sha, landing: "unknown", source: "unknown", files: [], reasons: [] };

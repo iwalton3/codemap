@@ -27,7 +27,7 @@ const run = (command: string, commit: string, phase: RepairExecution["phase"], o
 const CHECK = "node --test guard.test.js";
 const observedFix = [run(CHECK, W, "witness", "failed"), run(CHECK, F, "fix", "passed")];
 
-function fixture(opts: { pinned?: RepairExecution[]; classification?: string; refutationSubtype?: "factual" } = {}) {
+function fixture(opts: { pinned?: RepairExecution[]; classification?: string; refutationSubtype?: "factual" | "assumed" } = {}) {
   const sort: RepairSortInput = { id: "sort", classification: opts.classification ?? "mechanical", kind: "isolated", coverage: [{ findingId: "f", claimIds: ["f:original"] }],
     restsOn: [], source: "owner reviewed", provenance: "owner-reviewed", assessments: [], disagreements: [], ...(opts.refutationSubtype ? { refutationSubtype: opts.refutationSubtype } : {}) };
   const evidence: RepairEvidenceInput = { id: "proof", sortId: "sort", witnessCommit: W, baseCommit: "b".repeat(40), fixCommit: F,
@@ -81,11 +81,36 @@ test("a check the fixer pinned must be run by the verifier at both commits; one 
   assert.equal(unrun.rejected(ok), undefined);
 });
 
-test("a factual refutation needs the verifier's passing check at the witness, not the repaired code", () => {
-  const f = fixture({ classification: "factual-refutation", refutationSubtype: "factual" }); f.request();
-  const atFix = f.verify(1, conn("v1"), f.verdict("factually-refuted", [run(CHECK, F, "fix", "passed")]));
-  assert.match(f.rejected(atFix) ?? "", /passing check at the witness/);
-  assert.equal(f.rejected(f.verify(1, conn("v2"), f.verdict("factually-refuted", [run(CHECK, W, "witness", "passed")]))), undefined);
+const tests = { basis: { tests: true, reason: "the check calls the guarded path with the claimed input" } };
+test("plan 3.3 real basis: a refutation runs the PINNED check at the old code, having said why it tests the claim", () => {
+  const pinnedCheck = [run(CHECK, W, "witness", "passed")];
+  const f = fixture({ classification: "factual-refutation", refutationSubtype: "factual", pinned: pinnedCheck }); f.request();
+  const atFix = f.verify(1, conn("v1"), { ...f.verdict("factually-refuted", [run(CHECK, F, "fix", "passed")]), ...tests });
+  assert.match(f.rejected(atFix) ?? "", /each pinned check at the witness/);
+  const anyCommand = f.verify(1, conn("v2"), { ...f.verdict("factually-refuted", [run("true", W, "witness", "passed")]), ...tests });
+  assert.match(f.rejected(anyCommand) ?? "", /each pinned check at the witness/, "the any-passing-command door is shut");
+  const noBasis = f.verify(1, conn("v3"), f.verdict("factually-refuted", [run(CHECK, W, "witness", "passed")]));
+  assert.match(f.rejected(noBasis) ?? "", /states whether and why/);
+  const notTesting = f.verify(1, conn("v4"), { ...f.verdict("factually-refuted", [run(CHECK, W, "witness", "passed")]), basis: { tests: false, reason: "it never reaches the guard" } });
+  assert.match(f.rejected(notTesting) ?? "", /does not test the claim cannot refute/);
+  assert.equal(f.rejected(f.verify(1, conn("v5"), { ...f.verdict("factually-refuted", [run(CHECK, W, "witness", "passed")]), ...tests })), undefined);
+  const unpinned = fixture({ classification: "factual-refutation", refutationSubtype: "factual" }); unpinned.request();
+  const bare = unpinned.verify(1, conn("v1"), { ...unpinned.verdict("factually-refuted", [run(CHECK, W, "witness", "passed")]), ...tests });
+  assert.match(unpinned.rejected(bare) ?? "", /inspection with a written reason/);
+});
+
+test("plan 3.3: a reviewer's refuted assumption closes as invalid through two runs, by inspection or execution", () => {
+  const f = fixture({ classification: "invalid", refutationSubtype: "assumed" }); f.request();
+  const asRefuted = f.verify(1, conn("v1"), { ...f.verdict("factually-refuted", [], "inspection", [{ source: "pay.ts", commit: W, reasoning: "the guard exists" }]) });
+  assert.match(f.rejected(asRefuted) ?? "", /closes as invalid/);
+  f.verify(1, conn("v2"), f.verdict("invalid", [], "inspection", [{ source: "pay.ts", commit: W, reasoning: "the reviewer assumed no guard; line 12 guards it" }]));
+  f.verify(2, conn("v3"), f.verdict("invalid", [], "inspection", [{ source: "pay.ts", commit: W, reasoning: "guarded at line 12" }]));
+  const d = repairVerificationDecision(f.folded(), "rq", "f");
+  assert.deepEqual([d.verdict, d.complete], ["invalid", true]);
+  assert.equal(foldRepairRecords(f.events).sorts[0]!.eligible, true, "an assumed sort is eligible for verification");
+  const wrongKind = fixture({ classification: "factual-refutation", refutationSubtype: "factual" }); wrongKind.request();
+  const inv = wrongKind.verify(1, conn("v1"), wrongKind.verdict("invalid", [], "inspection", [{ source: "pay.ts", commit: W, reasoning: "r" }]));
+  assert.match(wrongKind.rejected(inv) ?? "", /only a reviewer's refuted assumption/);
 });
 
 test("grant model (R2): the requester's own connection never verifies; subagents on the controlled path do, with no second grade", () => {

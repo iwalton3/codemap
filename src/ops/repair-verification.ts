@@ -219,8 +219,10 @@ export async function repairVerificationBrief(root: string, review: number | str
     ...(job.role === "arbitrator" ? { runs } : {}),
     instruction: "Independently assess only the original claims against the pinned code. For \"fixed\", run each "
       + "check yourself: it must FAIL at the witness commit (phase witness) and PASS at the fix commit (phase fix), and "
-      + "you record both results. For \"factually-refuted\", run it at the witness commit and record it passing. If no "
-      + "check can be run, grade \"inspection\" with a no-check reason. A requirement or scope judgment is "
+      + "you record both results. To refute (\"factually-refuted\", or \"invalid\" when the sort says the reviewer "
+      + "assumed), first state in `basis` whether and why each pinned check actually tests the claim; if it does not, "
+      + "you cannot refute on it. Then run it at the witness commit (the old code) and record it passing. If no check "
+      + "can be run, grade \"inspection\" with a no-check reason. A requirement or scope judgment is "
       + `decision-needed. Then call ${job.role === "verifier" ? "repair_verification" : "repair_arbitration"}. `
       + `To hand this job to a subagent instead, launch it with exactly: ${launch}` };
 }
@@ -316,11 +318,11 @@ export async function applyRepairVerification(root: string, review: number | str
     const target = current.targets.find((t) => t.findingId === input.findingId);
     if (!target) return { error: "finding is outside immutable request" };
     const decision = repairVerificationDecision(records, request.id, target.findingId);
-    if (!decision.complete || !["fixed", "factually-refuted"].includes(decision.verdict)) return { error: decision.reasons.join("; ") || "no complete independent verdict" };
+    if (!decision.complete || !["fixed", "factually-refuted", "invalid"].includes(decision.verdict)) return { error: decision.reasons.join("; ") || "no complete independent verdict" };
     if ([...records.runs, ...records.arbitrations].some((x) => x.requestId === request.id && verifierIdentityKey(x.identity) === verifierIdentityKey(identity)))
       return { error: "a verifier cannot apply the verdict it gave" };
     const data: RepairVerificationApplication = { id: `apply_${randomUUID()}`, requestId: request.id, capsuleHash: request.capsuleHash,
-      findingId: target.findingId, openEpoch: target.openEpoch, claimHash: target.claimHash, outcome: decision.verdict as "fixed" | "factually-refuted",
+      findingId: target.findingId, openEpoch: target.openEpoch, claimHash: target.claimHash, outcome: decision.verdict as "fixed" | "factually-refuted" | "invalid",
       contextHash: repairVerificationHash(current.rulingContext), reason: input.reason, identity };
     return { kind: "finding.repairApplied", subject: target.findingId, data: { ...data } };
   });

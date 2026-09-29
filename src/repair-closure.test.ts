@@ -7,10 +7,10 @@ import { testChain } from "./test-events.js";
 import { repairVerificationHash, type RepairVerificationCapsule, type RepairClaimVerdict, type RepairVerificationState } from "./repair-verification.js";
 import type { LogEvent } from "./eventlog.js";
 
-function fixture(verdict: "fixed" | "factually-refuted" | "unknown" = "fixed") {
+function fixture(verdict: "fixed" | "factually-refuted" | "invalid" | "unknown" = "fixed") {
  const actor={principal:"owner"};
  const identity=(session:string)=>({principal:"verifier",harness:"mcp" as const,session});
- const sort:RepairSortInput={id:"sort",classification:"mechanical",kind:"isolated",coverage:[{findingId:"f",claimIds:["f:original"]}],restsOn:[],source:"owner reviewed exact guard",provenance:"owner-reviewed",assessments:[],disagreements:[]};
+ const sort:RepairSortInput={id:"sort",classification:verdict === "invalid" ? "invalid" : "mechanical",...(verdict === "invalid" ? {refutationSubtype:"assumed" as const} : {}),kind:"isolated",coverage:[{findingId:"f",claimIds:["f:original"]}],restsOn:[],source:"owner reviewed exact guard",provenance:"owner-reviewed",assessments:[],disagreements:[]};
  const evidence:RepairEvidenceInput={id:"proof",sortId:"sort",witnessCommit:"a".repeat(40),baseCommit:"b".repeat(40),fixCommit:"c".repeat(40),coverage:[{findingId:"f",claimIds:["f:original"],result:"complete",reason:"whole claim",claimResults:[{claimId:"f:original",result:"complete",reason:"whole claim"}]}],reproducer:[],regression:[],inspected:[],rulingIds:[],attribution:[]};
  const events:LogEvent[]=testChain("writer",[
  {id:"created",actor,kind:"finding.created",subject:"f",data:{text:"missing guard",targetId:"a",targetKind:"anchor",sourceRef:"a".repeat(40)}},
@@ -28,7 +28,7 @@ function fixture(verdict: "fixed" | "factually-refuted" | "unknown" = "fixed") {
  append("repair.verification-requested","request",{id:"request",capsule:c,capsuleHash:repairVerificationHash(c)},verifier);
  for(const slot of [1,2] as const) {
   const who=identity(`verifier-${slot}`);
-  const result:RepairClaimVerdict={findingId:"f",claimId:"f:original",verdict,reason:verdict === "factually-refuted" ? "guard already exists at cited target" : "guard rejects negatives",grade:verdict === "unknown" ? "none":"inspection",executions:[],inspected:verdict === "unknown" ? []:[{source:"guard",commit:verdict === "factually-refuted" ? evidence.witnessCommit : evidence.fixCommit,reasoning:"negative branch returns before mutation"}],noCheckReason:"no runnable target"};
+  const result:RepairClaimVerdict={findingId:"f",claimId:"f:original",verdict,reason:verdict === "factually-refuted" || verdict === "invalid" ? "guard already exists at cited target" : "guard rejects negatives",grade:verdict === "unknown" ? "none":"inspection",executions:[],inspected:verdict === "unknown" ? []:[{source:"guard",commit:verdict === "factually-refuted" || verdict === "invalid" ? evidence.witnessCommit : evidence.fixCommit,reasoning:"negative branch returns before mutation"}],noCheckReason:"no runnable target"};
   append("repair.verification-recorded",`run-${slot}`,{id:`run-${slot}`,requestId:"request",capsuleHash:repairVerificationHash(c),slot,identity:who,results:[result]},verifier);
  }
  const apply=()=>append("finding.repairApplied","f",{id:`application-${events.length}`,requestId:"request",capsuleHash:repairVerificationHash(c),findingId:"f",openEpoch:finding.openEpoch,claimHash:issueClaimHash("finding",finding),outcome:verdict === "unknown" ? "fixed":verdict,contextHash:repairVerificationHash(c.rulingContext),reason:"independent inspection covers exact whole claim",identity:identity("orchestrator")},verifier);
@@ -36,9 +36,9 @@ function fixture(verdict: "fixed" | "factually-refuted" | "unknown" = "fixed") {
 }
 
 test("a repair application closes exact finding with discovered proof",()=>{
- for(const verdict of ["fixed","factually-refuted"] as const) {
+ for(const verdict of ["fixed","factually-refuted","invalid"] as const) {
  const f=fixture(verdict);const closure=f.apply();const records=foldFindings(JSON.parse(JSON.stringify(f.events)));
- assert.equal(records.get("f")!.state,verdict === "fixed" ? "resolved":"refuted");
+ assert.equal(records.get("f")!.state,{fixed:"resolved","factually-refuted":"refuted",invalid:"invalid"}[verdict]);
  assert.equal(records.get("f")!.closed!.eventId,closure);
  assert.equal((records.repairVerification as RepairVerificationState).applications.length,1);
  }

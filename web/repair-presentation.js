@@ -4,6 +4,7 @@ export const repairStateLabel = (state) => ({
   'verified-at-commit': 'Verified at an unmerged commit',
   'verified-repair-landed': 'Verified repair landed',
   'factually-refuted': 'Factual refutation',
+  'invalid': 'Refuted assumption (invalid)',
   'partly-repaired': 'Partly repaired',
   'decision-needed': 'Decision needed',
   'human-accepted': 'Explicit human acceptance',

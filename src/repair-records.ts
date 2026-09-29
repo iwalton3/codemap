@@ -138,7 +138,10 @@ export function foldRepairRecords(input: LogEvent[]): RepairRecords {
       if (d.arbitration && d.assessments.some(a => a.identity.session === d.arbitration!.identity.session)) sort.holds.push("the arbitrator must be a third session");
     }
     if (d.provenance === "owner-reviewed" && (!nonempty(d.source) || sort.actor.via?.kind === "agent")) sort.holds.push("owner worklist requires principal authorship and exact source");
-    if (!["mechanical", "implementation-defect"].includes(d.classification) && !(d.refutationSubtype === "factual" && ["invalid", "factual-refutation"].includes(d.classification))) sort.holds.push("classification requires an explicit decision or factual basis");
+    // A reviewer's refuted assumption ("invalid, assumed") closes through verification too (R4); an
+    // assumption IN THE CODE is a real finding, never invalid (owner, batch 8, 5).
+    if (!["mechanical", "implementation-defect"].includes(d.classification) && !(d.refutationSubtype === "factual" && ["invalid", "factual-refutation"].includes(d.classification))
+      && !(d.refutationSubtype === "assumed" && d.classification === "invalid")) sort.holds.push("classification requires an explicit decision or factual basis");
     if (d.refutationSubtype === "scope") sort.holds.push("scope judgment cannot be settled as factual refutation");
     if (d.restsOn.length) sort.holds.push("requirement or ruling dependency remains explicit");
     if (d.disagreements.length && (!d.arbitration || !nonempty(d.arbitration.reason) || !reported(d.arbitration.identity) || d.disagreements.some(x => !d.arbitration!.addresses.includes(x.id)))) sort.holds.push("unaddressed sort disagreement");

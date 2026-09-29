@@ -143,7 +143,7 @@ test("an agent may write up a person's raw finding — until somebody stands beh
   } finally { u.cleanup(); }
 });
 
-test("an agent closes what nobody has confirmed, and only asks once somebody has", async () => {
+test("plan 3.3: an agent asks to close any finding, confirmed or not; the state never moves", async () => {
   const u = await universe();
   try {
     // AGENT-filed, so nobody has stood behind it in either sense.
@@ -155,12 +155,11 @@ test("an agent closes what nobody has confirmed, and only asks once somebody has
     const theirs = await shared.shareFinding(u.root, 269, { ...NEW, text: "third" }) as { id: string };
 
     await asAgent(async () => {
-      // Triage. A queue of unconfirmed false positives that only a person may clear is a
-      // queue nobody clears, so refuting its OWN unstood-behind finding straight to the
-      // closed section is the agent's job — the half the gate was never meant to cover.
-      const a = await shared.closeFinding(u.root, 269, open.id, "refuted", "the guard is two lines up");
-      assert.ok(!("error" in a), JSON.stringify(a));
-      assert.equal((await readFinding(u.root, open.id))!.state, "refuted");
+      // One bar for every agent closure (R4): even its OWN unstood-behind finding is a
+      // person's ask now, or goes through repair verification. The August shortcut is gone.
+      const a = await shared.closeFinding(u.root, 269, open.id, "refuted", "the guard is two lines up") as { asked?: string };
+      assert.equal(a.asked, "refute", JSON.stringify(a));
+      assert.equal((await readFinding(u.root, open.id))!.state, "issued");
 
       const t = await shared.closeFinding(u.root, 269, theirs.id, "refuted", "not reachable") as { asked?: string };
       assert.equal(t.asked, "refute", "a person's own report is not an agent's to retire");
@@ -518,7 +517,7 @@ test("every lifecycle act works on a finding the fold does not own", async () =>
  *
  * Found by a Fable 5 review of the agent-facing surface.
  */
-test("close_finding can actually close, and the ask conversion is reachable from it", async () => {
+test("close_finding's closing states reach the ask conversion", async () => {
   const u = await universe();
   try {
     // The schema has to DECLARE it, or an agent reading the description sends a field the
@@ -531,16 +530,16 @@ test("close_finding can actually close, and the ask conversion is reachable from
     assert.match(schema, /\bstate:\s*\{/, "`state` is declared, so it survives validation");
     assert.match(schema, /"refuted"/, "and its enum carries the closing states");
 
-    // Agent-filed and unconfirmed: it just happens.
+    // Agent-filed and unconfirmed: an ask too (plan 3.3), never a close.
     let mine!: { id: string };
     await asAgent(async () => { mine = await shared.shareFinding(u.root, 269, NEW) as { id: string }; });
     await asAgent(async () => {
       const r = await closeFinding(u.root, { id: mine.id, result: "answered", detail: "not reachable", state: "refuted" }) as
-        { ok?: boolean; state?: string; applied?: string[] };
-      assert.equal(r.state, "refuted");
-      assert.ok(r.applied?.includes("state"));
+        { asked?: string; applied?: string[] };
+      assert.equal(r.asked, "refute");
+      assert.ok(r.applied?.includes("ask"));
     });
-    assert.equal((await readFinding(u.root, mine.id))!.state, "refuted");
+    assert.equal((await readFinding(u.root, mine.id))!.state, "issued");
 
     // Person-filed: the same call becomes an ask, carrying `detail` as the reason.
     const theirs = await shared.shareFinding(u.root, 269, { ...NEW, text: "theirs" }) as { id: string };
@@ -653,7 +652,8 @@ test("an agent reopens a shared finding against its observed closure", async () 
   try {
     let mine!: { id: string };
     await asAgent(async () => { mine = await shared.shareFinding(u.root, 269, NEW) as { id: string }; });
-    await asAgent(async () => { await closeFinding(u.root, { id: mine.id, result: "answered", detail: "not real", state: "refuted" }); });
+    // A person closes it; the agent later finds it live again.
+    await shared.closeFinding(u.root, 269, mine.id, "refuted", "not real");
     assert.equal((await readFinding(u.root, mine.id))!.state, "refuted");
 
     await asAgent(async () => {

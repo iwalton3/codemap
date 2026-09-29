@@ -5,7 +5,7 @@ import { foldRepairRecords } from "./repair-records.js";
 import type { RepairClaim, RepairSortInput, RepairEvidenceInput, RepairExecution, RepairCoverage } from "./repair-records.js";
 import { verifierIdentityKey, type VerifierIdentity } from "./verifier-boundary.js";
 
-export type RepairVerdict = "fixed" | "factually-refuted" | "decision-needed" | "unknown";
+export type RepairVerdict = "fixed" | "factually-refuted" | "invalid" | "decision-needed" | "unknown";
 export interface RepairVerificationCapsule {
   scope: string;
   targets: { findingId: string; openEpoch: string; claimHash: string }[];
@@ -23,6 +23,8 @@ export interface RepairClaimVerdict {
   executions: RepairExecution[];
   inspected: { source: string; commit: string; reasoning: string }[];
   noCheckReason?: string;
+  /** Why the pinned check actually tests the claim — or that it does not (plan 3.3, "real basis"). */
+  basis?: { tests: boolean; reason: string };
 }
 export interface RepairVerificationRun {
   id: string; requestId: string; capsuleHash: string; slot: 1 | 2; identity: VerifierIdentity; results: RepairClaimVerdict[];
@@ -34,7 +36,7 @@ export interface RepairVerificationArbitration {
 }
 export interface RepairVerificationApplication {
   id: string; requestId: string; capsuleHash: string; findingId: string; openEpoch: string; claimHash: string;
-  outcome: "fixed" | "factually-refuted"; contextHash: string; reason: string; identity: VerifierIdentity;
+  outcome: "fixed" | "factually-refuted" | "invalid"; contextHash: string; reason: string; identity: VerifierIdentity;
 }
 export interface RepairVerificationRecords {
   requests: RepairVerificationRequest[]; runs: RepairVerificationRun[];
@@ -47,7 +49,7 @@ const text = (s: unknown): s is string => typeof s === "string" && !!s.trim();
 const sha = (s: unknown) => typeof s === "string" && /^[a-f0-9]{40,64}$/.test(s);
 const identityValid = (i: VerifierIdentity | undefined): i is VerifierIdentity => !!i && [i.principal, i.session].every(text)
   && (i.harness === "mcp" ? i.child === undefined : i.harness === "claude-subagent" && text(i.child));
-const verdicts = ["fixed", "factually-refuted", "decision-needed", "unknown"];
+const verdicts = ["fixed", "factually-refuted", "invalid", "decision-needed", "unknown"];
 const key = (v: { findingId: string; claimId: string }) => JSON.stringify([v.findingId, v.claimId]);
 const coverageKeys = (coverage: RepairCoverage[]) => coverage.flatMap((c) => c.claimIds.map((claimId) => key({ findingId: c.findingId, claimId })));
 
@@ -66,8 +68,11 @@ function resultError(r: RepairClaimVerdict, c: RepairVerificationCapsule): strin
     || (x.outcome === "unknown" ? !text(x.reason) : !Number.isInteger(x.exitCode))
     || (x.outcome === "passed" && x.exitCode !== 0) || (x.outcome === "failed" && x.exitCode === 0))) return "execution requires an actual consistent result";
   if (r.inspected.some((x) => !text(x.source) || ![c.evidence.witnessCommit, c.evidence.fixCommit].includes(x.commit) || !text(x.reasoning))) return "inspection must bind the witness or fix commit";
-  if (r.verdict !== "fixed" && r.verdict !== "factually-refuted") return undefined;
-  if (r.verdict === "factually-refuted" && c.sort.refutationSubtype === "scope") return "code evidence cannot refute a scope or requirement judgment";
+  if (r.verdict !== "fixed" && r.verdict !== "factually-refuted" && r.verdict !== "invalid") return undefined;
+  if (r.verdict !== "fixed" && c.sort.refutationSubtype === "scope") return "code evidence cannot refute a scope or requirement judgment";
+  if (r.verdict === "invalid" && c.sort.refutationSubtype !== "assumed") return "only a reviewer's refuted assumption closes as invalid";
+  if (r.verdict === "factually-refuted" && c.sort.refutationSubtype === "assumed") return "a refuted assumption closes as invalid, not as a factual refutation";
+  const refutes = r.verdict !== "fixed";
   if (c.sort.kind === "pattern" && (!c.evidence.patternEnumeration || c.sort.sites?.some((site) => !c.evidence.patternEnumeration!.expected.includes(site)
     || !c.evidence.patternEnumeration!.actual.includes(site)))) return "pattern enumeration omits an original site";
   const observed = (command: string, commit: string, phase: string, outcome: string) =>
@@ -76,16 +81,22 @@ function resultError(r: RepairClaimVerdict, c: RepairVerificationCapsule): strin
   const pinned = [...new Set(c.evidence.reproducer.filter((x) => x.outcome !== "unknown").map((x) => x.command))];
   if (r.grade === "inspection") {
     if (!text(r.noCheckReason) || !r.inspected.length) return "inspection closure needs an explicit no-check reason and inspected evidence";
-    const commit = r.verdict === "factually-refuted" ? c.evidence.witnessCommit : c.evidence.fixCommit;
-    if (!r.inspected.some((x) => x.commit === commit)) return r.verdict === "factually-refuted"
-      ? "factual refutation must inspect the witness commit" : "fixed must inspect the fix commit";
-    if (pinned.length) return "the fixer pinned a check, so the verifier must run it rather than inspect";
+    const commit = refutes ? c.evidence.witnessCommit : c.evidence.fixCommit;
+    if (!r.inspected.some((x) => x.commit === commit)) return refutes
+      ? "a refutation must inspect the witness commit" : "fixed must inspect the fix commit";
+    // A refuted assumption is often shown by reading, so it may inspect whatever was pinned (R4).
+    if (pinned.length && r.verdict !== "invalid") return "the fixer pinned a check, so the verifier must run it rather than inspect";
     return undefined;
   }
   if (r.grade !== "executable") return "closure needs executable or explicit inspection evidence";
-  if (r.verdict === "factually-refuted") {
-    return r.executions.some((x) => x.commit === c.evidence.witnessCommit && x.phase === "witness" && x.outcome === "passed")
-      ? undefined : "factual refutation needs the verifier's own passing check at the witness commit";
+  if (refutes) {
+    // Real basis (plan 3.3): the verifier says why the pinned check tests the claim, then runs it
+    // at the OLD code, where it must show no defect. Any other passing command proves nothing.
+    if (!r.basis || typeof r.basis.tests !== "boolean" || !text(r.basis.reason)) return "a refutation states whether and why the pinned check tests the claim";
+    if (!r.basis.tests) return "a check that does not test the claim cannot refute it: inspect, or return unknown";
+    if (!pinned.length) return "with no pinned check, a refutation is an inspection with a written reason";
+    return pinned.every((command) => observed(command, c.evidence.witnessCommit, "witness", "passed"))
+      ? undefined : "a refutation needs the verifier's own passing run of each pinned check at the witness commit";
   }
   const commands = pinned.length ? pinned : [...new Set(r.executions.map((x) => x.command))];
   const both = (command: string) => observed(command, c.evidence.witnessCommit, "witness", "failed") && observed(command, c.evidence.fixCommit, "fix", "passed");
@@ -186,13 +197,15 @@ export function repairVerificationDecision(records: RepairVerificationRecords, r
     if (!a || !b) return unresolved("partial coverage cannot resolve a whole finding");
     const result = a.verdict === b.verdict ? a.verdict : arbitration?.addresses.find((x) => x.findingId === findingId && x.claimId === claim.id)?.verdict;
     if (!result) return unresolved("disagreement awaits substantive arbitration");
-    if ((result === "fixed" || result === "factually-refuted") && ![a, b].every((x) => x.grade !== "none" && (x.verdict === "fixed" || x.verdict === "factually-refuted"))) return unresolved("arbitration cannot manufacture missing independent repair evidence");
+    const closes = (v: RepairVerdict) => v === "fixed" || v === "factually-refuted" || v === "invalid";
+    if (closes(result) && ![a, b].every((x) => x.grade !== "none" && closes(x.verdict))) return unresolved("arbitration cannot manufacture missing independent repair evidence");
     inspection ||= a.grade === "inspection" || b.grade === "inspection";
     outcomes.push(result);
   }
   if (outcomes.includes("decision-needed")) return { verdict: "decision-needed", complete: false, grade: "none", reasons: ["requirement or scope decision remains"] };
   if (outcomes.includes("unknown")) return unresolved("unknown never closes or automatically reopens");
-  return { verdict: outcomes.every((x) => x === "factually-refuted") ? "factually-refuted" : "fixed", complete: true,
+  if (outcomes.includes("invalid") && !outcomes.every((x) => x === "invalid")) return unresolved("a finding's claims disagree on whether it was ever real");
+  return { verdict: outcomes.every((x) => x === "factually-refuted") ? "factually-refuted" : outcomes.every((x) => x === "invalid") ? "invalid" : "fixed", complete: true,
     grade: inspection ? "inspection" : "executable", reasons: [] };
 }
 
@@ -223,7 +236,7 @@ export function isRepairVerificationState(value: unknown): value is RepairVerifi
       && v.runs.every((r) => text(r.id) && text(r.requestId) && text(r.capsuleHash) && identityValid(r.identity) && [1, 2].includes(r.slot) && Array.isArray(r.results))
       && v.arbitrations.every((r) => text(r.id) && text(r.requestId) && identityValid(r.identity) && Array.isArray(r.runIds) && r.runIds.length === 2 && Array.isArray(r.addresses))
       && v.applications.every((a) => text(a.id) && text(a.requestId) && text(a.findingId) && text(a.openEpoch) && text(a.claimHash) && text(a.contextHash) && text(a.reason)
-        && ["fixed", "factually-refuted"].includes(a.outcome) && identityValid(a.identity))
+        && ["fixed", "factually-refuted", "invalid"].includes(a.outcome) && identityValid(a.identity))
       && v.rejected.every((r) => text(r.eventId) && text(r.reason));
   } catch { return false; }
 }
