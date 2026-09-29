@@ -17,14 +17,21 @@ import { ensureSidecar } from "./sidecar.js";
 import { db } from "./db.js";
 import { discard } from "./test-tmp.js";
 import { standardProjection } from "./shared-projections.js";
-import {
-  foldStandard, standardScope, publishSpecDrafted, publishOperation, publishSpecRatified,
+import { foldStandard, standardScope, emptyStandard } from "./shared-standard.js";
+import { unfolded } from "./test-door.js";
+
+// This file asks what the FOLD does with each act, including acts this build's write door
+// refuses; so every act here is appended as another build would have appended it.
+const {
+  publishSpecDrafted, publishOperation, publishSpecRatified,
   publishAckGranted, publishAckReleased, publishAudit, publishProblemRaised, publishAdjudication,
   publishVacuityCheck, publishPointerDeclared, publishPointerRestated, publishPointerRetired,
   publishPopulationPinned, publishScrubPolicy, publishSpecWithdrawn, publishOperationRevised,
-  publishSpecReviewed, publishOperationRemoved, emptyStandard,
-} from "./shared-standard.js";
-import { ratifyWithReview } from "./test-approve.js";
+  publishSpecReviewed, publishOperationRemoved,
+} = unfolded;
+import { ratifyWithReview as ratifyThroughDoor } from "./test-approve.js";
+const ratifyWithReview = (l: string, s: string, a: Actor, id: string, at: string, w: Parameters<typeof ratifyThroughDoor>[5], ops: string[], reviewer?: Actor) =>
+  ratifyThroughDoor(l, s, a, id, at, w, ops, reviewer, "unfolded");
 import { criterionIdFor, requirementIdFor, framingContent, operationContent, type Acknowledgement, type Actor, type Audit, type Operation, type Pointer, type Problem, type Spec } from "./schema.js";
 
 const izzie: Actor = { principal: "izzie@x.com" };

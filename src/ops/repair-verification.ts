@@ -19,7 +19,7 @@ import { findingKeyScope } from "../review-target.js";
 import { findingScope, foldFindings, isClosed, type SharedFinding } from "../shared-findings.js";
 import { findingsProjection } from "../shared-projections.js";
 import { readCached } from "../materialize.js";
-import { emitEventChecked, readScopeChecked, GENESIS, SIDECAR_PROTOCOL, EVENT_SCHEMA, type LogEvent } from "../eventlog.js";
+import { emitEventChecked, readScopeChecked, type LogEvent } from "../eventlog.js";
 import { foldRepairRecords } from "../repair-records.js";
 import { decisionScope, foldDecisions, answerHasCurrentAuthority, intentCandidates, comparisonRestricts, heldFindings, heldIssues } from "../shared-decisions.js";
 import { canonicalIssueKey } from "../decision-issues.js";
@@ -128,15 +128,12 @@ async function append(root: string, review: number | string, identity: VerifierI
   const scope = findingScope(findingKeyScope(cfg, review));
   const emitted = await emitEventChecked(cfg.path, scope, actor, async (events) => {
     if ((await readScopeChecked(cfg.path, scope)).status !== "complete") return { error: "repair scope is blocked" };
-    const produced = await produce(events);
-    if ("error" in produced) return produced;
-    const candidate: LogEvent = { ...produced, id: randomUUID(), actor, at: new Date().toISOString(), after: events.map((e) => e.id),
-      writer: "repair-verification-admission", writerPrev: GENESIS, sidecarProtocol: SIDECAR_PROTOCOL, eventSchema: EVENT_SCHEMA };
-    const rejected = foldRepairVerification([...events, candidate]).rejected.find((r) => r.eventId === candidate.id);
-    if (rejected) return { error: rejected.reason };
-    if (produced.kind === "finding.repairApplied" && foldFindings([...events, candidate]).get(produced.subject)?.closed?.eventId !== candidate.id)
-      return { error: "canonical finding application refused current claim, epoch or authority" };
-    return produced;
+    return produce(events);
+  }, (events, minted) => {
+    const refused = foldRepairVerification(events).rejected.map((r) => ({ id: r.eventId, why: r.reason }));
+    if (minted.kind === "finding.repairApplied" && foldFindings(events).get(minted.subject)?.closed?.eventId !== minted.id)
+      refused.push({ id: minted.id, why: "canonical finding application refused current claim, epoch or authority" });
+    return { refused };
   });
   if ("error" in emitted) return emitted;
   const refreshed = await repairVerificationRecords(root, review);

@@ -11,7 +11,8 @@ import { postRound, answerDirect, reviseDecision, decisionRounds } from "./ops/d
 import { requestComparison, comparisonBrief, submitComparisonJudgment, recordComparisonJudgment,
   comparisonDetail, comparisonResolutionBrief, resolveComparison } from "./ops/comparisons.js";
 import { decisionsView } from "./ops/decision-holds.js";
-import { emitEvent, readScope } from "./eventlog.js";
+import { readScope } from "./eventlog.js";
+import { appendUnfolded } from "./test-door.js";
 import { decisionScope, foldDecisions, comparisonBriefText } from "./shared-decisions.js";
 import { resolveDecisionIssue } from "./decision-issues.js";
 import { universeKey } from "./sidecar-config.js";
@@ -206,7 +207,7 @@ test("resolution refuses a newly arrived judgment and replay rejects a subset pr
     const old = await comparisonResolutionBrief(u.root, id) as any;
     const request = old.shown.request;
     const scope = decisionScope(universeKey(u.root));
-    await emitEvent(u.side, scope, { principal: "another-reader" }, "decision.comparison.judged", id, {
+    await appendUnfolded(u.side, scope, { principal: "another-reader" }, "decision.comparison.judged", id, {
       judgment: { requestId: id, contextHash: request.contextHash, issues: request.issues,
         answerVersions: [`${request.left.answerId}\0${request.left.version}`, `${request.right.answerId}\0${request.right.version}`],
         verdict: "incompatible", rationale: "I also found incompatible intent.",
@@ -222,7 +223,7 @@ test("resolution refuses a newly arrived judgment and replay rejects a subset pr
         rationale: "Preserve Alice", shownHash: old.shownHash, executionsHash: old.executionsHash, source: "web" }) as any;
       assert.match(refused.error, /context hash|fresh brief/);
     });
-    const forged = await emitEvent(u.side, scope, { principal: "resolver" }, "decision.comparison.resolved", id, {
+    const forged = await appendUnfolded(u.side, scope, { principal: "resolver" }, "decision.comparison.resolved", id, {
       resolution: { requestId: id, contextHash: request.contextHash, issues: request.issues,
         answerVersions: [`${request.left.answerId}\0${request.left.version}`, `${request.right.answerId}\0${request.right.version}`],
         preserve: u.alice, rationale: "Preserve Alice", human: { principal: "resolver", session: "web", request: id,

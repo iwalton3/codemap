@@ -24,7 +24,9 @@ import { reviewQueue } from "./ops/annotations.js";
 import { postRound, logQuestion, relayAnswer, answerDirect, decisionRounds, decisionRound, nominateComparison, readerBrief, recordReading, submitVerdict as submitVerdictOp, confirmReading, parseVerdict, confirmId, withdrawDecision, reportRuling, withdrawalReaderBrief, submitWithdrawalVerdict, reviseDecision, revisionRelayBrief, reviseDecisionRelayed, interpretationRequestId } from "./ops/decisions.js";
 import { discard } from "./test-tmp.js";
 import { decisionsView, holdBuilds } from "./ops/decision-holds.js";
-import { decisionScope, foldDecisions, postRoundEvent, logQuestionEvent, postConfirmEvent, recordReadingEvent } from "./shared-decisions.js";
+import { decisionScope, foldDecisions, foldDecisionsReport, postRoundEvent, logQuestionEvent, postConfirmEvent, recordReadingEvent } from "./shared-decisions.js";
+import { sortEvents, type LogEvent } from "./eventlog.js";
+import { appendUnfolded, planted } from "./test-door.js";
 
 const state: State = { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State;
 const SRC = "export function creditLine(cents) {\n  return cents * 2;\n}\n";
@@ -53,7 +55,33 @@ async function universe() {
   const side = mkdtempSync(join(tmpdir(), "codemap-decisions-side-"));
   writeFileSync(join(root, ".codemap", "sidecar"), side, "utf8");
   const transcripts = mkdtempSync(join(tmpdir(), "codemap-decisions-tx-"));
-  return { root, side, transcripts, anchor: anchors[0]!.id, cleanup: () => { discard(root); discard(side); discard(transcripts); } };
+  return { root, side, transcripts, anchor: anchors[0]!.id, cleanup: () => {
+    try { assertEveryWriteAdmitted(side); } finally { discard(root); discard(side); discard(transcripts); }
+  } };
+}
+
+/**
+ * The population check for the write door (plan 1.1): whatever a scenario drove, nothing the
+ * ops appended to a decisions log is an event the fold refuses. Run at every universe's cleanup,
+ * so it covers every decisions op this file exercises.
+ */
+function assertEveryWriteAdmitted(side: string): void {
+  const events: LogEvent[] = [];
+  const walk = (dir: string) => {
+    let entries: import("node:fs").Dirent[] = [];
+    try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const x of entries) {
+      if (x.isDirectory()) walk(join(dir, x.name));
+      else if (x.name.endsWith(".ndjson"))
+        for (const line of readFileSync(join(dir, x.name), "utf8").split("\n")) {
+          // Bytes that are not JSON are the reader's `corrupt-shard`, not a write the door let in.
+          try { if (line.trim()) events.push(JSON.parse(line)); } catch { /* planted damage */ }
+        }
+    }
+  };
+  walk(join(side, "decisions"));
+  const refused = foldDecisionsReport(sortEvents(events)).refused.filter((r) => !planted.has(r.id));
+  assert.deepEqual(refused, [], "an op appended a decisions event the fold refuses");
 }
 
 const SESSION = "5e55a0a0-0000-0000-0000-000000000001";
@@ -315,7 +343,7 @@ test("historical prevalidated replay retains provenance and its answer closes no
       const r = await postRoundEvent(binding.cfg.path, binding.cfg.universe, binding.actor,
         { id: "R1", source: "triage", universe: binding.cfg.universe, prevalidated: { record: "rec", sortedBy: "two sorters and an arbitrator" } },
         [decision("d1", f)]);
-      assert.ok(r.id);
+      assert.ok(!("error" in r) && r.id);
       transcript(u.transcripts).ask("toolu_1", [payloadFor(f)], { [payloadFor(f).question]: "Not a defect" });
       assert.equal(((await logQuestion(u.root, { toolUseId: "toolu_1", round: "R1" }, {}, u.transcripts)) as any).ok, true);
       assert.equal((await readFinding(u.root, f))?.state, "issued");
@@ -1051,7 +1079,7 @@ const otherEvents = (side: string): number => {
   return n;
 };
 
-test("round five: a differently worded confirmation remains visible but cannot bind a Yes", async () => {
+test("round five: a differently worded confirmation is refused at the door", async () => {
   const u = await universe();
   try {
     const f = await withFinding(u);
@@ -1072,14 +1100,13 @@ test("round five: a differently worded confirmation remains visible but cannot b
       const posted = { round: "R1", ref: c.ref, kind: "options" as const, payload, options: payload.options.map((o: any) => ({ label: o.label, effects: [] })), confirms: { answer: a, readings: [maps] } };
       const other = { id: confirmId(a, posted), ...posted };
       assert.notEqual(other.id, c.label);
+      // No conforming build writes it: the door folds it and refuses (plan 1.1).
       const otherEvent = await postConfirmEvent(b.cfg.path, b.cfg.universe, b.actor, other);
-      t.ask("toolu_o", [payload], { [payload.question]: "Yes" }, later(2));
-      await logQuestion(u.root, { toolUseId: "toolu_o", round: "R1" }, {}, u.transcripts);
+      assert.ok("error" in otherEvent, JSON.stringify(otherEvent));
+      assert.match(otherEvent.error, /not a confirm codemap could have posted/);
       const round = await decisionRound(u.root, "R1") as any;
       const d = round.decisions.find((x: any) => (x.label ?? x.id) === "d1");
-      assert.notEqual(d.standing.id, a, JSON.stringify(round.decisions.map((x: any) => [x.id, x.answers.length, x.confirm])));
       assert.ok(d.standing.ruled.some((x: any) => x.finding === f && x.on === "settle"));
-      assert.equal(round.decisions.find((x: any) => x.id === otherEvent.id)?.confirm.state, "unverifiable");
     });
   } finally { u.cleanup(); }
 });
@@ -1337,8 +1364,7 @@ test("Round five replaces vanishing gate: cancelled replies remain visible; miss
       const b = bound(u);
       const never = otherClone(c, "never-recorded", [[{ decision: "d2", option: "Real, fix it" }]], (q) => q.replace(/^D3:/, "D9:"), "D9");
       const neverEvent = await postConfirmEvent(b.cfg.path, b.cfg.universe, b.actor, never);
-      const view = await decisionRounds(u.root) as any;
-      assert.ok(view.waitingOnYou.some((x: any) => x.decision === neverEvent.id && /not a confirm codemap can verify/.test(x.why)), JSON.stringify(view.waitingOnYou));
+      assert.ok("error" in neverEvent && /not a confirm codemap could have posted/.test(neverEvent.error), JSON.stringify(neverEvent));
     });
   } finally { u.cleanup(); }
 });
@@ -1375,7 +1401,10 @@ test("Q4: confirmReading refuses a ref shared by two posted questions", async ()
         options: first.ask.options.map((o: any) => ({ label: o.label, effects: [] })),
         confirms: { answer: a, readings: [[{ decision: "d1", option: "Not a defect" }]] } };
       const b = bindDecisions(u.root) as any;
-      await postConfirmEvent(b.cfg.path, b.cfg.universe, b.actor, duplicate);
+      // A build that posts a confirm under a ref already in the round: the door refuses it here.
+      assert.ok("error" in await postConfirmEvent(b.cfg.path, b.cfg.universe, b.actor, duplicate));
+      await appendUnfolded(b.cfg.path, decisionScope(b.cfg.universe), b.actor, "decision.confirm.posted", duplicate.id,
+        { publication: 2, round: duplicate.round, decision: duplicate });
       const again = await confirmReading(u.root, { answer: a, maps: [{ decision: "d1", option: "Real, fix it" }] }) as any;
       assert.match(String(again.error), /two questions.*ambiguous/);
     });

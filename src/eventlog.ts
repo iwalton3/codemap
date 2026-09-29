@@ -367,13 +367,29 @@ export async function rotateWriter(logRoot: string): Promise<string> {
  */
 export async function emitEvent(
   logRoot: string, scope: string, actor: Actor, kind: string, subject: string, data?: Record<string, unknown>,
+  fold?: DoorFold,
 ): Promise<LogEvent> {
-  const result = await emitEventChecked(logRoot, scope, actor, async () => ({ kind, subject, data }));
+  const result = await emitEventChecked(logRoot, scope, actor, async () => ({ kind, subject, data }), fold);
   if ("error" in result) throw new Error(result.error);
   return result;
 }
 
-/** Recheck an admission decision against the scope while holding the append lock. */
+/**
+ * The scope's fold, asked whether it would apply one event: the minted one, envelope and all.
+ * Passed in by the caller because the folds import this module.
+ */
+export type DoorFold = (events: LogEvent[], minted: LogEvent) =>
+  Promise<{ refused: { id: string; why: string }[] }> | { refused: { id: string; why: string }[] };
+
+/** Scopes whose every write is folded at the door before it is appended (plan 1.1). */
+const FOLDED_AT_THE_DOOR = /^(decisions|standard|law)\//;
+
+/**
+ * Recheck an admission decision against the scope while holding the append lock, then fold
+ * the event exactly as it will be appended — its real id, writer, `writerPrev` and `after` —
+ * and refuse it if the fold would. One door: a stand-in envelope folded differently from the
+ * real one (a writer of its own read as having seen nothing).
+ */
 export async function emitEventChecked(
   logRoot: string, scope: string, actor: Actor,
   check: (events: LogEvent[]) => Promise<
@@ -381,12 +397,15 @@ export async function emitEventChecked(
     | { existing: LogEvent }
     | { error: string }
   >,
+  fold?: DoorFold,
 ): Promise<LogEvent | { error: string }> {
   return withSidecarLock(logRoot, async () => {
     const events = await readScope(logRoot, scope);
     const admission = await check(events);
     if ("error" in admission) return admission;
     if ("existing" in admission) return admission.existing;
+    if (!fold && FOLDED_AT_THE_DOOR.test(scope) && admission.kind !== ACK_KIND)
+      throw new Error(`a write to ${scope} must be folded at the door`);
     const writer = await writerFor(logRoot);
     const seen = causalHeads(events);
     // The chain's own file, not fold order. A shard is single-writer and
@@ -404,6 +423,10 @@ export async function emitEventChecked(
       after: seen,
       ...(admission.data ? { data: admission.data } : {}),
     };
+    if (fold) {
+      const refused = (await fold(sortEvents([...events, event]), event)).refused.find((r) => r.id === event.id);
+      if (refused) return { error: refused.why };
+    }
     await appendEvents(logRoot, scope, writer, [event]);
     return event;
   });

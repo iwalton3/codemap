@@ -6,7 +6,7 @@ import type { SidecarConfig } from '../sidecar-config.js';
 import type { Operation, Spec, AskedQuestion } from '../schema.js';
 import { sidecarWriteDoor } from '../sidecar-config.js';
 import { emitEventChecked, readScopeChecked } from '../eventlog.js';
-import { foldStandard, lawScope, standardScope } from '../shared-standard.js';
+import { foldStandard, lawScope, standardDoor, standardScope } from '../shared-standard.js';
 import { materializeStandard } from '../standard-publish.js';
 import { decisionScope, foldDecisions, answerHasCurrentAuthority, intentCandidates, comparisonRestricts } from '../shared-decisions.js';
 import { operationContent, framingContent, contentDiff } from '../schema.js';
@@ -277,7 +277,7 @@ export async function applyOperationSignoff(root: string, input: {
     if (existing)
       return { existing };
     return { kind: 'spec.operation-signoff-applied', subject: op.id, data: { capsule } };
-  });
+  }, standardDoor(initial.cfg.path, lawScope()));
   if ('error' in event)
     return event;
   const folded = await materializeStandard(root, initial.cfg);

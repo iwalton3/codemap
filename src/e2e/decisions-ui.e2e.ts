@@ -19,7 +19,7 @@ import { readFinding } from "../store.js";
 import type { Questionnaire } from "../questionnaire.js";
 import { discard } from "../test-tmp.js";
 import { emitEvent, readScope } from "../eventlog.js";
-import { comparisonBriefText, decisionScope, foldDecisions } from "../shared-decisions.js";
+import { comparisonBriefText, decisionScope, decisionsDoor, foldDecisions } from "../shared-decisions.js";
 import { resolveSidecar } from "../sidecar-config.js";
 
 const pw = resolvePlaywright();
@@ -347,7 +347,7 @@ describe("the decisions UI", { skip: pw ? false : "playwright not resolvable (se
         proof: { purpose: "pair-comparison", requestId: id, contextHash: request.contextHash,
           brief: comparisonBriefText(request), receipt: "reader-receipt", agent: "reader-e2e",
           session: "reader-session", launch: "reader-launch", toolUseId: "reader-launch", call: "reader-call" },
-      });
+      }, decisionsDoor);
     const pure = foldDecisions(await readScope(cfg.path, decisionScope(cfg.universe)));
     assert.equal(pure.comparisons.find((x) => x.request.id === id)?.projection.state, "incompatible", JSON.stringify(pure.comparisons));
     const detail = await ops.comparisonDetail(root, id) as any;

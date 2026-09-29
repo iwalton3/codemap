@@ -140,6 +140,7 @@ export async function postRound(root: string, r: NewRound, via: Via = {}, dir: s
   const decisions = r.decisions.map((d) => d.follows
     ? { ...d, follows: decisionMatches(before, d.follows)[0]!.id } : d);
   const event = await postRoundEvent(b.cfg.path, b.cfg.universe, b.actor, { ...r.round, universe: b.cfg.universe }, decisions);
+  if ("error" in event) return event;
   const { s } = await decisionsView(root);
   return {
     ok: true, round: event.id, label: r.round.id,
@@ -430,6 +431,7 @@ export async function nominateComparison(root: string,
   if (existing) return { ok: true as const, nomination: existing.id, existing: true as const };
   const e = await nominateComparisonEvent(b.cfg.path, b.cfg.universe, b.actor,
     { answers: ids, findings, ...(issues.length ? { issues } : {}), reason: input.reason.trim() });
+  if ("error" in e) return e;
   const after = await decisionsView(root);
   const candidate = intentCandidates(after.s).find((x) => x.nomination?.id === e.id);
   if (!candidate) return { error: "the fold did not accept the nomination; it remains in the log for inspection", nomination: e.id };
@@ -448,6 +450,7 @@ async function record(root: string, b: Bound, d: FoldedDecision, via: AnswerVia,
     return { decision: d.id, ref: d.ref, recorded: false as const, why: `${d.ref} has a withdrawal; ask a fresh question` };
   const { s } = await decisionsView(root);
   const e = await recordAnswerEvent(b.cfg.path, b.cfg.universe, b.actor, { decision: d.id, hash: d.hash, via, ...(relayedBy ? { relayedBy } : {}) });
+  if ("error" in e) return { decision: d.id, ref: d.ref, recorded: false as const, why: e.error };
   return outcome(root, d, e.id);
 }
 
@@ -526,10 +529,12 @@ export async function logQuestion(root: string, input: { session?: string; toolU
     else if (hits.length) bound[q.question] = hits[0]!.id;
   }
   if (!rounds.length) return { error: refused.map((x) => x.why).join("; ") + " (nothing was written)" };
-  const logged = prior?.id ?? (await logQuestionEvent(b.cfg.path, b.cfg.universe, b.actor, {
+  const loggedEvent = prior ?? await logQuestionEvent(b.cfg.path, b.cfg.universe, b.actor, {
     session: call.session, toolUseId: call.toolUseId, questions: call.questions, answers: call.answers, transcript: session,
     rounds: rounds.map((r) => r.id), bound, answeredAt: call.at,
-  })).id;
+  });
+  if ("error" in loggedEvent) return loggedEvent;
+  const logged = loggedEvent.id;
   const binding = prior?.bound ?? bound;
   const once = loggedQuestionOnce(call);
   const answered = [];
@@ -835,12 +840,13 @@ async function settleAnswer(root: string, b: Bound, answer: string, dir: string)
     const why = readingRefusal(byId, d, a, { verdict: v.maps, unclear: v.unclear, session: req.maps,
       launchedAt: r.launchedAt, brief: req.brief, manifest: req.manifest });
     if (why) { bad(why); continue; }
-    await recordReadingEvent(b.cfg.path, b.cfg.universe, b.actor, {
+    const written = await recordReadingEvent(b.cfg.path, b.cfg.universe, b.actor, {
       answer, session: { ...(req.reading ? { reading: req.reading } : {}), maps: req.maps },
       reader: { agent: r.agentId, verdict: v.maps, ...(v.unclear ? { unclear: v.unclear } : {}), launchedAt: r.launchedAt, brief: req.brief, manifest: req.manifest, verified: { session: r.session, toolUseId: r.toolUseId, call: call.callId,
         ...(h.requestId ? { requestId: h.requestId } : {}), ...(h.receipt ? { receipt: h.receipt } : {}) } },
       ...(req.asks ? { asks: req.asks } : {}),
     });
+    if ("error" in written) { bad(written.error); return; }
     const after = found((await decisionsView(root)).s, answer);
     if (!after?.a.reading) { bad("the fold did not accept it: the decisions log changed while it was being recorded"); return; }
     settle(root, h, "recorded", undefined, call.callId);
@@ -942,6 +948,7 @@ export async function confirmReading(root: string, input: { answer: string; maps
   const bad = checkDecision(decision);
   if (bad) return { error: `the confirm could not be posted: ${bad}` };
   const event = await postConfirmEvent(b.cfg.path, b.cfg.universe, b.actor, decision);
+  if ("error" in event) return { error: `the confirm could not be posted: ${event.error}` };
   const after = (await decisionsView(root)).s.decisions.find((y) => y.id === event.id);
   if (!after || after.confirms?.invalid) return { ok: false, posted: event.id, why: `the fold does not accept it as a confirm${after?.confirms?.invalid ? `: ${after.confirms.invalid}` : ""} — it stays visible but cannot act; ask a valid question` };
   return { ok: true, confirm: event.id, label: id, ref, round: d.round, ask: after.payload, note: `ask this verbatim with AskUserQuestion, then log_question the call with round ${d.round}` };
@@ -1033,6 +1040,7 @@ export async function reportRuling(root: string, input: { decision: string; answ
   const decision: Decision = { id: "withdraw", round: id, ref: "D1", kind: "options", payload: question,
     options: question.options.map((o) => ({ label: o.label, effects: [] })) };
   const event = await postRoundEvent(b.cfg.path, b.cfg.universe, b.actor, { id, source: "report_ruling", universe: b.cfg.universe }, [decision]);
+  if ("error" in event) return event;
   return { ok: true as const, round: event.id, relay: `${event.id}:withdraw`, ask: question,
     next: `ask the person this question verbatim (log_question), or send them to the decisions page; on "${WITHDRAW_IT}", call withdraw_decision with relay` };
 }

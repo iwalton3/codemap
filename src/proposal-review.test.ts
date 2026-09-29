@@ -31,10 +31,8 @@ import {
   reviewProposal, signOffOperation, signOffFraming, signOffSection, getSpec, listRequirements,
 } from "./requirements.js";
 import { signOffEverything, ratifyReviewed, ratifyWithReview } from "./test-approve.js";
-import {
-  foldStandard, standardScope, publishSpecDrafted, publishOperation, publishSpecRatified,
-  publishSpecReviewed,
-} from "./shared-standard.js";
+import { foldStandard, standardScope, publishSpecDrafted, publishOperation } from "./shared-standard.js";
+import { appendUnfolded } from "./test-door.js";
 
 const state: State = { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State;
 const SRC = "export function creditLine(cents) { return cents; }\n";
@@ -417,6 +415,12 @@ async function log(t: string) {
   return root;
 }
 const fold = async (root: string) => foldStandard(await readScope(root, SCOPE));
+// Another clone's acts, appended as its build appended them: this section asks what the FOLD
+// does with an event, so the write door (which refuses these here) is not in the way.
+const publishSpecReviewed = (l: string, s: string, a: Actor, w: import("./schema.js").ProposalWitness) =>
+  appendUnfolded(l, s, a, "spec.reviewed", w.specId, { witness: w });
+const publishSpecRatified = (l: string, s: string, a: Actor, specId: string, at: string, witnesses: Record<string, unknown>, operations: string[]) =>
+  appendUnfolded(l, s, a, "spec.ratified", specId, { at, witnesses, operations });
 
 test("THE FOLD REFUSES A RATIFICATION ITS RATIFIER NEVER SIGNED", async () => {
   const root = await log("unread");

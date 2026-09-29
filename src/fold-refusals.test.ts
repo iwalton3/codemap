@@ -37,5 +37,5 @@ test("a refused standard event is named with its reason", () => {
   ];
   const { refused } = foldStandardReport(events);
   assert.deepEqual(refused.map((r) => r.id), ["e2"]);
-  assert.match(refused[0]!.why, /e\.actor\.via/);
+  assert.equal(refused[0]!.why, "a sign-off is a person's act");
 });

@@ -24,7 +24,7 @@
  */
 import { createHash } from "node:crypto";
 import { comparisonContextHash, deriveComparison, validateComparisonRequest, type AnswerSource, type CanonicalIssue, type ComparisonProjection, type ComparisonRequest, type ReaderJudgment, type HumanResolution } from "./decision-comparison.js";
-import { causality, emitEvent, emitEventChecked, GENESIS, type LogEvent } from "./eventlog.js";
+import { causality, emitEventChecked, type DoorFold, type LogEvent } from "./eventlog.js";
 import { isAgentActor } from "./identity.js";
 import { canonicalIssueKey, type CanonicalIssueReference } from "./decision-issues.js";
 import { questionnaireVersion, stageSubmission, validateQuestionnaire, type Questionnaire, type QuestionnaireAnswer, type StagedSubmission } from "./questionnaire.js";
@@ -2424,17 +2424,24 @@ export function supersededFindings(s: SharedDecisions): Map<string, { decision: 
 
 // --- writing --------------------------------------------------------------------------
 
+/** The decisions fold, as the write door asks it (plan 1.1). */
+export const decisionsDoor: DoorFold = (events) => foldDecisionsReport(events);
+
+/** One write, folded at the door: refused with the fold's reason, never appended to be refused later. */
+const put = (logRoot: string, universe: string, actor: Actor, kind: string, subject: string, data: Record<string, unknown>) =>
+  emitEventChecked(logRoot, decisionScope(universe), actor, async () => ({ kind, subject, data }), decisionsDoor);
+
 export const postRoundEvent = (logRoot: string, universe: string, actor: Actor, round: Omit<DecisionRound, "postedBy" | "at">, decisions: Decision[]) =>
-  emitEvent(logRoot, decisionScope(universe), actor, "decision.round.posted", round.id, { publication: 2, round, decisions });
+  put(logRoot, universe, actor, "decision.round.posted", round.id, { publication: 2, round, decisions });
 
 export const postConfirmEvent = (logRoot: string, universe: string, actor: Actor, decision: Decision & { confirms: Confirms }) =>
-  emitEvent(logRoot, decisionScope(universe), actor, "decision.confirm.posted", decision.id, { publication: 2, round: decision.round, decision });
+  put(logRoot, universe, actor, "decision.confirm.posted", decision.id, { publication: 2, round: decision.round, decision });
 
 export const logQuestionEvent = (logRoot: string, universe: string, actor: Actor, q: Omit<LoggedQuestion, "id" | "loggedBy" | "at">) =>
-  emitEvent(logRoot, decisionScope(universe), actor, "decision.question.logged", q.toolUseId, q as unknown as Record<string, unknown>);
+  put(logRoot, universe, actor, "decision.question.logged", q.toolUseId, q as unknown as Record<string, unknown>);
 
 export const recordAnswerEvent = (logRoot: string, universe: string, actor: Actor, a: { decision: string; hash: string; via: AnswerVia; relayedBy?: string }) =>
-  emitEvent(logRoot, decisionScope(universe), actor, "decision.answer.recorded", a.decision, a as unknown as Record<string, unknown>);
+  put(logRoot, universe, actor, "decision.answer.recorded", a.decision, a as unknown as Record<string, unknown>);
 
 /** One locked append is the whole selected batch. A retry is the original receipt. */
 export const submitQuestionnaireEvent = (
@@ -2467,7 +2474,7 @@ export const submitQuestionnaireEvent = (
   }
   return { kind: "decision.questionnaire.submitted", subject: round.id,
     data: { round: round.id, staged: checked.value } as unknown as Record<string, unknown> };
-});
+}, decisionsDoor);
 
 export interface ReadingEvent {
   answer: string;
@@ -2481,24 +2488,11 @@ export interface ReadingEvent {
 }
 
 export const recordReadingEvent = (logRoot: string, universe: string, actor: Actor, a: ReadingEvent) =>
-  emitEvent(logRoot, decisionScope(universe), actor, "decision.reading.recorded", a.answer, a as unknown as Record<string, unknown>);
+  put(logRoot, universe, actor, "decision.reading.recorded", a.answer, a as unknown as Record<string, unknown>);
 
 export const nominateComparisonEvent = (logRoot: string, universe: string, actor: Actor,
   input: { answers: [string, string]; findings: string[]; issues?: CanonicalIssueReference[]; reason: string }) =>
-  emitEvent(logRoot, decisionScope(universe), actor, "decision.comparison.nominated",
-    [...input.answers].sort().join("/"), input);
-
-/**
- * What the fold makes of `data` appended now by `actor` — the ONE predicate for a withdrawal or
- * revision (plan Phase 3.5): the op refuses exactly what the fold would refuse, because it asks
- * the fold rather than keeping a second copy of its rules.
- */
-function asFolded(events: LogEvent[], actor: Actor, kind: string, subject: string, data: unknown) {
-  // A writer of its own, or causality gives it no segment and it "saw" nothing.
-  const candidate = { id: "~candidate", kind, subject, actor, at: new Date().toISOString(),
-    after: events.map((e) => e.id), writer: "~candidate", writerPrev: GENESIS, data } as unknown as LogEvent;
-  return foldDecisions([...events, candidate]).decisions.find((x) => x.id === subject);
-}
+  put(logRoot, universe, actor, "decision.comparison.nominated", [...input.answers].sort().join("/"), input);
 
 export const withdrawDecisionEvent = (logRoot: string, universe: string, actor: Actor,
   input: { decision: string; answer?: string; reason: string; knownAnswers: string[];
@@ -2510,12 +2504,8 @@ export const withdrawDecisionEvent = (logRoot: string, universe: string, actor: 
     const sources = d.answers.filter((a) => a.verified && !a.sourceAnswer);
     if (canonical(sources.map((a) => a.id).sort()) !== canonical([...input.knownAnswers].sort()))
       return { error: "answers changed before withdrawal; read the decision again" };
-    const record = asFolded(events, actor, "decision.withdrawn", d.id, input)?.withdrawals?.find((w) => w.id === "~candidate");
-    if (!record) return { error: "the withdrawal is not well formed" };
-    if (record.state === "refused") return { error: record.refused! };
-    if (record.state === "conflict") return { error: `withdrawing now would conflict with ${record.conflictingAnswers?.join(", ") ?? "an earlier withdrawal"}; those answers need resolving first` };
     return { kind: "decision.withdrawn", subject: input.decision, data: input };
-  });
+  }, decisionsDoor);
 
 export const reviseAnswerEvent = (logRoot: string, universe: string, actor: Actor,
   input: { decision: string; hash: string; via: Extract<AnswerVia, { kind: "direct" | "revision-relay" }>;
@@ -2526,8 +2516,5 @@ export const reviseAnswerEvent = (logRoot: string, universe: string, actor: Acto
     const d = foldDecisions(events).decisions.find((x) => x.id === input.decision);
     if (!d || d.hash !== input.hash || d.withdrawn || d.answers.some((a) => a.withdrawn))
       return { error: "the question or its authority changed before revision; read it again" };
-    const answer = asFolded(events, actor, "decision.answer.revised", d.id, input)?.answers.find((a) => a.id === "~candidate");
-    if (!answer) return { error: "the fold would not read this as an answer: check the source answers, the scope and who is recording it" };
-    if (answer.revisionInvalid) return { error: answer.revisionInvalid };
     return { kind: "decision.answer.revised", subject: d.id, data: input };
-  });
+  }, decisionsDoor);

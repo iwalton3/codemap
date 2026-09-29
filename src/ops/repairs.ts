@@ -1,7 +1,7 @@
 import { repairCodeLifecycle } from "../repair-lifecycle.js";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { canonical } from "../canonical.js";
 import { requireActor } from "../identity.js";
 import { sidecarWriteDoor, resolveSidecar, sidecarIdentity } from "../sidecar-config.js";
@@ -9,7 +9,7 @@ import { findingKeyScope } from "../review-target.js";
 import { findingScope, foldFindings, type SharedFinding } from "../shared-findings.js";
 import { findingsProjection } from "../shared-projections.js";
 import { readCached } from "../materialize.js";
-import { emitEventChecked, readScopeChecked, GENESIS, SIDECAR_PROTOCOL, EVENT_SCHEMA, type LogEvent } from "../eventlog.js";
+import { emitEventChecked, readScopeChecked } from "../eventlog.js";
 import { emptyRepairRecords, foldRepairRecords, repairFindingCompleteness, type RepairFindingMap, type RepairSortInput, type RepairEvidenceInput, type RepairRecords } from "../repair-records.js";
 import type { RepairConnection } from "../verifier-boundary.js";
 import { earlierUnfavourableRuns, emptyRepairVerificationState, isRepairVerificationState, repairVerificationDecision, repairVerificationHash } from "../repair-verification.js";
@@ -104,16 +104,11 @@ async function append(root: string, review: number | string, kind: string, subje
   if (current.error !== undefined) return { error: current.error };
   if (current.status === "blocked") return { error: "repair scope is blocked; records remain visible but cannot authorize a write" };
   if (recorded?.(current.records)) return { ...current, ok: true as const, id: subject, alreadyRecorded: true };
-  const event = await emitEventChecked(cfg.path, scope, actor, async (events) => {
+  const event = await emitEventChecked(cfg.path, scope, actor, async () => {
     const checked = await readScopeChecked(cfg.path, scope);
     if (checked.status === "blocked") return { error: "repair scope became blocked before append" };
-    const candidate: LogEvent = { id: randomUUID(), kind, subject, data,
-      actor, at: new Date().toISOString(), after: events.map((e) => e.id),
-      writer: "repair-admission", writerPrev: GENESIS, sidecarProtocol: SIDECAR_PROTOCOL, eventSchema: EVENT_SCHEMA };
-    const folded = foldRepairRecords([...events, candidate]);
-    const refused = folded.rejected.find((r) => r.eventId === candidate.id);
-    return refused ? { error: refused.reason } : { kind, subject, data };
-  });
+    return { kind, subject, data };
+  }, (events) => ({ refused: foldRepairRecords(events).rejected.map((r) => ({ id: r.eventId, why: r.reason })) }));
   if ("error" in event) return event;
   const result = await repairRecords(root, review);
   if (result.error !== undefined) return { error: result.error };

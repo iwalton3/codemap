@@ -4,7 +4,7 @@ import { bindDecisions, type Via } from "../ops-shared.js";
 import { decisionsView } from "./decision-holds.js";
 import { canonicalIssueKey, resolveDecisionIssue, type CanonicalIssueReference } from "../decision-issues.js";
 import { decisionScope, foldDecisions, intentCandidates, comparisonRequestFor, comparisonBriefText, comparisonCurrentVersions, comparisonSourcesCurrent, resolutionShownHash,
-  type FoldedComparison } from "../shared-decisions.js";
+  decisionsDoor, type FoldedComparison } from "../shared-decisions.js";
 import { emitEventChecked } from "../eventlog.js";
 import { isAgentActor } from "../identity.js";
 import { saveReaderRequest, readerRequest, holdReaderReceipt, readerReceipts,
@@ -90,7 +90,7 @@ export async function requestComparison(root: string,
     if (!request || request.contextHash !== source.contextHash)
       return { error: "answer source changed before comparison request" };
     return { kind: "decision.comparison.requested", subject: id, data: { request } };
-  });
+  }, decisionsDoor);
   if ("error" in result) return result;
   const after = await comparisonDetail(root, id);
   if ("error" in after) return { error: `comparison ${id} was not accepted on replay: ${after.error}`, event: result.id };
@@ -175,7 +175,7 @@ export async function recordComparisonJudgment(root: string, input: { request: s
       if (!result.ok || !result.value.acceptedJudgments.some((x) => x.id === trial.id))
         return { error: "judgment is not independent or does not match the current comparison" };
       return { kind: "decision.comparison.judged", subject: input.request, data: { judgment, proof } };
-    });
+    }, decisionsDoor);
     if ("error" in event) return event;
     settleReaderReceipt(root, key, held.receipt, "recorded", undefined, call.callId);
     return { ok: true as const, recorded: true as const, event: event.id,
@@ -260,7 +260,7 @@ export async function resolveComparison(root: string,
     if (!projected.ok || !projected.value.acceptedResolutions.some((x) => x.id === trial.id))
       return { error: "comparison has no established judgment or this correction does not match the authority frontier" };
     return { kind: "decision.comparison.resolved", subject: input.request, data: { resolution, proof } };
-  });
+  }, decisionsDoor);
   if ("error" in event) return event;
   return { ok: true as const, event: event.id, comparison: await comparisonDetail(root, input.request) };
 }

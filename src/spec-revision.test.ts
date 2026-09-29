@@ -33,11 +33,8 @@ import {
 import { ratifyReviewed, signOffEverything, ratifyWithReview } from "./test-approve.js";
 import { acknowledgeGap, listAcknowledgements } from "./acknowledgements.js";
 import { readAcknowledgements } from "./store.js";
-import {
-  foldStandard, standardScope, publishSpecDrafted, publishOperation, publishSpecRatified,
-  publishSpecRevised, publishOperationRevised, publishOperationRemoved, publishSpecWithdrawn,
-  publishAckGranted, publishAudit, lawScope,
-} from "./shared-standard.js";
+import { foldStandard, standardScope, publishOperation, publishAckGranted, publishAudit, lawScope } from "./shared-standard.js";
+import { appendUnfolded } from "./test-door.js";
 
 const state: State = { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State;
 const SRC = "export function creditLine(cents) { return cents; }\n";
@@ -397,6 +394,18 @@ test("somebody else's COMMENT refuses the same three, and your own does not", as
 // A remote clone never saw the MCP call. Everything above has to be refused here too, or
 // the guard binds one machine.
 
+// A remote clone's acts, appended as its build appended them: this section asks what the
+// FOLD does with an event, so the write door (which refuses them here) is not in the way.
+const publishSpecDrafted = (l: string, s: string, a: Actor, spec: Spec) => appendUnfolded(l, s, a, "spec.drafted", spec.id, { spec });
+const publishOperationRemote = (l: string, s: string, a: Actor, op: Operation) => appendUnfolded(l, s, a, "spec.operation", op.specId, { operation: op });
+const publishSpecRatified = (l: string, s: string, a: Actor, specId: string, at: string, witnesses: Record<string, unknown>, operations: string[]) =>
+  appendUnfolded(l, s, a, "spec.ratified", specId, { at, witnesses, operations });
+const publishSpecRevised = (l: string, s: string, a: Actor, spec: Spec, at: string) => appendUnfolded(l, s, a, "spec.revised", spec.id, { spec, at });
+const publishOperationRevised = (l: string, s: string, a: Actor, op: Operation) => appendUnfolded(l, s, a, "spec.operation.revised", op.specId, { operation: op });
+const publishOperationRemoved = (l: string, s: string, a: Actor, op: Operation) => appendUnfolded(l, s, a, "spec.operation.removed", op.specId, { operation: op });
+const publishSpecWithdrawn = (l: string, s: string, a: Actor, specId: string, at: string, reason: string) =>
+  appendUnfolded(l, s, a, "spec.withdrawn", specId, { at, reason });
+
 const izzie: Actor = { principal: "izzie@x.com" };
 const opus: Actor = { principal: "izzie@x.com", via: { kind: "agent", model: "claude-opus-5" } };
 const mate: Actor = { principal: "mate@x.com", via: { kind: "agent", model: "other-model" } };
@@ -414,7 +423,7 @@ async function log(t: string) {
   const root = mkdtempSync(join(tmpdir(), `codemap-revfold-${t}-`));
   await ensureSidecar(root, izzie);
   await publishSpecDrafted(root, SCOPE, opus, SPEC);
-  await publishOperation(root, SCOPE, opus, ADD);
+  await publishOperationRemote(root, SCOPE, opus, ADD);
   return root;
 }
 /** The fold, over this scope's events. */
@@ -465,7 +474,7 @@ test("the fold refuses a kind change, a reasonless removal, and a removal someth
       evidenceKind: "lint-test", rationale: "how it is discharged",
       reversibility: "reversible",
     };
-    await publishOperation(root, SCOPE, opus, CRIT);
+    await publishOperationRemote(root, SCOPE, opus, CRIT);
     await publishOperationRevised(root, SCOPE, opus, { ...ADD, kind: "amend_statement", statement: "x", revisions: [{ at: "2026-08-02T00:00:00.000Z", by: opus, was: { statement: ADD.statement } }] });
     // The criterion still targets op_1, so this removal has TWO reasons to be refused.
     await publishOperationRemoved(root, SCOPE, opus, { ...ADD, removed: { at: "2026-08-02T00:00:00.000Z", by: opus, reason: "wrong rule" } });
@@ -507,7 +516,7 @@ test("a removed operation does not block a withdrawal the tool would allow", asy
   try {
     // An `amend_statement` — the kind that makes a ratified spec unwithdrawable — pulled
     // out of the draft before it was ever adopted.
-    await publishOperation(root, SCOPE, opus, {
+    await publishOperationRemote(root, SCOPE, opus, {
       ...ADD, id: "op_gone", ord: 1, kind: "amend_statement",
       requirementId: "req_elsewhere", statement: "Something else entirely.",
       removed: { at: "2026-08-01T12:00:00.000Z", by: opus, reason: "wrong spec" },
@@ -525,7 +534,7 @@ test("a removed operation does not block a withdrawal the tool would allow", asy
   // guard having been weakened.
   const live = await log("withdraw-live");
   try {
-    await publishOperation(live, SCOPE, opus, {
+    await publishOperationRemote(live, SCOPE, opus, {
       ...ADD, id: "op_live", ord: 1, kind: "amend_statement",
       requirementId: requirementIdFor("op_1"), statement: "Amended in the same spec.",
     });
@@ -633,7 +642,7 @@ test("a removal the fold refuses leaves the acknowledgement alone, and says so",
 
     const refused = await removeOperation(u.root, { operationId: second.id, reason: "second thoughts", ...AGENT });
     assert.ok("error" in refused, "the fold refuses it, so the tool must not report success");
-    assert.match((refused as any).error, /NOT removed/);
+    assert.match((refused as any).error, /a criterion in this draft targets it/);
     assert.equal((await readAcknowledgements(u.root, { operationId: second.id }))[0]!.state, "pending",
       "the approval artifact must survive a removal that did not happen");
     assert.equal((await readOperations(u.root, { specId })).some((o) => o.id === second.id), true,

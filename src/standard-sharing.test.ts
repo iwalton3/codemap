@@ -342,14 +342,15 @@ test("a shared ratification reports what the FOLD did, not what it was asked to 
 
     const race = await ratifySpec(b, mine.id);
     assert.ok("error" in race, `B's ratification applied nothing and must not report ok — got ${JSON.stringify(race)}`);
-    assert.match(race.error, /applied NOTHING/);
-    assert.match(race.error, /Do not retry/, "the spec is spent, and the natural response to an error is a retry");
-
-    // The record agrees with what was reported: spent, and conflicted.
-    const spent = await readSpec(b, mine.id);
-    assert.equal(spent!.status, "ratified");
-    assert.equal(spent!.conflicted, true);
-    // And the standard is A's text, on both clones.
+    // The write door folds the ratification before appending it and refuses it (plan 1.1):
+    // nothing is spent, so the spec is still B's draft to redo against the current text.
+    assert.match(race.error, /the ratification does not apply: an operation's base moved/);
+    const kept = await readSpec(b, mine.id);
+    assert.equal(kept!.status, "draft");
+    assert.equal(kept!.conflicted, undefined);
+    // And the standard is A's text, on both clones — B's once it folds the log again, which
+    // its refused append no longer does for it.
+    assert.equal(await materializeStandard(b, resolveSidecar(b)!), true);
     assert.equal((await listRequirements(a))[0]!.statement, "All credit lines are in USD or EUR.");
     assert.equal((await listRequirements(b))[0]!.statement, "All credit lines are in USD or EUR.");
   } finally { discard(a); discard(b); discard(side); }
@@ -423,7 +424,8 @@ test("the fold refuses a move whose source another clone has already emptied", a
 
     const race = await ratifySpec(b, mine.id);
     assert.ok("error" in race, "the fold applied nothing, so this is not an ok ratification");
-    assert.match(race.error, /applied NOTHING/);
+    assert.match(race.error, /the ratification does not apply: an operation's base moved/);
+    assert.equal(await materializeStandard(b, resolveSidecar(b)!), true);
     assert.equal((await listRequirements(b))[0]!.section, "Risk/Limits", "A's move stands; B's did not double-apply");
   } finally { discard(a); discard(b); discard(side); }
 });

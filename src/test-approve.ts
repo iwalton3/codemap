@@ -64,8 +64,12 @@ export async function ratifyWithReview(
   logRoot: string, scope: string, actor: import("./schema.js").Actor, specId: string, at: string,
   witnesses: Record<string, import("./schema.js").BugWitness[]>, opIds: string[],
   reviewer?: import("./schema.js").Actor,
+  /** `unfolded`: append as a build without the write door would — for a fold test that plants
+   *  a ratification this build refuses to write. */
+  through: "door" | "unfolded" = "door",
 ): Promise<void> {
-  const { foldStandard, publishSpecRatified, publishSpecReviewed } = await import("./shared-standard.js");
+  const { foldStandard, ...door } = await import("./shared-standard.js");
+  const { publishSpecRatified, publishSpecReviewed } = through === "door" ? door : (await import("./test-door.js")).unfolded;
   const { framingContent, operationContent } = await import("./schema.js");
   const { readScope } = await import("./eventlog.js");
   const who = reviewer ?? actor;
