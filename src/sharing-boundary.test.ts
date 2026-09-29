@@ -118,7 +118,7 @@ const BOTH_ENDS: { what: string; fold: [string, RegExp]; publish: [string, RegEx
     // matter more, not less, because a client publishing one as an event is exactly the
     // mistake the new path invites.
     what: "provisional (branch-local) audits and problems in the event log",
-    fold: ["src/shared-standard.ts", /if \(audit\.provisional\) break;/],
+    fold: ["src/shared-standard.ts", /if \(audit\.provisional\) \{ refuse\(e, .*?\); break; \}/],
     publish: ["src/standard-publish.ts", /if \(!audit\.provisional\) return share\(root, \(l, s, a\) => publishAudit/],
   },
   {
@@ -148,7 +148,7 @@ const BOTH_ENDS: { what: string; fold: [string, RegExp]; publish: [string, RegEx
     // reads the pointer state from its own map — the team's view of what was active, not
     // the writer's account of it.
     what: "a covering audit that skipped one of the rule's active pointers",
-    fold: ["src/shared-standard.ts", /if \(covering && watching\.some\(\(p\) => !seen\.has\(p\.id\)\)\) break;/],
+    fold: ["src/shared-standard.ts", /if \(covering && watching\.some\(\(p\) => !seen\.has\(p\.id\)\)\) \{ refuse\(e, .*?\); break; \}/],
     publish: ["src/audits.ts", /const missed = active\.filter\(\(p\) => !seen\.has\(p\.id\)\);/],
   },
   {
@@ -185,14 +185,14 @@ const BOTH_ENDS: { what: string; fold: [string, RegExp]; publish: [string, RegEx
     // `minObservations` from a single call and reports a pathology — the floor defeated
     // through the one door it does not watch.
     what: "the same pointer observed twice in one covering audit",
-    fold: ["src/shared-standard.ts", /if \(seen\.size !== obs\.length\) break;/],
+    fold: ["src/shared-standard.ts", /if \(seen\.size !== obs\.length\) \{ refuse\(e, .*?\); break; \}/],
     publish: ["src/audits.ts", /if \(seen\.size !== observations\.length\)/],
   },
   {
     // A lint enumerates whatever is CHECKED OUT, so a pin from a feature branch is that
     // branch's population and not the team's — the same rule `shareAudit` follows.
     what: "a population pinned off the default branch",
-    fold: ["src/shared-standard.ts", /if \(pin\.provisional\) break;/],
+    fold: ["src/shared-standard.ts", /if \(pin\.provisional\) \{ refuse\(e, .*?\); break; \}/],
     publish: ["src/standard-publish.ts", /pin\.provisional\s*\n?\s*\? Promise\.resolve\(localOnly\)/],
   },
   {
@@ -200,7 +200,7 @@ const BOTH_ENDS: { what: string; fold: [string, RegExp]; publish: [string, RegEx
     // scrub commit the exact error it exists to catch — a confident verdict from a check
     // that could not have produced one — for every clone that folded it.
     what: "a scrub policy whose observation floor cannot support a rate",
-    fold: ["src/shared-standard.ts", /policy\.minObservations < 2\) break;/],
+    fold: ["src/shared-standard.ts", /policy\.minObservations < 2\) \{ refuse\(e, .*?\); break; \}/],
     publish: ["src/scrub.ts", /minObservations < 2\) \{/],
   },
   {
@@ -231,7 +231,7 @@ const BOTH_ENDS: { what: string; fold: [string, RegExp]; publish: [string, RegEx
     // language that was an edge case; with a lint it is the DEFAULT failure mode, which is
     // why the cheap mechanical layer exists at all — and why it has to exist at both ends.
     what: "a population pinned from a lint that examined nothing",
-    fold: ["src/shared-standard.ts", /if \(pin\.basis === "lint" && !pin\.members\.length\) break;/],
+    fold: ["src/shared-standard.ts", /if \(pin\.basis === "lint" && !pin\.members\.length\) \{ refuse\(e, .*?\); break; \}/],
     publish: ["src/population.ts", /a lint reporting zero members cannot be pinned/],
   },
   {
@@ -240,7 +240,7 @@ const BOTH_ENDS: { what: string; fold: [string, RegExp]; publish: [string, RegEx
     // applicable". It can flip debt into a gap, which is silencing, so it is a principal's
     // act — and the fold decides it from the two member lists rather than from the writer.
     what: "an agent narrowing a rule's population",
-    fold: ["src/shared-standard.ts", /if \(prior\.members\.some\(\(m\) => !after\.has\(m\.id\)\)\) break;/],
+    fold: ["src/shared-standard.ts", /if \(prior\.members\.some\(\(m\) => !after\.has\(m\.id\)\)\) \{ refuse\(e, .*?\); break; \}/],
     publish: ["src/population.ts", /if \(delta\.narrows && isAgentActor\(actor\)\)/],
   },
   {
@@ -249,7 +249,7 @@ const BOTH_ENDS: { what: string; fold: [string, RegExp]; publish: [string, RegEx
     // so an empty one is the vacuity problem arriving at the record whose whole job is to
     // make auditing cheaper.
     what: "a pointer with no rationale",
-    fold: ["src/shared-standard.ts", /if \(!p\.rationale\?\.trim\(\)\) break;/],
+    fold: ["src/shared-standard.ts", /if \(!p\.rationale\?\.trim\(\)\) \{ refuse\(e, .*?\); break; \}/],
     publish: ["src/pointers.ts", /const rationale = input\.rationale\?\.trim\(\);/],
   },
   {
@@ -257,7 +257,7 @@ const BOTH_ENDS: { what: string; fold: [string, RegExp]; publish: [string, RegEx
     // state — which is why it is open to any actor — but an unexplained one leaves the rule
     // unwatched with nothing on the record saying why, and unwatched must not read as calm.
     what: "a pointer retired with no reason",
-    fold: ["src/shared-standard.ts", /if \(!reason\?\.trim\(\)\) break;/],
+    fold: ["src/shared-standard.ts", /if \(!reason\?\.trim\(\)\) \{ refuse\(e, .*?\); break; \}/],
     publish: ["src/pointers.ts", /retiring a pointer needs a reason/],
   },
   // Three more the FOLD was missing, all found by a second reviewer running the fold on
@@ -275,14 +275,14 @@ const BOTH_ENDS: { what: string; fold: [string, RegExp]; publish: [string, RegEx
   // share, because neither has anybody to explain anything to.
   {
     what: "an audit that does not stand up as a record — no finding, wrong evidence for its outcome, or witnesses that do not match it",
-    fold: ["src/shared-standard.ts", /if \(!auditClaimStands\(audit\)\) break;/],
+    fold: ["src/shared-standard.ts", /if \(!auditClaimStands\(audit\)\) \{ refuse\(e, .*?\); break; \}/],
     publish: ["src/provisional.ts", /&& auditClaimStands\(x\)/],
   },
   {
     // Withdrawal removes rules from the standard. It stays on the record as the act it is,
     // which needs the reason to be there — on both ends, not only where somebody typed it.
     what: "a withdrawal with no reason on the record",
-    fold: ["src/shared-standard.ts", /if \(!str\(e\.data, "reason"\)\?\.trim\(\)\) break;/],
+    fold: ["src/shared-standard.ts", /if \(!str\(e\.data, "reason"\)\?\.trim\(\)\) \{ refuse\(e, .*?\); break; \}/],
     publish: ["src/requirements.ts", /a withdrawal needs a `reason`/],
   },
   {
@@ -301,7 +301,7 @@ const BOTH_ENDS: { what: string; fold: [string, RegExp]; publish: [string, RegEx
     // record's word, so an appended row naming a ratified `requirementId` and no operation
     // was accepted by every clone and reported a binding rule as `gap`.
     what: "a gap minted after the spec that introduced the rule was ratified",
-    fold: ["src/shared-standard.ts", /specs\.get\(op\.specId\)\?\.status === "ratified"\) break;/],
+    fold: ["src/shared-standard.ts", /specs\.get\(op\.specId\)\?\.status === "ratified"\) \{ refuse\(e, .*?\); break; \}/],
     publish: ["src/acknowledgements.ts", /a gap may only be raised while the spec is still a draft/],
   },
   // Two more that had both ends in the code and neither end registered here, so a future
@@ -309,19 +309,19 @@ const BOTH_ENDS: { what: string; fold: [string, RegExp]; publish: [string, RegEx
   // principal-gated verbs when they were first exposed as tools.
   //
   // Both fold patterns anchor on the CODE of the surrounding case, not on its comment:
-  // `if (e.actor.via) break;` appears in two cases, so a bare match would be satisfied by
+  // `if (e.actor.via)` appears in two cases, so a bare match would be satisfied by
   // whichever survived, and a comment match would be satisfied by a comment above a guard
   // somebody had deleted.
   {
     what: "an agent's ratification of a spec",
     // `!== "draft"` since 2026-08-31: the old `=== "ratified"` caught a double-adopt and let
     // a WITHDRAWN spec through. The anchor here is the principal gate two lines below it.
-    fold: ["src/shared-standard.ts", /sp\.status !== "draft"\) break;[\s\S]{0,600}?if \(e\.actor\.via\) break;/],
+    fold: ["src/shared-standard.ts", /sp\.status !== "draft"\) \{ refuse\(e, .*?\); break; \}[\s\S]{0,900}?if \(e\.actor\.via\) \{ refuse\(e, .*?\); break; \}/],
     publish: ["src/requirements.ts", /principal\(root, input, "ratify"\)/],
   },
   {
     what: "an agent's adjudication of a problem",
-    fold: ["src/shared-standard.ts", /!p \|\| p\.disposition\) break;[\s\S]{0,240}?if \(e\.actor\.via\) break;/],
+    fold: ["src/shared-standard.ts", /!p \|\| p\.disposition\) \{ refuse\(e, .*?\); break; \}[\s\S]{0,400}?if \(e\.actor\.via\) \{ refuse\(e, .*?\); break; \}/],
     publish: ["src/problems.ts", /principal\(root, input, "adjudicate a problem"\)/],
   },
   {
@@ -337,7 +337,7 @@ const BOTH_ENDS: { what: string; fold: [string, RegExp]; publish: [string, RegEx
     // only be REPEALED, because putting the old statement back would witness it against
     // today's code as though the amendment had never happened.
     what: "withdrawing a spec that amended, retired or re-filed pre-existing state",
-    fold: ["src/shared-standard.ts", /if \(mine\.some\(\(o\) => o\.kind !== "add_requirement" && o\.kind !== "add_criterion"\)\) break;/],
+    fold: ["src/shared-standard.ts", /if \(mine\.some\(\(o\) => o\.kind !== "add_requirement" && o\.kind !== "add_criterion"\)\) \{ refuse\(e, .*?\); break; \}/],
     publish: ["src/requirements.ts", /const changed = ops\.find\(\(o\) => o\.kind !== "add_requirement"/],
   },
   {

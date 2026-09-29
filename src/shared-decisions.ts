@@ -240,6 +240,9 @@ export interface SharedDecisions {
 
 export interface SkippedEvent { id: string; kind: string; why: string }
 
+/** An event the fold did not apply as written, and why. See `foldDecisionsReport`. */
+export interface RefusedEvent { id: string; kind: string; why: string }
+
 const isObject = (v: unknown): v is Record<string, any> => !!v && typeof v === "object" && !Array.isArray(v);
 const str = (v: unknown): string | undefined => (typeof v === "string" && v.trim() ? v : undefined);
 
@@ -774,6 +777,14 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
     + s.decisions.reduce((n, d) => n + 1 + d.answers.length, 0));
 }
 
+/**
+ * The fold and every event it refused, for a caller that has to know whether one particular
+ * event would be applied — the write door (plan 1.1).
+ */
+export function foldDecisionsReport(events: LogEvent[]): { value: SharedDecisions; refused: RefusedEvent[] } {
+  return foldDecisionsWithRefusals(events);
+}
+
 export function leaveOutUnreadable<T extends { skipped?: SkippedEvent[] }>(
   once: (events: LogEvent[]) => T, events: LogEvent[], size: (t: T) => number,
 ): T {
@@ -792,8 +803,20 @@ export function leaveOutUnreadable<T extends { skipped?: SkippedEvent[] }>(
 }
 
 function foldDecisionsOnce(events: LogEvent[]): SharedDecisions {
+  return foldDecisionsWithRefusals(events).value;
+}
+
+/**
+ * The fold, and every event it did not apply as written. One output for every way the fold
+ * refuses, so the write door can ask whether it would refuse a new event (plan 1.1).
+ */
+function foldDecisionsWithRefusals(events: LogEvent[]): { value: SharedDecisions; refused: RefusedEvent[] } {
   const skipped: SkippedEvent[] = [];
-  const skip = (e: LogEvent, why: string) => { skipped.push({ id: e.id, kind: e.kind, why }); };
+  const refused: RefusedEvent[] = [];
+  const refuse = (e: LogEvent, why: string) => { refused.push({ id: e.id, kind: e.kind, why }); };
+  const skip = (e: LogEvent, why: string) => { skipped.push({ id: e.id, kind: e.kind, why }); refuse(e, why); };
+  const eventById = new Map(events.map((e) => [e.id, e]));
+  const refuseId = (id: string | undefined, why: string) => { const e = id ? eventById.get(id) : undefined; if (e) refuse(e, why); };
   const rounds = new Map<string, DecisionRound>();
   const decisions = new Map<string, FoldedDecision>();
   const exactRound = (id: string): DecisionRound | undefined => {
@@ -831,9 +854,9 @@ function foldDecisionsOnce(events: LogEvent[]): SharedDecisions {
     const q = e.data as any;
     // No round or no answer time: written by a build before either bound anything (H7.12).
     const asked = Array.isArray(q?.rounds) && q.rounds.length && q.rounds.every((r: unknown) => str(r)) ? q.rounds as string[] : str(q?.round) ? [q.round as string] : undefined;
-    if (!str(q?.session) || !str(q?.toolUseId) || !asked || !str(q?.answeredAt) || !Array.isArray(q?.questions) || !q?.answers || typeof q.answers !== "object" || Array.isArray(q.answers)) continue;
+    if (!str(q?.session) || !str(q?.toolUseId) || !asked || !str(q?.answeredAt) || !Array.isArray(q?.questions) || !q?.answers || typeof q.answers !== "object" || Array.isArray(q.answers)) { refuse(e, "a logged question needs its session, call, rounds, answer time, questions and answers"); continue; }
     if (!q.questions.every((x: any) => x && typeof x === "object" && typeof x.question === "string" && Array.isArray(x.options)
-      && x.options.every((o: any) => o && typeof o === "object" && typeof o.label === "string"))) continue;
+      && x.options.every((o: any) => o && typeof o === "object" && typeof o.label === "string"))) { refuse(e, "a logged question's questions need their text and option labels"); continue; }
     if (questions.has(e.id)) continue;
     // A call logged before per-question binding named one round for all of it (S0.7).
     const bound: Record<string, string> = q.bound && typeof q.bound === "object" && !Array.isArray(q.bound)
@@ -849,18 +872,21 @@ function foldDecisionsOnce(events: LogEvent[]): SharedDecisions {
 
   const acceptAnswer = (e: LogEvent, pos: number, data: any, answerId = e.id): void => {
     const d = exactDecision(str(data?.decision) ?? "");
-    if (!d || (postedPos.get(d.id) ?? Infinity) > pos || data.hash !== d.hash) return;
-    if (data?.via?.kind === "revision-relay" && e.kind !== "decision.answer.revised") return;
+    if (!d) return refuse(e, `no question ${String(data?.decision)}`);
+    if ((postedPos.get(d.id) ?? Infinity) > pos) return refuse(e, `the answer folds before ${d.ref} was posted`);
+    if (data.hash !== d.hash) return refuse(e, `the answer is to another version of ${d.ref}`);
+    if (data?.via?.kind === "revision-relay" && e.kind !== "decision.answer.revised") return refuse(e, "a relayed revision is recorded only as a revision");
     const r = resolve(d, data.via as AnswerVia, e.actor, questions, rounds);
-    if (!r || (r.park !== undefined && !ISO_DATE.test(r.park))) return;
+    if (!r) return refuse(e, `the answer binds to nothing this fold can check on ${d.ref}`);
+    if (r.park !== undefined && !ISO_DATE.test(r.park)) return refuse(e, "a park needs a date");
     const givenAt = r.givenAt ?? e.at;
     const given = ms(givenAt);
-    if (given === undefined) return;
+    if (given === undefined) return refuse(e, "the answer has no time that parses");
     if (r.givenAt !== undefined) {
       const posted = ms(d.postedAt);
-      if (posted === undefined || !(given > posted)) return;
+      if (posted === undefined || !(given > posted)) return refuse(e, `the answer was given before ${d.ref} was posted`);
     }
-    if (r.once && d.answers.some((x) => x.once === r.once)) return;
+    if (r.once && d.answers.some((x) => x.once === r.once)) return refuse(e, `this answer is already recorded on ${d.ref}`);
     const a: FoldedAnswer = {
       id: answerId, by: e.actor, at: e.at,
       via: data.questionnaireMeta ? "questionnaire" : (data.via as AnswerVia).kind,
@@ -886,8 +912,9 @@ function foldDecisionsOnce(events: LogEvent[]): SharedDecisions {
     switch (e.kind) {
       case "decision.round.posted": {
         const r = data?.round;
-        if (!r || typeof r !== "object" || !str(r.id) || !str(r.source) || (!data?.publication && rounds.has(r.id)) || !Array.isArray(data?.decisions)) break;
-        if (new Set(data.decisions.map((raw: Decision) => raw?.id)).size !== data.decisions.length) break;
+        if (!r || typeof r !== "object" || !str(r.id) || !str(r.source) || !Array.isArray(data?.decisions)) { refuse(e, "a round needs its id, source and decisions"); break; }
+        if (!data?.publication && rounds.has(r.id)) { refuse(e, `round ${r.id} is already posted`); break; }
+        if (new Set(data.decisions.map((raw: Decision) => raw?.id)).size !== data.decisions.length) { refuse(e, "a round's decisions need distinct ids"); break; }
         // Each decision's own shape first: the questionnaire check dereferences them.
         if (r.questionnaire) {
           const why = data.decisions.map((raw: Decision) => checkDecision(raw)).find(Boolean)
@@ -895,11 +922,11 @@ function foldDecisionsOnce(events: LogEvent[]): SharedDecisions {
           if (why) { skip(e, why); break; }
         }
         if (!data?.publication && r.questionnaire && [...rounds.values()].some((prior) => prior.id === r.questionnaire.id
-          || prior.questionnaire?.id === r.questionnaire.id || prior.questionnaire?.id === r.id)) break;
+          || prior.questionnaire?.id === r.questionnaire.id || prior.questionnaire?.id === r.id)) { refuse(e, `questionnaire ${r.questionnaire.id} is already posted`); break; }
         const pv = r.prevalidated;
         const prevalidated = pv && typeof pv === "object" && str(pv.record) && str(pv.sortedBy) ? { record: pv.record as string, sortedBy: pv.sortedBy as string } : undefined;
         const roundId = data?.publication ? e.id : r.id;
-        if (rounds.has(roundId)) break;
+        if (rounds.has(roundId)) { refuse(e, `round ${roundId} is already posted`); break; }
         rounds.set(roundId, {
           id: roundId, ...(data?.publication ? { label: r.id } : {}), source: r.source, universe: str(r.universe) ?? "",
           ...(str(r.pr) ? { pr: r.pr } : {}), ...(str(r.branch) ? { branch: r.branch } : {}),
@@ -911,7 +938,7 @@ function foldDecisionsOnce(events: LogEvent[]): SharedDecisions {
         for (const raw of data.decisions as Decision[]) {
           const malformed = checkDecision(raw);
           if (malformed) { skip(e, malformed); continue; }
-          if ((!data?.publication && decisions.has(raw.id)) || raw.round !== r.id) continue;
+          if ((!data?.publication && decisions.has(raw.id)) || raw.round !== r.id) { refuse(e, `decision ${raw.id} is already posted or names another round`); continue; }
           const d: FoldedDecision = {
             id: data?.publication ? `${e.id}:${raw.id}` : raw.id, ...(data?.publication ? { label: raw.id } : {}),
             round: roundId, ref: raw.ref, kind: raw.kind,
@@ -945,10 +972,12 @@ function foldDecisionsOnce(events: LogEvent[]): SharedDecisions {
         // `confirms` says — whether it is a confirm codemap could have written is judged below.
         const raw = data?.decision as (Decision & { confirms?: Confirms }) | undefined;
         const r = exactRound(str(data?.round) ?? "");
-        if (!r || !raw || typeof raw !== "object" || (!data?.publication && decisions.has(raw.id)) || raw.round !== (r.label ?? r.id) && raw.round !== r.id || checkDecision(raw)) break;
+        if (!r || !raw || typeof raw !== "object" || (!data?.publication && decisions.has(raw.id)) || raw.round !== (r.label ?? r.id) && raw.round !== r.id) { refuse(e, "a confirm needs its round and a decision in it"); break; }
+        const malformedConfirm = checkDecision(raw);
+        if (malformedConfirm) { refuse(e, malformedConfirm); break; }
         const cf = raw.confirms as unknown as Record<string, unknown> | undefined;
         const confirmId = data?.publication ? e.id : raw.id;
-        if (decisions.has(confirmId)) break;
+        if (decisions.has(confirmId)) { refuse(e, `confirm ${confirmId} is already posted`); break; }
         decisions.set(confirmId, {
           id: confirmId, ...(data?.publication ? { label: raw.id } : {}), round: r.id, ref: raw.ref, kind: raw.kind, payload: normalizeQuestion(raw.payload), options: raw.options,
           hash: decisionHash(raw), postedAt: typeof e.at === "string" ? e.at : "", postingEvent: e.id, answers: [],
@@ -991,16 +1020,16 @@ function foldDecisionsOnce(events: LogEvent[]): SharedDecisions {
         const round = exactRound(str(data?.round) ?? "");
         const q = round?.questionnaire;
         const staged = data?.staged as StagedSubmission | undefined;
-        if (!q || !staged || (e.subject !== q.id && e.subject !== round?.id) || isAgentActor(e.actor)
-          || !str(staged.attemptId) || !str(staged.payloadHash)) break;
+        if (!q || !staged || (e.subject !== q.id && e.subject !== round?.id) || !str(staged.attemptId) || !str(staged.payloadHash)) { refuse(e, "a submission needs its questionnaire round and staged attempt"); break; }
+        if (isAgentActor(e.actor)) { refuse(e, "a questionnaire submission is the person's own act"); break; }
         const checked = stageSubmission(q, {
           questionnaireId: staged.questionnaireId, version: staged.version,
           attemptId: staged.attemptId, answers: staged.answers,
         });
         if (!checked.ok || checked.value.payloadHash !== staged.payloadHash
-          || JSON.stringify(checked.value.listApprovals) !== JSON.stringify(staged.listApprovals)) break;
+          || JSON.stringify(checked.value.listApprovals) !== JSON.stringify(staged.listApprovals)) { refuse(e, "the submission does not match its questionnaire or payload"); break; }
         const attemptKey = `${e.actor.principal}\0${round!.id}\0${staged.attemptId}`;
-        if (seenQuestionnaireAttempts.has(attemptKey)) break;
+        if (seenQuestionnaireAttempts.has(attemptKey)) { refuse(e, `attempt ${staged.attemptId} is already submitted`); break; }
         const questions = new Map(q.sections.flatMap((section) => section.questions.map((question) => [question.id, question] as const)));
         const entries = checked.value.answers.map((answer) => {
           const d = [...decisions.values()].find((candidate) => candidate.round === round!.id && (candidate.label ?? candidate.id) === answer.questionId), question = questions.get(answer.questionId);
@@ -1030,7 +1059,7 @@ function foldDecisionsOnce(events: LogEvent[]): SharedDecisions {
           };
           return { d, answer, via, meta };
         });
-        if (entries.some((entry) => !entry)) break;
+        if (entries.some((entry) => !entry)) { refuse(e, "a submitted answer names no question of this questionnaire posted before it"); break; }
         seenQuestionnaireAttempts.add(attemptKey);
         for (const entry of entries) {
           const { d, answer, via, meta } = entry!;
@@ -1066,7 +1095,7 @@ function foldDecisionsOnce(events: LogEvent[]): SharedDecisions {
         // Nor one without the brief the reader was launched with (P3.4), which a build before
         // codemap wrote the brief could not record: those words go back to unread.
         if (!answer || !agent || !validVerdict(data.reader.verdict, data.reader.unclear) || !str(data.reader.launchedAt) || !str(data.reader?.verified?.session) || !str(data.reader.brief)
-          || !validMaps(data.session?.maps)) break;
+          || !validMaps(data.session?.maps)) { refuse(e, "a reading needs its answer, reader, verdict, launch, session, brief and the session's reading"); break; }
         readingEvents.push({ e, pos });
         break;
       }
@@ -1084,6 +1113,7 @@ function foldDecisionsOnce(events: LogEvent[]): SharedDecisions {
     const why = confirmRefusal(decisions, c, kept(c.confirms.answer));
     if (why) {
       c.confirms.invalid = why;
+      refuseId(c.postingEvent, `not a confirm codemap could have posted: ${why}`);
       if (!answersById.has(c.confirms.answer)) c.confirms.never = true;
       // Keep the question and verified words intact, but a malformed confirmation
       // cannot borrow authority from effect-bearing options (2026-09-24 round, Q3).
@@ -1102,8 +1132,11 @@ function foldDecisionsOnce(events: LogEvent[]): SharedDecisions {
   const readerUsed = new Map<string, string>();
   for (const r of readingEvents) {
     const data = r.e.data as any, x = kept(data.answer), agent = data.reader.agent as string;
-    if (!x || readings.has(data.answer) || readerUsed.has(agent)) continue;
-    if (readingRefusal(decisions, x.d, x.a, { verdict: data.reader.verdict, unclear: data.reader.unclear, session: data.session.maps, launchedAt: data.reader.launchedAt, brief: data.reader.brief, manifest: data.reader.manifest })) continue;
+    if (!x) { refuse(r.e, `no answer ${data.answer}`); continue; }
+    if (readings.has(data.answer)) { refuse(r.e, `answer ${data.answer} already has a reading`); continue; }
+    if (readerUsed.has(agent)) { refuse(r.e, `reader ${agent} already read answer ${readerUsed.get(agent)}`); continue; }
+    const unreadable = readingRefusal(decisions, x.d, x.a, { verdict: data.reader.verdict, unclear: data.reader.unclear, session: data.session.maps, launchedAt: data.reader.launchedAt, brief: data.reader.brief, manifest: data.reader.manifest });
+    if (unreadable) { refuse(r.e, unreadable); continue; }
     readings.set(data.answer, r);
     readerUsed.set(agent, data.answer);
   }
@@ -1183,6 +1216,7 @@ function foldDecisionsOnce(events: LogEvent[]): SharedDecisions {
       && (!!relayValid || targets.every((x) => causal.saw(sourceEventId(a.id), sourceEventId(x!.id))));
     if (!valid) {
       a.revisionInvalid = "revision needs exact source, scope and verified human act-time context";
+      refuseId(answerEvent?.id, a.revisionInvalid);
       a.cancelled = { by: a.id, reason: a.revisionInvalid };
       continue;
     }
@@ -1231,15 +1265,18 @@ function foldDecisionsOnce(events: LogEvent[]): SharedDecisions {
   for (const e of withdrawalEvents) {
     const data = e.data as any;
     const d = decisions.get(str(data?.decision) ?? "");
-    if (!d || !str(data?.reason) || e.subject !== d.id) continue;
+    if (!d || !str(data?.reason) || e.subject !== d.id) { refuse(e, "a withdrawal needs its question and a reason"); continue; }
     const target = str(data?.answer);
     const known = data?.knownAnswers;
-    if (!Array.isArray(known) || !known.every((id: unknown) => str(id))) continue;
+    if (!Array.isArray(known) || !known.every((id: unknown) => str(id))) { refuse(e, "a withdrawal needs the answers it knew of"); continue; }
     const sources = d.answers.filter((a) => a.verified && !a.sourceAnswer);
     const named = target ? sources.find((a) => a.id === target) : undefined;
-    const refuse = (why: string) => (d.withdrawals ??= []).push({ id: e.id, by: e.actor, at: e.at, reason: data.reason,
-      ...(target ? { answer: target } : {}), knownAnswers: [...known], state: "refused", refused: why });
-    if (target && (!named || !known.includes(target))) { refuse("it names no current verified answer on this question"); continue; }
+    const refuseWithdrawal = (why: string) => {
+      refuse(e, why);
+      (d.withdrawals ??= []).push({ id: e.id, by: e.actor, at: e.at, reason: data.reason,
+        ...(target ? { answer: target } : {}), knownAnswers: [...known], state: "refused", refused: why });
+    };
+    if (target && (!named || !known.includes(target))) { refuseWithdrawal("it names no current verified answer on this question"); continue; }
     if (isAgentActor(e.actor)) {
       // An agent never retires a ruling on its own: the person answers a relayed question.
       if (named) {
@@ -1250,12 +1287,12 @@ function foldDecisionsOnce(events: LogEvent[]): SharedDecisions {
           ? "an agent withdraws a ruling only as the person's answer to the relayed withdrawal question"
           : latest?.options[0] !== WITHDRAW_IT ? `${named.by.principal} has not answered "${WITHDRAW_IT}"`
           : !causal.saw(e.id, sourceEventId(latest.id)) ? "the withdrawal was written before the person's answer" : null;
-        if (why) { refuse(why); continue; }
+        if (why) { refuseWithdrawal(why); continue; }
       } else {
         const why = withdrawalReviewRefusal(d, data.reason, data.review);
-        if (why) { refuse(why); continue; }
+        if (why) { refuseWithdrawal(why); continue; }
       }
-    } else if (named && named.by.principal !== e.actor.principal) { refuse("only the person who gave a ruling withdraws it"); continue; }
+    } else if (named && named.by.principal !== e.actor.principal) { refuseWithdrawal("only the person who gave a ruling withdraws it"); continue; }
     // A direct page answer is given at append time. For a relayed question/message,
     // the recorder may have pulled after the person answered; its causal edge proves
     // the recorder's knowledge, not the person's act-time knowledge.
@@ -1272,7 +1309,10 @@ function foldDecisionsOnce(events: LogEvent[]): SharedDecisions {
       ...(conflicts.length ? { conflictingAnswers: conflicts } : {}),
     };
     (d.withdrawals ??= []).push(record);
-    if (record.state === "conflict") continue;
+    if (record.state === "conflict") {
+      refuse(e, prior ? `${d.ref} is already withdrawn` : `the withdrawal conflicts with ${conflicts.join(", ")}`);
+      continue;
+    }
     if (!target) {
       d.withdrawn = { id: e.id, by: e.actor, at: e.at, reason: data.reason };
       for (const a of d.answers) a.cancelled = { by: e.id, reason: `question withdrawn: ${data.reason}` };
@@ -1325,8 +1365,10 @@ function foldDecisionsOnce(events: LogEvent[]): SharedDecisions {
   for (const d of decisions.values()) if (d.resolves) {
     const targets = d.resolves.answers.map((id) => answersById.get(id)?.a);
     if (targets.some((a) => !a?.verified) || targets[0]!.by.principal === targets[1]!.by.principal
-      || targets.some((a) => !d.payload.question.includes(JSON.stringify(a!.words))))
+      || targets.some((a) => !d.payload.question.includes(JSON.stringify(a!.words)))) {
       d.resolutionInvalid = "it does not show two different people's exact verified rulings";
+      refuseId(d.postingEvent, d.resolutionInvalid);
+    }
   }
 
   // A later correction of a resolution replaces that resolution's authority. Applying every
@@ -1365,15 +1407,15 @@ function foldDecisionsOnce(events: LogEvent[]): SharedDecisions {
       || !str(data?.reason) || !Array.isArray(data?.findings) || !Array.isArray(data?.issues ?? [])
       || (!data.findings.length && !(data.issues ?? []).length)
       || !data.findings.every((f: unknown) => str(f)) || new Set(data.findings).size !== data.findings.length
-      || !(data.issues ?? []).every(validIssue)) continue;
-    if (e.subject !== [...ids].sort().join("/")) continue;
+      || !(data.issues ?? []).every(validIssue)) { refuse(e, "a nomination needs two distinct answers, a reason and its findings or issues"); continue; }
+    if (e.subject !== [...ids].sort().join("/")) { refuse(e, "a nomination's subject is its two answers"); continue; }
     const first = answersById.get(ids[0]), second = answersById.get(ids[1]);
     if (!first?.a.verified || !second?.a.verified || first.a.sourceAnswer || second.a.sourceAnswer
-      || first.a.by.principal === second.a.by.principal) continue;
+      || first.a.by.principal === second.a.by.principal) { refuse(e, "a nomination compares two different people's own verified answers"); continue; }
     const scope = new Set([...named(first.d), ...named(second.d)]);
     const issueScope = new Set([...namedIssues(first.d), ...namedIssues(second.d)].map(issueKey));
     if (!data.findings.every((f: string) => scope.has(f))
-      || !(data.issues ?? []).every((issue: CanonicalIssueReference) => issueScope.has(issueKey(issue)))) continue;
+      || !(data.issues ?? []).every((issue: CanonicalIssueReference) => issueScope.has(issueKey(issue)))) { refuse(e, "a nomination names only findings and issues its questions name"); continue; }
     (first.d.nominations ??= []).push({ id: e.id, by: e.actor, at: e.at,
       answers: [ids[0], ids[1]], findings: data.findings,
       ...((data.issues ?? []).length ? { issues: data.issues } : {}), reason: data.reason });
@@ -1386,10 +1428,12 @@ function foldDecisionsOnce(events: LogEvent[]): SharedDecisions {
   }
 
   const base: SharedDecisions = { rounds: [...rounds.values()], decisions: [...decisions.values()], questions: [...questions.values()], comparisons: [] };
-  base.comparisons = foldComparisons(base, comparisonEvents, skip);
+  base.comparisons = foldComparisons(base, comparisonEvents, skip, refuse);
   applyComparisonFrontier(base);
   if (skipped.length) base.skipped = skipped;
-  return base;
+  // One entry per event: an event refused in two passes (a submission with two bad answers) is one refusal.
+  const once = new Set<string>();
+  return { value: base, refused: refused.filter((r) => !once.has(r.id) && !!once.add(r.id)) };
 }
 
 /** Why `maps` cannot bind words `a` on `d`, or null: every decision it names is in the same
@@ -1738,7 +1782,8 @@ export function resolutionShownHash(shown: unknown): string {
 }
 
 /** Replay accepts only requests whose source is exactly the posted question and response. */
-function foldComparisons(s: SharedDecisions, events: LogEvent[], skip: (e: LogEvent, why: string) => void): FoldedComparison[] {
+function foldComparisons(s: SharedDecisions, events: LogEvent[], skip: (e: LogEvent, why: string) => void,
+  refuse: (e: LogEvent, why: string) => void): FoldedComparison[] {
   const byId = new Map<string, { request: ComparisonRequest; judgments: ReaderJudgment[]; resolutions: HumanResolution[] }>();
   const causal = causality(events);
   for (const e of events.filter((x) => x.kind === "decision.comparison.requested")) {
@@ -1746,7 +1791,8 @@ function foldComparisons(s: SharedDecisions, events: LogEvent[], skip: (e: LogEv
     if (e.kind === "decision.comparison.requested") {
       const r = data?.request as ComparisonRequest;
       if (!r || typeof r !== "object" || !isObject(r.left) || !isObject(r.right)) { skip(e, "a comparison request needs both sides"); continue; }
-      if (e.subject !== r.id || byId.has(r.id) || !validateComparisonRequest(r).ok) continue;
+      if (e.subject !== r.id || !validateComparisonRequest(r).ok) { refuse(e, "a comparison request's subject is its id, and the request must be well formed"); continue; }
+      if (byId.has(r.id)) { refuse(e, `comparison ${r.id} is already requested`); continue; }
       const leftDecision = s.decisions.find((d) => d.id === r.left.questionId);
       const rightDecision = s.decisions.find((d) => d.id === r.right.questionId);
       if (!leftDecision || !rightDecision || !r.issues.every((issue) => issue.universe === s.rounds[0]?.universe
@@ -1756,9 +1802,9 @@ function foldComparisons(s: SharedDecisions, events: LogEvent[], skip: (e: LogEv
               || namedIssues(d).some((ref) => issueKey(ref) === issueKey(issue as CanonicalIssueReference)))
             && validIssue(issue as CanonicalIssueReference)
             : [leftDecision, rightDecision].some((d) => namedIssues(d).some((x) => issueKey(x) === issueKey(issue as CanonicalIssueReference)))
-              && validIssue(issue as CanonicalIssueReference)))) continue;
+              && validIssue(issue as CanonicalIssueReference)))) { refuse(e, "a comparison request names questions and issues that do not match"); continue; }
       const expected = comparisonRequestFor(s, r.id, [r.left.answerId, r.right.answerId], r.issues);
-      if (!expected || !same(r, expected)) continue;
+      if (!expected || !same(r, expected)) { refuse(e, "a comparison request is not the one codemap derives from its answers"); continue; }
       byId.set(r.id, { request: r, judgments: [], resolutions: [] });
     }
   }
@@ -1774,7 +1820,7 @@ function foldComparisons(s: SharedDecisions, events: LogEvent[], skip: (e: LogEv
         || proof.contextHash !== r.request.contextHash || proof.brief !== comparisonBriefText(r.request)
         || proof.receipt !== j.reader.receipt || proof.agent !== j.reader.agent
         || proof.session !== j.reader.session || proof.launch !== j.reader.request
-        || !str(proof.call) || !str(proof.toolUseId)) continue;
+        || !str(proof.call) || !str(proof.toolUseId)) { refuse(e, "a comparison judgment needs its request and a proof of the reader that made it"); continue; }
       r.judgments.push(j);
     } else if (e.kind === "decision.comparison.resolved") {
       if (data?.resolution && !isObject(data.resolution.human)) { skip(e, "a comparison resolution needs the person's act"); continue; }
@@ -1799,7 +1845,7 @@ function foldComparisons(s: SharedDecisions, events: LogEvent[], skip: (e: LogEv
         || !same(proof.shown.judgments, prior.value.acceptedJudgments)
         || !same(proof.shown.resolutions, prior.value.acceptedResolutions)
         || (isAgentActor(e.actor) && (proof.source !== "question" || !str(proof.session) || !str(proof.toolUseId)))
-        || (!isAgentActor(e.actor) && proof.source !== "web" && proof.source !== "question")) continue;
+        || (!isAgentActor(e.actor) && proof.source !== "web" && proof.source !== "question")) { refuse(e, "a comparison resolution needs its request and a proof of what the person was shown"); continue; }
       r.resolutions.push(h);
     }
   }
