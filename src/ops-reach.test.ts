@@ -99,7 +99,7 @@ const MCP_FORBIDDEN = [
   "answerDirect",
   // The person's own acts on a question; an agent's way in is the relayed variant, whose
   // proof the fold checks. The folds refuse an agent actor here too.
-  "submitQuestionnaire", "approveDecisionWithdrawal", "reviseDecision",
+  "submitQuestionnaire", "reviseDecision",
   // Picking a side of a held withdrawal: "one person who sees both sides" (owner, batch 5).
   "resolveDecisionConflict", "keepSpecVerdict", "keepProblemVerdict",
 ];

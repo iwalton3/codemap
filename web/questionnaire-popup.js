@@ -118,7 +118,8 @@ export function mountQuestionnairePopup(host, interval = 15000) {
     if (disposed || !universe || loading) return;
     const generation = epoch, u = universe; loading = true;
     try {
-      const list = await api('/api/decisions/questionnaires', { u });
+      // `presence: 'poll'` is what tells the server a person has this page open (F39).
+      const list = await api('/api/decisions/questionnaires', { u, presence: 'poll' });
       if (!valid(generation)) return;
       principal = list.currentPrincipal; blocked = list.status.status === 'blocked';
       availability = blocked ? 'Questionnaire log blocked — submission unavailable' : !principal ? 'Questions need a local Git identity' : '';

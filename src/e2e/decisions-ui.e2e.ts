@@ -265,6 +265,43 @@ describe("the decisions UI", { skip: pw ? false : "playwright not resolvable (se
     await page.close();
   });
 
+  test("B11 (F6): a choice question answered through the real server at phone width", async () => {
+    const prompt = `D30: is ${finding} a real defect?`;
+    const questionnaire: Questionnaire = { id: "Q-phone", title: "Phone review", recipient: "izzie@x.com", sections: [
+      { id: "only", title: "Only", questions: [
+        { id: "q-choice", kind: "choice", prompt, allowOther: false, options: [
+          { id: "fix", label: "Real, fix it", description: "Fix claim", action: `unblocks ${finding}` },
+          { id: "reject", label: "Not a defect", description: "Reject claim", action: `settles ${finding} as refuted` },
+        ] },
+      ] },
+    ] };
+    const posted = await asAgent(() => ops.postRound(root, { round: { id: "RQ-phone", source: "e2e", questionnaire }, decisions: [
+      { id: "q-choice", round: "RQ-phone", ref: "D30", kind: "options",
+        payload: { question: prompt, options: [{ label: "Real, fix it", description: "Fix claim" }, { label: "Not a defect", description: "Reject claim" }] },
+        options: [{ label: "Real, fix it", effects: [{ findings: [finding], on: "unblock" }] },
+          { label: "Not a defect", effects: [{ findings: [finding], on: "settle", as: "refuted" }] }] },
+    ] })) as any;
+    assert.equal(posted.ok, true, JSON.stringify(posted));
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+    const errors: string[] = [];
+    page.on("pageerror", (e: Error) => errors.push(e.message));
+    await page.goto(`${server.url}/#/u/${universe}/decisions/RQ-phone/`, { waitUntil: "networkidle" });
+    await page.waitForSelector('.questionnaire-form', { timeout: 10_000 });
+    const fits = () => page.evaluate(() => document.scrollingElement!.scrollWidth <= document.scrollingElement!.clientWidth + 1);
+    const wide = await page.evaluate(() => [...document.querySelectorAll("*")].filter((el) => el.getBoundingClientRect().right > document.documentElement.clientWidth + 1)
+      .slice(0, 12).map((el) => `${el.tagName.toLowerCase()}.${(el as HTMLElement).className} w=${Math.round(el.getBoundingClientRect().width)} r=${Math.round(el.getBoundingClientRect().right)}`));
+    assert.equal(await fits(), true, `the real page fits a phone: ${JSON.stringify(wide)}`);
+    const choice = page.locator('[data-question-id="q-choice"]');
+    await choice.getByText("Real, fix it", { exact: true }).click();
+    await choice.getByRole('button', { name: 'Submit this answer' }).click();
+    await page.waitForFunction(() => document.body.textContent?.includes('1 submitted'));
+    const detail = await ops.questionnaireDetail(root, 'RQ-phone', 'izzie@x.com') as any;
+    assert.equal(detail.progress.find((x: any) => x.principal === 'izzie@x.com').counts.submitted, 1);
+    assert.equal(await fits(), true, "and still fits once answered");
+    assert.deepEqual(errors, []);
+    await page.close();
+  });
+
   test("an identity-less or blocked questionnaire shows the complete frozen form without submission", async () => {
     const choicePrompt = `D30: read the rationale and decide whether ${finding} should close. Choice context. Action: settle or fix.`;
     const listPrompt = `D32: inspect ${finding} item by item. List context. Action: settle or fix.`;

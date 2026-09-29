@@ -265,7 +265,9 @@ async function api(path: string, q: URLSearchParams): Promise<unknown> {
       return ops.decisionRound(root, q.get("id") ?? "");
     case "/api/decisions/questionnaires": {
       const currentPrincipal = resolveActor(root)?.principal ?? null;
-      ops.noteWebPresence(root, currentPrincipal);
+      // Only the page's own poll says a person has the UI open (F39): a probe, a script or an
+      // agent reading this list is not a person who will see a question sent there.
+      if (q.get("presence") === "poll") ops.noteWebPresence(root, currentPrincipal);
       return { ...await ops.questionnaireList(root, currentPrincipal ?? undefined), currentPrincipal };
     }
     case "/api/decisions/questionnaire": {

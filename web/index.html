@@ -67,6 +67,13 @@
       header { gap: 10px; padding: 10px 12px; }
       .search input { width: 150px; }
     }
+    /* A phone: the view links wrap onto more lines instead of pushing the page sideways (B11). */
+    @media (max-width: 600px) {
+      header { flex-wrap: wrap; row-gap: 6px; }
+      .viewlink, .vmenu > summary { margin-left: 0; }
+      .search { flex: 1 1 100%; }
+      .search input { width: 100%; }
+    }
 
     main { padding: 16px 18px; max-width: 1100px; margin: 0 auto; }
     /* Graph pages use the full window width + viewport height for legibility. */

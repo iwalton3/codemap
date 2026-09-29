@@ -19,7 +19,7 @@ import { canonicalIssueKey, resolveDecisionIssue, type CanonicalIssueReference }
 import {
   CONFIRM_NO, CONFIRM_YES, NONE, canonicalMaps, briefManifest, briefListing, briefRefusal, readingRefusal, readerBrief as briefFor, bindRefusal, checkDecision, checkQuestionnaireDecisions, confirmPayload, confirmState, confirmedWords, decisionHash, logQuestionEvent,
   mapsKey, named, namedIssues, possiblySuperseded, postConfirmEvent, postRoundEvent, validMaps, loggedQuestionOnce,
-  revisionRelayQuestion, withdrawalQuestion, withdrawalBriefContent, withdrawalBriefHash, withdrawalReviewRefusal, WITHDRAW_IT, type WithdrawalReview, type WithdrawalReviewReceipt, withdrawalScope, standingForIssue, checkListRevision, listRevisionItemIds, parseListRelayAnswer, type ListRevision,
+  revisionRelayQuestion, withdrawalQuestion, withdrawalBriefContent, withdrawalBriefHash, withdrawalReviewRefusal, WITHDRAW_IT, type WithdrawalReview, type WithdrawalReviewReceipt, standingForIssue, checkListRevision, listRevisionItemIds, parseListRelayAnswer, type ListRevision,
   readingsInDispute, intentCandidates, nominateComparisonEvent, recordAnswerEvent, submitQuestionnaireEvent, recordReadingEvent, ruledNotCarriedOut, standing, standingForFinding, waitingOnMe, awaitingReading, parked, withdrawDecisionEvent, reviseAnswerEvent, resolveConflictEvent, rulerOf,
   type AnswerVia, type BriefEntry, type FoldedDecision, type Mapping, type SharedDecisions,
 } from "../shared-decisions.js";

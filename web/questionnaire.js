@@ -215,7 +215,7 @@ export function mountQuestionnaire(host, options) {
     append(root, nav);
   }
 
-  /** @type {Map<string, {card: HTMLElement, chip: HTMLElement, one: HTMLButtonElement, show: (answer: QuestionnaireAnswer|undefined, words: string) => void}>} */
+  /** @type {Map<string, {card: HTMLElement, chip: HTMLElement, one: HTMLButtonElement, show: (answer: QuestionnaireAnswer|undefined, words: string) => void, inputs: (HTMLInputElement|HTMLTextAreaElement|HTMLElement & {disabled?: boolean})[]}>} */
   const cards = new Map();
   const sendAll = /** @type {HTMLButtonElement} */ (node('button', 'pullbtn q-primary'));
   sendAll.type = 'button';
@@ -236,6 +236,9 @@ export function mountQuestionnaire(host, options) {
       c.card.dataset.state = state;
       c.chip.textContent = state === 'submitted' ? 'Submitted' : state === 'ready' ? 'Ready' : 'Not answered';
       c.one.disabled = busy || state !== 'ready';
+      // Read-only while a submit is pending (B8: F40): an edit typed now would be wiped by the
+      // success path, which restores the submitted answer. A submitted card stays locked.
+      if (state !== 'submitted') for (const input of c.inputs) input.disabled = busy;
     }
   };
   const setAnswer = (id, answer) => { draft.answers[id] = answer; persist(); refresh(); };
@@ -387,7 +390,7 @@ export function mountQuestionnaire(host, options) {
         one.hidden = true;
       };
       append(card, note);
-      cards.set(question.id, { card, chip, one, show });
+      cards.set(question.id, { card, chip, one, show, inputs });
       const prior = options.submitted?.[question.id];
       if (prior) show(prior.answer, prior.words);
       append(sectionNode, card);

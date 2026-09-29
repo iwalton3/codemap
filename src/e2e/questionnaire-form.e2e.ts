@@ -34,7 +34,7 @@ describe("questionnaire form in a browser", { skip: pw ? false : "playwright not
           window.calls = []; window.failSubmit = false;
           mountQuestionnaire(document.querySelector('#form'), {
             questionnaire: ${JSON.stringify(q)}, publicationId: new URLSearchParams(location.search).get('publication') || 'pub-1', version: 'v1', principal: 'alice',
-            onSubmit: async (payload) => { window.calls.push(payload); return window.failSubmit
+            onSubmit: async (payload) => { window.calls.push(payload); if (window.hold) await window.hold; return window.failSubmit
               ? { error: 'temporarily unavailable' } : { ok: true, receipt: 'receipt-1' }; },
           });
         </script>`);
@@ -94,6 +94,23 @@ describe("questionnaire form in a browser", { skip: pw ? false : "playwright not
       await page.close();
     });
   }
+
+  test("B8 (F40): inputs are read-only while a submit is pending, so no newer edit is silently lost", async () => {
+    const page = await browser.newPage();
+    await page.goto(`${base}/?publication=pending`);
+    await page.evaluate(() => { (window as any).hold = new Promise((r) => { (window as any).release = r; }); });
+    const short = page.locator('[data-question-id="short"]');
+    await short.locator("textarea").fill("A");
+    await short.getByRole("button", { name: "Submit this answer" }).click();
+    await page.waitForFunction(() => (window as any).calls.length === 1);
+    assert.equal(await short.locator("textarea").isDisabled(), true, "locked while the answer is in flight");
+    assert.equal(await page.locator('[data-question-id="choice"]').getByLabel("Yes").isDisabled(), true, "every unsubmitted answer is locked");
+    await page.evaluate(() => (window as any).release());
+    await page.waitForFunction(() => document.querySelector('[data-question-id="short"]')?.getAttribute("data-state") === "submitted");
+    assert.equal(await short.locator("textarea").inputValue(), "A");
+    assert.equal(await page.locator('[data-question-id="choice"]').getByLabel("Yes").isDisabled(), false, "and unlocked again after");
+    await page.close();
+  });
 
   test("a draft survives reload, a marked item without a correction is not ready, and a failed submit keeps everything", async () => {
     const page = await browser.newPage();

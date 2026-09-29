@@ -158,3 +158,12 @@ test("confirm records the read it performs", () => {
   assert.match(block, /markReviewed\(/, "confirming must record the read it performed");
   assert.match(block, /guardSelfCheck\(/, "and obey the same no-self-vouching rule as sanity_check");
 });
+
+test("B7 (F38): post_round states the settle rule the fold enforces", async () => {
+  const { readFileSync } = await import("node:fs");
+  const mcp = readFileSync("src/mcp.ts", "utf8"), fold = readFileSync("src/shared-decisions.ts", "utf8");
+  const post = mcp.slice(mcp.indexOf('name: "post_round"'), mcp.indexOf("inputSchema", mcp.indexOf('name: "post_round"')));
+  assert.match(fold, /x\.as !== "refuted" && x\.as !== "accepted"/, "the fold's rule, as this test assumes it");
+  assert.match(post, /as: \\"accepted\\"/, "the description names the acceptance settle");
+  assert.doesNotMatch(post, /a settle without `as: \\"refuted\\"`,/, "and no longer says refuted is the only settle");
+});

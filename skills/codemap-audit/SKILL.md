@@ -14,9 +14,10 @@ The requirements subsystem records what a caller reports; **nothing runs a lint 
 nothing runs a scrub**, by design. You are the thing that runs. That is the whole
 reason this file exists.
 
-Read `docs/requirements-architecture.md` § *What resets a coverage deadline* and
-`docs/cross-universe-standard.md` before your first pass. They are normative and
-short.
+Read two documents from the codemap repository (not this one, and not shipped with this skill),
+`docs/requirements-architecture.md` § *What resets a coverage deadline* and
+`docs/cross-universe-standard.md`, before your first pass. They are normative and short. If you
+cannot reach the codemap repository, say so to the person and stop: do not audit from memory.
 
 ## Pick the job, because they select on different things
 
