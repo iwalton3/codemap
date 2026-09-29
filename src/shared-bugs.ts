@@ -27,6 +27,7 @@
  * from a rename from a deletion that ignored the defect.
  */
 
+import { LogDamage } from "./log-damage.js";
 import { createHash } from "node:crypto";
 import { ISO_DATE, type Actor, type BugSeverity, type BugWitness } from "./schema.js";
 import { isAgentActor, isIndependent, isErrorIndependent, reviewerKey } from "./identity.js";
@@ -479,6 +480,10 @@ function foldBugsInternal(events: LogEvent[], replay: ApplicationReplay): Map<st
       }
 
       case "bug.rulingApplied": {
+        // No build ever published a version 1 or 2 capsule: one here is damage, not a refusal (plan 1.1).
+        const version = (d?.capsule as { version?: unknown } | undefined)?.version;
+        if (version === 1 || version === 2)
+          throw new LogDamage({ id: e.id, kind: e.kind, why: `a ruling application in a dev-era capsule (version ${version}); this build writes version 3` });
         const attempts = (b.applications ??= []);
         const checked = validateApplicationCapsule(d?.capsule, "bug", e.subject);
         if ("error" in checked) {
@@ -509,7 +514,7 @@ function foldBugsInternal(events: LogEvent[], replay: ApplicationReplay): Map<st
         }
         spent.add(capsule.key);
         attempts.push({ eventId: e.id, at: e.at, by: e.actor, status: "executed", key: capsule.key, capsule });
-        b.state = "invalid";
+        b.state = capsule.outcome;
         b.closed = { eventId: e.id, at: e.at, by: e.actor, reason: capsule.reason };
         b.pending = undefined;
         break;

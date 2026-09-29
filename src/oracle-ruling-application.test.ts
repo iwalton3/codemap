@@ -98,7 +98,7 @@ test("two clones preserve one-shot application across reopen and delayed duplica
       "a12345671", "5e55a0a0-0000-0000-0000-000000000001");
     await settle(t);
     for (const issue of await readBoth(a, b, original.id)) {
-      assert.equal(issue.state, "invalid");
+      assert.equal(issue.state, "refuted");
       assert.equal(issue.closed?.eventId, first);
       assert.deepEqual(issue.applications?.map((x) => x.status), ["executed"]);
     }
@@ -136,7 +136,7 @@ test("two clones preserve one-shot application across reopen and delayed duplica
     assert.notEqual(second, first);
     await settle(t);
     for (const issue of await readBoth(a, b, original.id)) {
-      assert.equal(issue.state, "invalid");
+      assert.equal(issue.state, "refuted");
       assert.equal(issue.closed?.eventId, second);
       assert.deepEqual(issue.applications?.map((x) => x.status), ["executed", "duplicate", "executed"]);
       assert.notEqual(issue.applications?.[0]?.key, issue.applications?.[2]?.key);

@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { testChain, testEvent } from "./test-events.js";
 import { sortEvents, type LogEvent } from "./eventlog.js";
+import { isLogDamage } from "./log-damage.js";
 import { foldFindings, findingScope } from "./shared-findings.js";
 import { foldBugs, bugScope } from "./shared-bugs.js";
 import { canonicalIssueKey, type CanonicalIssueReference } from "./decision-issues.js";
@@ -28,12 +29,15 @@ function fixture(kind: "finding" | "bug") {
   });
   const fold = kind === "finding" ? foldFindings : foldBugs;
   const claimHash = issueClaimHash(kind, fold([created]).get(id)!);
-  const display = { question: `Is ${id} invalid?`, answer: `Yes, ${id} rests on an unsupported rule.`, context: "full ruling context" };
+  // The context the person was shown: the chosen option settles nothing about this issue, so
+  // the ruling defeats its premise and closes it as invalid.
+  const context = JSON.stringify({ payload: { question: `Is ${id} invalid?` }, options: [{ label: "Yes", effects: [] }], selected: ["Yes"], answerer: human.principal });
+  const display = { question: `Is ${id} invalid?`, answer: `Yes, ${id} rests on an unsupported rule.`, context };
   const displayHash = applicationDisplayHash(display);
   const make = (rulingKey = "ruling_1", openEpoch = "01", openState: "created" | "issued" = "issued"): ApplicationCapsuleV1 => {
     const issueKey = canonicalIssueKey(ref);
     return {
-      version: 1, key: applicationKey(rulingKey, issueKey),
+      version: 3, outcome: "invalid", key: applicationKey(rulingKey, issueKey),
       issue: { ref, key: issueKey, openEpoch, openState, claimHash },
       ruling: {
         answerId: rulingKey, roundId: "round_1", questionId: "question_1",
@@ -147,7 +151,7 @@ test("capsule checks correspondence and independent reader receipts", () => {
   if (wrongReview.issue.ref.kind === "finding") wrongReview.issue.ref.review = "2";
   assert.match((validateApplicationCapsule(wrongReview, "finding", f.id) as { error: string }).error, /identity/);
   const substring = structuredClone(c);
-  substring.ruling.display = { question: "Is f_10 invalid?", answer: "Yes", context: "context" };
+  substring.ruling.display = { question: "Is f_10 invalid?", answer: "Yes", context: c.ruling.display.context };
   substring.ruling.displayHash = applicationDisplayHash(substring.ruling.display);
   substring.evidence.readers[0]!.rulingHash = substring.ruling.displayHash;
   assert.match((validateApplicationCapsule(substring, "finding", f.id) as { error: string }).error, /not shown/);
@@ -170,7 +174,7 @@ test("capsule checks correspondence and independent reader receipts", () => {
 test("acceptance capsule requires exact selected human disposition and preserves the consumed act", () => {
   const f = fixture("finding");
   const cap = f.make();
-  cap.version = 2;
+  cap.outcome = "accepted";
   cap.ruling.answerer = { principal: human.principal };
   cap.acceptance = { by: human, option: "Accept permanently", findingId: f.id };
   cap.ruling.display = { question: `Accept ${f.id} as real and deliberately not being fixed?`, answer: "Accept permanently",
@@ -182,8 +186,10 @@ test("acceptance capsule requires exact selected human disposition and preserves
   assert.equal(accepted.state, "accepted");
   assert.deepEqual(accepted.closed?.by, human);
   assert.equal(f.fold([f.created, f.app("02", cap), f.reopen("03", "02"), f.app("04", cap)]).get(f.id)!.state, "created");
+  // A capsule in a dev-era version is damage: the fold halts on it rather than refusing it.
+  const old = structuredClone(cap) as any; old.version = 1;
+  assert.throws(() => f.fold([f.created, f.app("02", old)]), (e: unknown) => isLogDamage(e) && e.entry.id === "02");
   for (const mutate of [
-    (c: any) => c.version = 1,
     (c: any) => c.acceptance.by = agent,
     (c: any) => c.acceptance.findingId = "other",
     (c: any) => c.ruling.display.context = JSON.stringify({ selected: ["Plan only"], options: [{ label: "Accept permanently", effects: [{ findings: [f.id], on: "settle", as: "accepted" }] }] }),
@@ -200,7 +206,7 @@ test("acceptance capsule requires exact selected human disposition and preserves
 test("acceptance replay refuses malformed context and contradictory selected effects without crashing", () => {
   const f = fixture("finding");
   const make = (context: unknown) => {
-    const c = f.make(); c.version = 2;
+    const c = f.make(); c.outcome = "accepted";
     c.acceptance = { by: human, option: "Accept", findingId: f.id };
     c.ruling.answerer = { principal: human.principal };
     c.ruling.display = { question: `Accept ${f.id}?`, answer: "Accept", context: JSON.stringify(context && typeof context === "object" ? { ...context, answerer: human.principal } : context) };
@@ -236,4 +242,39 @@ test("acceptance replay refuses malformed context and contradictory selected eff
   stranger.ruling.answerer = { principal: "stranger@example.test" };
   assert.ok("error" in validateApplicationCapsule(stranger, "finding", f.id), "answerer remains bound to the reader's hashed shown context");
   assert.equal(f.fold([f.created, f.app("02", stranger)]).get(f.id)!.state, "issued");
+});
+
+for (const kind of ["finding", "bug"] as const) {
+  test(`${kind}: a ruling whose chosen option settles it as refuted closes it as refuted, not invalid`, () => {
+    // Owner, batch 7: the one pathway oddity this merge fixes — decision closures record the outcome ruled.
+    const f = fixture(kind);
+    const cap = f.make();
+    cap.outcome = "refuted";
+    const effect = kind === "finding" ? { findings: [f.id], on: "settle", as: "refuted" } : { findings: [], issues: [f.ref], on: "settle", as: "refuted" };
+    cap.ruling.display = { ...cap.ruling.display, context: JSON.stringify({ payload: {}, options: [{ label: "Refute", effects: [effect] }], selected: ["Refute"], answerer: human.principal }) };
+    cap.ruling.displayHash = applicationDisplayHash(cap.ruling.display);
+    cap.evidence.readers[0]!.rulingHash = cap.ruling.displayHash;
+    assert.equal(f.fold([f.created, f.app("02", cap)]).get(f.id)!.state, "refuted");
+    // An outcome the chosen option does not say is refused, whichever way it lies.
+    for (const outcome of ["invalid", "accepted"] as const) {
+      const wrong = structuredClone(cap); wrong.outcome = outcome;
+      assert.ok("error" in validateApplicationCapsule(wrong, kind, f.id), outcome);
+    }
+  });
+}
+
+test("the fold binds an arbitrator to the two reader receipts it read, not only the op", () => {
+  const f = fixture("finding");
+  const cap = f.make();
+  delete cap.evidence.directMention;
+  const reader = cap.evidence.readers[0]!;
+  cap.evidence.readers = [{ ...reader, verdict: "sound" }, { ...reader, id: "receipt_2", request: "request_2", launch: "launch_2", session: "session_2", verdict: "unsound" }];
+  const arbitrator = { ...reader, id: "receipt_3", request: "request_3", launch: "launch_3", session: "session_3", verdict: "sound" as const };
+  cap.evidence.arbitrator = { ...arbitrator, readerReceipts: ["receipt_1", "receipt_2"] };
+  assert.ok("capsule" in validateApplicationCapsule(cap, "finding", f.id));
+  for (const readerReceipts of [undefined, ["receipt_1", "receipt_x"], ["receipt_2", "receipt_1"]]) {
+    const bad = structuredClone(cap); bad.evidence.arbitrator = { ...arbitrator, ...(readerReceipts ? { readerReceipts } : {}) };
+    assert.match((validateApplicationCapsule(bad, "finding", f.id) as { error: string }).error, /did not read these two/, JSON.stringify(readerReceipts));
+    assert.equal(f.fold([f.created, f.app("02", bad)]).get(f.id)!.state, "issued");
+  }
 });

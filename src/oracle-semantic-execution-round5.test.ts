@@ -124,7 +124,7 @@ test("a prior invalidity application is shown with exact receipts when a later c
       assert.equal(applied.ok, true, JSON.stringify(applied)); execution = applied.application;
     });
     await settle(u.t); await checkSettled(u.t, u.ledger);
-    for (const member of u.t.all) assert.equal((await readFinding(member.repo, u.finding))?.state, "invalid");
+    for (const member of u.t.all) assert.equal((await readFinding(member.repo, u.finding))?.state, "refuted");
     await as(B, false, async () => {
       const result = await answerDirect(b!.repo, { decision: "d1", option: "Fix" }) as any;
       assert.equal(result.recorded, true, JSON.stringify(result)); second = result.answer;
@@ -139,7 +139,7 @@ test("a prior invalidity application is shown with exact receipts when a later c
       assert.equal(application.capsule.issue.ref.id, u.finding);
       assert.equal(application.capsule.ruling.answerId, first);
       assert.equal(application.capsule.evidence.readers[0].id, readerReceipt);
-      assert.equal((await readFinding(member.repo, u.finding))?.state, "invalid",
+      assert.equal((await readFinding(member.repo, u.finding))?.state, "refuted",
         "discovering disagreement cannot reopen an executed closure");
     }
     const humanBrief = await comparisonResolutionBrief(a!.repo, compared.id) as any;
@@ -151,7 +151,7 @@ test("a prior invalidity application is shown with exact receipts when a later c
     });
     await settle(u.t); await checkSettled(u.t, u.ledger);
     for (const member of u.t.all) {
-      assert.equal((await readFinding(member.repo, u.finding))?.state, "invalid");
+      assert.equal((await readFinding(member.repo, u.finding))?.state, "refuted");
       assert.equal((await comparisonDetail(member.repo, compared.id) as any).comparison.projection.preservedAnswer, second);
     }
   } finally { u.cleanup(); }

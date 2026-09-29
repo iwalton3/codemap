@@ -15,7 +15,7 @@ import { saveReaderRequest, readerRequest, holdReaderReceipt, readerReceipts, se
 import { readReader, isUnverified, transcriptDir } from "../transcript.js";
 import {
   applicationDisplayHash, applicationKey, issueClaimHash, validateApplicationCapsule,
-  type ApplicationCapsuleV1, type ApplicationReaderReceipt,
+  type ApplicationCapsuleV1, type ApplicationReaderReceipt, type ApplicationOutcome,
 } from "../ruling-application.js";
 import { materializeBugs } from "../bugs-publish.js";
 import { lookupFinding } from "../store.js";
@@ -35,6 +35,7 @@ interface Context {
   directMention?: string;
   decisionFingerprint: string;
   acceptance?: ApplicationCapsuleV1["acceptance"];
+  outcome: ApplicationOutcome;
 }
 
 const shownExactLink = (shown: string, ref: Extract<ResolvedIssue, { ref: { kind: "finding" } }>["ref"]): string | undefined => {
@@ -110,7 +111,12 @@ async function context(root: string, input: { issue: IssueReference; answerId: s
     return { error: "acceptance must select one unambiguous finding disposition" };
   const acceptance = acceptanceOptions.length ? { by: { principal: a.by.principal }, option: acceptanceOptions[0]!.label, findingId: resolved.ref.id } : undefined;
   const display = { question: d.payload.question, answer: [a.words, ...selected.map((option) => option.description ?? "")].filter(Boolean).join("\n"),
-    context: JSON.stringify({ payload: d.payload, options: d.options, ...(acceptance ? { selected: a.options, answerer: a.by.principal } : {}) }) };
+    context: JSON.stringify({ payload: d.payload, options: d.options, selected: a.options, answerer: a.by.principal }) };
+  // What the chosen option settles this issue as; a ruling that settles nothing about it
+  // defeats its premise, which is `invalid`.
+  const settle = d.options.filter((o) => a.options.includes(o.label)).flatMap((o) => o.effects)
+    .find((e) => e.on === "settle" && (e.findings.includes(resolved.ref.id) || e.issues?.some((i) => canonicalIssueKey(i) === resolved.key)));
+  const outcome: ApplicationOutcome = acceptance ? "accepted" : settle?.as === "refuted" ? "refuted" : "invalid";
   const claimHash = issueClaimHash(resolved.ref.kind, issue);
   const questionOrAnswer = `${display.question}\n${display.answer}`;
   const findingLookup = resolved.ref.kind === "finding" ? lookupFinding(root, resolved.ref.id) : undefined;
@@ -119,7 +125,7 @@ async function context(root: string, input: { issue: IssueReference; answerId: s
     ? shownExactLink(questionOrAnswer, resolved.ref) ?? (unambiguous && shownExactId(questionOrAnswer, resolved.ref.id) ? resolved.ref.id : undefined)
     : shownExactId(questionOrAnswer, resolved.ref.id) ? resolved.ref.id : undefined;
   return { target: resolved, issue, decision: d, answer: a, display, displayHash: applicationDisplayHash(display),
-    claimHash, directMention, acceptance, decisionFingerprint: digest(source.events.map((e) => [e.id, e.kind, e.data])) };
+    claimHash, directMention, acceptance, outcome, decisionFingerprint: digest(source.events.map((e) => [e.id, e.kind, e.data])) };
 }
 
 export interface ApplicationReceiptRef { requestId: string; receipt: string; agentId: string; callId: string }
@@ -323,17 +329,18 @@ export async function applyRuling(root: string, input: { issue: IssueReference; 
       by: { principal: actor.principal, via: { kind: "agent", harness: "subagent" } },
       briefHash: digest(x.brief.prompt), manifestHash: digest([x.brief.issueKey, x.brief.claimHash, x.brief.displayHash]),
       issueHash: c.claimHash, rulingHash: c.displayHash, verdict: x.body.verdict, rationale: x.body.rationale,
+      ...(x.brief.readerReceipts ? { readerReceipts: x.brief.readerReceipts } : {}),
     }));
     const readers = receipts(verified.slice(0, input.readers.length));
     const arbitrator = input.arbitrator ? receipts(verified.slice(-1))[0] : undefined;
     const capsule: ApplicationCapsuleV1 = {
-      version: c.acceptance ? 2 : 1, key, ...(c.acceptance ? { acceptance: c.acceptance } : {}),
+      version: 3, outcome: c.outcome, key, ...(c.acceptance ? { acceptance: c.acceptance } : {}),
       issue: { ref: c.target.ref, key: c.target.key, openEpoch: target.openEpoch!, openState: target.state as "issued" | "created", claimHash: c.claimHash },
       ruling: { answerId: c.answer.id, ...(c.acceptance ? { answerer: { principal: c.answer.by.principal } } : {}), roundId: c.decision.round, questionId: c.decision.id,
         display: c.display, displayHash: c.displayHash,
         authority: { checkedAt: new Date().toISOString(), sourceFingerprint: c.decisionFingerprint, status: "current", comparison: "clear" } },
       evidence: { ...(c.directMention ? { directMention: c.directMention } : {}), readers, ...(arbitrator ? { arbitrator } : {}) },
-      reason: `The ruling ${c.answer.id} ${c.acceptance ? "explicitly accepts this finding" : "defeats this issue's premise"}: ${[...readers, ...(arbitrator ? [arbitrator] : [])].map((x) => x.rationale).join("; ")}`,
+      reason: `The ruling ${c.answer.id} ${c.outcome === "accepted" ? "explicitly accepts this finding" : c.outcome === "refuted" ? "refutes this issue" : "defeats this issue's premise"}: ${[...readers, ...(arbitrator ? [arbitrator] : [])].map((x) => x.rationale).join("; ")}`,
     };
     const checked = validateApplicationCapsule(capsule, resolved.ref.kind, resolved.ref.id);
     if ("error" in checked) return { error: checked.error };

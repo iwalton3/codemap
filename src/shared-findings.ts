@@ -1,3 +1,4 @@
+import { LogDamage } from "./log-damage.js";
 import { foldRepairRecords, type RepairFindingMap } from "./repair-records.js";
 import { foldRepairVerification, type RepairVerificationApplication } from "./repair-verification.js";
 /**
@@ -1007,6 +1008,10 @@ function foldFindingsInternal(events: LogEvent[], replay: ApplicationReplay): Ma
       }
 
       case "finding.rulingApplied": {
+        // No build ever published a version 1 or 2 capsule: one here is damage, not a refusal (plan 1.1).
+        const version = (d?.capsule as { version?: unknown } | undefined)?.version;
+        if (version === 1 || version === 2)
+          throw new LogDamage({ id: e.id, kind: e.kind, why: `a ruling application in a dev-era capsule (version ${version}); this build writes version 3` });
         const attempts = (f.applications ??= []);
         const checked = validateApplicationCapsule(d?.capsule, "finding", e.subject);
         if ("error" in checked) {
@@ -1037,7 +1042,7 @@ function foldFindingsInternal(events: LogEvent[], replay: ApplicationReplay): Ma
         }
         spent.add(capsule.key);
         attempts.push({ eventId: e.id, at: e.at, by: e.actor, status: "executed", key: capsule.key, capsule });
-        f.state = capsule.acceptance ? "accepted" : "invalid";
+        f.state = capsule.outcome;
         f.closed = { eventId: e.id, at: e.at, by: capsule.acceptance?.by ?? e.actor, reason: capsule.reason };
         f.pending = undefined;
         break;

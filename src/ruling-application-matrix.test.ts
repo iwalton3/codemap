@@ -170,7 +170,7 @@ test("indirect bug application preserves its typed target and needs two sound re
       const applied = await applyRuling(u.root, { issue: u.issue, answerId: u.answer,
         readers: [first.ref, second.ref] }, u.transcripts) as any;
       assert.equal(applied.ok, true, JSON.stringify(applied));
-      assert.equal((await issueRow(u))?.state, "invalid");
+      assert.equal((await issueRow(u))?.state, "refuted");
       assert.equal((await applicationEvents(u)).length, 1);
     });
   } finally { u.cleanup(); }

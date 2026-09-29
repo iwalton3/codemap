@@ -19,11 +19,22 @@ export interface ApplicationReaderReceipt {
   rulingHash: string;
   verdict: "sound" | "unsound";
   rationale: string;
+  /** An arbitrator's only: the two reader receipts it was shown, so the fold can bind it to them. */
+  readerReceipts?: string[];
 }
 
+/** What the ruling closes the issue AS — from the option the person chose, never a default. */
+export type ApplicationOutcome = "refuted" | "accepted" | "invalid";
+
+/**
+ * Version 3 is the only version a fold accepts (plan 1.1): 1 and 2 carried no outcome, so a ruling
+ * that said "refuted" closed as `invalid`, and no arbitrator binding the fold could check. None
+ * were ever published; an event carrying one is damage.
+ */
 export interface ApplicationCapsuleV1 {
-  version: 1 | 2;
-  /** Version 2 binds explicit acceptance to the verified human choice. */
+  version: 3;
+  outcome: ApplicationOutcome;
+  /** Explicit acceptance, bound to the verified human choice. Present iff `outcome` is accepted. */
   acceptance?: { by: Actor; option: string; findingId: string };
   key: string;
   issue: {
@@ -140,12 +151,25 @@ const receipt = (v: unknown, issueHash: string, rulingHash: string): v is Applic
 export function validateApplicationCapsule(
   raw: unknown, kind: "finding" | "bug", subject: string,
 ): { capsule: ApplicationCapsuleV1 } | { error: string } {
-  if (!obj(raw) || raw.version !== 1 && raw.version !== 2) return { error: "unsupported or missing application capsule version" };
+  if (!obj(raw) || raw.version !== 3) return { error: "unsupported or missing application capsule version" };
   const c = raw as unknown as ApplicationCapsuleV1;
   if (!obj(c.issue) || !obj(c.issue.ref) || !obj(c.ruling) || !obj(c.evidence)) return { error: "incomplete application capsule" };
   const ref = c.issue.ref;
-  if (c.version === 1 && c.acceptance !== undefined) return { error: "legacy application cannot carry acceptance" };
-  if (c.version === 2) {
+  if (c.outcome !== "refuted" && c.outcome !== "accepted" && c.outcome !== "invalid") return { error: "an application says what it closes the issue as" };
+  if ((c.outcome === "accepted") !== (c.acceptance !== undefined)) return { error: "only an accepting ruling carries acceptance, and it always does" };
+  // The outcome is the chosen option's own settle, read from the context the person was shown.
+  let shownRuling: any;
+  try { shownRuling = JSON.parse(c.ruling.display.context); } catch { return { error: "the ruling context is not comparable" }; }
+  const chosen = obj(shownRuling) && Array.isArray(shownRuling.options) && Array.isArray(shownRuling.selected)
+    ? shownRuling.options.filter((o: any) => obj(o) && shownRuling.selected.includes(o.label)) : undefined;
+  if (!chosen) return { error: "the ruling context does not show the chosen options" };
+  const namesThis = (e: any) => obj(e) && ((Array.isArray(e.findings) && e.findings.includes(subject))
+    || (Array.isArray(e.issues) && e.issues.some((i: any) => obj(i) && i.kind === kind && i.id === subject)));
+  const settles = chosen.flatMap((o: any) => (Array.isArray(o.effects) ? o.effects : []).filter((e: any) => namesThis(e) && e.on === "settle"));
+  const said = settles.length ? settles[0].as : undefined;
+  if (settles.some((e: any) => e.as !== said) || (said ? said !== c.outcome : c.outcome !== "invalid"))
+    return { error: `the chosen option settles this issue as ${said ?? "nothing"}, not ${c.outcome}` };
+  if (c.acceptance !== undefined) {
     const a = c.acceptance;
     if (kind !== "finding" || !obj(a) || !obj(a.by) || !str(a.by.principal) || a.by.via !== undefined
       || !str(a.option) || a.findingId !== subject) return { error: "acceptance requires a human principal and exact finding" };
@@ -202,6 +226,9 @@ export function validateApplicationCapsule(
     if (!receipt(arb, c.issue.claimHash, r.displayHash) || arb.verdict !== "sound"
       || readers.some((x) => x.session === arb.session || x.launch === arb.launch || x.id === arb.id))
       return { error: "reader disagreement lacks an independent sound arbitrator" };
+    // Bound here, not only in the op: the arbitrator read THESE two receipts (plan 1.1).
+    if (JSON.stringify(arb.readerReceipts) !== JSON.stringify(readers.map((x) => x.id)))
+      return { error: "the arbitrator did not read these two reader receipts" };
   }
   return { capsule: c };
 }

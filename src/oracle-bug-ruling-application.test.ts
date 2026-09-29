@@ -82,7 +82,7 @@ test("two clones keep a bug ruling pair spent after reopen, delayed duplicate an
     await settle(t);
     for (const m of [a, b]) {
       const bug = await readBug(m.repo, issue.id);
-      assert.equal(bug?.state, "invalid");
+      assert.equal(bug?.state, "refuted");
       assert.equal(bug?.closed?.eventId, first);
       assert.deepEqual(bug?.applications?.map((x) => x.status), ["executed"]);
     }
@@ -124,7 +124,7 @@ test("two clones keep a bug ruling pair spent after reopen, delayed duplicate an
     await settle(t);
     for (const m of [a, b]) {
       const bug = await readBug(m.repo, issue.id);
-      assert.equal(bug?.state, "invalid");
+      assert.equal(bug?.state, "refuted");
       assert.equal(bug?.closed?.eventId, second);
       assert.deepEqual(bug?.applications?.map((x) => x.status), ["executed", "duplicate", "executed"]);
       assert.notEqual(bug?.applications?.[0]?.key, bug?.applications?.[2]?.key);

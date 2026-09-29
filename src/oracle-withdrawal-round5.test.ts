@@ -210,7 +210,7 @@ test("withdrawing an executed ruling preserves its finding closure and receipt o
     await settle(u.t); await checkSettled(u.t, u.ledger);
     for (const member of u.t.all) {
       const finding = await readFinding(member.repo, u.first);
-      assert.equal(finding?.state, "invalid", "withdrawal cannot silently reopen an executed closure");
+      assert.equal(finding?.state, "refuted", "withdrawal cannot silently reopen an executed closure");
       assert.ok(finding?.applications?.some((entry) => entry.eventId === application && entry.status === "executed"));
       const round = await decisionRound(member.repo, "R1") as any;
       const historical = round.decisions.find((d: any) => d.id === u.q1).answers.find((entry: any) => entry.id === answer);

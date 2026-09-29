@@ -101,7 +101,7 @@ test("application refuses bare approval and requires a recorded authentic reader
       assert.equal((recordApplicationVerdict(u.root, ref, u.tx) as any).recorded, true);
       const applied = await applyRuling(u.root, { issue: u.issue, answerId: u.answer, readers: [ref] }, u.tx) as any;
       assert.equal(applied.ok, true, JSON.stringify(applied));
-      assert.equal((await readFinding(u.root, u.id))?.state, "invalid", JSON.stringify(await readFinding(u.root, u.id)));
+      assert.equal((await readFinding(u.root, u.id))?.state, "refuted", JSON.stringify(await readFinding(u.root, u.id)));
       const retry = await applyRuling(u.root, { issue: u.issue, answerId: u.answer, readers: [] }, u.tx) as any;
       assert.equal(retry.application, applied.application, JSON.stringify(retry));
     });
@@ -208,7 +208,7 @@ test("a typed bug ruling uses exact bug scope and closes only with an authentic 
       assert.equal((recordApplicationVerdict(u.root, ref, u.tx) as any).recorded, true);
       const applied = await applyRuling(u.root, { issue, answerId: answer, readers: [ref] }, u.tx) as any;
       assert.equal(applied.ok, true, JSON.stringify(applied));
-      assert.equal((await readBug(u.root, bugId))?.state, "invalid");
+      assert.equal((await readBug(u.root, bugId))?.state, "refuted");
       assert.equal((await readFinding(u.root, u.id))?.state, "issued");
     });
   } finally { u.cleanup(); }
