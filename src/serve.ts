@@ -23,6 +23,17 @@ import { markReviewed, unmarkReviewed } from "./reviews.js";
 import { withLock } from "./lock.js";
 import { resolveActor } from "./identity.js";
 import { comparisonDetail, comparisonResolutionBrief, resolveComparison } from "./ops/comparisons.js";
+import { asLockout, lockoutGate } from "./lockout-gate.js";
+import type { LockedOut } from "./lockout.js";
+
+/** The routes a locked store still answers: sync and pull fetch, re-check, and clear a lock. */
+const RUNS_WHILE_LOCKED = new Set(["/api/shared/sync", "/api/shared/pull"]);
+
+/** 423 Locked, carrying the one diagnostic every page shows in place of itself (plan 1.2). */
+function sendLockout(res: import("node:http").ServerResponse, lockout: LockedOut): void {
+  res.writeHead(423, { "content-type": "application/json; charset=utf-8" });
+  res.end(JSON.stringify({ error: lockout.message, lockout: lockout.lockout }));
+}
 
 const WEB_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "web");
 
@@ -354,6 +365,12 @@ async function serveStatic(urlPath: string): Promise<{ body: Buffer; type: strin
 const server = createServer(async (req, res) => {
   try {
     const url = new URL(req.url ?? "/", "http://localhost");
+    // Damage anywhere this server can see locks every read and act, in every universe. The
+    // page itself still loads, so it can say so.
+    if (url.pathname.startsWith("/api/") && !RUNS_WHILE_LOCKED.has(url.pathname)) {
+      const lockout = await lockoutGate(ws.universes.map((u) => u.path));
+      if (lockout) { sendLockout(res, lockout); return; }
+    }
 
     // The one write path from the UI: mark/unmark a review (under the write lock).
     // Ratifying and withdrawing are PRINCIPAL acts, and this is a person at a browser
@@ -991,6 +1008,8 @@ const server = createServer(async (req, res) => {
     res.writeHead(200, { "content-type": file.type });
     res.end(file.body);
   } catch (e: any) {
+    const lockout = await asLockout(e, ws.universes.map((u) => u.path)).catch(() => null);
+    if (lockout) { sendLockout(res, lockout); return; }
     res.writeHead(500, { "content-type": "application/json" });
     res.end(JSON.stringify({ error: e?.message ?? String(e) }));
   }

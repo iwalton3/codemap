@@ -1,7 +1,8 @@
 /** Acceptance probes for the remaining explicit lifecycle acts in plan §3. */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { decisionHash, foldDecisions, revisionRelayQuestion, standingForFinding, standingForIssue, waitingOnMe, heldFindings,
+import { isLogDamage } from "./log-damage.js";
+import { decisionHash, foldDecisions, foldDecisionsReport, revisionRelayQuestion, standingForFinding, standingForIssue, waitingOnMe, heldFindings,
   withdrawalQuestion, withdrawalBriefContent, withdrawalBriefHash, WITHDRAW_IT, KEEP_IT } from "./shared-decisions.js";
 
 const alice = { principal: "alice" };
@@ -19,66 +20,75 @@ const findingDecision: any = {
     { label: "Keep open", effects: [] }],
 };
 const post = (d: any, id = "p1", round = "R1") => event(id, "decision.round.posted", round,
-  { round: { id: round, source: "test", universe: "u" }, decisions: [d] }, agent);
+  { publication: 2, round: { id: round, source: "test", universe: "u" }, decisions: [d] }, agent);
+/** A posted decision's id is its posting event's (`p1:d1`); its label is the id it was posted with. */
+const byLabel = (label: string) => (x: { label?: string }) => x.label === label;
+/** Why the fold halts on these events (plan 1.2), or undefined when it folds them. */
+const damageOf = (evs: any[]): string | undefined => {
+  try { foldDecisionsReport(evs); return undefined; } catch (e) { if (isLogDamage(e)) return e.entry.why; throw e; }
+};
 const answer = (id: string, d: any, option: string, actor: any, after: string[]) => event(id, "decision.answer.recorded", d.id,
   { decision: d.id, hash: decisionHash(d), via: { kind: "direct", option } }, actor, after);
 
 test("an agent retires a ruling only as the person's answer to the relayed withdrawal question", () => {
   // Owner, 2026-09-28: "me for rulings, allow relay via verified question system".
   const p = post(findingDecision), a = answer("a2", findingDecision, "Settle", alice, [p.id]);
-  const d1 = foldDecisions([p, a]).decisions.find((x) => x.id === "d1")!;
+  const d1 = foldDecisions([p, a]).decisions.find(byLabel("d1"))!;
   const reason = "it conflicts with the later currency ruling";
   const q = withdrawalQuestion(d1, d1.answers[0]!, reason, "D1");
   const relay: any = { id: "withdraw", round: "R9", ref: "D1", kind: "options", payload: q, options: q.options.map((o) => ({ label: o.label, effects: [] })) };
   const posted = { ...post(relay, "p3", "R9"), after: [a.id] };
-  const withdraw = (id: string, after: string[], over: any = {}) => event(id, "decision.withdrawn", "d1",
-    { decision: "d1", answer: a.id, reason, knownAnswers: [a.id], relay: "withdraw", ...over }, agent, after);
-  const state = (evs: any[], id: string) => foldDecisions(evs).decisions.find((x) => x.id === "d1")!.withdrawals?.find((w) => w.id === id);
+  const withdraw = (id: string, after: string[], over: any = {}) => event(id, "decision.withdrawn", "p1:d1",
+    { decision: "p1:d1", answer: a.id, reason, knownAnswers: [a.id], relay: "p3:withdraw", ...over }, agent, after);
+  const state = (evs: any[], id: string) => foldDecisions(evs).decisions.find(byLabel("d1"))!.withdrawals?.find((w) => w.id === id);
 
   const yes = answer("a4", relay, WITHDRAW_IT, alice, [posted.id]);
   assert.equal(state([p, a, posted, yes, withdraw("w5", [yes.id])], "w5")?.state, "applied");
-  assert.equal(foldDecisions([p, a, posted, yes, withdraw("w5", [yes.id])]).decisions.find((x) => x.id === "d1")!.answers[0]!.withdrawn?.by, "w5");
-  assert.match(state([p, a, posted, answer("a4", relay, KEEP_IT, alice, [posted.id]), withdraw("w5", ["a4"])], "w5")?.refused ?? "", /has not answered "Withdraw it"/);
-  assert.match(state([p, a, posted, answer("a4", relay, WITHDRAW_IT, bob, [posted.id]), withdraw("w5", ["a4"])], "w5")?.refused ?? "", /has not answered/,
+  assert.equal(foldDecisions([p, a, posted, yes, withdraw("w5", [yes.id])]).decisions.find(byLabel("d1"))!.answers[0]!.withdrawn?.by, "w5");
+  // Each refusal below is one the agent's own door makes, so a log holding it halts on it.
+  assert.match(damageOf([p, a, posted, answer("a4", relay, KEEP_IT, alice, [posted.id]), withdraw("w5", ["a4"])]) ?? "", /has not answered "Withdraw it"/);
+  assert.match(damageOf([p, a, posted, answer("a4", relay, WITHDRAW_IT, bob, [posted.id]), withdraw("w5", ["a4"])]) ?? "", /has not answered/,
     "another person's answer is not the ruling's principal's");
-  assert.match(state([p, a, posted, yes, withdraw("w5", [posted.id])], "w5")?.refused ?? "", /before the person's answer/);
-  assert.match(state([p, a, posted, yes, withdraw("w5", [yes.id], { reason: "a different reason" })], "w5")?.refused ?? "", /relayed withdrawal question/);
-  assert.match(state([p, a, withdraw("w5", [a.id], { relay: undefined })], "w5")?.refused ?? "", /relayed withdrawal question/, "no relay, no retirement");
+  // Written without having seen the person's answer: its writer's own door saw no answer.
+  assert.match(damageOf([p, a, posted, yes, withdraw("w5", [posted.id])]) ?? "", /has not answered "Withdraw it"/);
+  assert.match(damageOf([p, a, posted, yes, withdraw("w5", [yes.id], { reason: "a different reason" })]) ?? "", /relayed withdrawal question/);
+  assert.match(damageOf([p, a, withdraw("w5", [a.id], { relay: undefined })]) ?? "", /relayed withdrawal question/, "no relay, no retirement");
 });
 
 test("an agent withdraws an unanswered question only with two sound readers, or an arbitrator between them", () => {
   // Owner: "Readers for unanswered" — the ruling-application shape (A6).
   const p = post(findingDecision);
-  const d1 = foldDecisions([p]).decisions.find((x) => x.id === "d1")!;
+  const d1 = foldDecisions([p]).decisions.find(byLabel("d1"))!;
   const reason = "the finding was withdrawn by its author";
   const brief = withdrawalBriefHash(withdrawalBriefContent(d1, reason));
   const reader = (n: number, verdict: "sound" | "unsound", hash = brief) => ({ id: `r${n}`, session: `s${n}`, launch: `l${n}`, briefHash: hash, verdict, rationale: `reason ${n}` });
-  const withdraw = (review: unknown) => event("w5", "decision.withdrawn", "d1", { decision: "d1", reason, knownAnswers: [], review }, agent, [p.id]);
-  const state = (review: unknown) => foldDecisions([p, withdraw(review)]).decisions.find((x) => x.id === "d1")!.withdrawals?.[0];
+  const withdraw = (review: unknown) => event("w5", "decision.withdrawn", "p1:d1", { decision: "p1:d1", reason, knownAnswers: [], review }, agent, [p.id]);
+  const state = (review: unknown) => foldDecisions([p, withdraw(review)]).decisions.find(byLabel("d1"))!.withdrawals?.[0];
+  const refused = (review: unknown) => damageOf([p, withdraw(review)]) ?? "";
   assert.equal(state({ readers: [reader(1, "sound"), reader(2, "sound")] })?.state, "applied");
-  assert.match(state({ readers: [reader(1, "sound")] })?.refused ?? "", /two readers/);
-  assert.match(state({ readers: [reader(1, "sound"), { ...reader(2, "sound"), session: "s1" }] })?.refused ?? "", /independently/);
-  assert.match(state({ readers: [reader(1, "sound"), reader(2, "sound", "sha256:other")] })?.refused ?? "", /this exact brief/);
-  assert.match(state({ readers: [reader(1, "sound"), reader(2, "unsound")] })?.refused ?? "", /third reader must arbitrate/);
+  assert.match(refused({ readers: [reader(1, "sound")] }), /two readers/);
+  assert.match(refused({ readers: [reader(1, "sound"), { ...reader(2, "sound"), session: "s1" }] }), /independently/);
+  assert.match(refused({ readers: [reader(1, "sound"), reader(2, "sound", "sha256:other")] }), /this exact brief/);
+  assert.match(refused({ readers: [reader(1, "sound"), reader(2, "unsound")] }), /third reader must arbitrate/);
   const arbHash = withdrawalBriefHash(withdrawalBriefContent(d1, reason, ["reason 1", "reason 2"]));
   assert.equal(state({ readers: [reader(1, "sound"), reader(2, "unsound")], arbitrator: reader(3, "sound", arbHash) })?.state, "applied");
-  assert.match(state({ readers: [reader(1, "sound"), reader(2, "unsound")], arbitrator: reader(3, "unsound", arbHash) })?.refused ?? "", /arbitrator found/);
-  assert.match(state({ readers: [reader(1, "unsound"), reader(2, "unsound")] })?.refused ?? "", /both readers/);
-  assert.match(state(undefined)?.refused ?? "", /two readers/, "an agent alone withdraws nothing");
+  assert.match(refused({ readers: [reader(1, "sound"), reader(2, "unsound")], arbitrator: reader(3, "unsound", arbHash) }), /arbitrator found/);
+  assert.match(refused({ readers: [reader(1, "unsound"), reader(2, "unsound")] }), /both readers/);
+  assert.match(refused(undefined), /two readers/, "an agent alone withdraws nothing");
 });
 
 test("another person's revision stands when the old answer was in their store, and not when it was not", () => {
   // The owner's rule; the shown-the-old-answer receipt was too strict (plan Phase 3.2).
   const p = post(findingDecision), first = answer("a2", findingDecision, "Settle", alice, [p.id]);
-  const revise = (after: string[]) => event("r4", "decision.answer.revised", "d1", {
+  const revise = (after: string[]) => event("r4", "decision.answer.revised", "p1:d1", {
     decision: "d1", hash: decisionHash(findingDecision), via: { kind: "direct", option: "Keep open" },
     revision: { of: [first.id], findings: ["F1"] },
   }, bob, after);
-  const accepted = foldDecisions([p, first, revise([first.id])]).decisions.find((x) => x.id === "d1")!;
+  const accepted = foldDecisions([p, first, revise([first.id])]).decisions.find(byLabel("d1"))!;
   assert.equal(accepted.answers.find((x) => x.id === "r4")?.revisionInvalid, undefined);
   assert.equal(standingForFinding(accepted, "F1")?.id, "r4");
-  const unseen = foldDecisions([p, first, revise([p.id])]).decisions.find((x) => x.id === "d1")!;
-  assert.ok(unseen.answers.find((x) => x.id === "r4")?.revisionInvalid, "a revision of an answer its writer never had revises nothing");
+  assert.match(damageOf([p, first, revise([p.id])]) ?? "", /revision needs exact source/,
+    "a revision of an answer its writer never had revises nothing — and no conforming build writes one");
 });
 
 test("a scoped revision can change one canonical bug without changing an unrelated finding", () => {
@@ -92,7 +102,7 @@ test("a scoped revision can change one canonical bug without changing an unrelat
     revision: { of: [first.id], findings: [], issues: [bug] },
   }, alice, [first.id]);
   const folded = foldDecisions([p, first, revised]);
-  const current = folded.decisions.find((x) => x.id === d.id)!;
+  const current = folded.decisions.find(byLabel(d.id))!;
   assert.equal(standingForIssue(current, bug)?.id, revised.id);
   assert.equal(current.answers.find((x) => x.id === first.id)?.cancelled, undefined);
 });
@@ -112,29 +122,28 @@ test("an explicit correction of a resolution switches its authority frontier", (
     revision: { of: [first.id], resolves: { answers: [a.id, b.id], priorResolution: first.id, shownHash: decisionHash(resolution) } },
   }, alice, [first.id]);
   const folded = foldDecisions([p, a, b, rp, first, corrected]);
-  const choices = folded.decisions.find((x) => x.id === "d1")!.answers;
+  const choices = folded.decisions.find(byLabel("d1"))!.answers;
   assert.equal(choices.find((x) => x.id === b.id)?.resolvedOutBy, undefined);
   assert.equal(choices.find((x) => x.id === a.id)?.resolvedOutBy, corrected.id);
 });
 
 test("a verified relay revision uses the human's shown source and given time, not the recorder's later pull", () => {
   const p = post(findingDecision), first = answer("a2", findingDecision, "Settle", alice, [p.id]);
-  const source = foldDecisions([p, first]).decisions.find((d) => d.id === "d1")!;
+  const source = foldDecisions([p, first]).decisions.find(byLabel("d1"))!;
   const question = revisionRelayQuestion(source, [source.answers[0]!], "bob", { findings: ["F1"] });
   const unrelated = event("p5", "decision.round.posted", "other", {
-    round: { id: "other", source: "later sync", universe: "u" }, decisions: [],
+    publication: 2, round: { id: "other", source: "later sync", universe: "u" }, decisions: [],
   }, alice, [first.id]);
   const proof = { session: "human-session", toolUseId: "human-call", entryId: "human-receipt",
     answeredAt: at(3), question, answer: "Keep open" };
-  const revision = event("r6", "decision.answer.revised", "d1", {
+  const revision = event("r6", "decision.answer.revised", "p1:d1", {
     decision: "d1", hash: decisionHash(findingDecision), via: { kind: "revision-relay", proof },
     revision: { of: [first.id], findings: ["F1"] },
   }, { principal: "bob", via: { kind: "agent", model: "test" } }, [first.id, unrelated.id]);
   const accepted = foldDecisions([p, first, unrelated, revision]);
-  assert.equal(standingForFinding(accepted.decisions.find((d) => d.id === "d1")!, "F1")?.id, revision.id);
-  assert.equal(accepted.decisions.find((d) => d.id === "d1")!.answers.find((a) => a.id === revision.id)?.givenAt, at(3));
+  assert.equal(standingForFinding(accepted.decisions.find(byLabel("d1"))!, "F1")?.id, revision.id);
+  assert.equal(accepted.decisions.find(byLabel("d1"))!.answers.find((a) => a.id === revision.id)?.givenAt, at(3));
   const forged = { ...revision, data: { ...revision.data, via: { kind: "revision-relay",
     proof: { ...proof, question: { ...question, question: question.question + " different" } } } } };
-  const refused = foldDecisions([p, first, unrelated, forged]);
-  assert.ok(refused.decisions.find((d) => d.id === "d1")!.answers.find((a) => a.id === revision.id)?.revisionInvalid);
+  assert.match(damageOf([p, first, unrelated, forged]) ?? "", /revision needs exact source/);
 });

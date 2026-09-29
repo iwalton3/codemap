@@ -242,6 +242,13 @@
       max-width: min(680px, 92vw); background: var(--panel); color: var(--text); cursor: pointer;
       border: 1px solid var(--bad); border-left: 3px solid var(--bad); border-radius: 8px;
       padding: 10px 14px; font-size: 12.5px; line-height: 1.45; box-shadow: 0 6px 24px rgba(0,0,0,0.45); }
+    /* The lockout: a damaged shared log stops every read and act (plan 1.2), so it covers the
+       page rather than sitting beside it. Outside the render tree, like #flash. */
+    #lockout { position: fixed; inset: 0; z-index: 100; display: flex; align-items: center; justify-content: center;
+      background: rgba(0,0,0,0.72); padding: 24px; }
+    #lockout > div { max-width: min(760px, 94vw); background: var(--panel); color: var(--text);
+      border: 1px solid var(--bad); border-left: 4px solid var(--bad); border-radius: 10px;
+      padding: 18px 22px; font-size: 13.5px; line-height: 1.55; white-space: pre-wrap; }
     /* A proposed detector: visible to the ratifier, and marked as NOT part of the signature. */
     .op-detector { margin-top: 6px; padding: 6px 9px; border-radius: 6px; background: var(--panel2);
       border-left: 2px solid var(--warn); }

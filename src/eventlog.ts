@@ -424,7 +424,16 @@ export async function emitEventChecked(
       ...(admission.data ? { data: admission.data } : {}),
     };
     if (fold) {
-      const refused = (await fold(sortEvents([...events, event]), event)).refused.find((r) => r.id === event.id);
+      let verdict: Awaited<ReturnType<DoorFold>>;
+      try { verdict = await fold(sortEvents([...events, event]), event); } catch (err) {
+        // A fold that halts names the entry (`LogDamage`, not imported: it imports this module).
+        // This event is one no conforming build writes, so it is refused; damage already in
+        // the log is not this write's to answer, and goes on up to the lockout.
+        const entry = (err as { entry?: { id?: string; why?: string } } | null)?.entry;
+        if (entry?.id === event.id) return { error: entry.why ?? "the fold refuses it" };
+        throw err;
+      }
+      const refused = verdict.refused.find((r) => r.id === event.id);
       if (refused) return { error: refused.why };
     }
     await appendEvents(logRoot, scope, writer, [event]);
@@ -533,6 +542,10 @@ export interface ShardDamage {
   /** 1-based, counting every line including blank ones, so `sed -n 12p` finds it. */
   line: number;
   sample: string;
+  /** For a line that parses but is damaged (a wrong shape): the entry, and what is wrong. */
+  id?: string;
+  kind?: string;
+  why?: string;
 }
 
 /** `path:line` — the evidence form a `corrupt-shard` diagnostic carries. */
@@ -708,10 +721,8 @@ export interface ScopeDiagnostic {
    * `sidecar-missing` and `sidecar-mismatch` are the odd ones out and are raised by the
    * MATERIALIZER, not by `scopeStatus`: they are facts about the configured path rather
    * than about a scope's events, and there are no events to judge when they fire.
-   * `malformed-event` is raised by a fold that left an event out, and never blocks: the scope
-   * is read without it, and the diagnostic is what keeps that from being silent.
    */
-  reason: "sidecar-missing" | "sidecar-mismatch" | "corrupt-shard" | "protocol" | "duplicate-id" | "chain-cycle" | "fork" | "malformed-event";
+  reason: "sidecar-missing" | "sidecar-mismatch" | "corrupt-shard" | "protocol" | "duplicate-id" | "chain-cycle" | "fork";
   /** One line a person can act on. */
   detail: string;
   /** The ids or writers the detail is about, so a repair does not have to search. */
@@ -1196,3 +1207,37 @@ export const chainCycles = (events: LogEvent[]): string[] =>
 
 /** What a new write records as `after`. See `Causality.heads`. */
 export const causalHeads = (sortedEvents: LogEvent[]): string[] => causality(sortedEvents).heads();
+
+/**
+ * What the writer of `id` had in front of it: its causal ancestors (every `after` and its own
+ * `writerPrev`, transitively), plus every event of a scope it never linked to. `after` and
+ * `writerPrev` never cross a scope, so the parent graph's components are the scopes; a merged
+ * fold (the standard's law and evidence) has more than one, and the writer is credited with
+ * all of the others, which errs toward reading a refusal as a race rather than damage.
+ *
+ * The write door folded exactly this before appending, so a refusal that stands here is one
+ * no conforming build made (`log-damage.ts`).
+ */
+export function causalContext(events: LogEvent[], id: string): LogEvent[] {
+  const byId = new Map(events.map((e) => [e.id, e]));
+  const parents = (e: LogEvent) => sortEdges(e).filter((p) => byId.has(p));
+  const up = new Map<string, string>();
+  const find = (x: string): string => {
+    let r = x;
+    while (up.get(r)! !== r) r = up.get(r)!;
+    for (let y = x; up.get(y)! !== r;) { const next = up.get(y)!; up.set(y, r); y = next; }
+    return r;
+  };
+  for (const e of events) up.set(e.id, e.id);
+  for (const e of events) for (const p of parents(e)) up.set(find(e.id), find(p));
+  const mine = byId.has(id) ? find(id) : undefined;
+  const past = new Set<string>();
+  const stack = [id];
+  while (stack.length) {
+    const x = stack.pop()!;
+    if (past.has(x) || !byId.has(x)) continue;
+    past.add(x);
+    stack.push(...parents(byId.get(x)!));
+  }
+  return events.filter((e) => past.has(e.id) || find(e.id) !== mine);
+}

@@ -3,7 +3,10 @@
  */
 
 import { parseArgs } from "node:util";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
+import { existsSync } from "node:fs";
+import { lockoutGate } from "./lockout-gate.js";
+import { findDamage } from "./damage-scan.js";
 import { analyzeMarten } from "./analyzers/marten.js";
 import { enableAnalyzer } from "./analyzers/run.js";
 import { withLock } from "./lock.js";
@@ -722,6 +725,15 @@ async function cmdCheck(root: string): Promise<void> {
 
 const { positionals, values } = parseArgs({ allowPositionals: true, options: { verbose: { type: "boolean" }, emit: { type: "boolean" }, repo: { type: "string" }, "no-fetch": { type: "boolean" }, json: { type: "boolean" }, limit: { type: "string" }, offset: { type: "string" }, "dry-run": { type: "boolean" }, confirm: { type: "boolean" }, viewed: { type: "boolean" }, all: { type: "boolean" }, "min-severity": { type: "string" }, force: { type: "boolean" }, "max-prs": { type: "string" }, summary: { type: "string" }, approve: { type: "boolean" }, "request-changes": { type: "boolean" }, pull: { type: "boolean" }, anyone: { type: "boolean" }, only: { type: "string" }, queue: { type: "boolean" }, tier: { type: "string" }, locate: { type: "boolean" }, "show-elsewhere": { type: "boolean" }, principal: { type: "string" }, cursor: { type: "string" }, "wait-ms": { type: "string" }, apply: { type: "boolean" }, assign: { type: "string", multiple: true }, ref: { type: "string" } } });
 
+// Damage in the shared log locks every command but the ones that fetch and re-check, and the
+// read-only check itself (plan 1.2). Which store a command is about varies, so every store named
+// on the line (or the working directory) is asked.
+if (!["sync", "pull"].includes(positionals[0] ?? "") && !(positionals[0] === "sidecar" && positionals[1] === "check")) {
+  const roots = [values.repo, ...positionals.slice(1), "."].filter((p): p is string => !!p && existsSync(join(p, ".codemap")));
+  const lockout = await lockoutGate(roots.map((p) => resolve(p)));
+  if (lockout) { console.error(lockout.message); process.exit(1); }
+}
+
 if (positionals[0] === "analyze") {
   const analyzer = positionals[1] ?? "";
   const root = resolve(positionals[2] ?? ".");
@@ -855,6 +867,13 @@ if (positionals[0] === "analyze") {
     console.log(JSON.stringify(result, null, 2));
   } else if (positionals[0] === "sync") {
     await cmdSync(resolve((values.repo as string | undefined) ?? positionals[1] ?? "."));
+  } else if (positionals[0] === "sidecar" && positionals[1] === "check") {
+    // Read-only: folds every scope the way a read does and says what is damaged. Writes no
+    // lockout flag, so it is safe on a sidecar somebody else is using (docs/log-repair.md).
+    const target = resolve(positionals[2] ?? ".");
+    const d = await findDamage(target);
+    if (!d) console.log(`${target}: nothing damaged`);
+    else { console.log(`${target}: DAMAGED — entry ${d.id} (${d.kind})${d.shard ? ` at ${d.shard}${d.line ? `:${d.line}` : ""}` : ""}: ${d.why}`); process.exit(1); }
   } else if (positionals[0] === "sidecar" && positionals[1] === "heal") {
     await cmdHeal(resolve((values.repo as string | undefined) ?? positionals[2] ?? "."));
   } else if (positionals[0] === "sidecar" && positionals[1] === "adopt") {

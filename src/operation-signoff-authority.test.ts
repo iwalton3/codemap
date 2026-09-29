@@ -10,6 +10,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { isLogDamage } from "./log-damage.js";
 import { testChain } from "./test-events.js";
 import { foldStandard, reviewGap } from "./shared-standard.js";
 import { operationContent, framingContent, type Actor, type Operation, type Spec, type OperationSignoffCapsule } from "./schema.js";
@@ -45,6 +46,10 @@ const before = testChain("signoff-authority", [
 const applied = (c: unknown, actor = executor) => ({ ...before[2]!, id: "application", writerPrev: "sibling",
   kind: "spec.operation-signoff-applied", subject: op.id, actor, data: { capsule: c } });
 const credited = (c: unknown, actor = executor) => foldStandard([...before, applied(c, actor)]).witnesses;
+/** Why the fold halts on this application (plan 1.2): no conforming build writes one it refuses. */
+const halts = (c: unknown, actor = executor): string | undefined => {
+  try { credited(c, actor); return undefined; } catch (e) { if (isLogDamage(e)) return e.entry.why; throw e; }
+};
 
 test("a relayed sign-off credits the person whose answer it carries, for that operation only", () => {
   const w = credited(capsuleFor(answer()));
@@ -66,7 +71,7 @@ test("an answer that does not sign this exact operation credits nobody, however 
     ["an answer from another universe's log", answer({ sourceScope: "decisions/another/api" })],
     ["a withdrawn or outranked answer", answer({ status: "superseded" as "current" })],
   ];
-  for (const [name, ruling] of cases) assert.equal(credited(capsuleFor(ruling)).length, 0, name);
+  for (const [name, ruling] of cases) assert.ok(halts(capsuleFor(ruling)), `${name} credits nobody: the log halts on it`);
 });
 
 test("a copy edited after the reading, or recorded by someone other than its executor, credits nobody", () => {
@@ -78,7 +83,7 @@ test("a copy edited after the reading, or recorded by someone other than its exe
     (c: OperationSignoffCapsule) => { c.reader.verdict = "unsound" as "sound"; },
   ]) {
     const bad = capsuleFor(answer()); mutate(bad);
-    assert.equal(credited(bad).length, 0, String(mutate));
+    assert.ok(halts(bad), String(mutate));
   }
-  assert.equal(credited(capsuleFor(answer()), principal).length, 0, "the event's actor must be the capsule's executor");
+  assert.ok(halts(capsuleFor(answer()), principal), "the event's actor must be the capsule's executor");
 });

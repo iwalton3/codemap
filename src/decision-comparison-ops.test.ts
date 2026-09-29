@@ -13,6 +13,7 @@ import { requestComparison, comparisonBrief, submitComparisonJudgment, recordCom
 import { decisionsView } from "./ops/decision-holds.js";
 import { readScope } from "./eventlog.js";
 import { appendUnfolded } from "./test-door.js";
+import { isLogDamage } from "./log-damage.js";
 import { decisionScope, foldDecisions, comparisonBriefText } from "./shared-decisions.js";
 import { resolveDecisionIssue } from "./decision-issues.js";
 import { universeKey } from "./sidecar-config.js";
@@ -232,9 +233,9 @@ test("resolution refuses a newly arrived judgment and replay rejects a subset pr
         shownHash: old.shownHash, receipt: "forged-receipt", session: "web", shown: old.shown,
         executionsHash: old.executionsHash },
     });
-    const replay = foldDecisions(await readScope(u.side, scope));
-    const comparison = replay.comparisons.find((x) => x.request.id === id)!;
-    assert.ok(!comparison.resolutions.some((x) => x.id === forged.id));
+    // A resolution no conforming build writes: the replay halts on it, naming it (plan 1.2).
+    const events = await readScope(u.side, scope);
+    assert.throws(() => foldDecisions(events), (e: unknown) => isLogDamage(e) && e.entry.id === forged.id);
   } finally { u.cleanup(); }
 });
 

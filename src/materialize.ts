@@ -22,6 +22,22 @@ import { db } from "./db.js";
 import { SIDECAR_LINEAGE, type SidecarMark } from "./store.js";
 import { isSameSidecar } from "./sidecar.js";
 import { readScopeChecked, sortEvents, SHARD_EXT, type LogEvent, type ScopeDiagnostic, type ScopeStatus } from "./eventlog.js";
+import { isLogDamage } from "./log-damage.js";
+import { assertNotLockedOut, LockedOut, locate, recordLockout } from "./lockout.js";
+
+/**
+ * A fold that meets damage LOCKS this sidecar and says so, rather than carrying on (plan 1.2).
+ * Every read of shared state comes through here, so a damaged entry found by any read stops
+ * every other read and op too — including ones that never fold the scope it is in.
+ */
+function locking<A extends unknown[], T>(logRoot: string, scopes: string[], fold: (...args: A) => T): (...args: A) => T {
+  return (...args) => {
+    try { return fold(...args); } catch (e) {
+      if (!isLogDamage(e)) throw e;
+      throw new LockedOut(recordLockout(logRoot, locate(logRoot, scopes, e.entry)));
+    }
+  };
+}
 
 /**
  * Bumped whenever the FOLD or the PROJECTION changes shape.
@@ -246,7 +262,13 @@ import { readScopeChecked, sortEvents, SHARD_EXT, type LogEvent, type ScopeDiagn
 // Codex receipts are gone and verification identity is the connection; the ruling capsule's
 // key fields are one; revision receipts and withdrawal approvals are gone and withdrawal takes
 // readers or a relayed answer; cross-clone keys order by code unit, not locale.
-export const MATERIALIZER_VERSION = 50;
+// 50 → 51 (2026-09-28 pre-merge review, one bump for phases 1–4): the decisions and standard
+// folds HALT on damage instead of leaving an event out (`decision_skipped` is no longer
+// written); refusals are one output; the confirmer is recorded beside the words' author;
+// repair verification drops participants, gains invalid/assumed closures and per-site
+// dispositions; the ruling capsule is version 3. The shards do not move when a fold's mind
+// changes, so 18 → 19's reason applies to all of it.
+export const MATERIALIZER_VERSION = 51;
 
 /**
  * What the events in a scope are, cheaply.
@@ -292,6 +314,8 @@ export async function readCachedMerged<T>(
   fold: (events: LogEvent[], opts: { readable: Set<string> }) => T,
   proj: Projection<T>,
 ): Promise<Cached<T> & { fresh: boolean; folded: boolean }> {
+  assertNotLockedOut([logRoot]);
+  fold = locking(logRoot, scopes, fold);
   const d = db(root);
   let checked: ScopeDiagnostic | null | undefined;
   const unusable = () => (checked !== undefined ? checked : (checked = logRootMissing(logRoot) ?? wrongSidecar(root, logRoot)));
@@ -524,6 +548,8 @@ export async function readCached<T>(
   fold: (events: LogEvent[]) => T,
   proj: Projection<T>,
 ): Promise<Cached<T>> {
+  assertNotLockedOut([logRoot]);
+  fold = locking(logRoot, [scope], fold);
   const d = db(root);
   // Checked lazily, and only on the path that is about to FOLD. A cache hit serves rows
   // and touches no sidecar, so asking there cost a `git merge-base` on every read of
@@ -642,6 +668,7 @@ export async function ensureMaterialized<T>(
   fold: (events: LogEvent[]) => T,
   proj: Projection<T>,
 ): Promise<{ fresh: boolean; folded: boolean } & ScopeStatus> {
+  assertNotLockedOut([logRoot]);
   /** The stored verdict, or null if the row does not describe the shards on disk. */
   const current = async (): Promise<ScopeStatus | null> => {
     const before = await scopeFingerprint(logRoot, scope, identity);

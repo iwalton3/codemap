@@ -31,8 +31,8 @@ import {
   reviewProposal, signOffOperation, signOffFraming, signOffSection, getSpec, listRequirements,
 } from "./requirements.js";
 import { signOffEverything, ratifyReviewed, ratifyWithReview } from "./test-approve.js";
-import { foldStandard, standardScope, publishSpecDrafted, publishOperation } from "./shared-standard.js";
-import { appendUnfolded } from "./test-door.js";
+import { foldStandard, foldStandardReport, standardScope, publishSpecDrafted, publishOperation, publishSpecReviewed } from "./shared-standard.js";
+import { foldWithNext } from "./test-door.js";
 
 const state: State = { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State;
 const SRC = "export function creditLine(cents) { return cents; }\n";
@@ -415,25 +415,24 @@ async function log(t: string) {
   return root;
 }
 const fold = async (root: string) => foldStandard(await readScope(root, SCOPE));
-// Another clone's acts, appended as its build appended them: this section asks what the FOLD
-// does with an event, so the write door (which refuses these here) is not in the way.
-const publishSpecReviewed = (l: string, s: string, a: Actor, w: import("./schema.js").ProposalWitness) =>
-  appendUnfolded(l, s, a, "spec.reviewed", w.specId, { witness: w });
-const publishSpecRatified = (l: string, s: string, a: Actor, specId: string, at: string, witnesses: Record<string, unknown>, operations: string[]) =>
-  appendUnfolded(l, s, a, "spec.ratified", specId, { at, witnesses, operations });
+/**
+ * What the fold makes of one more act, not written: a refusal over what its writer saw is
+ * damage (plan 1.2), since that writer's own door would have refused it.
+ */
+const next = (root: string, actor: Actor, kind: string, data: Record<string, unknown>, opts: { unseen?: string[] } = {}) =>
+  foldWithNext(root, SCOPE, foldStandardReport, actor, kind, "sp_1", data, opts);
+const ratification = (at: string) => ({ at, witnesses: {}, operations: ["op_1"] });
 
 test("THE FOLD REFUSES A RATIFICATION ITS RATIFIER NEVER SIGNED", async () => {
   const root = await log("unread");
   try {
-    await publishSpecRatified(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1"]);
-    let s = await fold(root);
-    assert.equal(s.requirements.length, 0, "no clone applies an adoption nobody witnessed");
-    assert.equal(s.specs[0]!.conflicted, true, "and the ratification really happened, so the record says so");
+    // No clone applies an adoption nobody witnessed, and no conforming build writes one: the
+    // ratifier's own door refuses it, so in a log it is damage.
+    const unread = await next(root, izzie, "spec.ratified", ratification("2026-08-02T00:00:00.000Z"));
+    assert.match(unread.damage?.why ?? "", /has not signed off/);
 
-    // The same event in a FRESH log, once the readings that should have preceded it are
-    // there — so the refusal above was about the witness and not about anything else. A
-    // second ratification into the same log proves nothing: a spec that has been ratified
-    // once is spent, conflicted or not, and the fold skips it.
+    // The same ratification in a FRESH log, once the readings that should have preceded it are
+    // there — so the refusal above was about the witness and not about anything else.
     const clean = await log("unread-ok");
     try {
       await ratifyWithReview(clean, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1"]);
@@ -452,12 +451,10 @@ test("the fold refuses one signed by somebody ELSE, and one signed at a text tha
     await publishSpecReviewed(root, SCOPE, mate, {
       id: "rw_2", specId: "sp_1", operationId: "op_1", reviewer: mate, at: "2026-08-02T00:00:00.000Z", content: operationContent(ADD),
     });
-    await publishSpecRatified(root, SCOPE, izzie, "sp_1", "2026-08-03T00:00:00.000Z", {}, ["op_1"]);
-    assert.equal((await fold(root)).requirements.length, 0, "mate's reading is not izzie's");
+    assert.match((await next(root, izzie, "spec.ratified", ratification("2026-08-03T00:00:00.000Z"))).damage?.why ?? "",
+      /has not signed off/, "mate's reading is not izzie's");
 
-    // izzie reads it, and the text moves under her before she adopts it. A fresh log,
-    // because the spec above is spent — a second ratification into it would be skipped for
-    // a reason that has nothing to do with what this asserts.
+    // izzie reads it, and the text moves under her before she adopts it.
     const moved = await log("stale-moved");
     try {
       await publishSpecReviewed(moved, SCOPE, izzie, {
@@ -467,8 +464,8 @@ test("the fold refuses one signed by somebody ELSE, and one signed at a text tha
         id: "rw_4", specId: "sp_1", operationId: "op_1", reviewer: izzie, at: "2026-08-04T00:00:00.000Z",
         content: operationContent({ ...ADD, statement: "All credit lines are in EUR." }),
       });
-      await publishSpecRatified(moved, SCOPE, izzie, "sp_1", "2026-08-05T00:00:00.000Z", {}, ["op_1"]);
-      assert.equal((await fold(moved)).requirements.length, 0, "she signed a version this is not");
+      assert.match((await next(moved, izzie, "spec.ratified", ratification("2026-08-05T00:00:00.000Z"))).damage?.why ?? "",
+        /has not signed off/, "she signed a version this is not");
     } finally { discard(moved); }
 
     // And at the text it actually says, it binds — so both refusals were about the witness.
@@ -489,11 +486,9 @@ test("the fold drops an AGENT's sign-off, so an agent cannot clear the gate for 
       { id: "rw_a", content: framingContent(SPEC) },
       { id: "rw_b", operationId: "op_1", content: operationContent(ADD) },
     ]) {
-      await publishSpecReviewed(root, SCOPE, opus, { specId: "sp_1", reviewer: opus, at: "2026-08-02T00:00:00.000Z", ...w } as any);
+      const signed = await next(root, opus, "spec.reviewed", { witness: { specId: "sp_1", reviewer: opus, at: "2026-08-02T00:00:00.000Z", ...w } });
+      assert.equal(signed.damage?.why, "a sign-off is a person's act", "no conforming build writes an agent's sign-off");
     }
-    await publishSpecRatified(root, SCOPE, izzie, "sp_1", "2026-08-03T00:00:00.000Z", {}, ["op_1"]);
-    assert.equal((await fold(root)).requirements.length, 0);
-    assert.equal((await fold(root)).witnesses.length, 0, "the agent's sign-off is not a row anywhere");
 
     // The person's own reading of the identical text does bind — in a fresh log, since the
     // spec above is spent.
@@ -521,8 +516,8 @@ test("the fold takes the reviewer from the EVENT, never from the row's own claim
     assert.deepEqual(folded.witnesses.map((w) => w.reviewer.principal), ["mate@x.com", "mate@x.com"],
       "the payload said izzie; the log says who actually wrote it");
 
-    await publishSpecRatified(root, SCOPE, izzie, "sp_1", "2026-08-03T00:00:00.000Z", {}, ["op_1"]);
-    assert.equal((await fold(root)).requirements.length, 0, "so it buys izzie nothing");
+    assert.match((await next(root, izzie, "spec.ratified", ratification("2026-08-03T00:00:00.000Z"))).damage?.why ?? "",
+      /has not signed off/, "so it buys izzie nothing");
   } finally { discard(root); }
 });
 
@@ -531,12 +526,16 @@ test("the fold refuses a sign-off of a spec that is no longer a draft", async ()
   try {
     await ratifyWithReview(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1"]);
     assert.equal((await fold(root)).witnesses.length, 2, "the readings that permitted it are on the record");
-    await publishSpecReviewed(root, SCOPE, mate, {
-      id: "rw_late", specId: "sp_1", operationId: "op_1", reviewer: mate,
-      at: "2026-08-03T00:00:00.000Z", content: operationContent(ADD),
-    });
-    assert.equal((await fold(root)).witnesses.length, 2,
+    const late = { witness: { id: "rw_late", specId: "sp_1", operationId: "op_1", reviewer: mate,
+      at: "2026-08-03T00:00:00.000Z", content: operationContent(ADD) } };
+    const adopted = (await readScope(root, SCOPE)).find((e) => e.kind === "spec.ratified")!.id;
+    // A teammate reading the draft while it was adopted: a race, refused, and nothing is claimed.
+    const race = await next(root, mate, "spec.reviewed", late, { unseen: [adopted] });
+    assert.equal(race.refused?.why, "only a draft is reviewed");
+    assert.equal(race.value!.witnesses.length, 2,
       "a reading of something that can no longer change claims nothing, and would let a witness arrive after the adoption it is supposed to have preceded");
+    // One written having seen the adoption is one no conforming build writes.
+    assert.equal((await next(root, mate, "spec.reviewed", late)).damage?.why, "only a draft is reviewed");
   } finally { discard(root); }
 });
 

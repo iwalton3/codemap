@@ -5,12 +5,12 @@ import { confirmPayload, decisionHash, foldDecisions, readerBrief } from "./shar
 const when = (second: number) => `2026-09-25T00:00:${String(second).padStart(2, "0")}Z`;
 const posted = (decision: any, questionnaire?: any) => ({
   id: "posted", kind: "decision.round.posted", subject: "R1", actor: { principal: "alice" }, at: when(1), after: [],
-  data: { round: { id: "R1", source: "audit", ...(questionnaire ? { questionnaire } : {}) }, decisions: [decision] },
+  data: { publication: 2, round: { id: "R1", source: "audit", ...(questionnaire ? { questionnaire } : {}) }, decisions: [decision] },
 });
 const words = (decision: any) => ({
   id: "answer", kind: "decision.answer.recorded", subject: decision.id, actor: { principal: "alice" }, at: when(2), after: ["posted"],
   data: { decision: decision.id, hash: decisionHash(decision), via: {
-    kind: "message", session: "s", entryId: "reply", text: "I think so", round: "R1", at: when(2),
+    kind: "message", session: "s", entryId: "reply", text: "I think so", round: "posted", at: when(2),
   } },
 });
 const context = (decision: any, questionnaire?: any) => {

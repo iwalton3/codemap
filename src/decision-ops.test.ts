@@ -24,8 +24,8 @@ import { reviewQueue } from "./ops/annotations.js";
 import { postRound, logQuestion, relayAnswer, answerDirect, decisionRounds, decisionRound, nominateComparison, readerBrief, recordReading, submitVerdict as submitVerdictOp, confirmReading, parseVerdict, confirmId, withdrawDecision, reportRuling, withdrawalReaderBrief, submitWithdrawalVerdict, reviseDecision, revisionRelayBrief, reviseDecisionRelayed, interpretationRequestId } from "./ops/decisions.js";
 import { discard } from "./test-tmp.js";
 import { decisionsView, holdBuilds } from "./ops/decision-holds.js";
-import { decisionScope, foldDecisions, foldDecisionsReport, postRoundEvent, logQuestionEvent, postConfirmEvent, recordReadingEvent } from "./shared-decisions.js";
-import { sortEvents, type LogEvent } from "./eventlog.js";
+import { confirmPayload, CONFIRM_YES, decisionScope, foldDecisions, foldDecisionsReport, postRoundEvent, logQuestionEvent, postConfirmEvent, recordReadingEvent } from "./shared-decisions.js";
+import { causalHeads, readScope, sortEvents, type LogEvent } from "./eventlog.js";
 import { appendUnfolded, planted } from "./test-door.js";
 
 const state: State = { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State;
@@ -761,12 +761,12 @@ test("GATE (overwritten) / R7 (P1.4): a reader launched with anything but codema
 test("R6 + R15: only the report's final block is the verdict; a ref two questions share is ambiguous", () => {
   const q = (question: string) => ({ question, header: "H", options: [{ label: "A", description: "d" }, { label: "B", description: "d" }] });
   const dd = (id: string, ref: string, f: string) => ({ id, round: "R1", ref, kind: "options", payload: q(`${ref}: ${f}?`), options: [{ label: "A", effects: [{ findings: [f], on: "unblock" }] }, { label: "B", effects: [] }] });
-  const ev = (decisions: any[]) => [{ id: "e1", kind: "decision.round.posted", subject: "s", actor: { principal: "p" }, at: "2026-09-23T00:00:01Z", after: [], data: { round: { id: "R1", source: "x" }, decisions } }] as any;
+  const ev = (decisions: any[]) => [{ id: "e1", kind: "decision.round.posted", subject: "s", actor: { principal: "p" }, at: "2026-09-23T00:00:01Z", after: [], data: { publication: 2, round: { id: "R1", source: "x" }, decisions } }] as any;
   const one = foldDecisions(ev([dd("d1", "D1", "F1")]));
-  assert.deepEqual(parseVerdict("They wrote:\nD1 → B\nbut meant close.\n\nD1 → A", one.decisions, "R1"), { maps: [{ decision: "d1", option: "A" }] });
-  assert.deepEqual(parseVerdict("D1 → A\n\n", one.decisions, "R1"), { maps: [{ decision: "d1", option: "A" }] });
+  assert.deepEqual(parseVerdict("They wrote:\nD1 → B\nbut meant close.\n\nD1 → A", one.decisions, "e1"), { maps: [{ decision: "e1:d1", option: "A" }] });
+  assert.deepEqual(parseVerdict("D1 → A\n\n", one.decisions, "e1"), { maps: [{ decision: "e1:d1", option: "A" }] });
   const two = foldDecisions(ev([dd("d1", "D1", "F1"), dd("d1x", "D1", "F9")]));
-  assert.match(String((parseVerdict("D1 → A", two.decisions, "R1") as any).error), /two questions in round R1 share: it is ambiguous/);
+  assert.match(String((parseVerdict("D1 → A", two.decisions, "e1") as any).error), /two questions in round e1 share: it is ambiguous/);
 });
 
 test("the discussion + S0.1: confirm_reading POSTS the confirm into the words' round; answered Yes through log_question, it binds the reading as of when the words were typed", async () => {
@@ -1396,16 +1396,27 @@ test("Q4: confirmReading refuses a ref shared by two posted questions", async ()
       const a = (await relayAnswer(u.root, { round: "R1", decision: "d1", session: SESSION, entryId: "m-shared" }, {}, u.transcripts) as any).answer;
       const first = await confirmReading(u.root, { answer: a, maps: [{ decision: "d1", option: "Not a defect" }] }) as any;
       assert.equal(first.ok, true);
-      const duplicate = { id: "duplicate-ref", round: "R1", ref: "D1", kind: "options" as const,
-        payload: { ...first.ask, question: first.ask.question.replace(/^D2:/, "D1:") },
-        options: first.ask.options.map((o: any) => ({ label: o.label, effects: [] })),
-        confirms: { answer: a, readings: [[{ decision: "d1", option: "Not a defect" }]] } };
+      // Another agent, which had not seen that confirm, posts its own reading of the same words
+      // under the next free ref: also D2. Two confirms sharing a ref is a RACE, not damage.
       const b = bindDecisions(u.root) as any;
-      // A build that posts a confirm under a ref already in the round: the door refuses it here.
-      assert.ok("error" in await postConfirmEvent(b.cfg.path, b.cfg.universe, b.actor, duplicate));
-      await appendUnfolded(b.cfg.path, decisionScope(b.cfg.universe), b.actor, "decision.confirm.posted", duplicate.id,
-        { publication: 2, round: duplicate.round, decision: duplicate });
-      const again = await confirmReading(u.root, { answer: a, maps: [{ decision: "d1", option: "Real, fix it" }] }) as any;
+      const scope = decisionScope(b.cfg.universe);
+      const events = sortEvents(await readScope(b.cfg.path, scope));
+      const firstEvent = events.find((e) => e.id === first.confirm)!;
+      const before = events.filter((e) => e.id !== firstEvent.id);
+      const s = foldDecisions(before);
+      const d = s.decisions.find((x) => x.label === "d1")!, words = d.answers.find((x) => x.id === a)!;
+      const readings = [[{ decision: d.id, option: "Real, fix it" }]];
+      const payload = confirmPayload(new Map(s.decisions.map((x) => [x.id, x])), d, words, readings, "D2");
+      const posted = { round: "R1", ref: "D2", kind: "options" as const, payload,
+        options: payload.options.map((o) => ({ label: o.label, effects: [] })), confirms: { answer: a, readings } };
+      const theirs = await appendUnfolded(b.cfg.path, scope, b.actor, "decision.confirm.posted", confirmId(a, posted),
+        { publication: 2, round: (firstEvent.data as any).round, decision: { id: confirmId(a, posted), ...posted } },
+        { writer: "w_other_agent", after: causalHeads(before) });
+      assert.equal((await decisionRound(u.root, "R1") as any).decisions.filter((x: any) => x.ref === "D2").length, 2, "the race put two D2s in the round");
+      // New words, read onto one of the D2 confirms: a line naming D2 could mean either.
+      t.typed("m-later", "D2 yes", later(4));
+      const b2 = (await relayAnswer(u.root, { round: "R1", decision: "d1", session: SESSION, entryId: "m-later" }, {}, u.transcripts) as any).answer;
+      const again = await confirmReading(u.root, { answer: b2, maps: [{ decision: theirs.id, option: CONFIRM_YES }] }) as any;
       assert.match(String(again.error), /two questions.*ambiguous/);
     });
   } finally { u.cleanup(); }

@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { team, settle } from "./oracle.js";
 import { postRound, answerDirect, decisionRound, questionnaireDetail } from "./ops/decisions.js";
-import { decisionHash, foldDecisions } from "./shared-decisions.js";
+import { confirmPayload, decisionHash, foldDecisions } from "./shared-decisions.js";
 
 const actor = (principal: string) => ({ principal });
 const question = (text: string) => ({ id: "d1", round: "R1", ref: "D1", kind: "options" as const,
@@ -128,12 +128,15 @@ test("replaying one publication event does not mint a second question or erase i
 test("same-label confirm postings keep distinct event identities", () => {
   const d = question("Original question?");
   const p = event("p1", "decision.round.posted", { publication: 2, round: { id: "R1", source: "test", universe: "u" }, decisions: [d] }, "alice", "2026-09-25T00:00:01Z");
-  const confirm = { id: "c1", round: "p1", ref: "D2", kind: "options", payload: {
-    question: "D2: Confirm this reading?", options: [{ label: "Yes" }, { label: "No" }] },
-    options: [{ label: "Yes", effects: [] }, { label: "No", effects: [] }],
-    confirms: { answer: "missing", readings: [[{ decision: "p1:d1", option: "Yes" }]] } };
-  const c1 = event("c1-event", "decision.confirm.posted", { publication: 2, round: "p1", decision: confirm }, "alice", "2026-09-25T00:00:02Z");
-  const c2 = event("c2-event", "decision.confirm.posted", { publication: 2, round: "p1", decision: confirm }, "bob", "2026-09-25T00:00:03Z");
-  const folded = foldDecisions([p, c1, c2]);
+  const words = event("a1", "decision.answer.recorded", { decision: "p1:d1", hash: decisionHash(d), via: { kind: "direct", words: "the first, I think" } }, "alice", "2026-09-25T00:00:02Z");
+  // A confirm codemap could have posted — anything else halts the fold (plan 1.2).
+  const s = foldDecisions([p, words]);
+  const readings = [[{ decision: "p1:d1", option: "Yes" }]];
+  const payload = confirmPayload(new Map(s.decisions.map((x) => [x.id, x])), s.decisions[0]!, s.decisions[0]!.answers[0]!, readings, "D2");
+  const confirm = { id: "c1", round: "R1", ref: "D2", kind: "options", payload,
+    options: payload.options.map((o) => ({ label: o.label, effects: [] })), confirms: { answer: "a1", readings } };
+  const c1 = event("c1-event", "decision.confirm.posted", { publication: 2, round: "p1", decision: confirm }, "alice", "2026-09-25T00:00:03Z");
+  const c2 = event("c2-event", "decision.confirm.posted", { publication: 2, round: "p1", decision: confirm }, "bob", "2026-09-25T00:00:04Z");
+  const folded = foldDecisions([p, words, c1, c2]);
   assert.deepEqual(folded.decisions.filter((d) => d.label === "c1").map((d) => d.id), ["c1-event", "c2-event"]);
 });

@@ -48,8 +48,32 @@ export async function attestedPost(path, body) {
 
 export async function apiPost(path, body) {
   const r = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  await lockedOut(r);
   if (!r.ok) throw new Error('HTTP ' + r.status);
   return r.json();
+}
+
+/**
+ * 423 is the lockout: the shared log holds a damaged entry, so every read and act refuses
+ * until a person repairs it (plan 1.2, docs/log-repair.md). Shown over the page, once, with
+ * the server's one diagnostic — and thrown, so no page renders as though it had data.
+ *
+ * @param {Response} r
+ */
+async function lockedOut(r) {
+  if (r.status !== 423) return;
+  const body = await r.json().catch(() => ({}));
+  const message = body.error ?? 'codemap is locked: the shared log holds a damaged entry.';
+  let el = document.getElementById('lockout');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'lockout';
+    el.setAttribute('role', 'alert');
+    el.appendChild(document.createElement('div'));
+    document.body.appendChild(el);
+  }
+  el.firstElementChild.textContent = message;
+  throw new Error(message);
 }
 /**
  * What each GET route actually returns, taken from the ops functions THEMSELVES.
@@ -152,6 +176,7 @@ export async function apiPost(path, body) {
 export async function api(path, params = {}) {
   const qs = new URLSearchParams(Object.entries(params).filter(([, v]) => v != null && v !== '').map(([k, v]) => [k, String(v)]));
   const r = await fetch(path + (qs.toString() ? '?' + qs : ''));
+  await lockedOut(r);
   if (!r.ok) throw new Error('HTTP ' + r.status);
   return r.json();
 }
@@ -325,6 +350,7 @@ export function flashError(message) {
 export async function postSeen(path, body) {
   try {
     const r = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    await lockedOut(r);
     const out = await r.json().catch(() => ({}));
     if (out && out.error) flashError(out.error);
     else if (!r.ok) flashError('HTTP ' + r.status);

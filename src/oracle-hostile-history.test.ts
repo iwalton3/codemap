@@ -1,3 +1,4 @@
+import { LockedOut } from "./lockout.js";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
@@ -307,14 +308,15 @@ test("hostile history: each shape is refused in its own scope, and nowhere else"
     //      cannot deliver: a blocked scope is a diagnosis on the clone that already has
     //      the bytes, and the point of the transport gate is that one more clone never
     //      gets them.
-    await step("a damaged sidecar stops the pull instead of being merged into one more clone", async () => {
-      // Ana's own sync PUBLISHES it, and saying so is honest rather than a gap:
-      // `rewriteHistory` is a person with `git`, so the damage was committed without
-      // `commitLocal` ever seeing it and her tree is clean by the time she syncs. No gate
-      // inside codemap can reach a hand-edited history; what they cover is what codemap
-      // itself writes.
+    // `raw`, not `step`: both clones are LOCKED at the end of it, and every read the invariants
+    // make refuses — which is the lockout working, not an invariant failing.
+    await raw("a damaged sidecar stops the pull instead of being merged into one more clone", async () => {
+      // Ana's clone holds the bytes, so it is LOCKED (plan 1.2: damage anywhere this machine
+      // can see), and a locked sync publishes nothing. Only plain git gets them out — a
+      // person, or a build with no such gate — which is what the pull gate is for.
       const pushed = await syncOne(ana) as { error?: string };
-      assert.equal(pushed.error, undefined, `ana's own sync should still work: ${pushed.error}`);
+      assert.match(pushed.error ?? "", /codemap is locked/, "a clone holding damage does not publish it");
+      assert.equal(spawnSync("git", ["push", "-q", "origin", "HEAD:main"], { cwd: ana.sidecar }).status, 0);
 
       const blocked = await syncOne(ben) as { error?: string };
       assert.match(blocked.error ?? "", /refusing to merge/, "ben's pull refuses the damaged bytes");
@@ -324,7 +326,8 @@ test("hostile history: each shape is refused in its own scope, and nowhere else"
       // clone never took the bytes, so the scope is healthy on his machine and his own
       // work is untouched.
       assert.equal((await radius(ben))[await scopeFor(ben, "pr-23")], "complete");
-      assert.equal((await sharedFindings(ben.repo, 23) as any).findings.length, 1);
+      // And the pull it refused locks ben too: damage this machine can see (owner, batch 8).
+      await assert.rejects(sharedFindings(ben.repo, 23), LockedOut);
     });
 
     await step("and the repair, made where the shard was written, lets the team continue", async () => {
@@ -336,6 +339,12 @@ test("hostile history: each shape is refused in its own scope, and nowhere else"
       });
       assert.equal((await radius(ana))[scope], "complete",
         "a shard is append-only, so deleting the line is the whole repair");
+      // A locked sync re-checks here and on the fetched tip, and clears once neither is damaged:
+      // ana's publishes the repair, then ben's takes it — no re-clone (docs/log-repair.md).
+      for (const m of [ana, ben]) {
+        const r = await syncOne(m) as { error?: string };
+        assert.equal(r.error, undefined, `${m.machine}: ${r.error}`);
+      }
 
     });
 

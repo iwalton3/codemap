@@ -33,8 +33,10 @@ import {
 import { ratifyReviewed, signOffEverything, ratifyWithReview } from "./test-approve.js";
 import { acknowledgeGap, listAcknowledgements } from "./acknowledgements.js";
 import { readAcknowledgements } from "./store.js";
-import { foldStandard, standardScope, publishOperation, publishAckGranted, publishAudit, lawScope } from "./shared-standard.js";
+import { foldStandard, foldStandardReport, standardScope, publishOperation, publishAckGranted, publishAudit, lawScope } from "./shared-standard.js";
 import { appendUnfolded } from "./test-door.js";
+import { causalHeads, EVENT_SCHEMA, GENESIS, mintId, SIDECAR_PROTOCOL, sortEvents, type LogEvent } from "./eventlog.js";
+import { isLogDamage } from "./log-damage.js";
 
 const state: State = { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State;
 const SRC = "export function creditLine(cents) { return cents; }\n";
@@ -429,6 +431,30 @@ async function log(t: string) {
 /** The fold, over this scope's events. */
 const fold = async (root: string) => foldStandard(await readScope(root, SCOPE));
 
+/**
+ * The fold with one more event on the end, NOT written: as a writer who had seen the whole
+ * scope would have appended it, or — `unseen` — as a teammate who had not seen those events.
+ * Refused over what its writer saw, it is DAMAGE: that writer's own door would have refused
+ * it, so no conforming build wrote it (plan 1.2). Refused only because of what it could not
+ * see, it is a race, and the fold carries on without it.
+ */
+async function withEvent(root: string, actor: Actor, kind: string, subject: string, data: Record<string, unknown>,
+  opts: { unseen?: string[] } = {}) {
+  const events = sortEvents(await readScope(root, SCOPE));
+  const seen = opts.unseen ? events.filter((e) => !opts.unseen!.includes(e.id)) : events;
+  const e: LogEvent = { sidecarProtocol: SIDECAR_PROTOCOL, eventSchema: EVENT_SCHEMA, id: mintId(), kind, subject, actor,
+    at: new Date().toISOString(), writer: opts.unseen ? "w_teammate" : "w_here", writerPrev: GENESIS, after: causalHeads(seen), data };
+  try {
+    const r = foldStandardReport(sortEvents([...events, e]));
+    return { id: e.id, value: r.value, refused: r.refused.find((x) => x.id === e.id) };
+  } catch (err) {
+    if (isLogDamage(err)) return { id: e.id, damage: err.entry };
+    throw err;
+  }
+}
+const isDamage = async (w: ReturnType<typeof withEvent>) => { const r = await w; assert.equal(r.damage?.id, r.id, JSON.stringify(r.damage ?? r.refused)); };
+const REV = [{ at: "2026-08-02T00:00:00.000Z", by: { principal: "izzie@x.com", via: { kind: "agent", model: "claude-opus-5" } }, was: { title: "Credit currency policy" } }];
+
 // Every `*Revised` fixture below carries a `revisions` entry, because every real writer
 // does: `reviseSpec` and `reviseOperation` append one before publishing. The fold requires
 // the rewrite and the entry to arrive together — a rewrite with no entry moves text a
@@ -452,16 +478,30 @@ test("the fold applies a draft's corrections, and refuses them once it is ratifi
     assert.equal(s.operations[0]!.revisions?.at(-1)?.reason, "EUR lines went live in July");
 
     await ratifyWithReview(root, SCOPE, izzie, "sp_1", "2026-08-03T00:00:00.000Z", {}, ["op_1"]);
-    // The identical events, after adoption. Dropped — a ratified spec is the act that
-    // produced a rule, and rewriting it would rewrite the standard's own provenance.
-    await publishSpecRevised(root, SCOPE, opus, { ...SPEC, title: "quietly different", revisions: [{ at: "2026-08-02T00:00:00.000Z", by: opus, was: { title: SPEC.title } }] }, "2026-08-04T00:00:00.000Z");
-    await publishOperationRevised(root, SCOPE, opus, { ...ADD, statement: "All credit lines are in GBP.", revisions: [{ at: "2026-08-02T00:00:00.000Z", by: opus, was: { statement: ADD.statement } }] });
-    await publishOperationRemoved(root, SCOPE, opus, { ...ADD, removed: { at: "2026-08-04T00:00:00.000Z", by: opus, reason: "second thoughts" } });
-    s = await fold(root);
-    assert.equal(s.specs[0]!.title, "Credit currency policy v2");
-    assert.equal(s.operations[0]!.statement, "All credit lines are in USD or EUR.");
-    assert.equal(s.operations[0]!.removed, undefined);
-    assert.equal(s.requirements[0]!.statement, "All credit lines are in USD or EUR.", "and the standard is untouched");
+    const ratification = (await readScope(root, SCOPE)).find((e) => e.kind === "spec.ratified")!.id;
+    // The identical events, after adoption. Refused — a ratified spec is the act that produced
+    // a rule, and rewriting it would rewrite the standard's own provenance.
+    const late: [string, Record<string, unknown>][] = [
+      // Each a well-formed correction of the draft as its writer last saw it: one more revision
+      // entry than the draft had, so the only thing wrong with it is the ratification.
+      ["spec.revised", { spec: { ...SPEC, title: "quietly different",
+        revisions: [...REV, { at: "2026-08-04T00:00:00.000Z", by: opus, was: { title: "Credit currency policy v2" } }] }, at: "2026-08-04T00:00:00.000Z" }],
+      ["spec.operation.revised", { operation: { ...ADD, statement: "All credit lines are in GBP.", revisions: [
+        { at: "2026-08-02T00:00:00.000Z", by: opus, was: { statement: ADD.statement }, reason: "EUR lines went live in July" },
+        { at: "2026-08-04T00:00:00.000Z", by: opus, was: { statement: "All credit lines are in USD or EUR." } }] } }],
+      ["spec.operation.removed", { operation: { ...ADD, removed: { at: "2026-08-04T00:00:00.000Z", by: opus, reason: "second thoughts" } } }],
+    ];
+    for (const [kind, data] of late) {
+      // A teammate who had not pulled the ratification: a race. Refused, and the fold carries on.
+      const race = await withEvent(root, opus, kind, "sp_1", data, { unseen: [ratification] });
+      assert.ok(race.refused, `${kind}, written without seeing the ratification, is refused`);
+      assert.equal(race.value!.specs[0]!.title, "Credit currency policy v2");
+      assert.equal(race.value!.operations[0]!.statement, "All credit lines are in USD or EUR.");
+      assert.equal(race.value!.operations[0]!.removed, undefined);
+      assert.equal(race.value!.requirements[0]!.statement, "All credit lines are in USD or EUR.", "and the standard is untouched");
+      // Written having SEEN it: the writer's own door would have refused it. Damage.
+      await isDamage(withEvent(root, opus, kind, "sp_1", data));
+    }
   } finally { discard(root); }
 });
 
@@ -475,18 +515,19 @@ test("the fold refuses a kind change, a reasonless removal, and a removal someth
       reversibility: "reversible",
     };
     await publishOperationRemote(root, SCOPE, opus, CRIT);
-    await publishOperationRevised(root, SCOPE, opus, { ...ADD, kind: "amend_statement", statement: "x", revisions: [{ at: "2026-08-02T00:00:00.000Z", by: opus, was: { statement: ADD.statement } }] });
+    // None of these is a race: each is refused over everything its writer saw, so each is
+    // damage — no conforming build wrote it.
+    await isDamage(withEvent(root, opus, "spec.operation.revised", "sp_1",
+      { operation: { ...ADD, kind: "amend_statement", statement: "x", revisions: [{ at: "2026-08-02T00:00:00.000Z", by: opus, was: { statement: ADD.statement } }] } }));
     // The criterion still targets op_1, so this removal has TWO reasons to be refused.
-    await publishOperationRemoved(root, SCOPE, opus, { ...ADD, removed: { at: "2026-08-02T00:00:00.000Z", by: opus, reason: "wrong rule" } });
+    await isDamage(withEvent(root, opus, "spec.operation.removed", "sp_1",
+      { operation: { ...ADD, removed: { at: "2026-08-02T00:00:00.000Z", by: opus, reason: "wrong rule" } } }));
     // And this one has exactly one — nothing targets the criterion, so only the blank
     // reason can refuse it. Kept apart because a shadowed guard is a guard nothing tests.
-    await publishOperationRemoved(root, SCOPE, opus, { ...CRIT, removed: { at: "2026-08-02T00:00:00.000Z", by: opus, reason: "  " } });
+    const blank = await withEvent(root, opus, "spec.operation.removed", "sp_1",
+      { operation: { ...CRIT, removed: { at: "2026-08-02T00:00:00.000Z", by: opus, reason: "  " } } });
+    assert.match(blank.damage?.why ?? "", /a removal needs a reason/);
     let s = await fold(root);
-    assert.equal(s.operations.find((o) => o.id === "op_1")!.kind, "add_requirement", "a kind change is a different operation");
-    assert.equal(s.operations.find((o) => o.id === "op_1")!.removed, undefined,
-      "the criterion still targets it");
-    assert.equal(s.operations.find((o) => o.id === "op_2")!.removed, undefined,
-      "and a removal with a blank reason says nothing to the ratifier, so it does not land");
 
     // Drop the criterion with a real reason and the identical op_1 removal lands — so both
     // refusals were about what they said they were about.
@@ -539,17 +580,17 @@ test("a removed operation does not block a withdrawal the tool would allow", asy
       requirementId: requirementIdFor("op_1"), statement: "Amended in the same spec.",
     });
     await ratifyWithReview(live, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1", "op_live"]);
-    await publishSpecWithdrawn(live, SCOPE, izzie, "sp_1", "2026-08-03T00:00:00.000Z", "second thoughts");
-    assert.equal((await fold(live)).specs[0]!.status, "ratified", "an amendment can only be REPEALED");
+    const refused = await withEvent(live, izzie, "spec.withdrawn", "sp_1", { at: "2026-08-03T00:00:00.000Z", reason: "second thoughts" });
+    assert.match(refused.damage?.why ?? "", /repealed, not withdrawn/, "an amendment can only be REPEALED");
   } finally { discard(live); }
 });
 
 test("the fold lets an agent withdraw its own draft, and only that", async () => {
   const root = await log("withdraw");
   try {
-    // Somebody else's agent: refused, exactly as the tool refuses it.
-    await publishSpecWithdrawn(root, SCOPE, mate, "sp_1", "2026-08-02T00:00:00.000Z", "I disagree");
-    assert.equal((await fold(root)).specs[0]!.status, "draft");
+    // Somebody else's agent: refused, exactly as the tool refuses it — damage, not a race.
+    const theirs = await withEvent(root, mate, "spec.withdrawn", "sp_1", { at: "2026-08-02T00:00:00.000Z", reason: "I disagree" });
+    assert.match(theirs.damage?.why ?? "", /only its own principal's draft/);
 
     // Its own principal's draft: allowed. Nothing applied, so nothing is unbound.
     await publishSpecWithdrawn(root, SCOPE, opus, "sp_1", "2026-08-03T00:00:00.000Z", "an empty probe");
@@ -568,11 +609,12 @@ test("the fold refuses an agent's withdrawal of a RATIFIED spec, and one somebod
       grantedBy: mate, grantedAt: "2026-08-02T00:00:00.000Z",
     });
     // A pending gap somebody else granted: the agent's own draft, and still refused.
-    await publishSpecWithdrawn(root, SCOPE, opus, "sp_1", "2026-08-03T00:00:00.000Z", "second thoughts");
-    await publishOperationRevised(root, SCOPE, opus, { ...ADD, statement: "All credit lines are in EUR.", revisions: [{ at: "2026-08-02T00:00:00.000Z", by: opus, was: { statement: ADD.statement } }] });
+    const withdrawn = await withEvent(root, opus, "spec.withdrawn", "sp_1", { at: "2026-08-03T00:00:00.000Z", reason: "second thoughts" });
+    assert.match(withdrawn.damage?.why ?? "", /pending approval/, "somebody else's approval is chained to this proposal");
+    const rewritten = await withEvent(root, opus, "spec.operation.revised", "sp_1",
+      { operation: { ...ADD, statement: "All credit lines are in EUR.", revisions: [{ at: "2026-08-02T00:00:00.000Z", by: opus, was: { statement: ADD.statement } }] } });
+    assert.match(rewritten.damage?.why ?? "", /pending approval/, "and it cannot be rewritten under them");
     let s = await fold(root);
-    assert.equal(s.specs[0]!.status, "draft", "somebody else's approval is chained to this proposal");
-    assert.equal(s.operations[0]!.statement, "All credit lines are in USD.", "and it cannot be rewritten under them");
 
     // Released, and the same two events land — so both refusals were about the gap.
     const { publishAckReleased } = await import("./shared-standard.js");
@@ -587,8 +629,8 @@ test("the fold refuses an agent's withdrawal of a RATIFIED spec, and one somebod
     const other = await log("gated-ratified");
     try {
       await ratifyWithReview(other, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1"]);
-      await publishSpecWithdrawn(other, SCOPE, opus, "sp_1", "2026-08-03T00:00:00.000Z", "second thoughts");
-      assert.equal((await fold(other)).specs[0]!.status, "ratified");
+      const unbinding = await withEvent(other, opus, "spec.withdrawn", "sp_1", { at: "2026-08-03T00:00:00.000Z", reason: "second thoughts" });
+      assert.match(unbinding.damage?.why ?? "", /an agent withdraws only a draft/);
       assert.equal((await fold(other)).requirements.length, 1);
     } finally { discard(other); }
   } finally { discard(root); }

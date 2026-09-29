@@ -28,6 +28,10 @@ import { applicationReaderBrief, submitApplicationVerdict, recordApplicationVerd
 import { questionnaireStatus, waitQuestionnaireStatus } from "./ops/questionnaire-status.js";
 import { comparisonDetail, requestComparison, comparisonBrief, submitComparisonJudgment, recordComparisonJudgment, comparisonResolutionBrief, resolveComparison } from "./ops/comparisons.js";
 import { RepairConnection } from "./verifier-boundary.js";
+import { asLockout, lockoutGate } from "./lockout-gate.js";
+
+/** The tools a locked store still runs: they fetch, re-check, and are how a lock clears. */
+const RUNS_WHILE_LOCKED = new Set(["sync", "pull"]);
 
 /**
  * Tools that write to a universe's `.codemap/` are held under the write lock, so a
@@ -2322,12 +2326,19 @@ async function handle(msg: any): Promise<void> {
         return;
       }
       try {
+        // Damage anywhere this process can see locks every tool in every universe (plan 1.2).
+        if (!RUNS_WHILE_LOCKED.has(tool.name)) {
+          const lockout = await lockoutGate(ws.universes.map((u) => u.path));
+          if (lockout) throw lockout;
+        }
         const run = () => tool.handler(args, { ws, universe });
         const locked = typeof tool.mutates === "function" ? tool.mutates(args) : tool.mutates;
         const out = locked ? await withLock(universe.path, run) : await run();
         send({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(out, null, 2) }] } });
       } catch (e: any) {
-        send({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: "Error: " + (e?.message ?? String(e)) }], isError: true } });
+        const lockout = await asLockout(e, ws.universes.map((u) => u.path)).catch(() => null);
+        const text = lockout ? lockout.message : "Error: " + (e?.message ?? String(e));
+        send({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text }], isError: true } });
       }
       return;
     }

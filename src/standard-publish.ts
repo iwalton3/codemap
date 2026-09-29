@@ -28,6 +28,7 @@ import { ensureSidecar } from "./sidecar.js";
 import { publishProvisionalAudit } from "./provisional.js";
 import { readCached, readCachedMerged, ensureMaterialized } from "./materialize.js";
 import type { LogEvent } from "./eventlog.js";
+import { LockedOut } from "./lockout.js";
 import { standardProjection } from "./shared-projections.js";
 import {
   foldStandard, standardScope, lawScope, isLawEvent, publishSpecDrafted, publishOperation, publishSpecRatified,
@@ -123,6 +124,8 @@ export async function standardScopeWarning(root: string): Promise<StandardScope 
     if (!fresh) return { status: "stale", detail: "the rows are behind the log — the next sync will retry" };
     return undefined;
   } catch (e: any) {
+    // A lockout is not staleness: no read carries on past damage (plan 1.2).
+    if (e instanceof LockedOut) throw e;
     return { status: "stale", detail: `the shared standard could not be read: ${e?.message ?? e}` };
   }
 }

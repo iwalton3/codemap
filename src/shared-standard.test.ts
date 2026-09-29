@@ -9,29 +9,35 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readScope, type LogEvent } from "./eventlog.js";
+import { causalHeads, readScope, sortEvents, type LogEvent } from "./eventlog.js";
 import { ensureSidecar } from "./sidecar.js";
 import { db } from "./db.js";
 import { discard } from "./test-tmp.js";
 import { standardProjection } from "./shared-projections.js";
-import { foldStandard, standardScope, emptyStandard } from "./shared-standard.js";
-import { unfolded } from "./test-door.js";
-
-// This file asks what the FOLD does with each act, including acts this build's write door
-// refuses; so every act here is appended as another build would have appended it.
-const {
-  publishSpecDrafted, publishOperation, publishSpecRatified,
+import {
+  foldStandard, standardScope, publishSpecDrafted, publishOperation, publishSpecRatified,
   publishAckGranted, publishAckReleased, publishAudit, publishProblemRaised, publishAdjudication,
   publishVacuityCheck, publishPointerDeclared, publishPointerRestated, publishPointerRetired,
   publishPopulationPinned, publishScrubPolicy, publishSpecWithdrawn, publishOperationRevised,
-  publishSpecReviewed, publishOperationRemoved,
-} = unfolded;
-import { ratifyWithReview as ratifyThroughDoor } from "./test-approve.js";
-const ratifyWithReview = (l: string, s: string, a: Actor, id: string, at: string, w: Parameters<typeof ratifyThroughDoor>[5], ops: string[], reviewer?: Actor) =>
-  ratifyThroughDoor(l, s, a, id, at, w, ops, reviewer, "unfolded");
+  publishSpecReviewed, publishOperationRemoved, emptyStandard, foldStandardReport,
+} from "./shared-standard.js";
+import { foldWithNext, probe, unfolded } from "./test-door.js";
+import type { DamagedEntry } from "./log-damage.js";
+
+/**
+ * An act the fold refuses over everything its writer saw, probed as the next event and never
+ * written: no conforming build writes it — the write door refuses it — so in a log it is
+ * damage and the fold halts on it (plan 1.2). What it would have done is not a question.
+ */
+async function damage(p: Promise<{ damage?: DamagedEntry; refused?: unknown }>, why: string): Promise<DamagedEntry> {
+  const r = await p;
+  assert.ok(r.damage, `${why} — got ${JSON.stringify(r.refused ?? "applied")}`);
+  return r.damage!;
+}
+import { ratifyWithReview } from "./test-approve.js";
 import { criterionIdFor, requirementIdFor, framingContent, operationContent, type Acknowledgement, type Actor, type Audit, type Operation, type Pointer, type Problem, type Spec } from "./schema.js";
 
 const izzie: Actor = { principal: "izzie@x.com" };
@@ -51,6 +57,29 @@ async function log(t: string) {
   const root = tmp(t);
   await ensureSidecar(root, izzie);
   return root;
+}
+
+/**
+ * Re-home the scope's last event as another clone would have written it — its own writer and
+ * causal heads — so a fixture can put a genuine race in the log.
+ */
+function rewriteLast(root: string, e: LogEvent, envelope: Partial<LogEvent>): void {
+  const shard = join(root, SCOPE, `${e.writer}.ndjson`);
+  const lines = readFileSync(shard, "utf8").split("\n").filter((l) => l.trim() && JSON.parse(l).id !== e.id);
+  writeFileSync(shard, lines.map((l) => l + "\n").join(""));
+  const moved = { ...e, ...envelope };
+  writeFileSync(join(root, SCOPE, `${moved.writer}.ndjson`), JSON.stringify(moved) + "\n", { flag: "a" });
+}
+
+/** A reviewer's sign-off of a draft without its ratification, so a test can probe that. */
+async function signOff(root: string, who: Actor, specId: string, opIds: string[], at: string) {
+  const f = await fold(root);
+  const spec = f.specs.find((s) => s.id === specId)!;
+  await publishSpecReviewed(root, SCOPE, who, { id: `rw_frame_${specId}_${who.principal}`, specId, reviewer: who, at, content: framingContent(spec) });
+  for (const id of opIds) {
+    const op = f.operations.find((o) => o.id === id);
+    if (op) await publishSpecReviewed(root, SCOPE, who, { id: `rw_${id}_${who.principal}`, specId, operationId: id, reviewer: who, at, content: operationContent(op) });
+  }
 }
 
 const SPEC: Spec = {
@@ -115,7 +144,7 @@ test("THE FOLD REFUSES AN AGENT'S ADJUDICATION, because a remote clone sees only
   try {
     const audit: Audit = {
       id: "au_1", requirementId: "r_x", outcome: "nonconformant",
-      evidence: { read: ["a_credit"] }, witnesses: [], finding: "does not enforce USD",
+      evidence: { read: ["a_credit"] }, witnesses: [{ anchorId: "a_credit", bodyHash: "h1:sha256:abc" }], finding: "does not enforce USD",
       auditor: opus, at: "2026-08-03T00:00:00.000Z",
     };
     const problem: Problem = {
@@ -128,11 +157,8 @@ test("THE FOLD REFUSES AN AGENT'S ADJUDICATION, because a remote clone sees only
 
     // An AGENT appends a well-formed adjudication. The tool would have refused it; the
     // fold is the only thing standing between that row and every other clone.
-    await publishAdjudication(root, SCOPE, opus, "pr_1", "code-wrong", "the rule stands", "2026-08-04T00:00:00.000Z");
-    assert.equal(
-      (await fold(root)).problems[0]!.disposition, undefined,
-      "an agent-authored adjudication must not bind anybody",
-    );
+    assert.equal((await damage(probe.publishAdjudication(root, SCOPE, opus, "pr_1", "code-wrong", "the rule stands", "2026-08-04T00:00:00.000Z"),
+      "an agent-authored adjudication must not bind anybody")).why, "adjudication is a person's act");
 
     // The same act by a PRINCIPAL does bind — so the refusal is about the actor and not
     // about the event being unreadable.
@@ -158,7 +184,7 @@ test("THE FOLD REFUSES A VERDICT THAT IS NOT ONE, and a decision with no reason"
   try {
     await publishAudit(root, SCOPE, opus, {
       id: "au_1", requirementId: "r_x", outcome: "nonconformant", evidence: { read: ["a_1"] },
-      witnesses: [], finding: "no currency check", auditor: opus, at: "2026-08-03T00:00:00.000Z",
+      witnesses: [{ anchorId: "a_1", bodyHash: "h1:sha256:abc" }], finding: "no currency check", auditor: opus, at: "2026-08-03T00:00:00.000Z",
     });
     await publishProblemRaised(root, SCOPE, opus, {
       id: "pr_1", requirementId: "r_x", auditId: "au_1",
@@ -166,12 +192,9 @@ test("THE FOLD REFUSES A VERDICT THAT IS NOT ONE, and a decision with no reason"
       raisedBy: opus, raisedAt: "2026-08-03T00:00:01.000Z",
     });
 
-    await publishAdjudication(root, SCOPE, izzie, "pr_1", "fine, ignore it", "we discussed it", "2026-08-04T00:00:00.000Z");
-    assert.equal((await fold(root)).problems[0]!.disposition, undefined,
+    await damage(probe.publishAdjudication(root, SCOPE, izzie, "pr_1", "fine, ignore it", "we discussed it", "2026-08-04T00:00:00.000Z"),
       "an unrecognised verdict still reads as adjudicated everywhere downstream");
-
-    await publishAdjudication(root, SCOPE, izzie, "pr_1", "code-wrong", "   ", "2026-08-05T00:00:00.000Z");
-    assert.equal((await fold(root)).problems[0]!.disposition, undefined,
+    await damage(probe.publishAdjudication(root, SCOPE, izzie, "pr_1", "code-wrong", "   ", "2026-08-05T00:00:00.000Z"),
       "a decision with no reason leaves a later reader only the verb");
 
     // And the well-formed act from the same actor lands, so neither refusal above is the
@@ -188,7 +211,7 @@ test("a disposition smuggled into a raise payload is dropped", async () => {
   try {
     await publishAudit(root, SCOPE, opus, {
       id: "au_1", requirementId: "r_x", outcome: "nonconformant", evidence: { read: ["a_1"] },
-      witnesses: [], finding: "no", auditor: opus, at: "2026-08-03T00:00:00.000Z",
+      witnesses: [{ anchorId: "a_1", bodyHash: "h1:sha256:abc" }], finding: "no", auditor: opus, at: "2026-08-03T00:00:00.000Z",
     });
     await publishProblemRaised(root, SCOPE, opus, {
       id: "pr_1", requirementId: "r_x", auditId: "au_1", summary: "smuggled",
@@ -271,11 +294,15 @@ test("a spec ratifies once, so a replayed or duplicated event cannot apply it tw
 
     // A second ratification of the same spec. A fold that applied it again would amend
     // the rule a second time, and `amendedBy` would grow on every sync — the shape of bug
-    // that only appears after a clone has synced more than once.
-    await ratifyWithReview(root, SCOPE, izzie, "sp_1", "2026-08-09T00:00:00.000Z", {}, ["op_1"]);
-    const twice = await fold(root);
-    assert.deepEqual(twice.requirements, once.requirements, "applying a spec is idempotent");
-    assert.equal(twice.specs[0]!.ratifiedAt, "2026-08-02T00:00:00.000Z", "and the first adoption is the one that counts");
+    // that only appears after a clone has synced more than once. Written having seen the
+    // first, it is damage; racing it, it is refused and the first adoption is the one that counts.
+    const first = (await readScope(root, SCOPE)).find((e) => e.kind === "spec.ratified")!.id;
+    await damage(probe.publishSpecRatified(root, SCOPE, izzie, "sp_1", "2026-08-09T00:00:00.000Z", {}, ["op_1"]), "a spec ratifies once");
+    const race = await foldWithNext(root, SCOPE, foldStandardReport, izzie, "spec.ratified", "sp_1",
+      { at: "2026-08-09T00:00:00.000Z", witnesses: {}, operations: ["op_1"] }, { unseen: [first] });
+    assert.ok(race.refused, "a concurrent second ratification is refused");
+    assert.deepEqual(race.value!.requirements, once.requirements, "applying a spec is idempotent");
+    assert.equal(race.value!.specs[0]!.ratifiedAt, "2026-08-02T00:00:00.000Z", "and the first adoption is the one that counts");
   } finally { discard(root); }
 });
 
@@ -294,11 +321,8 @@ test("the fold refuses an agent's debt acknowledgement", async () => {
       priority: "high" as const, revalidateBy: "2027-01-01", state: "active" as const,
       grantedAt: "2026-08-01T00:00:00.000Z",
     };
-    await publishAckGranted(root, SCOPE, opus, { ...base, grantedBy: opus });
-    assert.equal(
-      (await fold(root)).acknowledgements.length, 0,
-      "accepting non-conformance is an admission with an owner; an agent has none",
-    );
+    await damage(probe.publishAckGranted(root, SCOPE, opus, { ...base, grantedBy: opus }),
+      "accepting non-conformance is an admission with an owner; an agent has none");
 
     // A gap from an agent IS legitimate — an auditor classifying ahead of adoption is the
     // intended caller — so the refusal must be about the basis, not about the actor alone.
@@ -334,10 +358,7 @@ test("THE FOLD REFUSES A GAP MINTED AFTER RATIFICATION, which is the third laund
     await publishOperation(root, SCOPE, opus, ADD);
 
     // No operation at all, aimed straight at a rule — the shape the local path cannot mint.
-    await publishAckGranted(root, SCOPE, opus, {
-      ...base, id: "ack_bare", requirementId: requirementIdFor(ADD.id),
-    });
-    assert.equal((await fold(root)).acknowledgements.length, 0,
+    await damage(probe.publishAckGranted(root, SCOPE, opus, { ...base, id: "ack_bare", requirementId: requirementIdFor(ADD.id) }),
       "a gap that names no operation was minted by something that skipped the gate");
 
     // Before ratification: legitimate.
@@ -348,8 +369,7 @@ test("THE FOLD REFUSES A GAP MINTED AFTER RATIFICATION, which is the third laund
     assert.equal((await fold(root)).requirements.length, 1, "the rule is now binding");
 
     // After ratification, naming the very same operation: refused.
-    await publishAckGranted(root, SCOPE, opus, { ...base, id: "ack_after", operationId: ADD.id });
-    assert.equal((await fold(root)).acknowledgements.length, 1,
+    await damage(probe.publishAckGranted(root, SCOPE, opus, { ...base, id: "ack_after", operationId: ADD.id }),
       "once the rule binds, `gap` is no longer an available answer — that is the asymmetry");
 
     // And the route `acknowledgements.ts` names outright: draft a SECOND spec amending the
@@ -363,8 +383,7 @@ test("THE FOLD REFUSES A GAP MINTED AFTER RATIFICATION, which is the third laund
     };
     await publishSpecDrafted(root, SCOPE, opus, { ...SPEC, id: "sp_2", title: "Currency amendment" });
     await publishOperation(root, SCOPE, opus, amend);
-    await publishAckGranted(root, SCOPE, opus, { ...base, id: "ack_amend", operationId: amend.id });
-    assert.equal((await fold(root)).acknowledgements.length, 1,
+    await damage(probe.publishAckGranted(root, SCOPE, opus, { ...base, id: "ack_amend", operationId: amend.id }),
       "a gap may only be raised against the operation that INTRODUCES a rule, never one amending it");
   } finally { discard(root); }
 });
@@ -376,11 +395,8 @@ test("the fold refuses a conformant audit that touched no code", async () => {
       id: "au_1", requirementId: "r_x", outcome: "conformant", evidence: {},
       witnesses: [], finding: "looks fine to me", auditor: opus, at: "2026-08-03T00:00:00.000Z",
     };
-    await publishAudit(root, SCOPE, opus, base);
-    assert.equal(
-      (await fold(root)).audits.length, 0,
-      "a doc-only or evidence-free certification must not reach `conformant` from anywhere",
-    );
+    await damage(probe.publishAudit(root, SCOPE, opus, base),
+      "a doc-only or evidence-free certification must not reach `conformant` from anywhere");
 
     await publishAudit(root, SCOPE, opus, {
       ...base, id: "au_2", evidence: { read: ["a_credit"] },
@@ -392,38 +408,23 @@ test("the fold refuses a conformant audit that touched no code", async () => {
     // nonempty `ran` — so `false` certified a rule for every clone while `audits.ts` refused
     // the identical audit locally. The case the original test never reached: it checked an
     // absent `ran` and a present `read`, so the difference between the two ends was invisible.
-    await publishAudit(root, SCOPE, opus, {
-      ...base, id: "au_3", evidence: { ran: [{ command: "false", passed: false }] },
-    });
-    assert.equal(
-      (await fold(root)).audits.length, 1,
-      "a failed command is not a certification — the fold must not be laxer than `touchedCode`",
-    );
+    await damage(probe.publishAudit(root, SCOPE, opus, { ...base, id: "au_3", evidence: { ran: [{ command: "false", passed: false }] } }),
+      "a failed command is not a certification — the fold must not be laxer than `touchedCode`");
 
     // Nor may it omit the command. `{passed: true}` names nothing that ran, and where the
     // requirement cites code the citations become witnesses, so the result reads as
     // code-backed. `recordAudit` refuses this outright; the fold has no such second check,
     // so its copy of the predicate is the only thing standing here.
-    await publishAudit(root, SCOPE, opus, {
-      ...base, id: "au_4", evidence: { ran: [{ passed: true } as never] },
-    });
-    assert.equal(
-      (await fold(root)).audits.length, 1,
-      "an entry with no command records nothing, and a positive audit that records nothing is not one",
-    );
+    await damage(probe.publishAudit(root, SCOPE, opus, { ...base, id: "au_4", evidence: { ran: [{ passed: true } as never] } }),
+      "an entry with no command records nothing, and a positive audit that records nothing is not one");
 
     // A passing command and NO WITNESSES. This used to bind, and the assertion here said
     // so — `touchedCode` accepts `ran` alone, so nothing at this end asked what could later
     // move under the claim. `serveWith` treats an empty witness list as never-superseded,
     // so `conformant` was PERMANENT on every clone and survived a rewrite of the code the
     // command was run against. `recordAudit` has always refused it; this end had not.
-    await publishAudit(root, SCOPE, opus, {
-      ...base, id: "au_5", evidence: { ran: [{ command: "npm test", passed: true }] },
-    });
-    assert.equal(
-      (await fold(root)).audits.length, 1,
-      "a claim nothing can ever invalidate is not a claim, at the fold as at the writer",
-    );
+    await damage(probe.publishAudit(root, SCOPE, opus, { ...base, id: "au_5", evidence: { ran: [{ command: "npm test", passed: true }] } }),
+      "a claim nothing can ever invalidate is not a claim, at the fold as at the writer");
 
     await publishAudit(root, SCOPE, opus, {
       ...base, id: "au_5b", evidence: { read: ["a_credit"], ran: [{ command: "npm test", passed: true }] },
@@ -434,8 +435,8 @@ test("the fold refuses a conformant audit that touched no code", async () => {
     // Absence of evidence must never FILE either. "I could not verify this" is an
     // unverified requirement, not a violation — the 138-false-positives gate, restated
     // where it binds a writer whose tool never applied it.
-    await publishAudit(root, SCOPE, opus, { ...base, id: "au_nc", outcome: "nonconformant", evidence: {} });
-    assert.equal((await fold(root)).audits.length, 2, "a non-conformance nobody demonstrated is not one");
+    await damage(probe.publishAudit(root, SCOPE, opus, { ...base, id: "au_nc", outcome: "nonconformant", evidence: {} }),
+      "a non-conformance nobody demonstrated is not one");
 
     await publishAudit(root, SCOPE, opus, {
       ...base, id: "au_nc2", outcome: "nonconformant", evidence: { consulted: ["the settlement doc"] },
@@ -452,18 +453,15 @@ test("the fold refuses a conformant audit that touched no code", async () => {
 test("the fold drops provisional work, which is never the team's", async () => {
   const root = await log("provgate");
   try {
-    await publishAudit(root, SCOPE, opus, {
+    await damage(probe.publishAudit(root, SCOPE, opus, {
       id: "au_1", requirementId: "r_x", outcome: "nonconformant", evidence: { read: ["a_1"] },
-      witnesses: [], finding: "broken on my branch", auditor: opus,
+      witnesses: [{ anchorId: "a_1", bodyHash: "h1:sha256:abc" }], finding: "broken on my branch", auditor: opus,
       at: "2026-08-03T00:00:00.000Z", provisional: true,
-    });
-    await publishProblemRaised(root, SCOPE, opus, {
+    }), "a branch audit is about work in progress, not the codebase");
+    await damage(probe.publishProblemRaised(root, SCOPE, opus, {
       id: "pr_1", requirementId: "r_x", auditId: "au_1", summary: "branch-local",
       raisedBy: opus, raisedAt: "2026-08-03T00:00:01.000Z", provisional: true,
-    });
-    const f = await fold(root);
-    assert.equal(f.audits.length, 0, "a branch audit is about work in progress, not the codebase");
-    assert.equal(f.problems.length, 0, "and so is a problem raised from one");
+    }), "and so is a problem raised from one");
   } finally { discard(root); }
 });
 
@@ -475,10 +473,9 @@ test("the fold refuses an agent's ratification", async () => {
     // Reviewed by the PERSON, ratified by the agent — so the only thing left to refuse
     // this is the agent gate under test. Letting the agent sign off too would make the
     // test pass for two reasons and pin neither.
-    await ratifyWithReview(root, SCOPE, opus, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1"], izzie);
-    const f = await fold(root);
-    assert.equal(f.requirements.length, 0, "adoption is a principal's act on every clone, not only on the one that ran the tool");
-    assert.equal(f.specs[0]!.status, "draft");
+    await signOff(root, izzie, "sp_1", ["op_1"], "2026-08-02T00:00:00.000Z");
+    assert.equal((await damage(probe.publishSpecRatified(root, SCOPE, opus, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1"]),
+      "adoption is a principal's act on every clone, not only on the one that ran the tool")).why, "ratification is a person's act");
 
     await ratifyWithReview(root, SCOPE, izzie, "sp_1", "2026-08-03T00:00:00.000Z", {}, ["op_1"]);
     assert.equal((await fold(root)).requirements.length, 1, "and a principal's does bind");
@@ -505,16 +502,21 @@ test("the fold refuses a spec adopted against a base that had already moved", as
       await publishSpecDrafted(root, SCOPE, izzie, { ...SPEC, id: sid, title: sid });
       await publishOperation(root, SCOPE, izzie, amend(oid, text));
     }
+    // B signs off its own proposal, then A's adoption lands without B having seen it.
+    await signOff(root, izzie, "sp_b", ["op_b"], "2026-08-03T00:00:00.000Z");
     await ratifyWithReview(root, SCOPE, izzie, "sp_a", "2026-08-03T00:00:00.000Z", {}, ["op_a"]);
     assert.match((await fold(root)).requirements[0]!.statement, /settlement float/);
+    const aAdopted = (await readScope(root, SCOPE)).filter((e) => e.kind === "spec.ratified").at(-1)!.id;
 
-    await ratifyWithReview(root, SCOPE, izzie, "sp_b", "2026-08-04T00:00:00.000Z", {}, ["op_b"]);
-    const after = await fold(root);
+    const bRatifies = { at: "2026-08-04T00:00:00.000Z", witnesses: {}, operations: ["op_b"] };
+    const race = await foldWithNext(root, SCOPE, foldStandardReport, izzie, "spec.ratified", "sp_b", bRatifies, { unseen: [aAdopted] });
     assert.match(
-      after.requirements[0]!.statement, /settlement float/,
+      race.value!.requirements[0]!.statement, /settlement float/,
       "B was drafted against text A has since replaced; applying it would erase an amendment a principal ratified",
     );
-    assert.equal(after.specs.find((x) => x.id === "sp_b")!.conflicted, true, "and the spec says why nothing landed");
+    assert.equal(race.value!.specs.find((x) => x.id === "sp_b")!.conflicted, true, "and the spec says why nothing landed");
+    // Having SEEN A's adoption, B's own door refuses it — so in a log it is damage.
+    await damage(probe.publishSpecRatified(root, SCOPE, izzie, "sp_b", "2026-08-04T00:00:00.000Z", {}, ["op_b"]), "B saw A land");
   } finally { discard(root); }
 });
 
@@ -611,8 +613,8 @@ test("the fold drops a `demonstrated` vacuity check that records no method", asy
       criterionId, witnesses: [{ anchorId: "a_lint", bodyHash: "h1:sha256:def" }],
       checkedBy: opus, at: "2026-08-03T00:00:00.000Z",
     };
-    await publishVacuityCheck(root, SCOPE, opus, { ...base, id: "vc_1", verdict: "demonstrated", method: "" });
-    assert.deepEqual((await fold(root)).vacuityChecks, [], "a demonstration recording nothing is not a demonstration");
+    await damage(probe.publishVacuityCheck(root, SCOPE, opus, { ...base, id: "vc_1", verdict: "demonstrated", method: "" }),
+      "a demonstration recording nothing is not a demonstration");
 
     // A verdict that WEAKENS a criterion needs no method — its failure mode is noise, and
     // gating it would gate what unsilences.
@@ -626,8 +628,8 @@ test("the fold drops a `demonstrated` vacuity check that records no method", asy
     assert.deepEqual((await fold(root)).vacuityChecks.map((v) => v.id), ["vc_2", "vc_3"]);
 
     // A verdict this build does not model is dropped rather than folded as something else.
-    await publishVacuityCheck(root, SCOPE, opus, { ...base, id: "vc_4", verdict: "fine" as never, method: "x" });
-    assert.deepEqual((await fold(root)).vacuityChecks.map((v) => v.id), ["vc_2", "vc_3"]);
+    await damage(probe.publishVacuityCheck(root, SCOPE, opus, { ...base, id: "vc_4", verdict: "fine" as never, method: "x" }),
+      "a verdict this build does not model");
   } finally { discard(root); }
 });
 
@@ -661,8 +663,7 @@ test("a pointer folds through its three acts, and the guards bind at this end to
     // A retirement with no reason is a rule quietly losing what watches it, which is how a
     // standard comes to look settled. Refused in the tool AND here — the tool binds only
     // writers who ask, and this subsystem has shipped the one-end version four times.
-    await publishPointerRetired(root, SCOPE, opus, "pt_1", "2026-08-13T00:00:00.000Z", "  ");
-    assert.equal((await fold(root)).pointers[0]!.state, "active", "still watching");
+    await damage(probe.publishPointerRetired(root, SCOPE, opus, "pt_1", "2026-08-13T00:00:00.000Z", "  "), "still watching");
 
     await publishPointerRetired(root, SCOPE, opus, "pt_1", "2026-08-13T00:00:00.000Z", "the doc was folded away");
     p = (await fold(root)).pointers;
@@ -674,11 +675,9 @@ test("a pointer folds through its three acts, and the guards bind at this end to
 test("the fold refuses a pointer nobody can evaluate, and one that arrives pre-retired", async () => {
   const root = await log("pointer-guards");
   try {
-    await publishPointerDeclared(root, SCOPE, opus, { ...PTR, id: "pt_mute", rationale: "   " });
-    assert.deepEqual((await fold(root)).pointers.map((x) => x.id), [], "no rationale, nothing to judge");
-
-    await publishPointerDeclared(root, SCOPE, opus, { ...PTR, id: "pt_bad", target: { kind: "spec" as never, id: "x" } });
-    assert.deepEqual((await fold(root)).pointers.map((x) => x.id), [], "a target kind this build does not model");
+    await damage(probe.publishPointerDeclared(root, SCOPE, opus, { ...PTR, id: "pt_mute", rationale: "   " }), "no rationale, nothing to judge");
+    await damage(probe.publishPointerDeclared(root, SCOPE, opus, { ...PTR, id: "pt_bad", target: { kind: "spec" as never, id: "x" } }),
+      "a target kind this build does not model");
 
     // A `declared` event carrying retirement fields would fold to a pointer that never
     // watched anything and cannot be retired again — the partial-strip shape that let
@@ -729,28 +728,24 @@ test("a population pin folds, and supersedes the one it names in the same act", 
 test("the fold refuses an empty pin, and an agent narrowing a population", async () => {
   const root = await log("population-guards");
   try {
-    await publishPopulationPinned(root, SCOPE, izzie, { ...POP, id: "pop_empty", members: [] });
-    assert.deepEqual((await fold(root)).populations.map((p) => p.id), [], "zero members is green, and green reads as conformant");
-
-    await publishPopulationPinned(root, SCOPE, izzie, { ...POP, id: "pop_bad", members: [{ id: "x", state: "maybe" as never }] });
-    assert.deepEqual((await fold(root)).populations.map((p) => p.id), [], "a member state this build does not model");
-
-    await publishPopulationPinned(root, SCOPE, izzie, {
+    await damage(probe.publishPopulationPinned(root, SCOPE, izzie, { ...POP, id: "pop_empty", members: [] }),
+      "zero members is green, and green reads as conformant");
+    await damage(probe.publishPopulationPinned(root, SCOPE, izzie, { ...POP, id: "pop_bad", members: [{ id: "x", state: "maybe" as never }] }),
+      "a member state this build does not model");
+    await damage(probe.publishPopulationPinned(root, SCOPE, izzie, {
       ...POP, id: "pop_mute", basis: "not-expressible", lint: [], witnesses: [], members: [], reason: "  ",
-    });
-    assert.deepEqual((await fold(root)).populations.map((p) => p.id), [], "the one basis nothing can check needs its argument");
+    }), "the one basis nothing can check needs its argument");
 
     await publishPopulationPinned(root, SCOPE, izzie, POP);
     assert.deepEqual((await fold(root)).populations.map((p) => p.id), ["pop_1"], "and a real one lands");
 
     // An AGENT dropping the violating member. Decided here from the two member lists the
     // writer had, not from the writer's word about what it was doing.
-    await publishPopulationPinned(root, SCOPE, opus, {
+    await damage(probe.publishPopulationPinned(root, SCOPE, opus, {
       ...POP, id: "pop_narrow", pinnedAt: "2026-08-16T00:00:00.000Z",
       members: [{ id: "GET /orders", state: "conforms" as const }],
-    }, "pop_1");
+    }, "pop_1"), "narrowing is a principal's act");
     let p = (await fold(root)).populations;
-    assert.deepEqual(p.map((x) => [x.id, x.state]), [["pop_1", "active"]], "narrowing is a principal's act");
 
     // The same agent WIDENING is fine — gate what silences, never what unsilences.
     await publishPopulationPinned(root, SCOPE, opus, {
@@ -781,19 +776,16 @@ test("a covering audit folds, and the fold restates the gates the tool cannot bi
 
     // A scrub that records nothing is the vacuous check this mechanism exists to detect,
     // one level up. Refused at both ends.
-    await publishAudit(root, SCOPE, opus, { ...base, id: "sc_mute", finding: "   " });
-    assert.deepEqual((await fold(root)).scrubs.map((s) => s.id), ["sc_1"]);
-
-    await publishAudit(root, SCOPE, opus, { ...base, id: "sc_bad", trigger: "invented" as never });
-    assert.deepEqual((await fold(root)).scrubs.map((s) => s.id), ["sc_1"]);
+    await damage(probe.publishAudit(root, SCOPE, opus, { ...base, id: "sc_mute", finding: "   " }), "a scrub that records nothing");
+    await damage(probe.publishAudit(root, SCOPE, opus, { ...base, id: "sc_bad", trigger: "invented" as never }), "a trigger this build does not model");
 
     // And the observation gate, which needs a pointer to exist to be meaningful: a scrub
     // that skips an ACTIVE pointer buys a fresh coverage period without having looked at
     // it. The fold reads the pointer state from its OWN map — the team's view of what was
     // active, not the writer's account of it.
     await publishPointerDeclared(root, SCOPE, opus, { ...PTR, id: "pt_w", requirementId: "r_x" });
-    await publishAudit(root, SCOPE, opus, { ...base, id: "sc_skip", at: "2026-08-19T00:00:00.000Z" });
-    assert.deepEqual((await fold(root)).scrubs.map((s) => s.id), ["sc_1"], "an omitted pointer is an unlooked-at rule");
+    await damage(probe.publishAudit(root, SCOPE, opus, { ...base, id: "sc_skip", at: "2026-08-19T00:00:00.000Z" }),
+      "an omitted pointer is an unlooked-at rule");
 
     await publishAudit(root, SCOPE, opus, {
       ...base, id: "sc_full", at: "2026-08-20T00:00:00.000Z",
@@ -808,11 +800,10 @@ test("the scrub policy is one decision, and one that cannot do its job is droppe
   try {
     assert.equal((await fold(root)).scrubPolicy, null, "unstated is its own answer");
 
-    await publishScrubPolicy(root, SCOPE, izzie, { coverageDays: 0, minObservations: 3, setBy: izzie, setAt: "2026-08-18T00:00:00.000Z" });
-    assert.equal((await fold(root)).scrubPolicy, null, "a period of zero covers nothing");
-
-    await publishScrubPolicy(root, SCOPE, izzie, { coverageDays: 30, minObservations: 1, setBy: izzie, setAt: "2026-08-18T00:00:00.000Z" });
-    assert.equal((await fold(root)).scrubPolicy, null, "a rate from one look is not a rate");
+    await damage(probe.publishScrubPolicy(root, SCOPE, izzie, { coverageDays: 0, minObservations: 3, setBy: izzie, setAt: "2026-08-18T00:00:00.000Z" }),
+      "a period of zero covers nothing");
+    await damage(probe.publishScrubPolicy(root, SCOPE, izzie, { coverageDays: 30, minObservations: 1, setBy: izzie, setAt: "2026-08-18T00:00:00.000Z" }),
+      "a rate from one look is not a rate");
 
     await publishScrubPolicy(root, SCOPE, izzie, { coverageDays: 30, minObservations: 3, setBy: izzie, setAt: "2026-08-19T00:00:00.000Z" });
     assert.equal((await fold(root)).scrubPolicy!.coverageDays, 30);
@@ -840,13 +831,10 @@ test("an agent cannot narrow a population by omitting what it supersedes", async
 
     // No `supersedes`, and the member list drops the violating one. Under a fold that
     // trusts the field, this lands active beside pop_1 with the gate never consulted.
-    await publishPopulationPinned(root, SCOPE, opus, {
+    await damage(probe.publishPopulationPinned(root, SCOPE, opus, {
       ...POP, id: "pop_sneak", pinnedAt: "2026-08-20T00:00:00.000Z",
       members: [{ id: "GET /orders", state: "conforms" as const }],
-    });
-    const p = (await fold(root)).populations;
-    assert.deepEqual(p.map((x) => [x.id, x.state]), [["pop_1", "active"]],
-      "narrowing is a principal's act however the event describes itself");
+    }), "narrowing is a principal's act however the event describes itself");
   } finally { discard(root); }
 });
 
@@ -879,11 +867,10 @@ test("the fold blocks an agent erasing a populated rule by declaring it inexpres
     // Replacing a lint pin of 2 members with "no lint can express this" drops both — it is
     // narrowing at its limit, and it reaches the gate through a different door than a
     // shorter member list does.
-    await publishPopulationPinned(root, SCOPE, opus, {
+    await damage(probe.publishPopulationPinned(root, SCOPE, opus, {
       ...POP, id: "pop_ne", basis: "not-expressible", lint: [], witnesses: [], members: [],
       reason: "spans two repos", pinnedAt: "2026-08-21T00:00:00.000Z",
-    });
-    assert.deepEqual((await fold(root)).populations.map((p) => [p.id, p.state]), [["pop_1", "active"]]);
+    }), "an agent may not declare a populated rule inexpressible");
 
     // A principal may, and then it is the active one.
     await publishPopulationPinned(root, SCOPE, izzie, {
@@ -906,17 +893,14 @@ test("the fold refuses a covering audit observing pointers that are not on the r
     };
     // A phantom fabricates history for a pointer on ANOTHER rule: `pointerRates` tallies by
     // pointer id and takes the rule from the first scrub that mentions it.
-    await publishAudit(root, SCOPE, opus, {
+    await damage(probe.publishAudit(root, SCOPE, opus, {
       ...base, observations: [{ pointerId: "pt_mine", firing: false }, { pointerId: "pt_other", firing: true }],
-    });
-    assert.deepEqual((await fold(root)).scrubs.map((s) => s.id), []);
-
+    }), "a phantom observation of another rule's pointer");
     // The same pointer twice reaches `minObservations` from one look.
-    await publishAudit(root, SCOPE, opus, {
+    await damage(probe.publishAudit(root, SCOPE, opus, {
       ...base, id: "sc_dup",
       observations: [{ pointerId: "pt_mine", firing: false }, { pointerId: "pt_mine", firing: false }],
-    });
-    assert.deepEqual((await fold(root)).scrubs.map((s) => s.id), []);
+    }), "one look counted twice");
 
     await publishAudit(root, SCOPE, opus, { ...base, id: "sc_ok", observations: [{ pointerId: "pt_mine", firing: false }] });
     assert.deepEqual((await fold(root)).scrubs.map((s) => s.id), ["sc_ok"]);
@@ -931,14 +915,14 @@ test("the fold refuses a vacuity check about a criterion nothing created, or one
 
     // A verdict about nothing: `criteriaFor` would never surface it and nothing could ever
     // supersede it, so it would sit in the log for ever looking like a demonstration.
-    await publishVacuityCheck(root, SCOPE, opus, { ...base, id: "vc_ghost", criterionId: "ac_nothing", verdict: "demonstrated", method: "broke it" });
-    assert.deepEqual((await fold(root)).vacuityChecks.map((v) => v.id), []);
+    await damage(probe.publishVacuityCheck(root, SCOPE, opus, { ...base, id: "vc_ghost", criterionId: "ac_nothing", verdict: "demonstrated", method: "broke it" }),
+      "a verdict about nothing");
 
     // A `demonstrated` check with NO witnesses can never go superseded — `serveCheck`
     // reads an empty witness list as nothing to drift from — so it would certify a check
     // across every later rewrite of that check. That is the pathology the pin exists for.
-    await publishVacuityCheck(root, SCOPE, opus, { ...base, id: "vc_eternal", criterionId, verdict: "demonstrated", method: "broke it", witnesses: [] });
-    assert.deepEqual((await fold(root)).vacuityChecks.map((v) => v.id), []);
+    await damage(probe.publishVacuityCheck(root, SCOPE, opus, { ...base, id: "vc_eternal", criterionId, verdict: "demonstrated", method: "broke it", witnesses: [] }),
+      "a demonstration nothing can supersede");
 
     // The weakening verdicts need no witnesses: they take nothing on trust.
     await publishVacuityCheck(root, SCOPE, opus, { ...base, id: "vc_weak", criterionId, verdict: "vacuous", method: "", witnesses: [] });
@@ -972,11 +956,11 @@ test("a criterion the fold cannot read refuses the whole ratification, not just 
       await publishSpecDrafted(root2, SCOPE, opus, SPEC);
       await publishOperation(root2, SCOPE, opus, ADD);
       await publishOperation(root2, SCOPE, opus, { ...ADD_CRITERION, ...bad });
-      await ratifyWithReview(root2, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1", "op_2"]);
-      const s = await fold(root2);
-      assert.deepEqual(s.criteria.map((c) => c.id), [], `${id} should not fold`);
-      assert.equal(s.specs[0]!.conflicted, true, `${id} must MARK the adoption, not pass it off as clean`);
-      assert.equal(s.requirements.length, 0, `${id} takes the rule with it — adoption is all-or-nothing`);
+      // Adoption is all-or-nothing, so no conforming build ratifies a proposal one of whose
+      // operations cannot apply: in a log that ratification is damage.
+      await signOff(root2, izzie, "sp_1", ["op_1", "op_2"], "2026-08-02T00:00:00.000Z");
+      assert.match((await damage(probe.publishSpecRatified(root2, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1", "op_2"]),
+        `${id} takes the rule with it — adoption is all-or-nothing`)).why, /does not apply/);
       discard(root2);
     }
   } finally { discard(root); }
@@ -1163,11 +1147,9 @@ test("THE FOLD REFUSES WITHDRAWING A SPEC THAT AMENDED SOMETHING — that case i
     assert.equal((await fold(root)).requirements[0]!.statement, "All credit lines are in USD or EUR.");
 
     // Nothing cites the amending spec at all, so this refusal is about the operation KIND.
-    await withdraw(root, izzie, "sp_2", "2026-08-04T00:00:00.000Z", "EU launch slipped");
-    const after = await fold(root);
-    assert.equal(after.specs.find((s) => s.id === "sp_2")!.status, "ratified", "refused");
-    assert.equal(after.requirements[0]!.statement, "All credit lines are in USD or EUR.",
-      "and no statement was restored against witnesses the amendment had already re-baselined");
+    assert.equal((await damage(probe.publishSpecWithdrawn(root, SCOPE, izzie, "sp_2", "2026-08-04T00:00:00.000Z", "EU launch slipped"),
+      "no statement is restored against witnesses the amendment had already re-baselined")).why,
+      "a ratified spec that changed a rule is repealed, not withdrawn");
   } finally { discard(root); }
 });
 
@@ -1202,12 +1184,9 @@ test("the fold refuses a ratification it cannot apply WHOLE, rather than adoptin
     await publishSpecDrafted(root, SCOPE, opus, SPEC);
     await publishOperation(root, SCOPE, opus, ADD);
     await publishOperation(root, SCOPE, opus, SELF);
-    await ratifyWithReview(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1", "op_self"]);
-    const s = await fold(root);
-    assert.equal(s.specs[0]!.status, "ratified", "the ratification happened and the record says so");
-    assert.equal(s.specs[0]!.conflicted, true, "but it is marked, the way a moved base is");
-    assert.equal(s.requirements.length, 0, "and NOTHING applied — not the operations that were fine");
-    assert.equal(s.criteria.length, 0);
+    await signOff(root, izzie, "sp_1", ["op_1", "op_self"], "2026-08-02T00:00:00.000Z");
+    assert.match((await damage(probe.publishSpecRatified(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1", "op_self"]),
+      "NOTHING applies — not the operations that were fine")).why, /an operation does not apply/);
   } finally { discard(root); }
 
   const clean = await log("whole-ok");
@@ -1250,8 +1229,7 @@ test("a rewrite without its revision entry is refused, and a first-time field st
     await publishOperation(root, SCOPE, opus, ADD);
 
     // Rewrite, no entry: the text a ratifier signed would move with nothing recording it.
-    await publishOperationRevised(root, SCOPE, opus, { ...ADD, statement: "Silently different." });
-    assert.equal((await fold(root)).operations[0]!.statement, ADD.statement, "a silent rewrite is not a correction");
+    await damage(probe.publishOperationRevised(root, SCOPE, opus, { ...ADD, statement: "Silently different." }), "a silent rewrite is not a correction");
 
     // Setting a field that was ABSENT. `was` is `{ evidence: undefined }` in memory and
     // `{}` once it has been through the log — the shape that broke this.
@@ -1283,10 +1261,9 @@ test("the fold refuses an operation with nothing in it, rather than ratifying a 
       await publishSpecDrafted(root, SCOPE, opus, SPEC);
       await publishOperation(root, SCOPE, opus, ADD);
       await publishOperation(root, SCOPE, opus, { ...bad, specId: "sp_1", rationale: "x", reversibility: "reversible" } as Operation);
-      await ratifyWithReview(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1", bad.id]);
-      const s = await fold(root);
-      assert.equal(s.specs[0]!.conflicted, true, `${what} must mark the adoption`);
-      assert.equal(s.requirements.length, 0, `${what} must not land a rule with undefined columns`);
+      await signOff(root, izzie, "sp_1", ["op_1", bad.id], "2026-08-02T00:00:00.000Z");
+      await damage(probe.publishSpecRatified(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1", bad.id]),
+        `${what} must not land a rule with undefined columns`);
     } finally { discard(root); }
   }
 });
@@ -1315,10 +1292,9 @@ test("a ratification refuses an operation that was withdrawn from the proposal",
     await publishSpecDrafted(pinned, SCOPE, opus, SPEC);
     await publishOperation(pinned, SCOPE, opus, ADD);
     await publishOperation(pinned, SCOPE, opus, DEAD);
-    await ratifyWithReview(pinned, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1", "op_dead"]);
-    const s = await fold(pinned);
-    assert.ok(!s.requirements.some((r) => r.title === "Withdrawn rule"), "a withdrawn operation must not become a rule");
-    assert.equal(s.specs[0]!.conflicted, true, "and pinning one is a proposal that cannot be adopted as pinned");
+    await signOff(pinned, izzie, "sp_1", ["op_1"], "2026-08-02T00:00:00.000Z");
+    await damage(probe.publishSpecRatified(pinned, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1", "op_dead"]),
+      "pinning a withdrawn operation is a proposal that cannot be adopted as pinned");
   } finally { discard(pinned); }
 
   const loose = await log("tombstone-loose");
@@ -1330,7 +1306,7 @@ test("a ratification refuses an operation that was withdrawn from the proposal",
     await publishSpecReviewed(loose, SCOPE, izzie, {
       id: "w_f", specId: "sp_1", reviewer: izzie, at: "2026-08-02T00:00:00.000Z", content: framingContent(SPEC),
     });
-    for (const op of [ADD, DEAD]) {
+    for (const op of [ADD]) {
       await publishSpecReviewed(loose, SCOPE, izzie, {
         id: `w_${op.id}`, specId: "sp_1", operationId: op.id, reviewer: izzie,
         at: "2026-08-02T00:00:00.000Z", content: operationContent(op),
@@ -1358,11 +1334,10 @@ test("the fold refuses an operation added to a spec that is already ratified", a
     await publishSpecDrafted(root, SCOPE, opus, SPEC);
     await publishOperation(root, SCOPE, opus, ADD);
     await ratifyWithReview(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1"]);
-    await publishOperation(root, SCOPE, opus, {
+    await damage(probe.publishOperation(root, SCOPE, opus, {
       ...ADD, id: "op_late", ord: 1, kind: "amend_statement",
       requirementId: requirementIdFor("op_1"), statement: "Slipped in afterwards.",
-    });
-    assert.ok(!(await fold(root)).operations.some((o) => o.id === "op_late"), "the spec is spent; nothing more attaches to it");
+    }), "the spec is spent; nothing more attaches to it");
   } finally { discard(root); }
 
   // And an operation on a spec still OPEN is stored, so the check is about status and not
@@ -1399,8 +1374,7 @@ test("the fold refuses an acknowledgement with no release condition", async () =
   ] as const) {
     const root = await log("ack-bad");
     try {
-      await publishAckGranted(root, SCOPE, izzie, { ...base, ...bad } as Acknowledgement);
-      assert.equal((await fold(root)).acknowledgements.length, 0, `${what} must not fold`);
+      await damage(probe.publishAckGranted(root, SCOPE, izzie, { ...base, ...bad } as Acknowledgement), `${what} must not fold`);
     } finally { discard(root); }
   }
   // The well-formed one folds, so the four above are refused for their field and not
@@ -1522,18 +1496,35 @@ test("a detector proposed with a spec whose ratification CONFLICTED does not go 
       "the control — a detector arriving after a CLEAN adoption is an ordinary one");
   } finally { discard(good); }
 
-  // The same log, ratified with NO review witnesses, which conflicts and applies nothing.
+  // A ratification that CONFLICTS, which a conforming build reaches only by racing: B signs
+  // off an amendment and a criterion on the rule, A's amendment of the same rule lands first,
+  // and B ratifies without having seen it. The spec is ratified, conflicted, applied nothing.
   const bad = await log("bind-conflicted");
   try {
-    await publishSpecDrafted(bad, SCOPE, opus, SPEC);
-    await publishOperation(bad, SCOPE, opus, ADD);
-    await publishOperation(bad, SCOPE, opus, ADD_CRITERION);
-    await publishSpecRatified(bad, SCOPE, izzie, "sp_1", "2026-08-03T00:00:00.000Z", {}, ["op_1", "op_2"]);
-    await publishPointerDeclared(bad, SCOPE, opus, pending("pt_x", "op_2"));
+    await ratified(bad);
+    const rid = requirementIdFor("op_1");
+    const onRule = { requirementId: rid, statement: "All credit lines are in USD." };
+    await publishSpecDrafted(bad, SCOPE, izzie, { ...SPEC, id: "sp_b", title: "b" });
+    await publishOperation(bad, SCOPE, izzie, { id: "op_b", specId: "sp_b", kind: "amend_statement", ord: 0, requirementId: rid,
+      statement: "USD and EUR.", context: onRule, rationale: "b", reversibility: "reversible" });
+    await publishOperation(bad, SCOPE, izzie, { ...ADD_CRITERION, id: "op_bc", specId: "sp_b", targetOperationId: undefined, requirementId: rid });
+    await signOff(bad, izzie, "sp_b", ["op_b", "op_bc"], "2026-08-03T00:00:00.000Z");
+    await publishSpecDrafted(bad, SCOPE, izzie, { ...SPEC, id: "sp_a", title: "a" });
+    await publishOperation(bad, SCOPE, izzie, { id: "op_a", specId: "sp_a", kind: "amend_statement", ord: 0, requirementId: rid,
+      statement: "USD, except settlement float.", context: onRule, rationale: "a", reversibility: "reversible" });
+    await ratifyWithReview(bad, SCOPE, izzie, "sp_a", "2026-08-03T00:00:00.000Z", {}, ["op_a"]);
+    const events = sortEvents(await readScope(bad, SCOPE));
+    const aAdopted = events.filter((e) => e.kind === "spec.ratified").at(-1)!.id;
+    await unfolded.publishSpecRatified(bad, SCOPE, izzie, "sp_b", "2026-08-04T00:00:00.000Z", {}, ["op_b", "op_bc"]);
+    // …as B's clone wrote it: a writer of its own that had not seen A's adoption.
+    const bEvent = (await readScope(bad, SCOPE)).at(-1)!;
+    rewriteLast(bad, bEvent, { writer: "w_b", writerPrev: "GENESIS", after: causalHeads(events.filter((e) => e.id !== aAdopted)) });
     const s = await fold(bad);
-    assert.equal(s.specs[0]!.conflicted, true, "the fixture must actually conflict, or this proves nothing");
-    assert.equal(s.criteria.length, 0, "and it applied nothing");
-    assert.equal(s.pointers[0]!.state, "pending",
+    const sb = s.specs.find((x) => x.id === "sp_b")!;
+    assert.equal(sb.conflicted, true, "the fixture must actually conflict, or this proves nothing");
+    assert.ok(!s.criteria.some((c) => c.id === criterionIdFor("op_bc")), "and it applied nothing");
+    const next = await probe.publishPointerDeclared(bad, SCOPE, opus, { ...pending("pt_x", "op_bc"), requirementId: rid });
+    assert.equal(next.value!.pointers.find((p) => p.id === "pt_x")!.state, "pending",
       "an active detector on a criterion that does not exist is coverage manufactured by the fold");
   } finally { discard(bad); }
 });
@@ -1586,12 +1577,19 @@ test("the fold refuses to ratify a spec that was withdrawn", async () => {
   try {
     await publishSpecDrafted(root, SCOPE, opus, SPEC);
     await publishOperation(root, SCOPE, opus, ADD);
+    // Bob signs off the draft; Alice withdraws it; Bob ratifies from a read taken before his
+    // pull: a race, refused, and the latch holds.
+    await signOff(root, izzie, "sp_1", ["op_1"], "2026-08-01T12:00:00.000Z");
     await withdraw(root, izzie, "sp_1", "2026-08-02T00:00:00.000Z", "not ours to make");
-    await ratifyWithReview(root, SCOPE, izzie, "sp_1", "2026-08-03T00:00:00.000Z", {}, ["op_1"]);
-    const s = await fold(root);
-    assert.equal(s.specs[0]!.status, "withdrawn", "the latch does not go backwards");
-    assert.equal(s.specs[0]!.ratifiedAt, undefined, "and it is not both at once");
-    assert.equal(s.requirements.length, 0);
+    const withdrawal = (await readScope(root, SCOPE)).find((e) => e.kind === "spec.withdrawn")!.id;
+    const race = await foldWithNext(root, SCOPE, foldStandardReport, izzie, "spec.ratified", "sp_1",
+      { at: "2026-08-03T00:00:00.000Z", witnesses: {}, operations: ["op_1"] }, { unseen: [withdrawal] });
+    assert.ok(race.refused, "a ratification racing the withdrawal is refused");
+    assert.equal(race.value!.specs[0]!.status, "withdrawn", "the latch does not go backwards");
+    assert.equal(race.value!.specs[0]!.ratifiedAt, undefined, "and it is not both at once");
+    assert.equal(race.value!.requirements.length, 0);
+    // Having seen the withdrawal, his own door refuses it: damage.
+    await damage(probe.publishSpecRatified(root, SCOPE, izzie, "sp_1", "2026-08-03T00:00:00.000Z", {}, ["op_1"]), "the spec is withdrawn");
   } finally { discard(root); }
 
   // The ordinary adoption still works, so this is about the STATUS and not about the arm
@@ -1623,18 +1621,16 @@ test("the fold refuses to ratify a spec that was withdrawn", async () => {
  * everything — and the assertion that a LATER good event still folds is the actual claim:
  * the bad one did not poison the run.
  */
-test("a malformed event is dropped, and the events after it still fold", async () => {
+test("a malformed event halts the fold, naming it — never a TypeError, never a silent drop", async () => {
   const root = await log("unbindable");
   try {
-    await publishSpecDrafted(root, SCOPE, opus, { id: "sp_bad", status: "draft", author: opus } as never);
-    await publishProblemRaised(root, SCOPE, opus, { id: "pr_bad", state: "awaitingAdjudication" } as never);
-    // A good spec AFTER the bad ones: if either had thrown, this would never be reached.
     await publishSpecDrafted(root, SCOPE, opus, SPEC);
     await publishOperation(root, SCOPE, opus, ADD);
-    const s = await fold(root);
-    assert.deepEqual(s.specs.map((x) => x.id), ["sp_1"], "the malformed spec is gone and the good one folded");
-    assert.deepEqual(s.problems, [], "and a problem about no rule is not a problem");
-    assert.equal(s.operations.length, 1);
+    // The good events fold; each malformed one is named, whatever the arm behind it checks.
+    assert.equal((await fold(root)).operations.length, 1);
+    assert.match((await damage(probe.publishSpecDrafted(root, SCOPE, opus, { id: "sp_bad", status: "draft", author: opus } as never), "a spec with no title")).why,
+      /not the shape a spec.drafted/);
+    await damage(probe.publishProblemRaised(root, SCOPE, opus, { id: "pr_bad", state: "awaitingAdjudication" } as never), "a problem about no rule");
   } finally { discard(root); }
 });
 
@@ -1643,11 +1639,10 @@ test("the fold drops a revision that changed nothing, and keeps one that did", a
   try {
     await publishSpecDrafted(root, SCOPE, opus, SPEC);
     await publishOperation(root, SCOPE, opus, ADD);
-    await publishOperationRevised(root, SCOPE, opus, {
+    await damage(probe.publishOperationRevised(root, SCOPE, opus, {
       ...ADD, revisions: [{ at: "2026-08-02T00:00:00.000Z", by: opus, was: {}, reason: "because" }],
-    });
+    }), "no correction happened, so none is recorded");
     let s = await fold(root);
-    assert.equal((s.operations[0]!.revisions ?? []).length, 0, "no correction happened, so none is recorded");
 
     await publishOperationRevised(root, SCOPE, opus, {
       ...ADD, statement: "All credit lines are in USD or EUR.",

@@ -30,7 +30,9 @@ import { witnessDrift, realDrift } from "./reviews.js";
 import { originSlug, headCommit, currentBranch, isAncestor, defaultBranch, revParse, trunkBase, hasObject, branchHead, trunkRef } from "./git.js";
 import { prIsMerged, prMergedAt, mergedAfter, landingOf, knownPrHead } from "./pr.js";
 import { fetchReviewThreads, type GhRunner } from "./pr-push.js";
-import { ensureSidecar, sync as sidecarSync, receive as sidecarReceive, healMerge, readManifests, checkPeers, currentManifest, sidecarLineage, isSameSidecar } from "./sidecar.js";
+import { ensureSidecar, sync as sidecarSync, receive as sidecarReceive, healMerge, readManifests, checkPeers, currentManifest, sidecarLineage, isSameSidecar, inboundDamage } from "./sidecar.js";
+import { lockoutMessage, lockoutOf } from "./lockout.js";
+import { recheckLockout, scanForDamage } from "./damage-scan.js";
 import {
   createFinding, corroborate, comment, promote, request, setState, recordOutcome,
   markPosted, markUpstreamed, promoteToBug, needsHumanAck, ackQueue, mayRevise,
@@ -248,11 +250,44 @@ function rememberSidecar(root: string, cfg: { path: string }): void {
   if (lineage) writeStoreMeta(root, SIDECAR_LINEAGE, { lineage, path: cfg.path } satisfies SidecarMark);
 }
 
+/**
+ * The transport's half of the lockout (plan 1.2). A locked clone still fetches and re-checks —
+ * here, and on the fetched tip without merging it — and the lock clears once neither holds any
+ * damage; that is how a repaired team log releases every clone without a re-clone
+ * (docs/log-repair.md). Anything still damaged refuses, naming it.
+ */
+async function releaseLockout(logRoot: string): Promise<{ error: string } | null> {
+  if (!lockoutOf(logRoot)) return null;
+  const inbound = await inboundDamage(logRoot);
+  if (inbound && "error" in inbound) return inbound;
+  const still = await recheckLockout(logRoot, inbound ? {
+    id: inbound.id ?? "(unreadable bytes)", kind: inbound.kind ?? "(unreadable bytes)",
+    why: inbound.why ?? "the line is not JSON, so no build can read the event it held",
+    shard: inbound.shard, line: inbound.line,
+  } : null);
+  return still ? { error: lockoutMessage(still) } : null;
+}
+
+/**
+ * Fold everything here, and lock and refuse on damage. Before a sync commits, so damage a broken
+ * build or a hand edit left in the working tree is never published (owner, batch 4: "don't pile
+ * more entries onto a possibly broken datastore") — the commit gate checks shapes, this the acts;
+ * and after a merge, so damage that arrived locks now rather than on some later read.
+ */
+async function damageHere(logRoot: string): Promise<{ error: string } | null> {
+  const l = await scanForDamage(logRoot);
+  return l ? { error: lockoutMessage(l) } : null;
+}
+
 export async function sharedPull(root: string) {
   const b = bind(root);
   if ("error" in b) return b;
+  const locked = await releaseLockout(b.cfg.path);
+  if (locked) return locked;
   const r = await sidecarReceive(b.cfg.path, b.actor, `codemap: ${b.cfg.universe}`);
   if ("error" in r) return r;
+  const damaged = await damageHere(b.cfg.path);
+  if (damaged) return damaged;
   rememberSidecar(root, b.cfg);
   const arrived = await settleArrivals(root, b.cfg);
   return { ...arrived, ok: true, universe: b.cfg.universe, sidecar: b.cfg.path, ...r };
@@ -261,8 +296,12 @@ export async function sharedPull(root: string) {
 export async function sharedSync(root: string) {
   const b = bind(root);
   if ("error" in b) return b;
+  const locked = await releaseLockout(b.cfg.path) ?? await damageHere(b.cfg.path);
+  if (locked) return locked;
   const r = await sidecarSync(b.cfg.path, b.actor, `codemap: ${b.cfg.universe}`);
   if ("error" in r) return r;
+  const damaged = await damageHere(b.cfg.path);
+  if (damaged) return damaged;
   rememberSidecar(root, b.cfg);
   const arrived = await settleArrivals(root, b.cfg);
   return { ...arrived, ok: true, universe: b.cfg.universe, sidecar: b.cfg.path, ...r };

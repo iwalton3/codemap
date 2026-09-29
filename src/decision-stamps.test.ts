@@ -12,6 +12,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { isLogDamage } from "./log-damage.js";
 import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -114,7 +115,10 @@ test("an agent's sign-off signs nothing, stamp or no stamp", async () => {
     assert.ok(foldStandard(events).witnesses.length > 0, "the person's own sign-offs count");
     const asAgent = (data: (e: LogEvent) => Record<string, unknown>) =>
       events.map((e) => (e.kind === "spec.reviewed" ? { ...e, actor: agent, data: data(e) } : e));
-    assert.equal(foldStandard(asAgent((e) => e.data!)).witnesses.length, 0);
-    assert.equal(foldStandard(asAgent((e) => ({ ...e.data!, decision: { ...base, operationId: (e.data as any).witness.operationId, content: "x" } }))).witnesses.length, 0);
+    // An agent's sign-off is one no conforming build writes, so a log holding one halts (plan 1.2).
+    const halts = (evs: LogEvent[]) => assert.throws(() => foldStandard(evs),
+      (e: unknown) => isLogDamage(e) && e.entry.why === "a sign-off is a person's act");
+    halts(asAgent((e) => e.data!));
+    halts(asAgent((e) => ({ ...e.data!, decision: { ...base, operationId: (e.data as any).witness.operationId, content: "x" } })));
   } finally { discard(root); discard(side); }
 });

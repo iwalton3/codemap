@@ -25,6 +25,8 @@
 import { createHash } from "node:crypto";
 import { comparisonContextHash, deriveComparison, validateComparisonRequest, type AnswerSource, type CanonicalIssue, type ComparisonProjection, type ComparisonRequest, type ReaderJudgment, type HumanResolution } from "./decision-comparison.js";
 import { causality, emitEventChecked, type DoorFold, type LogEvent } from "./eventlog.js";
+import { foldHaltingOnDamage } from "./log-damage.js";
+import { decisionEventShape } from "./log-shape.js";
 import { isAgentActor } from "./identity.js";
 import { canonicalIssueKey, type CanonicalIssueReference } from "./decision-issues.js";
 import { questionnaireVersion, stageSubmission, validateQuestionnaire, type Questionnaire, type QuestionnaireAnswer, type StagedSubmission } from "./questionnaire.js";
@@ -233,12 +235,7 @@ export interface SharedDecisions {
   decisions: FoldedDecision[];
   questions: LoggedQuestion[];
   comparisons: FoldedComparison[];
-  /** Events the fold could not read and left out. Reported, never silent (owner, 2026-09-28:
-   *  "Skip it, and report it"): one bad line used to block the whole scope. */
-  skipped?: SkippedEvent[];
 }
-
-export interface SkippedEvent { id: string; kind: string; why: string }
 
 /** An event the fold did not apply as written, and why. See `foldDecisionsReport`. */
 export interface RefusedEvent { id: string; kind: string; why: string }
@@ -767,43 +764,20 @@ function listRevisionMatchesAnswer(d: FoldedDecision, list: ListRevision | undef
 }
 
 /**
- * Total: never throws. The arms check the shapes they are known to dereference. For a shape
- * none of them anticipated, one event is left out: of those whose removal lets the fold
- * complete, the one that keeps the most of it — removing the round a bad event sits on also
- * completes, and would lose every question in it. Either way the event is named in `skipped`.
+ * The decisions fold. HALTS on damage (`LogDamage`), naming the entry: a wrong shape, or an act
+ * its writer's own door would have refused (owner, node 18: "Halt on any bad entry"). It used
+ * to leave such an event out and read on, which could drop a good answer and blame it.
  */
 export function foldDecisions(events: LogEvent[]): SharedDecisions {
-  return leaveOutUnreadable(foldDecisionsOnce, events, (s) => s.rounds.length + s.questions.length + s.comparisons.length
-    + s.decisions.reduce((n, d) => n + 1 + d.answers.length, 0));
+  return foldDecisionsReport(events).value;
 }
 
 /**
- * The fold and every event it refused, for a caller that has to know whether one particular
- * event would be applied — the write door (plan 1.1).
+ * The fold and the refusals that are not damage — races, for conflict handling — for a caller
+ * that has to know whether one particular event would be applied: the write door (plan 1.1).
  */
 export function foldDecisionsReport(events: LogEvent[]): { value: SharedDecisions; refused: RefusedEvent[] } {
-  return foldDecisionsWithRefusals(events);
-}
-
-export function leaveOutUnreadable<T extends { skipped?: SkippedEvent[] }>(
-  once: (events: LogEvent[]) => T, events: LogEvent[], size: (t: T) => number,
-): T {
-  try { return once(events); } catch (err) {
-    const why = `the fold could not read it: ${err instanceof Error ? err.message : String(err)}`;
-    let kept: { t: T; e: LogEvent } | undefined;
-    for (let i = 0; i < events.length; i++) {
-      let t: T;
-      try { t = once([...events.slice(0, i), ...events.slice(i + 1)]); } catch { continue; }
-      if (!kept || size(t) >= size(kept.t)) kept = { t, e: events[i]! };
-    }
-    if (!kept) throw err;
-    kept.t.skipped = [...(kept.t.skipped ?? []), { id: kept.e.id, kind: kept.e.kind, why }];
-    return kept.t;
-  }
-}
-
-function foldDecisionsOnce(events: LogEvent[]): SharedDecisions {
-  return foldDecisionsWithRefusals(events).value;
+  return foldHaltingOnDamage(events, foldDecisionsWithRefusals, decisionEventShape);
 }
 
 /**
@@ -811,10 +785,8 @@ function foldDecisionsOnce(events: LogEvent[]): SharedDecisions {
  * refuses, so the write door can ask whether it would refuse a new event (plan 1.1).
  */
 function foldDecisionsWithRefusals(events: LogEvent[]): { value: SharedDecisions; refused: RefusedEvent[] } {
-  const skipped: SkippedEvent[] = [];
   const refused: RefusedEvent[] = [];
   const refuse = (e: LogEvent, why: string) => { refused.push({ id: e.id, kind: e.kind, why }); };
-  const skip = (e: LogEvent, why: string) => { skipped.push({ id: e.id, kind: e.kind, why }); refuse(e, why); };
   const eventById = new Map(events.map((e) => [e.id, e]));
   const refuseId = (id: string | undefined, why: string) => { const e = id ? eventById.get(id) : undefined; if (e) refuse(e, why); };
   const rounds = new Map<string, DecisionRound>();
@@ -853,15 +825,13 @@ function foldDecisionsWithRefusals(events: LogEvent[]): { value: SharedDecisions
     if (e.kind !== "decision.question.logged") continue;
     const q = e.data as any;
     // No round or no answer time: written by a build before either bound anything (H7.12).
-    const asked = Array.isArray(q?.rounds) && q.rounds.length && q.rounds.every((r: unknown) => str(r)) ? q.rounds as string[] : str(q?.round) ? [q.round as string] : undefined;
+    // Shape-checked on entry (`log-shape.ts`): rounds and per-question binding are always there.
+    const asked = q.rounds as string[];
     if (!str(q?.session) || !str(q?.toolUseId) || !asked || !str(q?.answeredAt) || !Array.isArray(q?.questions) || !q?.answers || typeof q.answers !== "object" || Array.isArray(q.answers)) { refuse(e, "a logged question needs its session, call, rounds, answer time, questions and answers"); continue; }
     if (!q.questions.every((x: any) => x && typeof x === "object" && typeof x.question === "string" && Array.isArray(x.options)
       && x.options.every((o: any) => o && typeof o === "object" && typeof o.label === "string"))) { refuse(e, "a logged question's questions need their text and option labels"); continue; }
     if (questions.has(e.id)) continue;
-    // A call logged before per-question binding named one round for all of it (S0.7).
-    const bound: Record<string, string> = q.bound && typeof q.bound === "object" && !Array.isArray(q.bound)
-      ? Object.fromEntries(Object.entries(q.bound).filter(([, r]) => typeof r === "string" && asked.includes(r as string))) as Record<string, string>
-      : Object.fromEntries((q.questions as AskedQuestion[]).map((x) => [x.question, asked[0]!]));
+    const bound = Object.fromEntries(Object.entries(q.bound as Record<string, string>).filter(([, r]) => asked.includes(r)));
     questions.set(e.id, {
       id: e.id, session: q.session, toolUseId: q.toolUseId,
       questions: q.questions.map(normalizeQuestion), answers: q.answers, rounds: asked, bound, answeredAt: q.answeredAt,
@@ -913,22 +883,20 @@ function foldDecisionsWithRefusals(events: LogEvent[]): { value: SharedDecisions
       case "decision.round.posted": {
         const r = data?.round;
         if (!r || typeof r !== "object" || !str(r.id) || !str(r.source) || !Array.isArray(data?.decisions)) { refuse(e, "a round needs its id, source and decisions"); break; }
-        if (!data?.publication && rounds.has(r.id)) { refuse(e, `round ${r.id} is already posted`); break; }
         if (new Set(data.decisions.map((raw: Decision) => raw?.id)).size !== data.decisions.length) { refuse(e, "a round's decisions need distinct ids"); break; }
         // Each decision's own shape first: the questionnaire check dereferences them.
         if (r.questionnaire) {
           const why = data.decisions.map((raw: Decision) => checkDecision(raw)).find(Boolean)
             ?? checkQuestionnaireDecisions(r.questionnaire, data.decisions);
-          if (why) { skip(e, why); break; }
+          if (why) { refuse(e, why); break; }
         }
-        if (!data?.publication && r.questionnaire && [...rounds.values()].some((prior) => prior.id === r.questionnaire.id
-          || prior.questionnaire?.id === r.questionnaire.id || prior.questionnaire?.id === r.id)) { refuse(e, `questionnaire ${r.questionnaire.id} is already posted`); break; }
         const pv = r.prevalidated;
         const prevalidated = pv && typeof pv === "object" && str(pv.record) && str(pv.sortedBy) ? { record: pv.record as string, sortedBy: pv.sortedBy as string } : undefined;
-        const roundId = data?.publication ? e.id : r.id;
+        // A posting's id is its event's, so two postings of one label never collide.
+        const roundId = e.id;
         if (rounds.has(roundId)) { refuse(e, `round ${roundId} is already posted`); break; }
         rounds.set(roundId, {
-          id: roundId, ...(data?.publication ? { label: r.id } : {}), source: r.source, universe: str(r.universe) ?? "",
+          id: roundId, label: r.id, source: r.source, universe: str(r.universe) ?? "",
           ...(str(r.pr) ? { pr: r.pr } : {}), ...(str(r.branch) ? { branch: r.branch } : {}),
           ...(Array.isArray(r.notes) ? { notes: r.notes.filter((n: unknown) => str(n)) } : {}),
           ...(prevalidated ? { prevalidated } : {}),
@@ -937,10 +905,10 @@ function foldDecisionsWithRefusals(events: LogEvent[]): { value: SharedDecisions
         });
         for (const raw of data.decisions as Decision[]) {
           const malformed = checkDecision(raw);
-          if (malformed) { skip(e, malformed); continue; }
-          if ((!data?.publication && decisions.has(raw.id)) || raw.round !== r.id) { refuse(e, `decision ${raw.id} is already posted or names another round`); continue; }
+          if (malformed) { refuse(e, malformed); continue; }
+          if (raw.round !== r.id) { refuse(e, `decision ${raw.id} names another round`); continue; }
           const d: FoldedDecision = {
-            id: data?.publication ? `${e.id}:${raw.id}` : raw.id, ...(data?.publication ? { label: raw.id } : {}),
+            id: `${e.id}:${raw.id}`, label: raw.id,
             round: roundId, ref: raw.ref, kind: raw.kind,
             payload: normalizeQuestion(raw.payload),
             // A retired field on an old posting is ignored, never a reason to lose the question (S0.7).
@@ -970,16 +938,16 @@ function foldDecisionsWithRefusals(events: LogEvent[]): { value: SharedDecisions
       case "decision.confirm.posted": {
         // Its own kind, because a round is immutable once posted (above). Kept whatever its
         // `confirms` says — whether it is a confirm codemap could have written is judged below.
-        const raw = data?.decision as (Decision & { confirms?: Confirms }) | undefined;
+        const raw = data.decision as Decision & { confirms: Confirms };
         const r = exactRound(str(data?.round) ?? "");
-        if (!r || !raw || typeof raw !== "object" || (!data?.publication && decisions.has(raw.id)) || raw.round !== (r.label ?? r.id) && raw.round !== r.id) { refuse(e, "a confirm needs its round and a decision in it"); break; }
+        if (!r || raw.round !== (r.label ?? r.id) && raw.round !== r.id) { refuse(e, "a confirm needs its round and a decision in it"); break; }
         const malformedConfirm = checkDecision(raw);
         if (malformedConfirm) { refuse(e, malformedConfirm); break; }
         const cf = raw.confirms as unknown as Record<string, unknown> | undefined;
-        const confirmId = data?.publication ? e.id : raw.id;
+        const confirmId = e.id;
         if (decisions.has(confirmId)) { refuse(e, `confirm ${confirmId} is already posted`); break; }
         decisions.set(confirmId, {
-          id: confirmId, ...(data?.publication ? { label: raw.id } : {}), round: r.id, ref: raw.ref, kind: raw.kind, payload: normalizeQuestion(raw.payload), options: raw.options,
+          id: confirmId, label: raw.id, round: r.id, ref: raw.ref, kind: raw.kind, payload: normalizeQuestion(raw.payload), options: raw.options,
           hash: decisionHash(raw), postedAt: typeof e.at === "string" ? e.at : "", postingEvent: e.id, answers: [],
           confirms: { answer: str(cf?.answer) ?? "", readings: Array.isArray(cf?.readings) ? cf.readings as Mapping[][] : [] },
         });
@@ -990,7 +958,7 @@ function foldDecisionsWithRefusals(events: LogEvent[]): { value: SharedDecisions
       case "decision.answer.revised": {
         const proof = data?.via?.kind === "revision-relay" ? data.via.proof : undefined;
         if (data?.via?.kind === "revision-relay" && (!isObject(proof) || typeof proof.answer !== "string"
-          || (proof.question !== undefined && !isObject(proof.question)))) { skip(e, "a relayed revision needs its question and answer"); break; }
+          || (proof.question !== undefined && !isObject(proof.question)))) { refuse(e, "a relayed revision needs its question and answer"); break; }
         const d = exactDecision(str(data?.decision) ?? "");
         const validList = d && !checkListRevision(d, data?.revision ?? { findings: [], issues: [] }, data?.list)
           && listRevisionMatchesAnswer(d, data?.list, data?.via);
@@ -1428,9 +1396,8 @@ function foldDecisionsWithRefusals(events: LogEvent[]): { value: SharedDecisions
   }
 
   const base: SharedDecisions = { rounds: [...rounds.values()], decisions: [...decisions.values()], questions: [...questions.values()], comparisons: [] };
-  base.comparisons = foldComparisons(base, comparisonEvents, skip, refuse);
+  base.comparisons = foldComparisons(base, comparisonEvents, refuse);
   applyComparisonFrontier(base);
-  if (skipped.length) base.skipped = skipped;
   // One entry per event: an event refused in two passes (a submission with two bad answers) is one refusal.
   const once = new Set<string>();
   return { value: base, refused: refused.filter((r) => !once.has(r.id) && !!once.add(r.id)) };
@@ -1782,15 +1749,14 @@ export function resolutionShownHash(shown: unknown): string {
 }
 
 /** Replay accepts only requests whose source is exactly the posted question and response. */
-function foldComparisons(s: SharedDecisions, events: LogEvent[], skip: (e: LogEvent, why: string) => void,
-  refuse: (e: LogEvent, why: string) => void): FoldedComparison[] {
+function foldComparisons(s: SharedDecisions, events: LogEvent[], refuse: (e: LogEvent, why: string) => void): FoldedComparison[] {
   const byId = new Map<string, { request: ComparisonRequest; judgments: ReaderJudgment[]; resolutions: HumanResolution[] }>();
   const causal = causality(events);
   for (const e of events.filter((x) => x.kind === "decision.comparison.requested")) {
     const data = e.data as any;
     if (e.kind === "decision.comparison.requested") {
       const r = data?.request as ComparisonRequest;
-      if (!r || typeof r !== "object" || !isObject(r.left) || !isObject(r.right)) { skip(e, "a comparison request needs both sides"); continue; }
+      if (!r || typeof r !== "object" || !isObject(r.left) || !isObject(r.right)) { refuse(e, "a comparison request needs both sides"); continue; }
       if (e.subject !== r.id || !validateComparisonRequest(r).ok) { refuse(e, "a comparison request's subject is its id, and the request must be well formed"); continue; }
       if (byId.has(r.id)) { refuse(e, `comparison ${r.id} is already requested`); continue; }
       const leftDecision = s.decisions.find((d) => d.id === r.left.questionId);
@@ -1811,7 +1777,7 @@ function foldComparisons(s: SharedDecisions, events: LogEvent[], skip: (e: LogEv
   for (const e of events.filter((x) => x.kind !== "decision.comparison.requested")) {
     const data = e.data as any;
     if (e.kind === "decision.comparison.judged") {
-      if (data?.judgment && !isObject(data.judgment.reader)) { skip(e, "a comparison judgment needs its reader"); continue; }
+      if (data?.judgment && !isObject(data.judgment.reader)) { refuse(e, "a comparison judgment needs its reader"); continue; }
       const j = data?.judgment ? { ...data.judgment, id: e.id, at: e.at } as ReaderJudgment : undefined;
       const r = byId.get(j?.requestId ?? "");
       const proof = data?.proof;
@@ -1823,7 +1789,7 @@ function foldComparisons(s: SharedDecisions, events: LogEvent[], skip: (e: LogEv
         || !str(proof.call) || !str(proof.toolUseId)) { refuse(e, "a comparison judgment needs its request and a proof of the reader that made it"); continue; }
       r.judgments.push(j);
     } else if (e.kind === "decision.comparison.resolved") {
-      if (data?.resolution && !isObject(data.resolution.human)) { skip(e, "a comparison resolution needs the person's act"); continue; }
+      if (data?.resolution && !isObject(data.resolution.human)) { refuse(e, "a comparison resolution needs the person's act"); continue; }
       const h = data?.resolution ? { ...data.resolution, id: e.id, at: e.at } as HumanResolution : undefined;
       const r = byId.get(h?.requestId ?? "");
       const proof = data?.proof;

@@ -31,7 +31,7 @@ import { needsHumanAck, foldFindings, prOfScope, type SharedFinding } from "./sh
 import { foldDocs, type SharedDoc, type UnmatchedAcceptance } from "./shared-docs.js";
 import { foldNotes, type SharedNote } from "./shared-notes.js";
 import { foldReviewLinks, type ReviewLink } from "./shared-reviews.js";
-import { foldDecisions, type SharedDecisions, type SkippedEvent } from "./shared-decisions.js";
+import { foldDecisions, type SharedDecisions } from "./shared-decisions.js";
 import { foldTriage, triageSubject, isTombstone, ABSENT_FIELD, type TriageEntry, type Axis, type TriageField } from "./shared-triage.js";
 import { foldGraph, type SharedWiring } from "./shared-graph.js";
 import { foldBugs, needsHumanAck as bugNeedsAck, type SharedBug } from "./shared-bugs.js";
@@ -424,9 +424,9 @@ export const reviewLinksProjection: Projection<ReviewLink[]> = {
 /** Decision rounds (`decisions/<universe>`). See shared-decisions.ts. */
 export const decisionsProjection: Projection<SharedDecisions> = {
   write(d: DatabaseSync, scope: string, value: SharedDecisions): void {
+    // `decision_skipped` is emptied and never written: a fold halts on what it cannot read now,
+    // and the table stays only so an older store opens (plan 1.2).
     for (const t of ["decision_rounds", "decision_records", "logged_questions", "decision_comparisons", "decision_skipped"]) d.prepare(`DELETE FROM ${t} WHERE scope = ?`).run(scope);
-    const skipped = d.prepare("INSERT INTO decision_skipped(scope,body) VALUES(?,?)");
-    for (const x of value.skipped ?? []) skipped.run(scope, JSON.stringify(x));
     const round = d.prepare("INSERT INTO decision_rounds(scope,id,body) VALUES(?,?,?)");
     for (const r of value.rounds) round.run(scope, r.id, JSON.stringify(r));
     const dec = d.prepare("INSERT INTO decision_records(scope,id,round,body) VALUES(?,?,?,?)");
@@ -442,9 +442,7 @@ export const decisionsProjection: Projection<SharedDecisions> = {
         .map((r) => {
           try { return JSON.parse(r.body) as T; } catch { throw new CorruptProjection(`${table} ${scope} holds an unreadable row`); }
         });
-    const skipped = all<SkippedEvent>("decision_skipped");
-    return { rounds: all("decision_rounds"), decisions: all("decision_records"), questions: all("logged_questions"), comparisons: all("decision_comparisons"),
-      ...(skipped.length ? { skipped } : {}) };
+    return { rounds: all("decision_rounds"), decisions: all("decision_records"), questions: all("logged_questions"), comparisons: all("decision_comparisons") };
   },
 };
 

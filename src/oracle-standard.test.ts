@@ -28,6 +28,14 @@
  *   never saw the code.
  */
 
+import { isLogDamage } from "./log-damage.js";
+import { LockedOut } from "./lockout.js";
+import { lockoutGate } from "./lockout-gate.js";
+import { standardScopeWarning } from "./standard-publish.js";
+import { sortEvents } from "./eventlog.js";
+import { spawnSync } from "node:child_process";
+import { foldStandard, lawScope } from "./shared-standard.js";
+import { sharedSync, sharedPull } from "./ops-shared.js";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { team, who, whileApart, settle, branch, appendRaw, rewriteHistory, type Team, type Member } from "./oracle.js";
@@ -437,49 +445,35 @@ test("every fold refusal binds a writer whose tool never checked, on every clone
       data: { disposition: "requirement-changed", reason: "the business moved", at: "2026-08-24T00:00:00Z" },
     });
     rewriteHistory(ben, "a writer whose tool never checked", () => {});
-    await settle(t);
-
-    // COULD ANY OF THIS FAIL? Only if the forgeries actually arrived. Every assertion
-    // below is a negative — "this did not happen" — and a shard that never propagated
-    // satisfies all of them while testing nothing at all.
     const forgedIds = ["9000000001-ratify", "9000000002-debt", "9000000003-gap",
       "9000000004-audit", "9000000005-adjudicate"];
-    for (const m of [izzie, ben]) {
-      const ids = new Set((await readScope(m.sidecar, scope)).map((e) => e.id));
-      for (const id of forgedIds) {
-        assert.ok(ids.has(id), `${m.actor.principal} never received ${id} — the refusals below prove nothing`);
-      }
+
+    // Each forgery, on its own, is DAMAGE: the fold refuses it over everything its writer saw,
+    // so no conforming build wrote it (plan 1.2). Folded one at a time beside the legitimate
+    // log, or a single forgery would explain every refusal.
+    const events = await readScope(ben.sidecar, scope);
+    const law = await readScope(ben.sidecar, lawScope());
+    const legit = events.filter((e) => !forgedIds.includes(e.id));
+    for (const id of forgedIds) {
+      assert.throws(() => foldStandard(sortEvents([...law, ...legit, events.find((e) => e.id === id)!])),
+        (e: unknown) => isLogDamage(e) && e.entry.id === id, `${id} is damage`);
     }
 
-    // Every clone, including the one the shard was written on. A guard that binds only
-    // the reader is not a guard: the events are here, and they must fold to nothing.
+    // The clone holding it is locked, and cannot publish it: a sync folds before it commits.
+    const refused = await sharedSync(ben.repo) as { error?: string };
+    assert.match(refused.error ?? "", /codemap is locked/);
+    // A build with no such gate publishes it anyway, with plain git…
+    assert.equal(spawnSync("git", ["push", "-q", "origin", "HEAD"], { cwd: ben.sidecar }).status, 0);
+    // …and every clone that sees it locks too, naming it. No read carries on past it.
+    const pulled = await sharedPull(izzie.repo) as { error?: string };
+    assert.match(pulled.error ?? "", /codemap is locked/);
     for (const m of [izzie, ben]) {
-      const where = m.actor.principal;
-      const specs = await readSpecs(m.repo, {});
-      assert.equal(specs.find((x) => x.id === pending.specId)!.status, "draft",
-        `${where}: an agent adopted a spec through the log`);
-
-      const acks = await readAcknowledgements(m.repo, {});
-      assert.equal(acks.find((a) => a.id === "ack_forged_debt"), undefined,
-        `${where}: an agent granted debt through the log`);
-      assert.equal(acks.find((a) => a.id === "ack_forged_gap"), undefined,
-        `${where}: a gap was minted against a rule that is already law`);
-
-      assert.equal((await readAudits(m.repo)).find((a) => a.id === "au_forged"), undefined,
-        `${where}: a command that FAILED certified a rule`);
-
-      const p = (await listProblems(m.repo)).find((x) => x.id === problem.id)!;
-      assert.equal(p.disposition, undefined, `${where}: an agent decided which side moves`);
-      assert.equal(p.state, "open");
-
-      // And the standard is exactly what the legitimate acts left behind.
-      const rules = await listRequirements(m.repo);
-      assert.equal(rules.length, 1, `${where}: the forged ratification added a rule`);
-      assert.equal((await conformance(m.repo))[0]!.conformance, "unknown",
-        `${where}: the forged audit or the forged gap moved the conformance state`);
+      const locked = await lockoutGate([m.repo]);
+      assert.ok(locked && forgedIds.includes(locked.lockout.entry.id), `${m.actor.principal} is locked on a forgery`);
+      await assert.rejects(standardScopeWarning(m.repo), LockedOut, `${m.actor.principal}: a read of the standard refuses`);
     }
+    void ledger;
 
-    await checkSettled(t, ledger);
   } finally {
     t.dispose();
   }

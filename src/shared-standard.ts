@@ -48,9 +48,9 @@ import type {
 } from "./schema.js";
 import { criterionIdFor, movedSection, normalizeSection, requirementIdFor, EVIDENCE_KINDS, AUDIT_TRIGGERS, COVERING_TRIGGERS, PROBLEM_DISPOSITIONS, ACK_PRIORITIES, ISO_DATE, auditClaimStands, contentDiff, framingContent, operationContent, witnessHash } from "./schema.js";
 import type { LogEvent } from "./eventlog.js";
-import { readdir } from "node:fs/promises";
-import { join } from "node:path";
-import { causality, emitEvent, readScope, sortEvents, SHARD_EXT, type DoorFold } from "./eventlog.js";
+import { causality, emitEvent, readScope, scopesOnDisk, sortEvents, type DoorFold } from "./eventlog.js";
+import { foldHaltingOnDamage } from "./log-damage.js";
+import { standardEventShape } from "./log-shape.js";
 import { applyRevision, newContestState } from "./contest.js";
 
 /** The EVIDENCE half — audits, pointers, populations, problems, debt. Per universe. */
@@ -104,17 +104,9 @@ export const emptyStandard = (): SharedStandard => ({
 const put = (logRoot: string, scope: string, actor: Actor, kind: string, subject: string, data: Record<string, unknown>) =>
   emitEvent(logRoot, scope, actor, kind, subject, data, standardDoor(logRoot, scope));
 
-/** Every evidence scope in a sidecar. A universe key can nest (`org/repo`), so this walks. */
-async function evidenceScopes(logRoot: string): Promise<string[]> {
-  const out: string[] = [];
-  const walk = async (rel: string): Promise<void> => {
-    const entries = await readdir(join(logRoot, rel), { withFileTypes: true }).catch(() => []);
-    if (entries.some((x) => x.isFile() && x.name.endsWith(SHARD_EXT))) out.push(rel);
-    for (const x of entries) if (x.isDirectory()) await walk(`${rel}/${x.name}`);
-  };
-  await walk("standard");
-  return out;
-}
+/** Every evidence scope in a sidecar. */
+const evidenceScopes = async (logRoot: string): Promise<string[]> =>
+  (await scopesOnDisk(logRoot)).filter((s) => s.startsWith("standard/"));
 
 /**
  * The standard's fold, as the write door asks it (plan 1.1). The standard folds from two
@@ -379,11 +371,15 @@ export function foldStandard(events: LogEvent[]): SharedStandard {
 export interface RefusedStandardEvent { id: string; kind: string; why: string }
 
 /**
- * The fold, and every event it did not apply as written — the one output the write door asks
- * whether a new event would be applied (plan 1.1). A ratification that lands `conflicted` is
- * reported too: the act is kept, its application is not.
+ * The fold, HALTING on damage (`LogDamage`) and naming the entry, and the refusals that are not
+ * damage — races. The write door asks it whether a new event would be applied (plan 1.1). A
+ * ratification that lands `conflicted` is reported too: the act is kept, its application is not.
  */
 export function foldStandardReport(events: LogEvent[]): { value: SharedStandard; refused: RefusedStandardEvent[] } {
+  return foldHaltingOnDamage(events, foldStandardWithRefusals, standardEventShape);
+}
+
+function foldStandardWithRefusals(events: LogEvent[]): { value: SharedStandard; refused: RefusedStandardEvent[] } {
   const refused: RefusedStandardEvent[] = [];
   const refuse = (e: LogEvent, why: string) => { refused.push({ id: e.id, kind: e.kind, why }); };
   const specs = new Map<string, Spec>();

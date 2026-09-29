@@ -27,7 +27,9 @@ import { ANCHOR_SCHEME, HASH_SCHEME } from "./schema.js";
 import { GRAMMAR_VERSIONS } from "./grammar-versions.js";
 import { gitBin } from "./git.js";
 import { withSidecarLock, touchHeldLocks } from "./lock.js";
-import { SHARD_EXT, principalKey, splitShard, damageRef, type ShardDamage } from "./eventlog.js";
+import { SHARD_EXT, principalKey, splitShard, damageRef, type LogEvent, type ShardDamage } from "./eventlog.js";
+import { shapeCheckFor } from "./log-shape.js";
+import { recordLockout } from "./lockout.js";
 import type { Actor } from "./schema.js";
 
 /**
@@ -123,14 +125,35 @@ const branchOf = (root: string): string => g(root, ["symbolic-ref", "--short", "
  * crash from a disk that ate an event somebody had already read.
  */
 
-/** Damage only — the events are `readShard`'s business, not a gate's. */
+/**
+ * Damage only — the events are `readShard`'s business, not a gate's. Bytes that are not JSON,
+ * and, in a scope that has one, an event not in the shape its kind is written in (plan 1.2):
+ * the transport sees the same damage a read halts on, or it would publish what locks the team.
+ */
 function shardDamage(text: string, as: string): ShardDamage[] {
-  return splitShard(text, as).damage;
+  const out = splitShard(text, as).damage;
+  const check = shapeCheckFor(dirname(as));
+  if (!check) return out;
+  text.split("\n").forEach((line, i) => {
+    if (!line.trim()) return;
+    let e: LogEvent;
+    try { e = JSON.parse(line) as LogEvent; } catch { return; }
+    const why = check(e);
+    if (why) out.push({ shard: as, line: i + 1, sample: line.slice(0, 80), id: e.id, kind: e.kind, why });
+  });
+  return out.sort((a, b) => a.line - b.line);
 }
+
+/** Lock this clone on the first damaged line, the way a read that met it would (plan 1.2). */
+const lockOn = (root: string, damage: ShardDamage[]): void => {
+  const d = damage[0];
+  if (d) recordLockout(root, { id: d.id ?? "(unreadable bytes)", kind: d.kind ?? "(unreadable bytes)",
+    why: d.why ?? "the line is not JSON, so no build can read the event it held", scope: dirname(d.shard), shard: d.shard, line: d.line });
+};
 
 /** The one sentence both gates end with, so a person is never left without the repair. */
 const damageDetail = (damage: ShardDamage[]): string =>
-  damage.slice(0, 3).map((d) => `  ${damageRef(d)}: ${JSON.stringify(d.sample)}`).join("\n")
+  damage.slice(0, 3).map((d) => `  ${damageRef(d)}: ${d.why ? `${d.id} (${d.kind}): ${d.why}` : JSON.stringify(d.sample)}`).join("\n")
   + (damage.length > 3 ? `\n  … and ${damage.length - 3} more` : "");
 
 /**
@@ -226,12 +249,13 @@ function commitLocal(root: string, message: string): CommitOutcome {
   // and publish it.
   const damaged = damagedWorkingShards(root);
   if (damaged.length) {
-    return { error: `refusing to commit ${damaged.length} unreadable line(s) — no build can parse these, `
-      + `so the events they should hold are already lost, and committing them would lose them for the `
-      + `whole team:\n${damageDetail(damaged)}\n`
-      + `A shard is append-only and never rewritten, so deleting the damaged line(s) is the repair. `
-      + `Until then this clone does not sync in EITHER direction — a sync commits before it pulls, so `
-      + `nothing is sent and nothing is received. Everything else here is intact and unaffected.` };
+    lockOn(root, damaged);
+    return { error: `refusing to commit ${damaged.length} unreadable line(s) — bytes that are not JSON, or `
+      + `an event no conforming build writes — and committing them would put them in front of the whole `
+      + `team:\n${damageDetail(damaged)}\n`
+      + `The store is locked until they are repaired: see docs/log-repair.md. Until then this clone does `
+      + `not sync in EITHER direction — a sync commits before it pulls, so nothing is sent and nothing is `
+      + `received.` };
   }
   g(root, ["add", "-A"]);
   const c = g(root, ["commit", "-q", "-m", message]);
@@ -552,7 +576,7 @@ function deletingCommits(root: string, range: string): { commit: string; path: s
 function linesAt(root: string, rev: string, path: string): string[] | null {
   const blob = g(root, ["show", `${rev}:${path}`]);
   if (!blob.ok) return null;
-  return blob.out.split("\n").filter((l) => l.trim() && isEventLine(l));
+  return blob.out.split("\n").filter((l) => l.trim() && isEventLine(l, path));
 }
 
 /**
@@ -569,8 +593,10 @@ function linesAt(root: string, rev: string, path: string): string[] | null {
  * fails the envelope check, and that IS a real record whose loss must still be caught.
  * Same line the damage check draws.
  */
-function isEventLine(line: string): boolean {
-  try { JSON.parse(line); return true; } catch { return false; }
+function isEventLine(line: string, path: string): boolean {
+  // A wrong-shaped line is damage too (plan 1.2): restoring one would undo its repair.
+  const check = shapeCheckFor(dirname(path));
+  try { const e = JSON.parse(line) as LogEvent; return !check || !check(e); } catch { return false; }
 }
 
 /**
@@ -695,6 +721,21 @@ function fetchRemote(root: string): { fetched: boolean } | { error: string } {
 }
 
 /**
+ * What a LOCKED clone may still do (plan 1.2): fetch, and look at what the fetched tip would
+ * bring, without merging it. Nothing is written but the remote-tracking ref. The first damaged
+ * line inbound, or null; an error when the fetch itself fails.
+ */
+export async function inboundDamage(root: string): Promise<ShardDamage | null | { error: string }> {
+  const f = fetchRemote(root);
+  if ("error" in f) return f;
+  if (!f.fetched) return null;
+  const remoteSha = g(root, ["rev-parse", "--verify", "--quiet", `origin/${branchOf(root)}`]).out;
+  if (!remoteSha) return null;
+  const beforeSha = g(root, ["rev-parse", "--verify", "--quiet", "HEAD"]).out;
+  return damagedInboundShards(root, beforeSha, remoteSha)[0] ?? null;
+}
+
+/**
  * Fetch and merge. A sidecar with no remote is a perfectly good local one, so
  * that is a no-op rather than an error — the whole design works offline and only
  * needs a remote to reach other people.
@@ -758,11 +799,12 @@ async function pullHeld(root: string, actor?: Actor, fetched: FetchState = false
   // repair it. Stopping is what gets it repaired; merging is what spreads it.
   const damaged = damagedInboundShards(root, beforeSha, remoteSha);
   if (damaged.length) {
-    return { error: `refusing to merge: ${damaged.length} line(s) in the incoming shards are not JSON, `
-      + `so the events they held are gone rather than merely unread. The sidecar is untouched.\n`
+    // Damage this machine can see locks it, an incoming pull it refused included (owner, batch 8).
+    lockOn(root, damaged);
+    return { error: `refusing to merge: ${damaged.length} line(s) in the incoming shards are damaged — `
+      + `bytes that are not JSON, or an event no conforming build writes. The sidecar is untouched.\n`
       + `${damageDetail(damaged)}\n`
-      + `A shard is append-only, so deleting the damaged line(s) where they were written and `
-      + `pushing is the repair — whoever wrote that shard still has the history to do it with.` };
+      + `The store is locked until the team's log is repaired: see docs/log-repair.md.` };
   }
 
   // `--allow-unrelated-histories` because the ordinary way a team arrives here is

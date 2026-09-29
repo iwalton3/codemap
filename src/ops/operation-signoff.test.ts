@@ -1,3 +1,4 @@
+import { isLogDamage } from '../log-damage.js';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
@@ -82,7 +83,9 @@ test('Alice exact approval applied by Bob agent signs only the named operation a
     assert.ok(application);
     for (const corrupt of [undefined, { ...(application.data!.capsule as any), ruling: { ...(application.data!.capsule as any).ruling, selected: [PLAN_ONLY] } }, { ...(application.data!.capsule as any), reader: undefined }]) {
       const forged = { ...application, data: { capsule: corrupt } };
-      assert.equal(foldStandard(events.filter(e => e.id !== application.id).concat(forged)).witnesses.length, 0);
+      // No conforming build writes it, so a log holding it halts on it (plan 1.2).
+      assert.throws(() => foldStandard(events.filter(e => e.id !== application.id).concat(forged)),
+        (e: unknown) => isLogDamage(e) && e.entry.id === application.id);
     }
   }
   finally {

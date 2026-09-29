@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { isLogDamage } from "./log-damage.js";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -257,15 +258,12 @@ test("a list revision keeps per-item corrections and refuses incomplete or misma
     const events = await readScope(u.side, decisionScope(universeKey(u.root)));
     const forged = events.map((e) => e.id === answer.id
       ? { ...e, data: { ...(e.data as any), list: { ...reviewed, marked: [{ itemId: "reject-item", correction: "" }] } } } : e);
-    const replay = foldDecisions(forged).decisions.find((d) => d.id === decision.id)!;
-    const invalid = replay.answers.find((a) => a.id === answer.id);
-    assert.match(invalid?.revisionInvalid ?? "", /revision needs exact source/);
-    assert.ok(invalid?.cancelled, "the malformed event remains visible without authority");
-    const legacy = events.map((e) => e.id === answer.id
-      ? { ...e, data: { ...(e.data as any), list: undefined, via: { kind: "direct", option: "Reject item" } } } : e);
-    const oldAnswer = foldDecisions(legacy).decisions.find((d) => d.id === decision.id)!
-      .answers.find((a) => a.id === answer.id);
-    assert.match(oldAnswer?.revisionInvalid ?? "", /revision needs exact source/);
+    // Neither is a revision a conforming build writes, so a log holding one halts on it (plan 1.2).
+    const haltsOn = (evs: typeof events) => assert.throws(() => foldDecisions(evs),
+      (e: unknown) => isLogDamage(e) && e.entry.id === answer.id && /revision needs exact source/.test(e.entry.why));
+    haltsOn(forged);
+    haltsOn(events.map((e) => e.id === answer.id
+      ? { ...e, data: { ...(e.data as any), list: undefined, via: { kind: "direct", option: "Reject item" } } } : e));
   } finally { u.cleanup(); }
 });
 
@@ -316,10 +314,8 @@ test("a list relay shows source corrections and records only the person's exact 
       const changed = events.map((event) => event.id === revised.revision
         ? { ...event, data: { ...(event.data as any), list: { ...((event.data as any).list),
           marked: [{ itemId: "fix-item", correction: "agent-authored change" }] } } } : event);
-      const forged = foldDecisions(changed).decisions.find((item) => item.id === d.id)!
-        .answers.find((item) => item.id === revised.revision)!;
-      assert.ok(forged.revisionInvalid);
-      assert.ok(forged.cancelled);
+      assert.throws(() => foldDecisions(changed), (e: unknown) => isLogDamage(e) && e.entry.id === revised.revision,
+        "an agent-edited list is not a revision a conforming build writes: the log halts on it");
     });
   } finally { u.cleanup(); discard(transcripts); }
 });
