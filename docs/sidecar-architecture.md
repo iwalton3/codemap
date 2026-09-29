@@ -375,6 +375,12 @@ this build does not understand, which the envelope check drops on purpose; count
 corruption would turn every version skew into a blocked scope. `linesAt` draws the same
 line for the same reason: a newer client's event must still count as lost if it goes.
 
+That is about the ENVELOPE and about kinds this build does not know. A KNOWN kind in
+`decisions/`, `standard/` or `law/` whose data is the wrong shape, or which its own writer's
+build would have refused, is damage. Those logs lock the application until a person repairs
+the entry (plan 1.2; `docs/log-repair.md`). Unknown kinds are still skipped, and so are kinds
+this branch retired.
+
 ## An absent sidecar is not an empty one
 
 The same failure one layer up, and it destroys rather than hides. The fold is total — it

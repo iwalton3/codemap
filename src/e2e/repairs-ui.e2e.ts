@@ -14,7 +14,6 @@ import { repairVerificationHash, type RepairVerificationCapsule } from "../repai
 import { emitEvent } from "../eventlog.js";
 import { requireActor } from "../identity.js";
 import { issueClaimHash } from "../ruling-application.js";
-import { decisionsView } from "../ops/decision-holds.js";
 
 const pw = resolvePlaywright();
 test("repair page retains original scope, separate evidence outcomes and the closure gate", {
@@ -92,7 +91,7 @@ test("repair page retains original scope, separate evidence outcomes and the clo
       targets: [{ findingId: verificationFinding.id, openEpoch: verificationTarget.openEpoch!, claimHash: issueClaimHash("finding", verificationTarget) }],
       code: { witnessCommit: commit, baseCommit: commit, fixCommit: commit, touched: [], availability: "available" },
       claims: records.records.claims.filter(claim => claim.findingId === verificationFinding.id), sort: { ...independentSort, id: independentSortId }, evidence: { ...independentEvidence, id: independentEvidenceId },
-      rulingContext: JSON.stringify({ decisions: (await decisionsView(root)).s, eligibility: [] }), orchestrator };
+      rulingContext: JSON.stringify({ rulings: [] }), orchestrator };
     const request = { id: "browser-request", capsule, capsuleHash: repairVerificationHash(capsule) };
     await emitEvent(side, records.scope, actor, "repair.verification-requested", request.id, { ...request });
     const verifier = new RepairConnection(actor.principal).identity();
@@ -195,10 +194,11 @@ test("repair page retains original scope, separate evidence outcomes and the clo
     assert.equal(driftSearch.findings[0].repair.lifecycles[0].currentProof, false);
     assert.ok(driftSearch.findings[0].repair.lifecycles[0].attention.some((reason: string) => reason.includes("source moved")));
     await page.reload({ waitUntil: "networkidle" });
-    await page.waitForSelector(".repair-closure-attention", { timeout: 10_000 });
+    // Drift is lifecycle attention (above). Closure attention is for a verification the log no
+    // longer accepts, which only the removed fixer record used to cause here (plan 3.1).
+    await page.waitForSelector(".historical-repair-closure", { timeout: 10_000 });
     const attentionText = await page.textContent("main");
     assert.ok(attentionText.includes("Recorded historical closure"));
-    assert.ok(attentionText.includes("Closure needs attention:"));
     assert.equal((await readFinding(root, closureFinding.id))?.state, "resolved", "drift raises attention without silently undoing the completed act");
     assert.ok((await page.textContent(".historical-repair-closure")).includes(closureFinding.id),
       "historical closure remains visible even when its verification no longer counts");

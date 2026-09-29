@@ -264,10 +264,13 @@ function locking<A extends unknown[], T>(logRoot: string, scopes: string[], fold
 // readers or a relayed answer; cross-clone keys order by code unit, not locale.
 // 50 → 51 (2026-09-28 pre-merge review, one bump for phases 1–4): the decisions and standard
 // folds HALT on damage instead of leaving an event out (`decision_skipped` is no longer
-// written); refusals are one output; the confirmer is recorded beside the words' author;
-// repair verification drops participants, gains invalid/assumed closures and per-site
-// dispositions; the ruling capsule is version 3. The shards do not move when a fold's mind
-// changes, so 18 → 19's reason applies to all of it.
+// written); a held withdrawal, a held spec or problem (`*.conflict.resolved`) and `lateActs`
+// are new; the confirmer rules (`rulerOf`), two people's different confirms hold, a withdrawn
+// Yes re-folds; an agent never closes a finding directly; repair verification drops
+// participants, gains `invalid`, a refutation basis and per-site dispositions, and spends in
+// the findings arm; a bug from a finding inherits its filer; an operation sign-off is kept by
+// the text it signed; the ruling capsule is version 3. The shards do not move when a fold's
+// mind changes, so 18 → 19's reason applies to all of it.
 export const MATERIALIZER_VERSION = 51;
 
 /**

@@ -307,6 +307,22 @@ otherwise mkdir a new empty sidecar at the wrong path and put somebody on a team
 Absence is only an error when `shared_scope` shows this store has folded from a sidecar
 before, or a first sync could never create one.
 
+**The decisions and standard logs are a durable event store: damage LOCKS the application.**
+Damage is an entry no conforming build could have written: bytes that are not JSON, a wrong
+shape (`log-shape.ts`, which covers dev-era shapes of live kinds too), or an act the fold refuses
+even over its own causal context (`log-damage.ts`, `eventlog.ts causalContext`). What two people
+racing produce is conflict handling and never locks: the same outcome settles quietly, and
+different outcomes HOLD until one side gives way or a person picks (`*.conflict.resolved`). Damage
+anywhere this machine can see sets `<sidecar>/.git/codemap-lockout.json`. Every read and op then
+answers one diagnostic (MCP error, HTTP 423, CLI exit 1), commit and pull refuse, and a locked sync
+only fetches and re-checks. The repair is manual and a person approves each step:
+`docs/log-repair.md`. `codemap sidecar check <path>` is the read-only pre-push check.
+
+**Every decisions, standard and repair write goes through one door**, `emitEventChecked(..., fold)`.
+It mints the envelope, folds that minted event with the log, and refuses what the fold would refuse.
+A test that needs an event this build will not write plants it with `test-door.ts`, never by
+weakening the door.
+
 It defers the mechanisms to two documents: `docs/plan-docs-unification.md` and
 `docs/fork-repair.md`. The second is worth knowing exists before touching
 `eventlog.ts` or `contest.ts` — the causal vector's per-writer ordinal is a **prefix
@@ -314,6 +330,28 @@ claim** that a fork falsifies, and the fix derives the vector from the `writerPr
 chain instead of fold order. A design that looked like a soundness argument was wrong
 here for two reviews; both documents open with the counterexample rather than quietly
 dropping it.
+
+## Closing a finding: one bar, and only grants verify — read `docs/repair-verification.md`
+
+**An agent never closes a finding directly** (R4). Not `refuted`, not `invalid`, not even its own
+unconfirmed one. Its closure goes through repair verification: two blind runs, an arbitrator on
+disagreement, then a separate application. Anything else it concludes becomes a person's ask.
+`mayTransitionFinding` is the finding ratchet. Bugs keep `mayTransition`'s agent close path until
+the bug follow-up.
+
+**Only grants verify** (R2: "We shouldn't pretend to know who the fixer is"): a fresh session a
+person starts with the `codemap-verify` skill (it claims first), or a subagent launched with exactly
+the prompt `repair_brief` returns. There is no fixer record and no weaker grade. The fold keeps what
+it can see: the requester never fills a slot of its own request, the two runs are distinct, and
+nobody applies their own verdict. A refutation states why the pinned check tests the claim, then
+runs it at the old code. A pattern closes site by site from the SORT's list: each site is fixed or
+filed with `file_site_bug`. Cross-scope facts (the site bug, a cited ruling, inherited
+confirmation) are checked by the op, and the fold checks only that the field is there: an accepted
+gap, stated rather than hidden.
+
+**A confirmation belongs to its confirmer** (R3): `rulerOf(a)` is who rules through an answer.
+Withdrawal, comparison, sign-off and the `ruler:` line key on it. Only a revision and a changed
+response key on the words' author, `a.by`.
 
 ## Findings that outlive their PR — read `docs/finding-backlog.md`
 
