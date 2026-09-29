@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { resolvePlaywright, launchPlaywright, startServer } from './harness.js';
-import { draftSpec, addOperation } from '../requirements.js';
+import { draftSpec, addOperation, reviseOperation } from '../requirements.js';
 import { writeLocalProposalWitness } from '../store.js';
 import { operationContent, type ProposalWitness } from '../schema.js';
 import { discard } from '../test-tmp.js';
@@ -40,6 +40,13 @@ test('operation sign-off provenance distinguishes human authority, agent executi
     assert.match(text, /Human answer human-answer-alice.*executed by bob@acme.test via agent/s);
     assert.match(text, /Independent reader independent-reader/);
     assert.match(text, /framing approval and ratification remain separate/);
+    // B9 (F41): once the operation is revised, the same sign-off is history, not an exact sign-off.
+    assert.ok(!('error' in await reviseOperation(root, { operationId: op.id, statement: 'Changed credit bound.', reason: 'tighter' })));
+    await page.reload();
+    await page.waitForSelector('.operation-signoff-receipt');
+    const stale = await page.textContent('.operation-signoff-receipt');
+    assert.doesNotMatch(stale, /Exact operation signed/);
+    assert.match(stale, /earlier text of this operation/);
     assert.deepEqual(errors, []);
     await page.close();
   }

@@ -87,3 +87,21 @@ test("a copy edited after the reading, or recorded by someone other than its exe
   }
   assert.ok(halts(capsuleFor(answer()), principal), "the event's actor must be the capsule's executor");
 });
+
+test("D7: a sign-off counts iff the text it signed is the text at ratification, wherever a concurrent A→B→A edit folds", () => {
+  const rev = (statement: string, n: number) => ({ ...op, statement,
+    revisions: Array.from({ length: n }, (_, i) => ({ at: `2026-09-26T0${i + 1}:00:00Z`, by: executor, reason: `edit ${i + 1}`, was: {} })) });
+  const toB = { ...before[1]!, id: "to-b", writerPrev: "sibling", after: ["sibling"], kind: "spec.operation.revised", subject: op.specId, data: { operation: rev("Exceed nothing.", 1) } };
+  const toA = { ...before[1]!, id: "to-a", writerPrev: "to-b", after: ["to-b"], kind: "spec.operation.revised", subject: op.specId, data: { operation: rev(op.statement!, 2) } };
+  // The sign-off saw only the operation as first written: concurrent with both edits.
+  const signed = { ...applied(capsuleFor(answer())), writer: "w-signer", writerPrev: "GENESIS", after: ["operation"] };
+  for (const order of [[...before, signed, toB, toA], [...before, toB, signed, toA], [...before, toB, toA, signed]]) {
+    const s = foldStandard(order as never);
+    const gap = reviewGap(s.specs[0]!, s.operations, s.witnesses, principal.principal);
+    assert.ok(!gap.unwitnessed.some((o) => o.id === op.id) && !gap.moved.some((o) => o.id === op.id),
+      `signed text A is the text now, in order ${order.map((e) => e.id).join(",")}: ${JSON.stringify(gap)}`);
+  }
+  // And it does NOT count for text that differs at ratification.
+  const s = foldStandard([...before, signed, toB] as never);
+  assert.ok(reviewGap(s.specs[0]!, s.operations, s.witnesses, principal.principal).moved.some((o) => o.id === op.id));
+});

@@ -17,7 +17,13 @@ ${JSON.stringify({ operationId, specId, content, framing }, null, 2)}`,
 export type { OperationSignoffCapsule } from "./schema.js";
 export const operationSignoffKey = (operationId: string, answerId: string) => 'op_sign_' + signoffHash([operationId, answerId]).slice(7);
 const word = (x: unknown): x is string => typeof x === 'string' && !!x.trim();
-export function validateOperationSignoff(value: unknown, op: Operation, spec: Spec, executor?: Actor): {
+/**
+ * `current: false` is the FOLD's call (D7: F58). The op checks the capsule against the operation's
+ * text now; the fold must not, because "now" is the fold position, and a concurrent A→B→A edit
+ * then decided admission by where it happened to sort. The fold records what was signed, and
+ * ratification's `reviewGap` counts it iff that text is the text at ratification.
+ */
+export function validateOperationSignoff(value: unknown, op: Operation, spec: Spec, executor?: Actor, opts: { current?: boolean } = {}): {
   capsule: OperationSignoffCapsule;
 } | {
   error: string;
@@ -29,7 +35,7 @@ export function validateOperationSignoff(value: unknown, op: Operation, spec: Sp
     const contentMap = (v: unknown): v is Record<string, string> => !!v && typeof v === 'object' && !Array.isArray(v) && Object.values(v).every(x => typeof x === 'string');
     if (!contentMap(c.content) || !contentMap(c.framing))
       return { error: 'sign-off content must be exact string field maps' };
-    if (witnessHash(c.content) !== witnessHash(operationContent(op)) || witnessHash(c.framing) !== witnessHash(framingContent(spec)))
+    if (opts.current !== false && (witnessHash(c.content) !== witnessHash(operationContent(op)) || witnessHash(c.framing) !== witnessHash(framingContent(spec))))
       return { error: 'operation or framing content differs from the human presentation' };
     const r = c.ruling;
     if (!r || ![r.answerId, r.decisionId, r.ref, r.universe, r.sourceScope, r.via, r.principal, r.responseHash, r.sourceFingerprint, r.checkedAt].every(word) || !Number.isFinite(Date.parse(r.checkedAt)) || typeof r.words !== 'string' || r.verified !== true || r.status !== 'current' || r.comparison !== 'clear')

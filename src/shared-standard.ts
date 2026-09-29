@@ -592,7 +592,7 @@ function foldStandardWithRefusals(events: LogEvent[]): { value: SharedStandard; 
         // Credits the principal of the answer the capsule carries, only where that answer is a
         // sign-off of this exact operation; the op checked the copy against the decisions log
         // when it wrote this, and forgery is out of scope (owner, 2026-09-28).
-        const checked = validateOperationSignoff(value, op, sp, e.actor);
+        const checked = validateOperationSignoff(value, op, sp, e.actor, { current: false });
         if ("error" in checked) { refuse(e, checked.error); break; }
         const c = checked.capsule;
         reviews.set(`${sp.id}|${op.id}|${c.ruling.principal}`, {

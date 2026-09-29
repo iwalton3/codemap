@@ -750,8 +750,8 @@ class SpecPage extends Component {
       </div>
       ${when(!!o.blockedBy, () => html`<div class="op-blocked">${o.blockedBy}</div>`)}
       ${this.opBody(o)}
-      ${each((d.operationSignoffs || []).filter(w => w.operationId === o.operation.id), (w) => html`<div class="fs operation-signoff-receipt">
-        Exact operation signed by ${w.reviewer.principal} · ${w.at}
+      ${each((d.operationSignoffs || []).filter(w => w.operationId === o.operation.id), (w) => html`<div class="fs operation-signoff-receipt ${w.current ? '' : 'dim'}">
+        ${w.current ? 'Exact operation signed' : 'Signed an earlier text of this operation — it does not count until signed again —'} by ${w.reviewer.principal} · ${w.at}
         <div>Human answer ${w.application.ruling.answerId} · source ${w.application.ruling.sourceScope} · executed by ${w.application.executor.principal}${w.application.executor.via ? ' via agent' : ''}</div>
         <div>Independent reader ${w.application.reader.session} · ${w.application.reader.rationale}</div>
         <div>Operation only; framing approval and ratification remain separate.</div>
