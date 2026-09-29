@@ -5,20 +5,15 @@ import { randomUUID } from "node:crypto";
  *
  * `session` is the MCP CONNECTION the work arrived on — one per agent session, held in memory
  * for the connection's life. A subagent shares its parent's connection, so a subagent's work
- * carries its parent's `session` plus `child` (the subagent id `readReader` verified). That is
- * what lets the fold tell a subagent the fixer launched (allowed, weaker grade) from the fixer
- * itself (refused): both arrive on the fixer's connection, only one has a verified `child`.
+ * carries its parent's `session` plus `child` (the subagent id `readReader` verified). Only grants
+ * verify (R2: a claimed verifier connection, or a subagent on the controlled prompt path); codemap
+ * does not pretend to know who the fixer is.
  */
 export interface VerifierIdentity {
   principal: string;
   harness: "mcp" | "claude-subagent";
   session: string;
   child?: string;
-}
-
-export interface RepairParticipant {
-  identity: VerifierIdentity;
-  role: "fixer" | "relayer";
 }
 
 export type BoundaryResult = { ok: true } | { ok: false; error: string };
@@ -29,7 +24,7 @@ export function verifierIdentityKey(identity: VerifierIdentity): string {
 
 /** The work a claimed verifier connection may do; anything else ends the claim. */
 export const REPAIR_VERIFIER_TOOLS: readonly string[] = Object.freeze([
-  "repair_brief", "repair_verification", "repair_arbitration", "repair_records",
+  "repair_pending", "repair_brief", "repair_verification", "repair_arbitration",
 ]);
 
 /**

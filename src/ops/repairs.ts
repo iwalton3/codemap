@@ -23,7 +23,6 @@ export async function repairRecords(root: string, review: number | string) {
   const scope = findingScope(findingKeyScope(cfg, review));
   const cached = await readCached(root, cfg.path, scope, sidecarIdentity(cfg), foldFindings, findingsProjection);
   const records = structuredClone((cached.value as RepairFindingMap<SharedFinding>).repairRecords ?? emptyRepairRecords());
-  const participants = records.participants.map(p => p.input);
   const projectedVerification = (cached.value as RepairFindingMap<SharedFinding>).repairVerification;
   if (projectedVerification !== undefined && !isRepairVerificationState(projectedVerification)) throw new Error("repair verification projection has a malformed shape");
   const verification = isRepairVerificationState(projectedVerification) ? projectedVerification : emptyRepairVerificationState();
@@ -46,7 +45,7 @@ export async function repairRecords(root: string, review: number | string) {
       const finding = cached.value.get(findingId);
       const target = request.capsule.targets.find(t => t.findingId === findingId)!;
       const claimChanged = !finding || finding.openEpoch !== target.openEpoch || issueClaimHash("finding", finding) !== target.claimHash;
-      return { requestId: request.id, findingId, ...repairVerificationDecision(verification, request.id, findingId, participants),
+      return { requestId: request.id, findingId, ...repairVerificationDecision(verification, request.id, findingId),
         historicalClosure: finding?.repairClosure?.requestId === request.id ? finding.repairClosure : undefined,
         staleReasons: [...staleReasons, ...(claimChanged ? ["current finding claim or opening changed"] : [])] };
     });
@@ -75,7 +74,6 @@ export async function repairRecords(root: string, review: number | string) {
       : result.verdict === "factually-refuted" ? "factually-refuted"
       : code?.landing === "landed" ? "verified-repair-landed" : "verified-at-commit";
     return { findingId: result.findingId, requestId: result.requestId, state, grade: result.grade,
-      launchedByParticipant: result.launchedByParticipant,
       earlierUnfavourable: earlierUnfavourableRuns(verification, result.requestId).map(r => ({ requestId: r.requestId, runId: r.id,
         verdicts: r.results.filter(v => v.findingId === result.findingId).map(v => v.verdict) })),
       applied: !!result.historicalClosure, code, attention,
@@ -150,11 +148,3 @@ export async function recordRepairEvidence(root: string, review: number | string
   return append(root, review, "repair.evidence-recorded", id, { ...evidence, id }, (r) => r.evidence.some(e => e.input.id === id));
 }
 
-/** The identity is this MCP connection's, never a tool argument (see `verifier-boundary.ts`). */
-export async function recordRepairParticipant(root: string, review: number | string,
-  input: { repairId: string; role: "fixer" | "relayer" }, connection: RepairConnection) {
-  const actor = requireActor(root);
-  if ("error" in actor) return actor;
-  if (connection.principal !== actor.principal) return { error: "this connection belongs to another principal" };
-  return append(root, review, "repair.participant-recorded", input.repairId, { ...input, identity: connection.identity() });
-}

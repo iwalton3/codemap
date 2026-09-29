@@ -5,7 +5,7 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { team, settle } from "./oracle.js";
 import { shareFinding } from "./ops-shared.js";
-import { repairRecords, postRepairSort, recordRepairEvidence, recordRepairParticipant } from "./ops/repairs.js";
+import { repairRecords, postRepairSort, recordRepairEvidence } from "./ops/repairs.js";
 import { emitEvent, SHARD_EXT } from "./eventlog.js";
 import { resolveSidecar, sidecarIdentity } from "./sidecar-config.js";
 import { findingKeyScope } from "./review-target.js";
@@ -56,8 +56,6 @@ test("repair verification replays unchanged shards after an upgrade and retains 
       coverage: [{ findingId: finding.id, claimIds: [claimId], result: "unknown", reason: "commit unavailable", claimResults: [{ claimId, result: "unknown", reason: "commit unavailable" }] }],
       reproducer: [], regression: [], inspected: [], noCheckReason: "required commit unavailable", rulingIds: [], attribution: [] });
     assert.ok("ok" in evidence && evidence.ok, JSON.stringify(evidence));
-    const participant = await recordRepairParticipant(root, 7, { repairId: sorted.id, role: "fixer" }, new RepairConnection("alice@acme.test"));
-    assert.ok("ok" in participant && participant.ok, JSON.stringify(participant));
     const source = await repairRecords(root, 7);
     assert.ok("records" in source && source.records);
     const orchestrator = new RepairConnection("alice@acme.test").identity();

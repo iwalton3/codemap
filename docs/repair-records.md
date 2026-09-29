@@ -6,8 +6,10 @@ independent verification and a separate application check. Existing human-ruling
 own direct and indirect reader cardinalities.
 
 The authoritative acts live in the canonical finding's sidecar scope:
-`repair.claims-recorded`, `repair.sort-recorded`,
-`repair.participant-recorded`, and `repair.evidence-recorded`.
+`repair.claims-recorded`, `repair.sort-recorded` and `repair.evidence-recorded`.
+`repair.participant-recorded`, `repair.verification-producer` and
+`repair.verification-sealed` are retired kinds: skipped, never shown as rejected
+(`RETIRED_REPAIR_KINDS`).
 The finding fold projects them atomically with the findings into SQLite.
 Normal
 readers use the projection; writes capture causality under the sidecar lock.
@@ -46,16 +48,8 @@ absent. A passing regression run is not a reproducer.
 Inspection remains a weaker evidence grade. Commands are data: storing or
 reading them never executes them or authorizes external side effects.
 
-`record_repair_participant` has no identity input: the identity is the MCP connection
-the call arrived on (see [repair verification](repair-verification.md)), and that
-connection then cannot verify the repair. Blocked scope records remain visible and
-cannot supply authoritative participation. It records which connection made codemap
-calls; it cannot prove all shell repair work was registered.
-
-The fixer-sort guard permits the original principal-authored owner approval;
-later fixer participation under that principal does not revoke that approval.
-Corrections by a fixer principal remain held, and a reported assessment from
-the exact fixer session cannot improve eligibility.
+There is no fixer record. Who may verify is decided by grants, not by who fixed
+(see [repair verification](repair-verification.md)).
 
 No stored execution result is an independent verifier receipt. P3 checks
 code availability, rerun usefulness, evidence adequacy, current claim/sort

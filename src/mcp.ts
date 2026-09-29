@@ -279,10 +279,16 @@ const tools: Tool[] = [
   },
   {
     name: "repair_request",
-    description: "Ask for independent verification of a repair from an eligible current sort and evidence record (the fixer must be recorded). Freezes the claims, sort, evidence, pinned commits and ruling context.",
+    description: "Ask for independent verification of a repair from an eligible current sort and evidence record. Freezes the claims, sort, evidence, pinned commits and ruling context.",
     inputSchema: obj({ review: { type: "string" }, sortId: { type: "string" }, evidenceId: { type: "string" } }, ["review", "sortId", "evidenceId"]),
     mutates: true,
     handler: (a, c) => ops.requestRepairVerification(c.universe.path, a.review, a, connection),
+  },
+  {
+    name: "repair_pending",
+    description: "The repair verification jobs open on a review: request ids, open verifier slots, and whether an arbitration is needed. Blind — no verdict, evidence or conclusion. A claimed verifier reads this first.",
+    inputSchema: obj({ review: { type: "string" } }, ["review"]),
+    handler: (a, c) => ops.pendingRepairJobs(c.universe.path, a.review),
   },
   {
     name: "repair_brief",
@@ -330,7 +336,7 @@ const tools: Tool[] = [
   },
   {
     name: "repair_records",
-    description: "Read claim coverage, sorts and their holds, participants, evidence and verification results for a review. Records authorize nothing.",
+    description: "Read claim coverage, sorts and their holds, evidence and verification results for a review. Records authorize nothing.",
     inputSchema: obj({ review: { type: "string" } }, ["review"]),
     handler: (a, c) => ops.repairRecords(c.universe.path, a.review),
   },
@@ -347,13 +353,6 @@ const tools: Tool[] = [
     inputSchema: obj({ review: repairString, evidence: repairEvidenceSchema }, ["review", "evidence"]),
     mutates: true,
     handler: (a, c) => ops.recordRepairEvidence(c.universe.path, a.review, a.evidence),
-  },
-  {
-    name: "record_repair_participant",
-    description: "Record this session as a repair's fixer or relayer. Its own connection then cannot verify that repair; subagents it launches can, at a weaker grade.",
-    inputSchema: obj({ review: { type: "string" }, repairId: { type: "string" }, role: { type: "string", enum: ["fixer", "relayer"] } }, ["review", "repairId", "role"]),
-    mutates: true,
-    handler: (a, c) => ops.recordRepairParticipant(c.universe.path, a.review, { repairId: a.repairId, role: a.role }, connection),
   },
   {
     name: "list_universes",

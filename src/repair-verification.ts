@@ -3,7 +3,7 @@ import { sortEvents, type LogEvent } from "./eventlog.js";
 import { canonical } from "./transcript.js";
 import { foldRepairRecords } from "./repair-records.js";
 import type { RepairClaim, RepairSortInput, RepairEvidenceInput, RepairExecution, RepairCoverage } from "./repair-records.js";
-import { verifierIdentityKey, type VerifierIdentity, type RepairParticipant } from "./verifier-boundary.js";
+import { verifierIdentityKey, type VerifierIdentity } from "./verifier-boundary.js";
 
 export type RepairVerdict = "fixed" | "factually-refuted" | "decision-needed" | "unknown";
 export interface RepairVerificationCapsule {
@@ -51,21 +51,6 @@ const verdicts = ["fixed", "factually-refuted", "decision-needed", "unknown"];
 const key = (v: { findingId: string; claimId: string }) => JSON.stringify([v.findingId, v.claimId]);
 const coverageKeys = (coverage: RepairCoverage[]) => coverage.flatMap((c) => c.claimIds.map((claimId) => key({ findingId: c.findingId, claimId })));
 
-/** The fixers and relayers of THIS repair — its sort or its evidence. */
-const participantsOf = (participants: readonly (RepairParticipant & { repairId?: string })[], c: RepairVerificationCapsule) =>
-  participants.filter((p) => p.repairId === undefined || p.repairId === c.sort.id || p.repairId === c.evidence.id);
-
-/**
- * A participant's own connection may not verify its repair; a subagent it launched may, at a
- * weaker grade (owner: fixer-launched verifiers give a weaker "fixed" — "Probably a good idea").
- * Returns the refusal, or whether the verifier was launched by a participant.
- */
-function participation(i: VerifierIdentity, participants: readonly RepairParticipant[]): { error: string } | { launchedByParticipant: boolean } {
-  const own = participants.find((p) => p.identity.principal === i.principal && p.identity.session === i.session);
-  if (!own) return { launchedByParticipant: false };
-  return i.child ? { launchedByParticipant: true } : { error: `a repair's ${own.role} cannot verify it` };
-}
-
 /**
  * The evidence bar (owner, 2026-09-28, "Your approved bar only"): for "fixed", the verifier itself
  * observes a check fail at the witness and pass at the fix — the same command, both recorded by
@@ -110,7 +95,6 @@ function resultError(r: RepairClaimVerdict, c: RepairVerificationCapsule): strin
 }
 
 export function foldRepairVerification(events: LogEvent[]): RepairVerificationRecords {
-  const participants = foldRepairRecords(events).participants.map((p) => p.input);
   const out = emptyRepairVerificationState();
   const ordered = sortEvents(events);
   for (const [at, e] of ordered.entries()) {
@@ -137,7 +121,6 @@ export function foldRepairVerification(events: LogEvent[]): RepairVerificationRe
         if (!error) out.requests.push(structuredClone(d));
       } else {
         const request = out.requests.find((x) => x.id === d.requestId);
-        const own = request ? participantsOf(participants, request.capsule) : [];
         if (!request || request.capsuleHash !== d.capsuleHash) error = "unknown or changed verification request";
         else if (e.kind === "finding.repairApplied") {
           const workers = [...out.runs.filter((x) => x.requestId === d.requestId), ...out.arbitrations.filter((x) => x.requestId === d.requestId)];
@@ -146,9 +129,8 @@ export function foldRepairVerification(events: LogEvent[]): RepairVerificationRe
           if (!error && out.applications.some((a) => a.requestId === d.requestId && a.findingId === d.findingId && a.openEpoch === d.openEpoch)) error = "verification application is one-shot per finding epoch";
           if (!error) out.applications.push(structuredClone(d));
         } else {
-          const joined = participation(d.identity, own);
-          if ("error" in joined) error = joined.error;
-          else if (verifierIdentityKey(d.identity) === verifierIdentityKey(request.capsule.orchestrator)) error = "the orchestrator cannot verify its own request";
+          // What the fold can see (R2): the requester never verifies, and the two runs are distinct.
+          if (verifierIdentityKey(d.identity) === verifierIdentityKey(request.capsule.orchestrator)) error = "the orchestrator cannot verify its own request";
           else if (e.kind === "repair.verification-recorded") {
             const previous = out.runs.filter((x) => x.requestId === d.requestId);
             if (![1, 2].includes(d.slot) || previous.some((x) => x.slot === d.slot || x.id === d.id || verifierIdentityKey(x.identity) === verifierIdentityKey(d.identity))) error = "each of the two blind slots needs its own verifier";
@@ -183,21 +165,19 @@ export function repairVerificationDisagreements(a: RepairVerificationRun, b: Rep
 
 export interface RepairDecision {
   verdict: RepairVerdict; complete: boolean; grade: "executable" | "inspection" | "none";
-  /** A verifier a fixer or relayer launched counted: the owner's weaker grade. */
-  launchedByParticipant: boolean;
   reasons: string[];
 }
 
-export function repairVerificationDecision(records: RepairVerificationRecords, requestId: string, findingId: string, participants: readonly (RepairParticipant & { repairId?: string })[] = []): RepairDecision {
+export function repairVerificationDecision(records: RepairVerificationRecords, requestId: string, findingId: string): RepairDecision {
   const request = records.requests.find((x) => x.id === requestId);
   const runs = records.runs.filter((x) => x.requestId === requestId);
-  const unresolved = (reason: string): RepairDecision => ({ verdict: "unknown", complete: false, grade: "none", launchedByParticipant: false, reasons: [reason] });
+  const unresolved = (reason: string): RepairDecision => ({ verdict: "unknown", complete: false, grade: "none", reasons: [reason] });
   if (!request || runs.length !== 2) return unresolved("two independent runs are required");
   const claims = request.capsule.claims.filter((x) => x.findingId === findingId);
   if (!claims.length) return unresolved("finding is outside immutable request");
   const arbitration = records.arbitrations.find((x) => x.requestId === requestId);
   if (!["mechanical", "implementation-defect", "invalid", "factual-refutation"].includes(request.capsule.sort.classification)
-    || request.capsule.sort.refutationSubtype === "scope") return { verdict: "decision-needed", complete: false, grade: "none", launchedByParticipant: false, reasons: ["sort requires a requirement or scope decision"] };
+    || request.capsule.sort.refutationSubtype === "scope") return { verdict: "decision-needed", complete: false, grade: "none", reasons: ["sort requires a requirement or scope decision"] };
   const outcomes: RepairVerdict[] = [];
   let inspection = false;
   for (const claim of claims) {
@@ -210,15 +190,10 @@ export function repairVerificationDecision(records: RepairVerificationRecords, r
     inspection ||= a.grade === "inspection" || b.grade === "inspection";
     outcomes.push(result);
   }
-  if (outcomes.includes("decision-needed")) return { verdict: "decision-needed", complete: false, grade: "none", launchedByParticipant: false, reasons: ["requirement or scope decision remains"] };
+  if (outcomes.includes("decision-needed")) return { verdict: "decision-needed", complete: false, grade: "none", reasons: ["requirement or scope decision remains"] };
   if (outcomes.includes("unknown")) return unresolved("unknown never closes or automatically reopens");
-  const own = participantsOf(participants, request.capsule);
-  const launchedByParticipant = [...runs, ...(arbitration ? [arbitration] : [])].some((x) => {
-    const joined = participation(x.identity, own);
-    return "launchedByParticipant" in joined && joined.launchedByParticipant;
-  });
   return { verdict: outcomes.every((x) => x === "factually-refuted") ? "factually-refuted" : "fixed", complete: true,
-    grade: inspection ? "inspection" : "executable", launchedByParticipant, reasons: [] };
+    grade: inspection ? "inspection" : "executable", reasons: [] };
 }
 
 /**

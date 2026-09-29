@@ -7,7 +7,8 @@ test("a connection claims the verifier role only before any other call, and then
   assert.equal(fresh.claim().ok, true);
   assert.equal(fresh.claimed(), true);
   assert.equal(fresh.enter("repair_brief").ok, true);
-  assert.match((fresh.enter("record_repair_participant") as { error: string }).error, /does not allow/);
+  assert.equal(fresh.enter("repair_pending").ok, true, "a claimed session finds its work blind");
+  assert.match((fresh.enter("repair_records") as { error: string }).error, /does not allow/, "B13: the records are off the blind verifier's allowlist");
   assert.equal(fresh.enter("repair_verification").ok, true, "a refused call does not end the role");
   assert.match((fresh.claim() as { error: string }).error, /already claimed/);
 

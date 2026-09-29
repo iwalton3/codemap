@@ -42,10 +42,9 @@ labels. A failed/partial write records what actually succeeded and where to resu
 
 Every independent participant starts with no inherited history, on the model `shared.md` A names
 (X1 under Codex); a model label is not independence. Never relay one verifier's conclusion to
-another. The session that fixes (or relays for) a repair records itself with
-`record_repair_participant` before asking for verification: that session's own connection can then
-never verify the repair, and a subagent it launches verifies at a weaker grade that the records
-show.
+another. Only grants verify a repair: a fresh session the person starts with the `codemap-verify`
+skill, or a subagent launched with exactly the prompt `repair_brief` returns. The session that asks
+for verification never fills a slot of its own request.
 
 ## Findings and sort
 
@@ -61,7 +60,7 @@ purpose and artifact, never the first reading. Post the skill's own sort with th
 `post_repair_sort`: `dual-sorted`, with both sorters' classifications and reasons (each sorter named
 by its session) and the arbitrator's reasons where they disagreed, or `owner-reviewed` for a genuine
 owner-approved worklist — never fabricate owner approval. Read `repair_records` for eligibility and
-holds; fixer reclassification never grants early-fix authority. Two corrections that compete from
+holds. Two corrections that compete from
 one sort are held as a question for the owner, which they answer with a correction of their own.
 
 A requirement/scope choice is the owner's. Design defects, assumptions, suggestions and patterns

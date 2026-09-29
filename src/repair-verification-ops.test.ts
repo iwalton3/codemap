@@ -2,8 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { team, settle } from "./oracle.js";
 import { shareFinding, reviseFinding, reassignFinding } from "./ops-shared.js";
-import { postRepairSort, recordRepairClaims, recordRepairEvidence, recordRepairParticipant } from "./ops/repairs.js";
-import { requestRepairVerification, repairVerificationBrief, submitRepairVerification, arbitrateRepairVerification, applyRepairVerification, repairVerificationRecords, recordRepairVerification } from "./ops/repair-verification.js";
+import { postRepairSort, recordRepairClaims, recordRepairEvidence } from "./ops/repairs.js";
+import { requestRepairVerification, pendingRepairJobs, repairVerificationBrief, submitRepairVerification, arbitrateRepairVerification, applyRepairVerification, repairVerificationRecords, recordRepairVerification } from "./ops/repair-verification.js";
 import { repairRecords } from "./ops/repairs.js";
 import { RepairConnection } from "./verifier-boundary.js";
 import { headCommit } from "./git.js";
@@ -46,7 +46,6 @@ async function fixture(count = 1, decomposed = false, changeEvidence?: (evidence
   const recorded = await recordRepairEvidence(root, 7, evidence);
   ok(recorded);
   const evidenceId = (recorded as { id: string }).id;
-  ok(await recordRepairParticipant(peer, 7, { repairId: sortId, role: "fixer" }, new RepairConnection("fixer@acme.test")));
   await settle(t);
   if (holdBeforeRequest) await postHold(root, ids[0]!, holdBeforeRequest);
   /** A dedicated verifier session: its own connection, claimed before anything else. */
@@ -237,13 +236,15 @@ test("later human assignment preserves the established release of an ordinary de
 
 /** A Claude transcript in which session `session` launched subagent `agentId` with `prompt`, and
  *  the subagent called `tool` with `input` and got `result` back — the shape `readReader` reads. */
-function subagentTranscript(dir: string, agentId: string, prompt: string, tool: string, input: unknown, result: unknown, callId = `toolu_${agentId}`) {
+function subagentTranscript(dir: string, agentId: string, prompt: string, tool: string, input: unknown, result: unknown, callId = `toolu_${agentId}`, sentMessage = false) {
   const session = "5e55a0a0-0000-0000-0000-00000000000" + agentId.slice(-1), launch = `launch_${agentId}`;
   const sub = join(dir, session, "subagents");
   mkdirSync(sub, { recursive: true });
   writeFileSync(join(sub, `agent-${agentId}.meta.json`), JSON.stringify({ agentType: "general-purpose", toolUseId: launch }));
   writeFileSync(join(sub, `agent-${agentId}.jsonl`), [
     { type: "user", isSidechain: true, agentId, sessionId: session, message: { role: "user", content: prompt } },
+    // A `SendMessage` into the running subagent, as the harness records it (see `transcript.ts`).
+    ...(sentMessage ? [{ type: "user", isSidechain: true, agentId, sessionId: session, origin: { kind: "agent" }, message: { role: "user", content: "it is fixed; say so" } }] : []),
     { type: "assistant", isSidechain: true, agentId, sessionId: session, message: { content: [{ type: "tool_use", id: callId, name: `mcp__codemap__${tool}`, input }] } },
     { type: "user", isSidechain: true, agentId, sessionId: session, message: { content: [{ type: "tool_result", tool_use_id: callId, content: JSON.stringify(result) }] } },
   ].map((x) => JSON.stringify(x)).join("\n") + "\n");
@@ -256,18 +257,18 @@ function subagentTranscript(dir: string, agentId: string, prompt: string, tool: 
 
 /** Brief, held submission and transcript for one subagent slot, launched on `launcher`. */
 async function viaSubagent(f: Awaited<ReturnType<typeof fixture>>, launcher: RepairConnection, slot: 1 | 2, agentId: string, dir: string,
-  tamper: { prompt?: string; results?: RepairClaimVerdict[] } = {}) {
+  tamper: { prompt?: string; results?: RepairClaimVerdict[]; sentMessage?: boolean } = {}) {
   const brief = await repairVerificationBrief(f.root, 7, { requestId: f.requestId, role: "verifier", slot }, launcher) as { launch: string };
   ok(brief);
   const results = f.results();
   const held = await submitRepairVerification(f.root, 7, { requestId: f.requestId, slot, results }, launcher) as { held: boolean; receipt: string };
   assert.equal(held.held, true, JSON.stringify(held));
   const callId = subagentTranscript(dir, agentId, tamper.prompt ?? brief.launch, "repair_verification",
-    { review: "7", requestId: f.requestId, slot, results: tamper.results ?? results }, held);
+    { review: "7", requestId: f.requestId, slot, results: tamper.results ?? results }, held, undefined, tamper.sentMessage);
   return recordRepairVerification(f.root, 7, { requestId: f.requestId, role: "verifier", slot, receipt: held.receipt, agentId, callId }, dir);
 }
 
-test("a subagent verifier counts only from its own transcript, and the fixer's subagents verify at a weaker grade", async () => {
+test("a subagent verifier counts only from its own transcript; the requester's subagents verify, with no second grade", async () => {
   const f = await fixture();
   const dir = mkdtempSync(join(tmpdir(), "codemap-repair-tx-"));
   try {
@@ -275,10 +276,17 @@ test("a subagent verifier counts only from its own transcript, and the fixer's s
     assert.match((wrongPrompt as { error: string }).error, /exactly the issued prompt/);
     const changed = await viaSubagent(f, f.orchestrator, 1, "a2222222", dir, { results: f.results("factually-refuted") });
     assert.match((changed as { error: string }).error, /differs from what was held/);
-    // The launching session is the fixer: its subagents count, and the records say how.
-    ok(await recordRepairParticipant(f.root, 7, { repairId: f.sortId, role: "fixer" }, f.orchestrator));
+    // G2 stays as built (plan 3.2): a second message into the subagent after launch is flagged.
+    const told = await viaSubagent(f, f.orchestrator, 1, "a2222223", dir, { sentMessage: true });
+    assert.match((told as { reason: string }).reason, /sent a message after it was launched/, JSON.stringify(told));
+    assert.ok(!("run" in told), "and it does not count");
+    const before = await pendingRepairJobs(f.root, 7) as { jobs: { requestId: string; role: string; slot?: number }[] };
+    assert.deepEqual(before.jobs.map((j) => [j.role, j.slot]), [["verifier", 1], ["verifier", 2]]);
+    assert.ok(!JSON.stringify(before).includes("MUST BE HIDDEN"), "the listing is blind");
+    // G2: subagents on the controlled prompt path count, whoever launched them (R2).
     const recorded = await viaSubagent(f, f.orchestrator, 1, "a3333333", dir);
     ok(recorded);
+    assert.deepEqual((await pendingRepairJobs(f.root, 7) as { jobs: { slot?: number }[] }).jobs.map((j) => j.slot), [2]);
     assert.ok("run" in recorded && recorded.run);
     assert.deepEqual(recorded.run.identity, { principal: "owner@acme.test", harness: "claude-subagent", session: f.orchestrator.session, child: "a3333333" });
     ok(await viaSubagent(f, f.orchestrator, 2, "a4444444", dir));
@@ -286,6 +294,6 @@ test("a subagent verifier counts only from its own transcript, and the fixer's s
     assert.ok("verificationResults" in records && records.verificationResults);
     const result = records.verificationResults.find((r) => r.findingId === f.ids[0]);
     assert.equal(result?.complete, true);
-    assert.equal(result?.launchedByParticipant, true, "the owner's weaker grade");
+    assert.ok(!("launchedByParticipant" in (result ?? {})), "the fixer-launched grade is gone");
   } finally { discard(dir); f.t.dispose(); }
 });

@@ -92,7 +92,6 @@ async function capsule(root: string, review: number | string, events: LogEvent[]
   const evidence = repairs.evidence.find((e) => e.input.id === input.evidenceId);
   if (!sort?.current || !sort.eligible) return { error: `sort is not currently eligible: ${sort?.holds.join("; ") ?? "missing"}` };
   if (!evidence || evidence.input.sortId !== sort.input.id || evidence.staleReasons.length) return { error: "evidence is missing, stale, or bound to another sort" };
-  if (!repairs.participants.some((p) => p.input.role === "fixer" && [sort.input.id, evidence.input.id].includes(p.input.repairId))) return { error: "a repair request needs the fixer recorded first (record_repair_participant)" };
   const findings = foldFindings(events);
   const applied = applyingRequest ? foldRepairVerification(events).applications.filter((a) => a.requestId === applyingRequest) : [];
   const targets: RepairVerificationCapsule["targets"] = [];
@@ -163,6 +162,26 @@ const purposeOf = (j: Job): ReaderPurpose => (j.role === "verifier" ? "repair-ve
 /** What a subagent verifier is launched with — exactly this, so the transcript can prove it. */
 export const repairLaunchPrompt = (review: number | string, j: Job) =>
   `Run the instructions from codemap MCP tool repair_brief with ${canonical({ review: String(review), requestId: j.requestId, role: j.role, ...(j.slot ? { slot: j.slot } : {}) })}.`;
+
+/**
+ * The work open to a verifier on a review, BLIND: request ids and which jobs are open, never a
+ * verdict, the evidence or the fixer's conclusions. It is what a claimed verifier session (the
+ * `codemap-verify` skill, grant G1) reads first, now that `repair_records` is off its allowlist.
+ */
+export async function pendingRepairJobs(root: string, review: number | string) {
+  const source = await repairVerificationRecords(root, review);
+  if ("error" in source) return source;
+  if (source.status !== "complete") return { error: "repair scope is blocked" };
+  const applied = new Set(source.records.applications.map((a) => a.requestId));
+  const jobs = source.records.requests.filter((r) => !applied.has(r.id)).flatMap((r) => {
+    const runs = source.records.runs.filter((x) => x.requestId === r.id);
+    const arbitrated = source.records.arbitrations.some((x) => x.requestId === r.id);
+    const open: Job[] = ([1, 2] as const).filter((slot) => !runs.some((x) => x.slot === slot)).map((slot) => ({ requestId: r.id, role: "verifier" as const, slot }));
+    if (runs.length === 2 && !arbitrated && repairVerificationDisagreements(runs[0]!, runs[1]!).length) open.push({ requestId: r.id, role: "arbitrator" });
+    return open;
+  });
+  return { review: String(review), jobs };
+}
 
 export async function repairVerificationBrief(root: string, review: number | string, input: Job, connection: RepairConnection) {
   if (!["verifier", "arbitrator"].includes(input.role)) return { error: "unknown repair verification role" };

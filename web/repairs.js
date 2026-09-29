@@ -54,7 +54,7 @@ class RepairsPage extends Component {
     return html`<div class="sec">Independent verification history (${verification.requests.length})</div>
       <div class="fs dim">Runs keep their exact checked claims and code. Unknown neither closes nor automatically reopens a finding. A separate application checks whether the result still applies.</div>
       ${each(verification.requests, (request) => html`<div class="op-card verification-request"><h3>${request.id}</h3>
-        ${each(summaries.filter(summary => summary.requestId === request.id), (summary) => html`<div class="fs verification-summary">Finding ${summary.findingId}: ${summary.verdict} · ${summary.complete ? 'complete bounded coverage at checked inputs' : 'incomplete bounded coverage'} · ${summary.grade === 'inspection' ? 'weaker inspection grade' : summary.grade + ' grade'}${summary.launchedByParticipant ? ' · weaker: a verifier the fixer launched' : ''}${summary.reasons.length ? ' — ' + summary.reasons.join('; ') : ''}
+        ${each(summaries.filter(summary => summary.requestId === request.id), (summary) => html`<div class="fs verification-summary">Finding ${summary.findingId}: ${summary.verdict} · ${summary.complete ? 'complete bounded coverage at checked inputs' : 'incomplete bounded coverage'} · ${summary.grade === 'inspection' ? 'weaker inspection grade' : summary.grade + ' grade'}${summary.reasons.length ? ' — ' + summary.reasons.join('; ') : ''}
           ${each(summary.staleReasons || [], (reason) => html`<div class="fs qbadge drift">Stale verification: ${reason}. Historical evidence cannot establish current applicability.</div>`, (reason) => reason)}
         </div>`, (summary) => summary.findingId)}
         <div class="fs">Orchestrator: ${identityText(request.capsule.orchestrator)}</div>
@@ -97,7 +97,7 @@ class RepairsPage extends Component {
           ${when(!!lifecycle.code, () => html`<div class="fs">Exact checked commit ${lifecycle.code.checkedCommit} · default commit ${lifecycle.code.defaultCommit || 'unavailable'} · landing ${lifecycle.code.landing} · source ${lifecycle.code.source} · default source ${lifecycle.code.defaultSource}</div>
             ${each(lifecycle.code.reasons, (reason) => html`<div class="fs dim">${reason}</div>`, (reason) => reason)}`)}
           <div class="fs">Unresolved or checked scope: ${each(lifecycle.claims, (claim) => html`<div class="fs">${claim.id}: ${claim.text}</div>`, (claim) => claim.id)}</div>
-          <div class="fs">Verifiers: ${lifecycle.verifiers.map(identityText).join('; ') || 'no qualifying independent verdict'}${lifecycle.launchedByParticipant ? ' · weaker grade: launched by the fixer' : ''}</div>
+          <div class="fs">Verifiers: ${lifecycle.verifiers.map(identityText).join('; ') || 'no qualifying independent verdict'}</div>
           ${each(lifecycle.earlierUnfavourable || [], (e) => html`<div class="fs repair-earlier">Earlier request ${e.requestId}, run ${e.runId}: ${e.verdicts.join(', ')}</div>`, (e) => e.runId)}
           <div class="fs">Ruling IDs: ${lifecycle.rulingIds.join(', ') || 'none recorded'}</div>
           ${each(lifecycle.attention, (reason) => html`<div class="fs qbadge drift repair-lifecycle-attention">Repair needs attention: ${reason}</div>`, (reason) => reason)}
@@ -141,8 +141,6 @@ class RepairsPage extends Component {
           ${each(record.input.attribution, (attribution) => html`<div class="fs">${attribution.file} · claims ${attribution.claimIds.join(', ')}<pre>${attribution.hunk}</pre></div>`, (attribution, i) => i)}
           <div class="fs">Ruling IDs: ${record.input.rulingIds.join(', ') || 'none recorded'}</div>
         </div>`, (record) => record.eventId)}
-        <div class="sec">Repair participants (${detail.records.participants.length})</div>
-        ${each(detail.records.participants, (record) => html`<div class="op-card"><div class="fs">${record.input.role} · repair ${record.input.repairId} · ${identityText(record.input.identity)}</div>${this.provenance(record)}</div>`, (record) => record.eventId)}
         <div class="sec">Recorded closure history (${detail.historicalClosures.length})</div>
         ${each(detail.historicalClosures, (closure) => html`<div class="op-card historical-repair-closure"><div class="fs">Recorded historical closure ${closure.applicationId}: finding ${closure.findingId} · ${closure.outcome} · current finding state ${closure.state}. Request ${closure.requestId}. The completed act remains history.</div>
           ${each(closure.attention, (reason) => html`<div class="fs qbadge drift repair-closure-attention">Closure needs attention: ${reason}</div>`, (reason) => reason)}

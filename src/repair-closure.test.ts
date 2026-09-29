@@ -52,13 +52,12 @@ test("reopened finding starts a new epoch and cannot reuse the closure",()=>{
  const f=fixture();const closed=f.apply();f.append("finding.reopened","f",{state:"created",observedClosure:closed});const epoch=foldFindings(f.events).get("f")!.openEpoch;f.apply();const finding=foldFindings(f.events).get("f")!;
  assert.equal(finding.state,"created");assert.equal(finding.openEpoch,epoch);assert.notEqual(epoch,"created");
 });
-test("late fixer participation raises attention without erasing historical closure",()=>{
- const f=fixture();f.apply();assert.equal(foldFindings(f.events).get("f")!.state,"resolved");
- // A verifier's own connection is later recorded as the fixer: its run no longer counts.
+test("a retired participant record changes nothing about a closure",()=>{
+ const f=fixture();f.apply();
  f.append("repair.participant-recorded","proof",{repairId:"proof",identity:f.identity("verifier-1"),role:"fixer"},{principal:"verifier"});
  const replayed=foldFindings(f.events).get("f")!;
  assert.equal(replayed.state,"resolved");
- assert.match(replayed.repairClosure!.attention.join(" "),/historical closure.*retained/);
+ assert.deepEqual(replayed.repairClosure!.attention,[]);
 });
 test("a new preserved claim makes otherwise complete evidence partial",()=>{
  const f=fixture();f.append("repair.claims-recorded","f",{findingId:"f",parentId:"f:original",reason:"split omitted obligation",claims:[{id:"f:second",text:"second guard required"}]});f.apply();

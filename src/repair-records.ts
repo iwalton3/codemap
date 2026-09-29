@@ -1,6 +1,6 @@
 import type { Actor, BugWitness } from "./schema.js";
 import { sortEvents, type LogEvent } from "./eventlog.js";
-import type { VerifierIdentity, RepairParticipant } from "./verifier-boundary.js";
+import type { VerifierIdentity } from "./verifier-boundary.js";
 
 export type { RepairClaim, RepairCoverage, ReportedSortReceipt, RepairAssessment, RepairSortInput } from "./repair-sort-types.js";
 import type { RepairClaim, RepairCoverage, ReportedSortReceipt, RepairSortInput } from "./repair-sort-types.js";
@@ -17,22 +17,28 @@ export interface RepairEvidenceInput {
   inspected: { source: string; commit: string; reasoning: string }[]; noCheckReason?: string;
   rulingIds: string[]; attribution: { file: string; hunk: string; claimIds: string[] }[];
 }
-/** A fixer or relayer, as the connection it worked on — see `verifier-boundary.ts`. */
-export interface RepairParticipantInput extends RepairParticipant { repairId: string }
 export interface Recorded<T> { input: T; eventId: string; actor: Actor; at: string }
 export interface RepairRecords {
   claims: RepairClaim[]; sorts: (Recorded<RepairSortInput> & { eligible: boolean; current: boolean; holds: string[] })[];
-  evidence: (Recorded<RepairEvidenceInput> & { staleReasons: string[] })[]; participants: Recorded<RepairParticipantInput>[];
+  evidence: (Recorded<RepairEvidenceInput> & { staleReasons: string[] })[];
   rejected: { eventId: string; reason: string }[];
 }
 export type RepairFindingMap<T> = Map<string, T> & { repairRecords?: RepairRecords; repairVerification?: unknown };
-export const emptyRepairRecords = (): RepairRecords => ({ claims: [], sorts: [], evidence: [], participants: [], rejected: [] });
+export const emptyRepairRecords = (): RepairRecords => ({ claims: [], sorts: [], evidence: [], rejected: [] });
 const nonempty = (v: unknown): v is string => typeof v === "string" && v.trim().length > 0;
 const identity = (v: VerifierIdentity | undefined): boolean => !!v && v.harness === "mcp" && v.child === undefined && [v.principal, v.session].every(nonempty);
 const reported = (v: { principal: string; session: string } | undefined): boolean => !!v && nonempty(v.principal) && nonempty(v.session);
 const unique = (xs: string[]) => new Set(xs).size === xs.length;
 const commit = (v: string) => /^[a-f0-9]{40,64}$/.test(v);
 const receiptValid = (v: ReportedSortReceipt | undefined) => v === undefined || !!v && [v.id, v.source, v.content].every(nonempty);
+
+/**
+ * Kinds this fold does not read. RETIRED ones were removed from the design and are skipped, never
+ * shown as rejected (plan 3.1: the fixer model went with the grant model, R2); the verification
+ * kinds belong to `foldRepairVerification`.
+ */
+export const RETIRED_REPAIR_KINDS: readonly string[] = ["repair.participant-recorded", "repair.verification-producer", "repair.verification-sealed"];
+const VERIFICATION_KINDS: readonly string[] = ["repair.verification-requested", "repair.verification-recorded", "repair.verification-arbitrated"];
 
 /** Original claims come from creation, never the finding's mutable current text. */
 export function foldRepairRecords(input: LogEvent[]): RepairRecords {
@@ -53,7 +59,7 @@ export function foldRepairRecords(input: LogEvent[]): RepairRecords {
       out.claims.push({ id: `${e.subject}:original`, findingId: e.subject, text: d.text, eventId: e.id, actor: e.actor, at: e.at,
         asFiled: structuredClone(d), ...(d.witness ? { witness: d.witness } : {}) });
     }
-    if (!e.kind.startsWith("repair.") || ["repair.verification-producer", "repair.verification-requested", "repair.verification-sealed", "repair.verification-arbitrated"].includes(e.kind)) continue;
+    if (!e.kind.startsWith("repair.") || RETIRED_REPAIR_KINDS.includes(e.kind) || VERIFICATION_KINDS.includes(e.kind)) continue;
     let error: string | undefined;
     try {
       if (e.kind === "repair.claims-recorded") {
@@ -61,10 +67,6 @@ export function foldRepairRecords(input: LogEvent[]): RepairRecords {
         if (!parent || !nonempty(d.reason) || !Array.isArray(d.claims) || !d.claims.length) error = "claim decomposition needs an original parent and reason";
         else if (d.claims.some((c: any) => !nonempty(c.id) || !nonempty(c.text) || out.claims.some(p => p.id === c.id)) || !unique(d.claims.map((c: any) => c.id))) error = "claim decomposition cannot replace existing claims";
         else for (const c of d.claims) out.claims.push({ id: c.id, text: c.text, findingId: parent.findingId, parentId: parent.id, eventId: e.id, actor: e.actor, at: e.at, reason: d.reason });
-      } else if (e.kind === "repair.participant-recorded") {
-        const data = d as RepairParticipantInput;
-        if (!nonempty(data.repairId) || !identity(data.identity) || !["fixer", "relayer"].includes(data.role) || data.identity.principal !== e.actor.principal) error = "invalid repair participant";
-        else out.participants.push(record(e, data));
       } else if (e.kind === "repair.sort-recorded") {
         const data = d as RepairSortInput;
         error = coverageError(data.coverage);
@@ -140,10 +142,6 @@ export function foldRepairRecords(input: LogEvent[]): RepairRecords {
     if (d.refutationSubtype === "scope") sort.holds.push("scope judgment cannot be settled as factual refutation");
     if (d.restsOn.length) sort.holds.push("requirement or ruling dependency remains explicit");
     if (d.disagreements.length && (!d.arbitration || !nonempty(d.arbitration.reason) || !reported(d.arbitration.identity) || d.disagreements.some(x => !d.arbitration!.addresses.includes(x.id)))) sort.holds.push("unaddressed sort disagreement");
-    const fixers = out.participants.filter(p => p.input.role === "fixer");
-    const initialOwnerApproval = !d.prior && d.provenance === "owner-reviewed" && sort.actor.via?.kind !== "agent";
-    if (fixers.some(p => (!initialOwnerApproval && d.provenance !== "dual-sorted" && p.actor.principal === sort.actor.principal)
-      || d.assessments.some(a => a.identity.session === p.input.identity.session))) sort.holds.push("fixer cannot improve repair eligibility by sorting its work");
     if (d.prior) {
       const original = out.sorts.find(s => s.input.id === lineage(d.id))!;
       if (JSON.stringify(d.coverage) !== JSON.stringify(original.input.coverage) || (original.input.kind === "pattern" && (d.kind !== "pattern" || JSON.stringify(d.sites) !== JSON.stringify(original.input.sites)))) sort.holds.push("correction cannot remove original coverage");
@@ -177,10 +175,9 @@ export function repairFindingCompleteness(records: RepairRecords, evidenceId: st
 export function isRepairRecords(value: unknown): value is RepairRecords {
   if (!value || typeof value !== "object") return false;
   const v = value as Partial<RepairRecords>;
-  return Array.isArray(v.claims) && Array.isArray(v.sorts) && Array.isArray(v.evidence) && Array.isArray(v.participants) && Array.isArray(v.rejected)
+  return Array.isArray(v.claims) && Array.isArray(v.sorts) && Array.isArray(v.evidence) && Array.isArray(v.rejected)
     && v.claims.every(c => !!c && nonempty(c.id) && nonempty(c.findingId) && nonempty(c.text))
     && v.sorts.every(s => !!s && !!s.input && Array.isArray(s.input.coverage) && Array.isArray(s.holds) && typeof s.current === "boolean" && typeof s.eligible === "boolean")
     && v.evidence.every(e => !!e && !!e.input && Array.isArray(e.input.coverage) && Array.isArray(e.staleReasons))
-    && v.participants.every(p => !!p && !!p.input && identity(p.input.identity) && ["fixer", "relayer"].includes(p.input.role))
     && v.rejected.every(r => !!r && nonempty(r.eventId) && nonempty(r.reason));
 }

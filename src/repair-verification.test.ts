@@ -37,7 +37,6 @@ function fixture(opts: { pinned?: RepairExecution[]; classification?: string; re
     { id: "created", actor: owner, kind: "finding.created", subject: "f", data: { text: "missing guard", targetId: "a", targetKind: "anchor" } },
     { id: "sort", actor: owner, kind: "repair.sort-recorded", subject: "sort", data: { ...sort } },
     { id: "proof", actor: owner, kind: "repair.evidence-recorded", subject: "proof", data: { ...evidence } },
-    { id: "fixer", actor: owner, kind: "repair.participant-recorded", subject: "sort", data: { repairId: "sort", identity: conn("fixer"), role: "fixer" } },
   ]);
   const finding = foldFindings(events).get("f")!;
   const capsule: RepairVerificationCapsule = { scope: "findings/acme/1", claims: foldRepairRecords(events).claims, sort, evidence,
@@ -58,8 +57,7 @@ function fixture(opts: { pinned?: RepairExecution[]; classification?: string; re
       claimHash: issueClaimHash("finding", finding), outcome, contextHash: repairVerificationHash("ctx"), reason: "verified", identity });
   const folded = () => foldRepairVerification(events);
   const rejected = (eventId: string) => folded().rejected.find((r) => r.eventId === eventId)?.reason;
-  const participants = () => foldRepairRecords(events).participants.map((p) => p.input);
-  return { events, request, verdict, verify, apply, folded, rejected, participants, add, capsule };
+  return { events, request, verdict, verify, apply, folded, rejected, add, capsule };
 }
 
 test("fixed is the verifier's own fail-then-pass observation; an echo of the fixer's pass is refused", () => {
@@ -68,8 +66,8 @@ test("fixed is the verifier's own fail-then-pass observation; an echo of the fix
   const echo = f.verify(2, conn("v2"), f.verdict("fixed", [run(CHECK, F, "fix", "passed")]));
   assert.match(f.rejected(echo) ?? "", /own observation of the check failing at the witness and passing at the fix/);
   f.verify(2, conn("v3"), f.verdict("fixed", observedFix));
-  const d = repairVerificationDecision(f.folded(), "rq", "f", f.participants());
-  assert.deepEqual([d.verdict, d.complete, d.grade, d.launchedByParticipant], ["fixed", true, "executable", false]);
+  const d = repairVerificationDecision(f.folded(), "rq", "f");
+  assert.deepEqual([d.verdict, d.complete, d.grade], ["fixed", true, "executable"]);
 });
 
 test("a check the fixer pinned must be run by the verifier at both commits; one the fixer could not run pins nothing", () => {
@@ -90,19 +88,24 @@ test("a factual refutation needs the verifier's passing check at the witness, no
   assert.equal(f.rejected(f.verify(1, conn("v2"), f.verdict("factually-refuted", [run(CHECK, W, "witness", "passed")]))), undefined);
 });
 
-test("the fixer's own connection cannot verify; a subagent it launched can, and the verdict says so", () => {
+test("grant model (R2): the requester's own connection never verifies; subagents on the controlled path do, with no second grade", () => {
   const f = fixture(); f.request();
   const own = f.verify(1, conn("fixer"), f.verdict("fixed", observedFix));
-  assert.match(f.rejected(own) ?? "", /fixer cannot verify/);
+  assert.match(f.rejected(own) ?? "", /orchestrator cannot verify its own request/);
   f.verify(1, sub("fixer", "a1111111"), f.verdict("fixed", observedFix));
   f.verify(2, sub("fixer", "a2222222"), f.verdict("fixed", observedFix));
-  const d = repairVerificationDecision(f.folded(), "rq", "f", f.participants());
-  assert.equal(d.complete, true);
-  assert.equal(d.launchedByParticipant, true, "the owner's weaker grade");
-  const independent = fixture(); independent.request();
-  independent.verify(1, conn("v1"), independent.verdict("fixed", observedFix));
-  independent.verify(2, sub("orchestrator-elsewhere", "a3333333"), independent.verdict("fixed", observedFix));
-  assert.equal(repairVerificationDecision(independent.folded(), "rq", "f", independent.participants()).launchedByParticipant, false);
+  const d = repairVerificationDecision(f.folded(), "rq", "f");
+  assert.deepEqual([d.complete, d.grade], [true, "executable"], "a grant verifies; codemap does not pretend to know who the fixer is");
+});
+
+test("a retired repair kind is skipped, never shown as a rejected record", () => {
+  const f = fixture();
+  f.add("old-participant", "repair.participant-recorded", "sort", { repairId: "sort", identity: conn("fixer"), role: "fixer" });
+  f.request();
+  f.verify(1, conn("v1"), f.verdict("fixed", observedFix));
+  const records = foldRepairRecords(f.events);
+  assert.equal(records.rejected.length, 0, JSON.stringify(records.rejected));
+  assert.ok(!("participants" in records));
 });
 
 test("two blind slots take two verifiers, once each, and the orchestrator is neither", () => {

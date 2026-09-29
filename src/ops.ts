@@ -24,8 +24,8 @@
 export { operationSignoffQuestion, operationSignoffReaderBrief, submitOperationSignoffVerdict, recordOperationSignoffVerdict, applyOperationSignoff } from "./ops/operation-signoff.js";
 
 export { type Trust } from "./ops/shared.js";
-export { repairRecords, postRepairSort, recordRepairEvidence, recordRepairParticipant, recordRepairClaims } from "./ops/repairs.js";
-export { requestRepairVerification, repairVerificationBrief, submitRepairVerification, arbitrateRepairVerification, recordRepairVerification, applyRepairVerification, repairVerificationRecords } from "./ops/repair-verification.js";
+export { repairRecords, postRepairSort, recordRepairEvidence, recordRepairClaims } from "./ops/repairs.js";
+export { requestRepairVerification, pendingRepairJobs, repairVerificationBrief, submitRepairVerification, arbitrateRepairVerification, recordRepairVerification, applyRepairVerification, repairVerificationRecords } from "./ops/repair-verification.js";
 
 export { availableViews, status, dashboard, lintSummaries, findGaps, cover, coverageRules, uncover } from "./ops/overview.js";
 

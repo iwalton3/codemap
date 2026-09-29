@@ -3041,7 +3041,7 @@ export function decisionBugStates(root: string): { id: string; state: string; so
 // Repair records share the canonical findings scope and its materialization transaction.
 export function readRepairRecords(root: string, scope: string): import("./repair-records.js").RepairRecords {
   const row = db(root).prepare("SELECT body FROM repair_records WHERE scope = ?").get(scope) as { body: string } | undefined;
-  if (!row) return { claims: [], sorts: [], evidence: [], participants: [], rejected: [] };
+  if (!row) return { claims: [], sorts: [], evidence: [], rejected: [] };
   const records: unknown = JSON.parse(row.body);
   if (!isRepairRecords(records)) throw new Error(`repair records ${scope} have a malformed shape`);
   return records;

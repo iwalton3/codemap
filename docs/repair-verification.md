@@ -1,7 +1,7 @@
 # Repair verification
 
 How a repaired finding gets closed on evidence rather than on the fixer's word. The records it
-builds on (claims, sorts, evidence, participants) are in [repair records](repair-records.md);
+builds on (claims, sorts, evidence) are in [repair records](repair-records.md);
 the fold is `src/repair-verification.ts`, the ops `src/ops/repair-verification.ts`. The owner's
 rulings behind it are in `.git/plan/2026-09-28-codex-recovery/` (plan Phase 2.6).
 
@@ -24,22 +24,20 @@ optionally with a **subagent** id. There are two ways to be one:
   exactly that prompt, submitted exactly what was held, got that receipt back.
 
 A subagent shares its parent's connection, so its identity carries the parent's connection plus
-its own id. That is how the fold tells the two cases apart for participants:
+its own id.
 
-- the **fixer's or relayer's own connection** cannot verify its repair (refused in the fold);
-- a **subagent the fixer launched** can, and the decision says `launchedByParticipant` — the
-  owner's weaker grade, shown wherever the repair is.
-
-The orchestrator (whoever calls `repair_request`) may be the fixer; it cannot fill a slot of its
-own request. A verifier cannot apply the verdict it gave.
-
-Known residual, accepted with "no permanent taint": a fixer that reconnects gets a fresh
-connection and could claim the role. This guards against mistakes, not adversaries.
+**Only grants verify** (R2, plan 3.1: "We shouldn't pretend to know who the fixer is"): (G1) a
+fresh session a person starts with the `codemap-verify` skill, which claims the role first; (G2) a
+subagent on the controlled prompt path above; (G3) question logging, which buys derived actions.
+There is no fixer record and no weaker grade for a verifier the fixer launched. The tool enforces
+the grants; the fold keeps what it can see — the requester (whoever calls `repair_request`) never
+fills a slot of its own request, the two runs are distinct verifiers, and a verifier cannot apply
+the verdict it gave. The rest is an accepted gap: a fixer that reconnects gets a fresh connection
+and could claim the role. This guards against mistakes, not adversaries.
 
 ## The request and the two slots
 
-`repair_request` freezes an eligible current sort and evidence record (the fixer must already be
-recorded), the immutable original and decomposed claims, the pinned witness/base/fix commits and
+`repair_request` freezes an eligible current sort and evidence record, the immutable original and decomposed claims, the pinned witness/base/fix commits and
 diff, the findings' open epochs and claim hashes, and the ruling context. Missing code is recorded
 as unknown. Nothing runs a stored command.
 
@@ -72,8 +70,8 @@ refuses). Fixed closes `resolved`, a factual refutation `refuted`; unknown never
 reopens. One application per finding per opening; a reopen starts a new epoch. Linked bugs are
 not closed.
 
-A later contradiction — e.g. a verifier's connection later recorded as the fixer — keeps the
-historical closure and raises attention. A new request on the same fix shows the **earlier runs
+A later contradiction — the code the closure verified has moved — keeps the historical closure and
+raises attention. A new request on the same fix shows the **earlier runs
 that did not come back fixed** beside it, so asking again cannot bury a bad result; verifier
 briefs never show them.
 

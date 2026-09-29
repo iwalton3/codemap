@@ -280,7 +280,7 @@ test("repair fold event vocabulary and projection are pinned to the materializer
   const { MATERIALIZER_VERSION } = await import("./materialize.js");
   const src = readFileSync("src/repair-records.ts", "utf8");
   const kinds = [...new Set([...src.matchAll(/kind === "(repair\.[a-z-]+)"/g)].map(m => m[1]))].sort();
-  assert.deepEqual(kinds, ["repair.claims-recorded", "repair.evidence-recorded", "repair.participant-recorded", "repair.sort-recorded"]);
+  assert.deepEqual(kinds, ["repair.claims-recorded", "repair.evidence-recorded", "repair.sort-recorded"]);
   assert.match(readFileSync("src/shared-projections.ts", "utf8"), /INSERT OR REPLACE INTO repair_records/);
   assert.equal(MATERIALIZER_VERSION, 51);
 });

@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { team, settle } from "./oracle.js";
 import { shareFinding } from "./ops-shared.js";
-import { postRepairSort, recordRepairClaims, recordRepairEvidence, recordRepairParticipant, repairRecords } from "./ops/repairs.js";
+import { postRepairSort, recordRepairClaims, recordRepairEvidence, repairRecords } from "./ops/repairs.js";
 import { RepairConnection } from "./verifier-boundary.js";
 import { repairFindingCompleteness, type RepairSortInput, type RepairEvidenceInput } from "./repair-records.js";
 import { readFinding } from "./store.js";
@@ -16,7 +16,7 @@ const sort = (findingId: string, claims: string[]): Omit<RepairSortInput, "id"> 
   restsOn: [], provenance: "owner-reviewed", assessments: [], disagreements: [] });
 const sha = "a".repeat(40);
 
-test("repair ops preserve original scope, sync partial evidence, and take participant identity from the connection", async () => {
+test("repair ops preserve original scope and sync partial evidence", async () => {
   const t = await team(["alice@acme.test", "bob@acme.test"]);
   try {
     const root = t.all[0]!.repo, peer = t.all[1]!.repo;
@@ -40,8 +40,6 @@ test("repair ops preserve original scope, sync partial evidence, and take partic
     const recorded = await pendingEvidence;
     ok(recorded);
     const evidenceId = (recorded as { id: string }).id;
-    const invalid = await recordRepairParticipant(root, 7, { repairId: sortId, role: "fixer" }, new RepairConnection("mallory@acme.test"));
-    assert.match((invalid as { error: string }).error, /another principal/);
     await settle(t);
     const ours = await repairRecords(root, 7), theirs = await repairRecords(peer, 7);
     assert.ok("records" in ours && ours.records && "records" in theirs && theirs.records);
@@ -51,16 +49,9 @@ test("repair ops preserve original scope, sync partial evidence, and take partic
     assert.equal(theirs.coverage![evidenceId]![0]!.completeness, "partial");
     assert.equal(theirs.records.claims[0]!.text, "first and second obligations");
     assert.notEqual((await readFinding(peer, f.id, { pr: 7 }))!.state, "resolved");
-    const connection = new RepairConnection("alice@acme.test");
-    ok(await recordRepairParticipant(root, 7, { repairId: sortId, role: "fixer" }, connection));
-    await settle(t);
-    const after = await repairRecords(peer, 7);
-    assert.ok("records" in after && after.records);
-    assert.equal(after.records.participants[0]!.input.identity.session, connection.session);
-    assert.equal(after.records.sorts[0]!.eligible, true);
-    const correction = await postRepairSort(root, 7, { ...sort(f.id, [c1, c2]), prior: sortId, reason: "fixer proposes a new classification" });
+    assert.equal(theirs.records.sorts[0]!.eligible, true);
+    const correction = await postRepairSort(root, 7, { ...sort(f.id, [c1, c2]), prior: sortId, reason: "a new classification" });
     assert.ok("records" in correction && correction.records && "id" in correction);
-    assert.ok(correction.records.sorts.find(s => s.input.id === correction.id)!.holds.some(h => h.includes("fixer")));
     // A retry of the same record is the same record, not a second, competing sort.
     const again = await postRepairSort(root, 7, sort(f.id, [c1, c2]));
     assert.ok("alreadyRecorded" in again && again.alreadyRecorded && again.id === sortId, JSON.stringify(again));
@@ -82,22 +73,16 @@ test("repair ops preserve original scope, sync partial evidence, and take partic
   } finally { t.dispose(); }
 });
 
-test("over MCP a fixer's connection records itself and cannot then claim the verifier role; a claimed one cannot fix", async () => {
+test("over MCP a connection that has worked cannot claim the verifier role; a claimed one cannot read the repair records", async () => {
   const t = await team(["alice@acme.test"]);
   try {
     const root = t.all[0]!.repo;
-    const fixer = await rpc(root, [{ name: "record_repair_participant", arguments: { review: "7", repairId: "repair1", role: "fixer" } },
-      { name: "claim_verifier", arguments: {} }]);
-    ok(JSON.parse(fixer[0]!));
-    assert.match(fixer[1]!, /before any other codemap call/);
-    const records = await repairRecords(root, 7);
-    assert.ok("records" in records && records.records);
-    assert.equal(records.records.participants[0]!.input.identity.harness, "mcp");
-    const verifier = await rpc(root, [{ name: "claim_verifier", arguments: {} },
-      { name: "record_repair_participant", arguments: { review: "7", repairId: "repair2", role: "fixer" } },
-      { name: "repair_records", arguments: { review: "7" } }]);
+    const worked = await rpc(root, [{ name: "repair_records", arguments: { review: "7" } }, { name: "claim_verifier", arguments: {} }]);
+    assert.doesNotMatch(worked[0]!, /^Error/);
+    assert.match(worked[1]!, /before any other codemap call/);
+    const verifier = await rpc(root, [{ name: "claim_verifier", arguments: {} }, { name: "repair_records", arguments: { review: "7" } }]);
     ok(JSON.parse(verifier[0]!));
-    assert.match(verifier[1]!, /verifier role does not allow record_repair_participant/);
-    assert.doesNotMatch(verifier[2]!, /^Error/, "reading records stays within the role");
+    // B13: the records show the fixer's evidence and the other runs, which a blind verifier must not read.
+    assert.match(verifier[1]!, /verifier role does not allow repair_records/);
   } finally { t.dispose(); }
 });

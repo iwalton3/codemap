@@ -86,8 +86,6 @@ test("repair page retains original scope, separate evidence outcomes and the clo
     assert.ok("records" in records && records.records);
     const actor = requireActor(root);
     assert.ok(!("error" in actor));
-    const participant = await ops.recordRepairParticipant(root, 7, { repairId: independentSortId, role: "fixer" }, new RepairConnection(actor.principal));
-    assert.ok("ok" in participant && participant.ok, JSON.stringify(participant));
     const orchestrator = new RepairConnection(actor.principal).identity();
     const verificationTarget = (await readFinding(root, verificationFinding.id))!;
     const capsule: RepairVerificationCapsule = { scope: records.scope,
@@ -138,8 +136,6 @@ test("repair page retains original scope, separate evidence outcomes and the clo
       coverage: [{ findingId: closureFinding.id, claimIds: [closureClaim], result: "complete", reason: "fixture scope inspected", claimResults: [{ claimId: closureClaim, result: "complete", reason: "fixture scope inspected" }] }],
       reproducer: [], regression: [], inspected: [], noCheckReason: "synthetic inspection fixture", rulingIds: [], attribution: [] });
     assert.ok("ok" in closureEvidence && closureEvidence.ok, JSON.stringify(closureEvidence));
-    const fixer = await ops.recordRepairParticipant(root, 7, { repairId: closureSortId, role: "fixer" }, new RepairConnection(actor.principal));
-    assert.ok("ok" in fixer && fixer.ok, JSON.stringify(fixer));
     const verifiers: RepairConnection[] = [];
     const makeHost = () => {
       const connection = new RepairConnection(actor.principal);
@@ -196,15 +192,12 @@ test("repair page retains original scope, separate evidence outcomes and the clo
     const driftSearch = await ops.search(root, "Independent historical closure fixture") as any;
     assert.equal(driftSearch.findings[0].repair.lifecycles[0].currentProof, false);
     assert.ok(driftSearch.findings[0].repair.lifecycles[0].attention.some((reason: string) => reason.includes("source moved")));
-    // Slot 1's own connection is later recorded as the fixer: its run stops counting.
-    const lateParticipant = await ops.recordRepairParticipant(root, 7, { repairId: closureSortId, role: "fixer" }, verifiers[0]!);
-    assert.ok("ok" in lateParticipant && lateParticipant.ok, JSON.stringify(lateParticipant));
     await page.reload({ waitUntil: "networkidle" });
     await page.waitForSelector(".repair-closure-attention", { timeout: 10_000 });
     const attentionText = await page.textContent("main");
     assert.ok(attentionText.includes("Recorded historical closure"));
     assert.ok(attentionText.includes("Closure needs attention:"));
-    assert.equal((await readFinding(root, closureFinding.id))?.state, "resolved", "late participant provenance raises attention without silently undoing the completed act");
+    assert.equal((await readFinding(root, closureFinding.id))?.state, "resolved", "drift raises attention without silently undoing the completed act");
     assert.ok((await page.textContent(".historical-repair-closure")).includes(closureFinding.id),
       "historical closure remains visible even when its verification no longer counts");
     assert.equal(await page.locator("main button").count(), 0, "evidence commands must not become executable controls");

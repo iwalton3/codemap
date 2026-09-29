@@ -13,10 +13,9 @@ import { db } from "./db.js";
 import { readRepairRecords } from "./store.js";
 import { discard } from "./test-tmp.js";
 
-/** A sorter as the skill's sort reports it, and a fixer as the connection it worked on. */
+/** A sorter as the skill's sort reports it. */
 const who = { principal: "alice", session: "s1" };
 const other = { ...who, session: "s2" };
-const fixer = { principal: "alice", harness: "mcp" as const, session: "s1" };
 const actor = { principal: "alice" };
 const agent = { principal: "alice", via: { kind: "agent" as const, model: "m" } };
 const created = { kind: "finding.created", subject: "f1", data: { text: "negative and duplicate credits accepted", targetId: "a", targetKind: "anchor" } };
@@ -96,15 +95,6 @@ test("arbitration must address each disagreement and unresolved dependency holds
   assert.ok(records.sorts[0]!.holds.some(h => h.includes("disagreement")));
 });
 
-test("fixer cannot reclassify an initial principal-approved worklist", () => {
-  const records = foldRepairRecords(chain([sorted(), sorted(sort({ id: "s2", prior: "s1", reason: "new reading" })), { kind: "repair.participant-recorded", subject: "s1", data: { repairId: "s1", identity: fixer, role: "fixer" } }]));
-  assert.equal(records.sorts.length, 2);
-  assert.equal(records.sorts[0]!.holds.some(h => h.includes("fixer")), false);
-  assert.ok(records.sorts[1]!.holds.some(h => h.includes("fixer")));
-  const initial = foldRepairRecords(chain([sorted(), { kind: "repair.participant-recorded", subject: "s1", data: { repairId: "s1", identity: fixer, role: "fixer" } }]));
-  assert.equal(initial.sorts[0]!.eligible, true);
-});
-
 test("correction retains history and cannot shrink original pattern", () => {
   const first = sort({ kind: "pattern", predicate: "missing guard", sites: ["api", "batch"] });
   const records = foldRepairRecords(chain([sorted(first), sorted(sort({ id: "s2", prior: "s1", reason: "only api changed" }))]));
@@ -127,18 +117,17 @@ test("folding repair proof never closes a canonical finding", () => {
   assert.equal(findings.repairRecords!.evidence.length, 1);
 });
 
-test("unchanged shards replay old materializer cache and atomically persist participants", async () => {
+test("unchanged shards replay old materializer cache and atomically persist repair records", async () => {
   const root = mkdtempSync(join(tmpdir(), "repair-replay-"));
   const log = join(root, "sidecar"); const scope = "findings/acme/pr-1";
   try {
     mkdirSync(join(log, scope), { recursive: true });
-    const events = chain([sorted(), proof(), { kind: "repair.participant-recorded", subject: "s1", data: { repairId: "s1", identity: fixer, role: "fixer" } }]);
+    const events = chain([sorted(), proof()]);
     writeFileSync(join(log, scope, "writer.ndjson"), events.map(e => JSON.stringify(e)).join("\n") + "\n");
     await readCached(root, log, scope, "identity", foldFindings, findingsProjection);
     const d = db(root);
     assert.equal(readRepairRecords(root, scope).evidence.length, 1);
-    assert.equal(readRepairRecords(root, scope).participants[0]!.input.identity.session, "s1");
-    d.prepare("UPDATE repair_records SET body=? WHERE scope=?").run(JSON.stringify({ claims: [], sorts: [], evidence: [], participants: [], rejected: [] }), scope);
+    d.prepare("UPDATE repair_records SET body=? WHERE scope=?").run(JSON.stringify({ claims: [], sorts: [], evidence: [], rejected: [] }), scope);
     const oldHash = createHash("sha256");
     oldHash.update(`v44\0identity\0${scope}\0`);
     const st = statSync(join(log, scope, "writer.ndjson"), { bigint: true });
