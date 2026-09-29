@@ -1008,6 +1008,14 @@ export interface Spec {
    */
   conflicted?: boolean;
   /**
+   * A ratification and a withdrawal written concurrently: neither applies until a person who
+   * saw both picks one (`spec.conflict.resolved`; plan 1.3, owner's "split by kind"). Set by
+   * the fold; while it is set the spec is still a draft that nothing may adopt or withdraw.
+   */
+  held?: { event: string; act: "ratify" | "withdraw"; by: Actor; at: string }[];
+  /** Writes that raced this spec's adoption or withdrawal and did not land, for their authors. */
+  lateActs?: LateAct[];
+  /**
    * Withdrawal — taking a spec back. See `withdrawSpec`.
    *
    * The spec stays in the log and keeps its ratification: deleting a ratified spec would
@@ -1692,8 +1700,13 @@ export interface Problem {
   adjudicatedBy?: Actor;
   adjudicatedAt?: string;
   adjudicationReason?: string;
+  /** Two different verdicts written concurrently: open until a person picks one (plan 1.3). */
+  held?: { event: string; disposition: string; by: Actor; at: string; reason: string }[];
   origin?: string;
 }
+
+/** An act that raced another and did not land: shown to its author as "did not land: raced X". */
+export interface LateAct { id: string; kind: string; by: Actor; at: string; raced: string; why: string }
 
 /**
  * A requirement's id, DERIVED from the operation that creates it.

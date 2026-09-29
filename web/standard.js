@@ -246,7 +246,13 @@ class StandardPage extends Component {
 
       <div class="sec">awaiting adjudication (${q.awaitingAdjudication.length})</div>
       <div class="empty">Which side moves is a business question, so an agent may establish the disagreement and may never decide it. This is deliberately NOT a fix queue — naming the disposition does not do the work.</div>
-      ${each(q.awaitingAdjudication, (p) => this.problem(p, u, () => html`<div class="op-actions">
+      ${each(q.awaitingAdjudication, (p) => this.problem(p, u, () => (p.held || []).length ? html`<div class="fs">Held: two people adjudicated this at the same time. Read both, then keep one; the other does not land.</div>
+      <div class="op-actions">
+        ${this.why('pick:' + p.id, 'why this side')}
+        ${each(p.held, (h) => html`<button class="pullbtn" title="${h.reason}"
+          disabled="${!!this.state.busy}"
+          on-click="${() => this.act('pick:' + p.id, '/api/standard/keep_problem_verdict', { problemId: p.id, keep: h.event, reason: this.state.reason['pick:' + p.id] || '' })}">keep ${h.disposition} (${h.by.principal})</button>`, (h) => h.event)}
+      </div>` : html`<div class="op-actions">
         ${this.why('adj:' + p.id, 'why — this is what a later reader has instead of the conversation')}
         ${each(DISPOSITIONS, (d) => html`<button class="pullbtn" title="${d[1]}"
           disabled="${!!this.state.busy}"
@@ -419,6 +425,17 @@ class SpecPage extends Component {
     try {
       const body = { u: this.props.params.universe, specId: this.props.params.id };
       const r = await attestedPost(`/api/standard/${kind}`, kind === 'withdraw' ? { ...body, reason: this.state.reason } : body);
+      if (r && r.error) { this.state.err = r.error; return; }
+      this.load.run();
+    } catch (e) { this.state.err = errText(e); } finally { this.state.busy = null; }
+  }
+
+  /** Keep one side of a held spec (plan 1.3). A person's act; the fold re-checks it. */
+  async keepSide(keep) {
+    if (this.state.busy) return;
+    this.state.busy = 'pick'; this.state.err = null;
+    try {
+      const r = await attestedPost('/api/standard/keep_spec_verdict', { u: this.props.params.universe, specId: this.props.params.id, keep, reason: this.state.reason });
       if (r && r.error) { this.state.err = r.error; return; }
       this.load.run();
     } catch (e) { this.state.err = errText(e); } finally { this.state.busy = null; }
@@ -829,8 +846,19 @@ class SpecPage extends Component {
       ${thread(d.comments)}
       ${this.composer(d.spec.id, 'comment on the proposal as a whole…')}
 
+      ${when((d.spec.lateActs || []).length > 0, () => html`<div class="sec">did not land (${d.spec.lateActs.length})</div>`)}
+      ${each(d.spec.lateActs || [], (x) => html`<div class="op-card"><div class="ft"><span class="qbadge drift">did not land</span> ${x.kind} ${byline(x.by, x.at)}</div>
+        <div class="fs">raced ${x.raced}: ${x.why}</div></div>`, (x) => x.id)}
+
       ${when(!!this.state.err, () => html`<div class="attn-banner"><span class="attn-n">✕</span> <span>${this.state.err}</span></div>`)}
-      ${when(d.spec.status === 'draft', () => html`<div class="op-actions">
+      ${when((d.spec.held || []).length > 0, () => html`<div class="sec">held</div>
+        <div class="fs">A ratification and a withdrawal were written at the same time, so neither applied. Read both sides, then keep one; the other does not land.</div>
+        <div class="op-actions">
+          <input placeholder="why this side…" on-input="${(e) => { this.state.reason = e.target.value; }}">
+          ${each(d.spec.held, (h) => html`<button class="pullbtn" disabled="${!this.state.reason || !!this.state.busy}"
+            on-click="${() => this.keepSide(h.event)}">keep the ${h.act === 'ratify' ? 'ratification' : 'withdrawal'} (${h.by.principal})</button>`, (h) => h.event)}
+        </div>`)}
+      ${when(d.spec.status === 'draft' && !(d.spec.held || []).length, () => html`<div class="op-actions">
         <button class="pullbtn" disabled="${!d.adoptable || !d.signedOff || !!this.state.busy}"
           title="${!d.adoptable ? 'at least one operation was written against a standard that has since moved' : !d.signedOff ? 'adoption is all-or-nothing, so your signature covers every operation — sign off what you have read first' : 'apply every operation, all or nothing'}"
           on-click="${() => this.act('ratify')}">${this.state.busy === 'ratify' ? 'adopting…' : '✓ ratify'}</button>

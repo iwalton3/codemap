@@ -457,6 +457,13 @@ const server = createServer(async (req, res) => {
             problemId: body.problemId, disposition: body.disposition, reason: body.reason ?? "",
           });
         }
+        // Picking a side of a held verdict (plan 1.3): a person's act, with no MCP tool.
+        if (act === "keep_spec_verdict") {
+          return ops.keepSpecVerdict(root, { specId: body.specId, keep: body.keep, reason: body.reason ?? "" });
+        }
+        if (act === "keep_problem_verdict") {
+          return ops.keepProblemVerdict(root, { problemId: body.problemId, keep: body.keep, reason: body.reason ?? "" });
+        }
         if (act === "acknowledge_debt") {
           return ops.acknowledgeDebt(root, {
             requirementId: body.requirementId, rationale: body.rationale ?? "",

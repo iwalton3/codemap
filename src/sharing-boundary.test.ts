@@ -301,7 +301,7 @@ const BOTH_ENDS: { what: string; fold: [string, RegExp]; publish: [string, RegEx
     // record's word, so an appended row naming a ratified `requirementId` and no operation
     // was accepted by every clone and reported a binding rule as `gap`.
     what: "a gap minted after the spec that introduced the rule was ratified",
-    fold: ["src/shared-standard.ts", /specs\.get\(op\.specId\)\?\.status === "ratified"\) \{ refuse\(e, .*?\); break; \}/],
+    fold: ["src/shared-standard.ts", /specs\.get\(op\.specId\)\?\.status === "ratified"\) \{ (?:refuse|notDraft)\(e, .*?\); break; \}/],
     publish: ["src/acknowledgements.ts", /a gap may only be raised while the spec is still a draft/],
   },
   // Two more that had both ends in the code and neither end registered here, so a future

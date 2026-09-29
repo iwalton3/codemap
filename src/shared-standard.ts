@@ -171,6 +171,13 @@ export const publishSpecWithdrawn = (
   logRoot: string, scope: string, actor: Actor, specId: string, at: string, reason: string,
 ) => put(logRoot, scope, actor, "spec.withdrawn", specId, { at, reason });
 
+/** A person picks one side of a held verdict (plan 1.3): `keep` is the id of the verdict that stands. */
+export const publishSpecConflictResolved = (logRoot: string, scope: string, actor: Actor, specId: string, keep: string, reason: string) =>
+  put(logRoot, scope, actor, "spec.conflict.resolved", specId, { keep, reason });
+
+export const publishProblemConflictResolved = (logRoot: string, scope: string, actor: Actor, problemId: string, keep: string, reason: string) =>
+  put(logRoot, scope, actor, "problem.conflict.resolved", problemId, { keep, reason });
+
 export const publishAckGranted = (logRoot: string, scope: string, actor: Actor, ack: Acknowledgement) =>
   put(logRoot, scope, actor, "ack.granted", ack.id, { ack });
 
@@ -401,6 +408,67 @@ function foldStandardWithRefusals(events: LogEvent[]): { value: SharedStandard; 
   const contest = newContestState();
   const causal = causality(events);
 
+  // Opposing verdicts on one item, written concurrently (plan 1.3; owner, "split by kind"): a
+  // ratification and a withdrawal of one spec, or two different adjudications of one problem.
+  // Neither applies until a person who saw both picks one; the other side then did not land.
+  // Found up front because the pick is necessarily later in fold order than both sides.
+  const verdicts = new Map<string, LogEvent[]>(), picks = new Map<string, LogEvent[]>();
+  const push = (m: Map<string, LogEvent[]>, k: string, e: LogEvent) => m.set(k, [...(m.get(k) ?? []), e]);
+  for (const e of events) {
+    if (e.kind === "spec.ratified" || e.kind === "spec.withdrawn") push(verdicts, `spec:${e.subject}`, e);
+    else if (e.kind === "problem.adjudicated") push(verdicts, `problem:${e.subject}`, e);
+    else if (e.kind === "spec.conflict.resolved") push(picks, `spec:${e.subject}`, e);
+    else if (e.kind === "problem.conflict.resolved") push(picks, `problem:${e.subject}`, e);
+  }
+  const opposed = (a: LogEvent, b: LogEvent) => a.kind === "problem.adjudicated"
+    ? str(a.data, "disposition") !== str(b.data, "disposition") : a.kind !== b.kind;
+  const heldSides = new Map<string, Set<string>>();
+  for (const [k, vs] of verdicts) for (const a of vs) for (const b of vs) {
+    if (a.id < b.id && opposed(a, b) && !causal.saw(a.id, b.id) && !causal.saw(b.id, a.id))
+      heldSides.set(k, new Set([...(heldSides.get(k) ?? []), a.id, b.id]));
+  }
+  const kept = new Map<string, string>();
+  for (const [k, ps] of picks) {
+    const sides = heldSides.get(k);
+    const latest = new Map<string, LogEvent>();
+    for (const p of ps) {
+      const keep = str(p.data, "keep");
+      if (!sides || !keep || !sides.has(keep) || !str(p.data, "reason")?.trim()) { refuse(p, "a resolution names one side of a held conflict and why"); continue; }
+      if (p.actor.via) { refuse(p, "picking a side is a person's act"); continue; }
+      if (![...sides].every((id) => causal.saw(p.id, id))) { refuse(p, "a resolution is by someone who saw every side"); continue; }
+      latest.set(p.actor.principal, p);
+    }
+    // Each person's latest pick stands for them; two people picking differently stay held.
+    const keeps = new Set([...latest.values()].map((p) => str(p.data, "keep")));
+    if (keeps.size === 1) kept.set(k, [...keeps][0]!);
+  }
+  /** "held" while undecided, "lost" when a person kept another side, undefined otherwise. */
+  const holdOf = (e: LogEvent, k: string): "held" | "lost" | undefined =>
+    !heldSides.get(k)?.has(e.id) || kept.get(k) === e.id ? undefined : kept.has(k) ? "lost" : "held";
+  // What moved a spec out of draft, so a write that raced it is recorded for its author.
+  const closedBy = new Map<string, string>();
+  const late = (e: LogEvent, specId: string, raced: string, why: string) => {
+    const sp = specs.get(specId);
+    if (sp) specs.set(specId, { ...sp, lateActs: [...(sp.lateActs ?? []), { id: e.id, kind: e.kind, by: e.actor, at: e.at, raced, why }] });
+  };
+  /** A draft edit refused because the spec left draft: a race when its writer never saw that. */
+  const notDraft = (e: LogEvent, specId: string, why: string) => {
+    const by = closedBy.get(specId);
+    if (by && !causal.saw(e.id, by)) late(e, specId, by, why);
+    refuse(e, why);
+  };
+
+  const holdSpec = (e: LogEvent, sp: Spec, hold: "held" | "lost", act: "ratify" | "withdraw") => {
+    if (hold === "lost") {
+      const k = kept.get(`spec:${sp.id}`)!;
+      late(e, sp.id, k, "a person kept the other side");
+      refuse(e, `did not land: a person kept ${k}`);
+      return;
+    }
+    specs.set(sp.id, { ...sp, held: [...(sp.held ?? []), { event: e.id, act, by: e.actor, at: str(e.data, "at") ?? e.at }] });
+    refuse(e, "held: a ratification and a withdrawal of this spec were written at the same time");
+  };
+
   for (let i = 0; i < events.length; i++) {
     const e = events[i]!;
     switch (e.kind) {
@@ -427,7 +495,7 @@ function foldStandardWithRefusals(events: LogEvent[]): { value: SharedStandard; 
         // An operation for a spec this fold has not seen drafted is kept: the drafting shard
         // may simply not have arrived, the same allowance `spec.ratified` makes above.
         const sp = specs.get(op.specId);
-        if (sp && sp.status !== "draft") { refuse(e, "the spec is no longer a draft"); break; }
+        if (sp && sp.status !== "draft") { notDraft(e, sp.id, "the spec is no longer a draft"); break; }
         operations.set(op.id, { ...op, origin: "sync" });
         break;
       }
@@ -448,7 +516,8 @@ function foldStandardWithRefusals(events: LogEvent[]): { value: SharedStandard; 
       case "spec.revised": {
         const next = obj(e.data, "spec") as Spec | undefined;
         const sp = next?.id ? specs.get(next.id) : undefined;
-        if (!next || !sp || sp.status !== "draft") { refuse(e, "only a draft spec is revised"); break; }
+        if (!next || !sp) { refuse(e, "only a draft spec is revised"); break; }
+        if (sp.status !== "draft") { notDraft(e, sp.id, "only a draft spec is revised"); break; }
         if (!next.title?.trim()) { refuse(e, "a spec needs a title"); break; }
         // See `spec.operation.revised` for the argument. Same biconditional, over the
         // framing rather than the operation.
@@ -466,7 +535,8 @@ function foldStandardWithRefusals(events: LogEvent[]): { value: SharedStandard; 
         const cur = next?.id ? operations.get(next.id) : undefined;
         if (!next || !cur) { refuse(e, "no such operation"); break; }
         const sp = specs.get(cur.specId);
-        if (!sp || sp.status !== "draft") { refuse(e, "only a draft's operations are corrected or pulled"); break; }
+        if (!sp) { refuse(e, "only a draft's operations are corrected or pulled"); break; }
+        if (sp.status !== "draft") { notDraft(e, sp.id, "only a draft's operations are corrected or pulled"); break; }
         // A kind change is a different operation validated against fields this one was
         // never written with; the tool refuses it and so does this.
         if (next.kind !== cur.kind) { refuse(e, "a correction cannot change an operation's kind"); break; }
@@ -568,7 +638,10 @@ function foldStandardWithRefusals(events: LogEvent[]): { value: SharedStandard; 
         // still carrying `withdrawnBy`/`withdrawnAt` — a spec that is both, which no verb
         // can undo, since a second ratification breaks here and a withdrawal refuses a spec
         // that is already withdrawn.
+        const hold = sp && holdOf(e, `spec:${sp.id}`);
+        if (sp && hold) { holdSpec(e, sp, hold, "ratify"); break; }
         if (!sp || sp.status !== "draft") { refuse(e, "only a draft is ratified"); break; }
+        if (sp.held?.length) { refuse(e, "the spec is held between a ratification and a withdrawal: a person picks one"); break; }
         // Adoption is a principal's act, and a remote clone sees only this row. Without
         // this the tool's gate binds nobody but the machine that ran it.
         if (e.actor.via) { refuse(e, "ratification is a person's act"); break; }
@@ -642,10 +715,12 @@ function foldStandardWithRefusals(events: LogEvent[]): { value: SharedStandard; 
         // is the application.
         if (stale || unread || !allApply || (pinned && mine.length !== pinned.length)) {
           specs.set(sp.id, { ...sp, status: "ratified", ratifiedBy: e.actor, ratifiedAt: at, conflicted: true });
+          closedBy.set(sp.id, e.id);
           refuse(e, `the ratification does not apply: ${[stale && "an operation's base moved", unread && "the ratifier has not signed off the text", !allApply && "an operation does not apply", pinned && mine.length !== pinned.length && "the pinned operations are not all live"].filter(Boolean).join("; ")}`);
           break;
         }
         specs.set(sp.id, { ...sp, status: "ratified", ratifiedBy: e.actor, ratifiedAt: at });
+        closedBy.set(sp.id, e.id);
         for (const op of mine) applyOperation(requirements, criteria, op, sp, e.actor, at, witnesses[op.id] ?? [], creating);
 
         // Bind what the operations produced. The LOCAL path does this at ratification
@@ -698,7 +773,10 @@ function foldStandardWithRefusals(events: LogEvent[]): { value: SharedStandard; 
       }
       case "spec.withdrawn": {
         const sp = specs.get(e.subject);
+        const hold = sp && holdOf(e, `spec:${sp.id}`);
+        if (sp && hold) { holdSpec(e, sp, hold, "withdraw"); break; }
         if (!sp || sp.status === "withdrawn" || sp.status === "repealed") { refuse(e, "the spec is already withdrawn or repealed"); break; }
+        if (sp.held?.length) { refuse(e, "the spec is held between a ratification and a withdrawal: a person picks one"); break; }
         // A withdrawal with no reason. `withdrawSpec` refuses one — "it stays on the record
         // as the act it is" — and the fold did not, so a client that skipped the field
         // removed rules from every clone's standard with nothing on the record saying why.
@@ -794,6 +872,7 @@ function foldStandardWithRefusals(events: LogEvent[]): { value: SharedStandard; 
         // the most authoritative record here.
         const { conflicted: _resolved, ...cleared } = sp;
         specs.set(sp.id, { ...cleared, status: "withdrawn", withdrawnBy: e.actor, withdrawnAt: at });
+        if (cleared.status === "draft") closedBy.set(sp.id, e.id);
         break;
       }
       case "ack.granted": {
@@ -820,7 +899,7 @@ function foldStandardWithRefusals(events: LogEvent[]): { value: SharedStandard; 
         if (ack.basis === "gap") {
           const op = ack.operationId ? operations.get(ack.operationId) : undefined;
           if (!op || op.kind !== "add_requirement") { refuse(e, "a gap is raised on an add_requirement operation"); break; }
-          if (specs.get(op.specId)?.status === "ratified") { refuse(e, "a gap is raised only while its spec is a draft"); break; }
+          if (specs.get(op.specId)?.status === "ratified") { notDraft(e, op.specId, "a gap is raised only while its spec is a draft"); break; }
         }
         // A GAP folds PENDING: it is part of an argument nobody has adopted yet, and it
         // silences nothing until ratification binds it — in the same act that creates the
@@ -1079,7 +1158,17 @@ function foldStandardWithRefusals(events: LogEvent[]): { value: SharedStandard; 
       }
       case "problem.adjudicated": {
         const p = problems.get(e.subject);
+        const hold = p && holdOf(e, `problem:${p.id}`);
+        if (p && hold === "held") {
+          problems.set(p.id, { ...p, held: [...(p.held ?? []), { event: e.id, disposition: str(e.data, "disposition") ?? "", by: e.actor, at: e.at, reason: str(e.data, "reason") ?? "" }] });
+          refuse(e, "held: another person adjudicated this problem differently at the same time");
+          break;
+        }
+        if (p && hold === "lost") { refuse(e, `did not land: a person kept ${kept.get(`problem:${p.id}`)}`); break; }
+        // The same verdict twice (two people at once) is the same outcome and settles quietly.
+        if (p?.disposition && p.disposition === str(e.data, "disposition")) break;
         if (!p || p.disposition) { refuse(e, "no such open problem"); break; }
+        if (p.held?.length) { refuse(e, "the problem is held between two adjudications: a person picks one"); break; }
         // The fold must not be more permissive than the tool: adjudication is a
         // principal's act, and a remote clone sees only this row.
         if (e.actor.via) { refuse(e, "adjudication is a person's act"); break; }
@@ -1100,6 +1189,10 @@ function foldStandardWithRefusals(events: LogEvent[]): { value: SharedStandard; 
         });
         break;
       }
+      // Validated up front with the holds they settle; nothing to apply at their own position.
+      case "spec.conflict.resolved":
+      case "problem.conflict.resolved":
+        break;
       default: break;
     }
   }

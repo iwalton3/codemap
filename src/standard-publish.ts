@@ -34,7 +34,7 @@ import {
   foldStandard, standardScope, lawScope, isLawEvent, publishSpecDrafted, publishOperation, publishSpecRatified,
   publishSpecRevised, publishOperationRevised, publishOperationRemoved, publishSpecReviewed,
   publishAckGranted, publishAckReleased, publishAudit, publishProblemRaised, publishAdjudication,
-  publishSpecWithdrawn,
+  publishSpecWithdrawn, publishSpecConflictResolved, publishProblemConflictResolved,
   publishVacuityCheck, publishPointerDeclared, publishPointerRestated, publishPointerRetired,
   publishPopulationPinned, publishScrubPolicy,
 } from "./shared-standard.js";
@@ -217,6 +217,13 @@ export const shareSpecWithdrawn = (
   root: string, specId: string, at: string, reason: string,
 ): Promise<Shared> =>
   share(root, (l, s, a) => publishSpecWithdrawn(l, s, a, specId, at, reason), lawScope());
+
+/** Picking a side of a held verdict travels where the verdicts did: law for a spec. */
+export const shareSpecConflictResolved = (root: string, specId: string, keep: string, reason: string): Promise<Shared> =>
+  share(root, (l, s, a) => publishSpecConflictResolved(l, s, a, specId, keep, reason), lawScope());
+
+export const shareProblemConflictResolved = (root: string, problemId: string, keep: string, reason: string): Promise<Shared> =>
+  share(root, (l, s, a) => publishProblemConflictResolved(l, s, a, problemId, keep, reason));
 
 /**
  * A GAP is law; DEBT is evidence.

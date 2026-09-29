@@ -23,8 +23,9 @@ import {
   publishVacuityCheck, publishPointerDeclared, publishPointerRestated, publishPointerRetired,
   publishPopulationPinned, publishScrubPolicy, publishSpecWithdrawn, publishOperationRevised,
   publishSpecReviewed, publishOperationRemoved, emptyStandard, foldStandardReport,
+  publishSpecConflictResolved, publishProblemConflictResolved,
 } from "./shared-standard.js";
-import { foldWithNext, probe, unfolded } from "./test-door.js";
+import { appendUnfolded, foldWithNext, probe, unfolded } from "./test-door.js";
 import type { DamagedEntry } from "./log-damage.js";
 
 /**
@@ -1578,14 +1579,15 @@ test("the fold refuses to ratify a spec that was withdrawn", async () => {
     await publishSpecDrafted(root, SCOPE, opus, SPEC);
     await publishOperation(root, SCOPE, opus, ADD);
     // Bob signs off the draft; Alice withdraws it; Bob ratifies from a read taken before his
-    // pull: a race, refused, and the latch holds.
+    // pull: opposing verdicts at once, so neither applies until a person picks (plan 1.3).
     await signOff(root, izzie, "sp_1", ["op_1"], "2026-08-01T12:00:00.000Z");
     await withdraw(root, izzie, "sp_1", "2026-08-02T00:00:00.000Z", "not ours to make");
     const withdrawal = (await readScope(root, SCOPE)).find((e) => e.kind === "spec.withdrawn")!.id;
     const race = await foldWithNext(root, SCOPE, foldStandardReport, izzie, "spec.ratified", "sp_1",
       { at: "2026-08-03T00:00:00.000Z", witnesses: {}, operations: ["op_1"] }, { unseen: [withdrawal] });
-    assert.ok(race.refused, "a ratification racing the withdrawal is refused");
-    assert.equal(race.value!.specs[0]!.status, "withdrawn", "the latch does not go backwards");
+    assert.ok(race.refused, "a ratification racing the withdrawal does not apply");
+    assert.equal(race.value!.specs[0]!.status, "draft", "held: neither verdict applies");
+    assert.equal(race.value!.specs[0]!.held?.length, 2);
     assert.equal(race.value!.specs[0]!.ratifiedAt, undefined, "and it is not both at once");
     assert.equal(race.value!.requirements.length, 0);
     // Having seen the withdrawal, his own door refuses it: damage.
@@ -1651,5 +1653,92 @@ test("the fold drops a revision that changed nothing, and keeps one that did", a
     s = await fold(root);
     assert.equal(s.operations[0]!.statement, "All credit lines are in USD or EUR.");
     assert.equal(s.operations[0]!.revisions?.at(-1)?.reason, "EUR went live", "and a real one still carries its why");
+  } finally { discard(root); }
+});
+
+// --- plan 1.3: opposing verdicts on law hold; stale writes did not land -------------------------
+
+const bob: Actor = { principal: "bob@x.com" };
+const carol: Actor = { principal: "carol@x.com" };
+const heads = async (root: string) => causalHeads(sortEvents(await readScope(root, SCOPE)));
+
+/** izzie ratifies sp_1 while bob, who had not pulled, withdraws it. */
+async function heldSpec(t: string) {
+  const root = await log(t);
+  await publishSpecDrafted(root, SCOPE, opus, SPEC);
+  await publishOperation(root, SCOPE, opus, ADD);
+  const before = await heads(root);
+  await ratifyWithReview(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1"]);
+  const ratified = (await readScope(root, SCOPE)).find((e) => e.kind === "spec.ratified")!;
+  const withdrawn = await appendUnfolded(root, SCOPE, bob, "spec.withdrawn", "sp_1",
+    { at: "2026-08-02T00:00:01.000Z", reason: "superseded by sp_2" }, { after: before, writer: "w_bob" });
+  return { root, ratified, withdrawn };
+}
+
+test("plan 1.3: a ratification and a withdrawal written at once hold the spec until a person picks", async () => {
+  const { root, ratified, withdrawn } = await heldSpec("held");
+  try {
+    const held = await fold(root);
+    const sp = held.specs.find((s) => s.id === "sp_1")!;
+    assert.equal(sp.status, "draft", "neither verdict applied");
+    assert.deepEqual(sp.held!.map((h) => h.act).sort(), ["ratify", "withdraw"]);
+    assert.equal(held.requirements.length, 0, "nothing adopted while held");
+
+    await damage(foldWithNext(root, SCOPE, foldStandardReport, izzie, "spec.ratified", "sp_1",
+      { at: "2026-08-03T00:00:00.000Z", witnesses: {}, operations: ["op_1"] }), "a third verdict on a held spec is no build's write");
+    await damage(foldWithNext(root, SCOPE, foldStandardReport, opus, "spec.conflict.resolved", "sp_1",
+      { keep: ratified.id, reason: "r" }), "picking a side is a person's act");
+
+    await publishSpecConflictResolved(root, SCOPE, carol, "sp_1", ratified.id, "the rule is still wanted");
+    const picked = await fold(root);
+    const after = picked.specs.find((s) => s.id === "sp_1")!;
+    assert.equal(after.status, "ratified");
+    assert.equal(after.held, undefined);
+    assert.equal(picked.requirements.length, 1, "the kept ratification applies");
+    assert.deepEqual(after.lateActs!.map((x) => [x.id, x.raced]), [[withdrawn.id, ratified.id]], "the withdrawal did not land, and says why");
+
+    const dave: Actor = { principal: "dave@x.com" };
+    await publishSpecConflictResolved(root, SCOPE, dave, "sp_1", withdrawn.id, "sp_2 replaces it");
+    assert.equal((await fold(root)).specs.find((s) => s.id === "sp_1")!.status, "draft", "two people picking differently stay held");
+  } finally { discard(root); }
+});
+
+test("plan 1.3: a draft edit that raced the adoption did not land, and is recorded for its author", async () => {
+  const root = await log("late");
+  try {
+    await publishSpecDrafted(root, SCOPE, opus, SPEC);
+    await publishOperation(root, SCOPE, opus, ADD);
+    const before = await heads(root);
+    await ratifyWithReview(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1"]);
+    const ratified = (await readScope(root, SCOPE)).find((e) => e.kind === "spec.ratified")!;
+    const late = await appendUnfolded(root, SCOPE, bob, "spec.operation", "sp_1",
+      { operation: { ...ADD, id: "op_2", ord: 1, title: "Another" } }, { after: before, writer: "w_bob" });
+    const sp = (await fold(root)).specs.find((s) => s.id === "sp_1")!;
+    assert.deepEqual(sp.lateActs!.map((x) => [x.id, x.raced]), [[late.id, ratified.id]]);
+  } finally { discard(root); }
+});
+
+test("plan 1.3: two different adjudications at once hold the problem; the same one twice settles quietly", async () => {
+  const root = await log("adj");
+  try {
+    const P: Problem = { id: "pr_1", requirementId: "r_x", auditId: "au_1", summary: "s", raisedBy: opus, raisedAt: "2026-08-01T00:00:00.000Z" };
+    await publishProblemRaised(root, SCOPE, opus, P);
+    const before = await heads(root);
+    await publishAdjudication(root, SCOPE, izzie, "pr_1", "code-wrong", "fix the code", "2026-08-02T00:00:00.000Z");
+    const same = await foldWithNext(root, SCOPE, foldStandardReport, bob, "problem.adjudicated", "pr_1",
+      { disposition: "code-wrong", reason: "agreed", at: "2026-08-02T00:00:01.000Z" }, { unseen: (await readScope(root, SCOPE)).filter((e) => !before.includes(e.id) && e.kind === "problem.adjudicated").map((e) => e.id) });
+    assert.equal(same.refused, undefined, "the same verdict twice is the same outcome");
+    assert.equal(same.value!.problems[0]!.disposition, "code-wrong");
+
+    const other = await appendUnfolded(root, SCOPE, bob, "problem.adjudicated", "pr_1",
+      { disposition: "accepted", reason: "live with it", at: "2026-08-02T00:00:01.000Z" }, { after: before, writer: "w_bob" });
+    const held = (await fold(root)).problems[0]!;
+    assert.equal(held.disposition, undefined, "neither verdict applied");
+    assert.equal(held.held!.length, 2);
+
+    await publishProblemConflictResolved(root, SCOPE, carol, "pr_1", other.id, "the business accepts it");
+    const picked = (await fold(root)).problems[0]!;
+    assert.equal(picked.disposition, "accepted");
+    assert.equal(picked.held, undefined);
   } finally { discard(root); }
 });

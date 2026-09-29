@@ -54,7 +54,7 @@ import { isAgentActor, requireActor, resolvePrincipal } from "./identity.js";
 import type { ActorInput } from "./identity.js";
 import {
   disposition, shareOperation, shareOperationRemoved, shareOperationRevised, shareSpecDrafted,
-  shareSpecRatified, shareSpecReviewed, shareSpecRevised, shareSpecWithdrawn, type Shared,
+  shareSpecRatified, shareSpecReviewed, shareSpecRevised, shareSpecWithdrawn, shareSpecConflictResolved, type Shared,
 } from "./standard-publish.js";
 import { reviewComplete, reviewGap, type ReviewGap } from "./shared-standard.js";
 
@@ -1169,6 +1169,7 @@ export async function ratifySpec(
   const sp = await readSpec(root, specId);
   if (!sp) return { error: `no spec "${specId}"` };
   if (sp.status !== "draft") return { error: `${specId} is already ${sp.status}` };
+  if (sp.held?.length) return { error: `${specId} is held: a ratification and a withdrawal were written at the same time (${sp.held.map((h) => `${h.act} by ${h.by.principal}`).join(", ")}). A person who has read both picks one` };
 
   const ops = await readOperations(root, { specId });
   if (!ops.length) return { error: `${specId} has no operations — there is nothing to adopt` };
@@ -1505,6 +1506,27 @@ async function withdrawer(root: string, sp: Spec, input: ActorInput): Promise<Ac
  *   compensating spec restores the text as its own witnessed act, which is honest and is
  *   what `docs/requirements-architecture.md` means by repeal.
  */
+/**
+ * A person picks one side of a held spec (plan 1.3; owner, "split by kind"): `keep` is the
+ * ratification or withdrawal that stands; the other did not land. Never an agent's act, and the
+ * fold restates both that and "saw every side".
+ */
+export async function keepSpecVerdict(
+  root: string, specId: string, input: { keep: string; reason: string } & ActorInput,
+): Promise<{ ok: true; spec: Spec | null } | Err> {
+  const who = principal(root, input, "pick a side of a held spec");
+  if (isErr(who)) return who;
+  const reason = input.reason?.trim();
+  if (!reason) return { error: "say why this side" };
+  const sp = await readSpec(root, specId);
+  if (!sp) return { error: `no spec "${specId}"` };
+  if (!sp.held?.length) return { error: `${specId} is not held` };
+  if (!sp.held.some((h) => h.event === input.keep)) return { error: `keep one of ${sp.held.map((h) => `${h.event} (${h.act})`).join(", ")}` };
+  const d = disposition(await shareSpecConflictResolved(root, specId, input.keep, reason));
+  if ("error" in d) return d;
+  return { ok: true, spec: await readSpec(root, specId) };
+}
+
 export async function withdrawSpec(
   root: string, specId: string, input: { reason: string } & ActorInput,
 ): Promise<{ ok: true; spec: Spec; retired: string[] } | Err> {
@@ -1513,6 +1535,7 @@ export async function withdrawSpec(
   const sp = await readSpec(root, specId);
   if (!sp) return { error: `no spec "${specId}"` };
   if (sp.status === "withdrawn" || sp.status === "repealed") return { error: `${specId} is already ${sp.status}` };
+  if (sp.held?.length) return { error: `${specId} is held: a ratification and a withdrawal were written at the same time (${sp.held.map((h) => `${h.act} by ${h.by.principal}`).join(", ")}). A person who has read both picks one` };
 
   const who = await withdrawer(root, sp, input);
   if (isErr(who)) return who;

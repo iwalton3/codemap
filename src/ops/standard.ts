@@ -24,7 +24,7 @@
 
 import {
   draftSpec as draftSpecRec, addOperation as addOperationRec, ratifySpec as ratifySpecRec,
-  withdrawSpec as withdrawSpecRec, reviseSpec as reviseSpecRec,
+  withdrawSpec as withdrawSpecRec, reviseSpec as reviseSpecRec, keepSpecVerdict as keepSpecVerdictRec,
   reviewProposal as reviewProposalRec, signOffOperation as signOffOperationRec,
   signOffFraming as signOffFramingRec, signOffSection as signOffSectionRec,
   reviseOperation as reviseOperationRec, removeOperation as removeOperationRec,
@@ -45,7 +45,7 @@ import {
   conformance as conformanceRec, silenced, type ConformanceSubject,
 } from "../audits.js";
 import {
-  raiseProblem as raiseProblemRec, adjudicate as adjudicateRec, listProblems as listProblemsRec,
+  raiseProblem as raiseProblemRec, adjudicate as adjudicateRec, keepProblemVerdict as keepProblemVerdictRec, listProblems as listProblemsRec,
   awaitingAdjudication as awaitingRec, actionable, settledWithoutAdjudication as settledRec,
 } from "../problems.js";
 import type { ActorInput } from "../identity.js";
@@ -331,6 +331,9 @@ export const removeOperation = (
 export const withdrawSpec = (root: string, input: { specId: string; reason: string } & ActorInput) =>
   withdrawSpecRec(root, input.specId, input);
 
+export const keepSpecVerdict = (root: string, input: { specId: string; keep: string; reason: string } & ActorInput) =>
+  keepSpecVerdictRec(root, input.specId, input);
+
 /**
  * A spec rendered for disposal, with the team's comments on it.
  *
@@ -495,6 +498,9 @@ export const adjudicate = (
   root: string,
   input: { problemId: string; disposition: ProblemDisposition; reason: string } & ActorInput,
 ) => adjudicateRec(root, input.problemId, input.disposition, input.reason, input);
+
+export const keepProblemVerdict = (root: string, input: { problemId: string; keep: string; reason: string } & ActorInput) =>
+  keepProblemVerdictRec(root, input.problemId, input);
 
 export const listProblems = async (root: string, input: { requirementId?: string } = {}) =>
   served(root, async () => ({ problems: await listProblemsRec(root, input) }));

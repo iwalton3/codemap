@@ -70,7 +70,7 @@ export {
   declarePointer, proposePointer, restatePointer, retirePointer, pointersFor, auditQueue,
   pinPopulation, declareNotExpressible, populationFor, brokenPins,
   setScrubPolicy, scrubPlan, scrubsFor, baselinePlan,
-  raiseProblem, adjudicate, listProblems, awaitingAdjudication, actionableProblems,
+  raiseProblem, adjudicate, listProblems, keepSpecVerdict, keepProblemVerdict, awaitingAdjudication, actionableProblems,
   settledWithoutAdjudication,
 } from "./ops/standard.js";
 
