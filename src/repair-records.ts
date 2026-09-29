@@ -79,6 +79,7 @@ export function foldRepairRecords(input: LogEvent[]): RepairRecords {
         if (!error && data.provenance !== "owner-reviewed" && data.provenance !== "dual-sorted") error = "unknown sort provenance";
         if (!error && data.provenance === "dual-sorted" && (data.assessments.length !== 2 || new Set(data.assessments.map(a => a.identity.session)).size < 2)) error = "dual sorting needs two sorters in distinct sessions";
         if (!error && data.prior && (!nonempty(data.reason) || !out.sorts.some(s => s.input.id === data.prior))) error = "correction needs predecessor and reason";
+        if (!error && data.ruling !== undefined && (!nonempty(data.ruling) || !data.prior)) error = "a cited ruling settles a correction: it names a logged answer and a prior sort";
         if (!error && data.kind === "pattern" && (!nonempty(data.predicate) || !data.sites?.length || !unique(data.sites))) error = "pattern needs predicate and original sites";
         if (!error) out.sorts.push({ ...record(e, data), eligible: false, current: true, holds: [] });
       } else if (e.kind === "repair.evidence-recorded") {
@@ -120,15 +121,17 @@ export function foldRepairRecords(input: LogEvent[]): RepairRecords {
     const d = sort.input;
     sort.current = heads.includes(sort);
     if (!sort.current) sort.holds.push("superseded sort retained as history");
-    // Competing corrections: two heads from one lineage, or two sorts of the same claims. The
-    // latest correction on a lineage wins; when two compete, the owner decides, by posting a
-    // correction of their own that is newer than the rest (owner, Defaults A2).
+    // Competing corrections: two heads from one lineage, or two sorts of the same claims. They
+    // are settled by a LOGGED RULING (R5): a correction that cites a decisions answer supersedes
+    // its competitors, the newest citing one if several do. The fold checks only that the field is
+    // there; the op checks the ruling exists (R4's accepted gap). Without one, every competitor
+    // holds, and the hold names them all.
     const rivals = heads.filter(s => s !== sort && (lineage(s.input.id) === lineage(d.id) || overlaps(s.input, d)));
     if (sort.current && rivals.length) {
-      const newest = [sort, ...rivals].reduce((a, b) => (position(b) > position(a) ? b : a));
-      if (newest.actor.via?.kind === "agent")
-        sort.holds.push(`competes with ${rivals.map(r => r.input.id).join(", ")}: a question for the owner, answered by a correction of their own`);
-      else if (newest !== sort) sort.holds.push(`outranked by the owner's correction ${newest.input.id}`);
+      const citing = [sort, ...rivals].filter(s => nonempty(s.input.ruling));
+      const settled = citing.length ? citing.reduce((a, b) => (position(b) > position(a) ? b : a)) : undefined;
+      if (!settled) sort.holds.push(`competes with ${rivals.map(r => r.input.id).join(", ")}: settled by a correction citing a logged ruling`);
+      else if (settled !== sort) sort.holds.push(`superseded by ${settled.input.id}, which cites ruling ${settled.input.ruling}`);
     }
     if (d.provenance === "dual-sorted") {
       const disagreement = new Set(d.assessments.map(a => a.classification)).size > 1;

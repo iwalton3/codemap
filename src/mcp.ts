@@ -257,7 +257,8 @@ const repairSortSchema = obj({ prior: repairString, reason: repairString, classi
   restsOn: repairStrings, source: repairString, provenance: { type: "string", enum: ["owner-reviewed", "dual-sorted"] },
   assessments: { type: "array", items: obj({ identity: repairIdentity, classification: repairString, reason: repairString, receipt: reportedSortReceipt }, ["identity", "classification", "reason"], false) },
   disagreements: { type: "array", items: obj({ id: repairString, text: repairString }, ["id", "text"], false) },
-  arbitration: obj({ addresses: repairStrings, reason: repairString, identity: repairIdentity, receipt: reportedSortReceipt }, ["addresses", "reason", "identity"], false) },
+  arbitration: obj({ addresses: repairStrings, reason: repairString, identity: repairIdentity, receipt: reportedSortReceipt }, ["addresses", "reason", "identity"], false),
+  ruling: { ...repairString, description: "A logged decisions answer this correction rests on. Competing corrections are settled by the one citing a ruling." } },
   ["classification", "kind", "coverage", "restsOn", "source", "provenance", "assessments", "disagreements"], false);
 const repairEvidenceSchema = obj({ sortId: repairString, witnessCommit: repairString, baseCommit: repairString, fixCommit: repairString,
   coverage: { type: "array", items: obj({ ...repairCoverage, result: repairResult, reason: repairString,

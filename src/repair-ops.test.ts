@@ -52,6 +52,8 @@ test("repair ops preserve original scope and sync partial evidence", async () =>
     assert.equal(theirs.records.sorts[0]!.eligible, true);
     const correction = await postRepairSort(root, 7, { ...sort(f.id, [c1, c2]), prior: sortId, reason: "a new classification" });
     assert.ok("records" in correction && correction.records && "id" in correction);
+    const unruled = await postRepairSort(root, 7, { ...sort(f.id, [c1, c2]), prior: sortId, reason: "as ruled", ruling: "ans_that_does_not_exist" });
+    assert.match(String((unruled as { error?: string }).error), /not a verified, standing answer/, "R5: the op checks the ruling exists");
     // A retry of the same record is the same record, not a second, competing sort.
     const again = await postRepairSort(root, 7, sort(f.id, [c1, c2]));
     assert.ok("alreadyRecorded" in again && again.alreadyRecorded && again.id === sortId, JSON.stringify(again));

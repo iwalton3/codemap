@@ -128,6 +128,13 @@ export async function postRepairSort(root: string, review: number | string, sort
   sort = structuredClone(sort);
   if (!sort || !Array.isArray(sort.assessments) || sort.assessments.some(a => !a || typeof a !== "object")) return { error: "sort requires assessment records" };
   if ("id" in sort) return callerId("sort");
+  if (sort.ruling !== undefined) {
+    // The cross-scope half of R5: the cited answer is a verified, standing ruling in the decisions log.
+    const view = await decisionsView(root);
+    const a = view.s.decisions.flatMap((d) => d.answers).find((x) => x.id === sort.ruling);
+    if (!a || !a.verified || a.sourceAnswer || a.withdrawn || a.cancelled)
+      return { error: `ruling ${String(sort.ruling)} is not a verified, standing answer in this universe's decisions log` };
+  }
   const id = contentId("rs_", review, sort);
   return append(root, review, "repair.sort-recorded", id, { ...sort, id }, (r) => r.sorts.some(s => s.input.id === id));
 }

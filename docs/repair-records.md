@@ -19,10 +19,11 @@ from that review's findings. `post_repair_sort` records a classification,
 isolated/pattern kind, exact owner source or reported sorter assessments,
 coverage, dependencies, disagreements and arbitration. A correction names its
 prior version and reason. Superseded versions survive. The latest correction on a
-lineage wins; two corrections competing from one sort (or two sorts of the same
-claims) are held as a question for the owner, which they answer by posting a
-correction of their own — the newest head, person-authored, wins and the rest read
-"outranked" (owner, Defaults A2). An agent cannot turn its own report into an
+lineage wins. Two corrections competing from one sort (or two sorts of the same
+claims) all hold, each naming the others, until a correction cites a logged ruling:
+a decisions answer, named in `ruling` (R5). The newest citing correction supersedes
+the rest. The op checks that the ruling is a verified, standing answer; the fold
+checks only that the field is there. An agent cannot turn its own report into an
 owner-reviewed worklist.
 
 A `dual-sorted` sort is the skill's own two-sorter sort, posted with the round: two

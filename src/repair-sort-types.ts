@@ -12,4 +12,6 @@ export interface RepairSortInput {
   restsOn: string[]; source: string; provenance: "owner-reviewed" | "dual-sorted";
   assessments: RepairAssessment[]; disagreements: { id: string; text: string }[];
   arbitration?: { addresses: string[]; reason: string; identity: ReportedSorter; receipt?: ReportedSortReceipt };
+  /** A logged decisions answer this correction rests on: it settles competing corrections (R5). */
+  ruling?: string;
 }

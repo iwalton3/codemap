@@ -144,19 +144,21 @@ test("unchanged shards replay old materializer cache and atomically persist repa
 });
 
 
-test("two corrections competing from one sort are a question for the owner; the owner's own correction answers it", () => {
-  // Owner, Defaults A2: "the latest wins, and two competing corrections become a question to you".
+test("R5: competing corrections all hold, naming each other, until a correction cites a logged ruling", () => {
   const left = sorted(sort({ id: "left", prior: "s1", reason: "first reading" }), agent);
   const right = sorted(sort({ id: "right", prior: "s1", reason: "different reading" }), agent);
   const records = foldRepairRecords(chain([sorted(), left, right]));
   assert.equal(records.sorts[0]!.current, false);
-  assert.ok(records.sorts.slice(1).every(s => s.current && !s.eligible && s.holds.some(h => h.includes("question for the owner"))));
-  const decided = foldRepairRecords(chain([sorted(), left, right, sorted(sort({ id: "owner", prior: "left", reason: "the owner's reading" }))]));
+  assert.ok(records.sorts.slice(1).every(s => s.current && !s.eligible && s.holds.some(h => h.includes("settled by a correction citing a logged ruling"))));
+  assert.match(records.sorts.find(s => s.input.id === "left")!.holds.join(), /competes with right/, "the hold names the other correction");
+  const uncited = foldRepairRecords(chain([sorted(), left, right, sorted(sort({ id: "owner", prior: "left", reason: "the owner's reading" }))]));
+  assert.equal(uncited.sorts.find(s => s.input.id === "owner")!.eligible, false, "a newer correction without a ruling settles nothing");
+  const decided = foldRepairRecords(chain([sorted(), left, right, sorted(sort({ id: "ruled", prior: "left", reason: "as ruled", ruling: "ans_1" }))]));
   const by = (id: string) => decided.sorts.find(s => s.input.id === id)!;
-  assert.equal(by("owner").eligible, true, by("owner").holds.join());
-  assert.match(by("right").holds.join(), /outranked by the owner's correction owner/);
+  assert.equal(by("ruled").eligible, true, by("ruled").holds.join());
+  assert.match(by("right").holds.join(), /superseded by ruled, which cites ruling ans_1/);
   const linear = foldRepairRecords(chain([sorted(), sorted(sort({ id: "s2", prior: "s1", reason: "r" }), agent), sorted(sort({ id: "s3", prior: "s2", reason: "r" }), agent)]));
-  assert.ok(!linear.sorts.find(s => s.input.id === "s3")!.holds.some(h => h.includes("question")), "a linear chain has one latest correction");
+  assert.ok(!linear.sorts.find(s => s.input.id === "s3")!.holds.some(h => h.includes("competes")), "a linear chain has one latest correction");
 });
 
 test("absent check data stays absent, explicit no-check reasons cannot be blank", () => {
@@ -179,7 +181,7 @@ test("pattern completeness retains original sites despite narrowed enumeration",
 
 test("deep correction descendants cannot launder another unresolved lineage head", () => {
   const records = foldRepairRecords(chain([sorted(), sorted(sort({ id: "left", prior: "s1", reason: "first reading" }), agent), sorted(sort({ id: "right", prior: "s1", reason: "different reading" }), agent), sorted(sort({ id: "left2", prior: "left", reason: "adjust first reading" }), agent)]));
-  assert.ok(records.sorts.filter(s => s.current).every(s => !s.eligible && s.holds.some(h => h.includes("question for the owner"))));
+  assert.ok(records.sorts.filter(s => s.current).every(s => !s.eligible && s.holds.some(h => h.includes("citing a logged ruling"))));
 });
 
 
