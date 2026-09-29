@@ -1282,16 +1282,16 @@
      "ref": "D3",
      "kind": "options",
      "payload": {
-      "question": "D3: confirm how your words on D1 (answer 00mularlvh-328a04f422, round 00mularloo-4389f81c6b) are read. You typed at 2026-09-28T13:42:34.109Z:\n\"The premise is false after all.\"\nD1 → Reject (settles f_00mularlhq-d473cf5a06 as refuted)\nAs of when you typed it, is that what you meant?",
+      "question": "D3: confirm how alice@acme.test's words on D1 (answer 00mularlvh-328a04f422, round 00mularloo-4389f81c6b) are read. alice@acme.test typed at 2026-09-28T13:42:34.109Z:\n\"The premise is false after all.\"\nD1 → Reject (settles f_00mularlhq-d473cf5a06 as refuted)\nAs of when the words were typed, is that what they meant?",
       "header": "Confirm",
       "options": [
        {
         "label": "Yes",
-        "description": "Bind exactly the action above, as of when you typed it"
+        "description": "Bind exactly the action above, as of when the words were typed"
        },
        {
         "label": "No — ask me again",
-        "description": "Not what I meant: ask the question again"
+        "description": "Not what they meant: ask the question again"
        }
       ],
       "multiSelect": false

@@ -8,7 +8,7 @@ import { sidecarWriteDoor } from '../sidecar-config.js';
 import { emitEventChecked, readScopeChecked } from '../eventlog.js';
 import { foldStandard, lawScope, standardDoor, standardScope } from '../shared-standard.js';
 import { materializeStandard } from '../standard-publish.js';
-import { decisionScope, foldDecisions, answerHasCurrentAuthority, intentCandidates, comparisonRestricts } from '../shared-decisions.js';
+import { decisionScope, foldDecisions, answerHasCurrentAuthority, rulerOf, intentCandidates, comparisonRestricts } from '../shared-decisions.js';
 import { operationContent, framingContent, contentDiff } from '../schema.js';
 import { readReader, isUnverified, transcriptDir } from '../transcript.js';
 import { saveReaderRequest, readerRequest, holdReaderReceipt, readerReceipts, settleReaderReceipt } from '../reader-local.js';
@@ -84,7 +84,7 @@ async function context(root: string, input: {
     return { error: 'answer does not sign the full exact operation presentation; plan-only answers sign nothing' };
   const ruling: OperationSignoffCapsule['ruling'] = {
     answerId: a.id, decisionId: d.id, ref: d.ref, universe: cfg.universe, sourceScope: decisionScope(cfg.universe), via: a.via,
-    ...(a.questionnaire ? { questionnaire: a.questionnaire } : {}), principal: a.by.principal, responseHash: a.responseHash,
+    ...(a.questionnaire ? { questionnaire: a.questionnaire } : {}), principal: rulerOf(a).principal, responseHash: a.responseHash,
     display: d.payload, selected: a.options, words: a.words, verified: true, status: 'current', comparison: 'clear',
     sourceFingerprint: signoffHash(source.events), checkedAt: new Date().toISOString(),
   };

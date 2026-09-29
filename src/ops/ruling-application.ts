@@ -10,7 +10,7 @@ import { foldFindings, isClosed, type SharedFinding } from "../shared-findings.j
 import { readCached } from "../materialize.js";
 import { findingsProjection } from "../shared-projections.js";
 import { foldBugs, type SharedBug } from "../shared-bugs.js";
-import { decisionScope, foldDecisions, intentCandidates, comparisonRestricts, namedIssues, answerHasCurrentAuthority, type FoldedAnswer, type FoldedDecision } from "../shared-decisions.js";
+import { decisionScope, foldDecisions, intentCandidates, rulerOf, comparisonRestricts, namedIssues, answerHasCurrentAuthority, type FoldedAnswer, type FoldedDecision } from "../shared-decisions.js";
 import { saveReaderRequest, readerRequest, holdReaderReceipt, readerReceipts, settleReaderReceipt } from "../reader-local.js";
 import { readReader, isUnverified, transcriptDir } from "../transcript.js";
 import {
@@ -109,9 +109,9 @@ async function context(root: string, input: { issue: IssueReference; answerId: s
     && (e.findings.includes(resolved.ref.id) || e.issues?.some(i => canonicalIssueKey(i) === resolved.key))));
   if (acceptanceOptions.length && (resolved.ref.kind !== "finding" || acceptanceOptions.length !== 1 || conflictingDisposition))
     return { error: "acceptance must select one unambiguous finding disposition" };
-  const acceptance = acceptanceOptions.length ? { by: { principal: a.by.principal }, option: acceptanceOptions[0]!.label, findingId: resolved.ref.id } : undefined;
+  const acceptance = acceptanceOptions.length ? { by: { principal: rulerOf(a).principal }, option: acceptanceOptions[0]!.label, findingId: resolved.ref.id } : undefined;
   const display = { question: d.payload.question, answer: [a.words, ...selected.map((option) => option.description ?? "")].filter(Boolean).join("\n"),
-    context: JSON.stringify({ payload: d.payload, options: d.options, selected: a.options, answerer: a.by.principal }) };
+    context: JSON.stringify({ payload: d.payload, options: d.options, selected: a.options, answerer: rulerOf(a).principal }) };
   // What the chosen option settles this issue as; a ruling that settles nothing about it
   // defeats its premise, which is `invalid`.
   const settle = d.options.filter((o) => a.options.includes(o.label)).flatMap((o) => o.effects)
@@ -336,7 +336,7 @@ export async function applyRuling(root: string, input: { issue: IssueReference; 
     const capsule: ApplicationCapsuleV1 = {
       version: 3, outcome: c.outcome, key, ...(c.acceptance ? { acceptance: c.acceptance } : {}),
       issue: { ref: c.target.ref, key: c.target.key, openEpoch: target.openEpoch!, openState: target.state as "issued" | "created", claimHash: c.claimHash },
-      ruling: { answerId: c.answer.id, ...(c.acceptance ? { answerer: { principal: c.answer.by.principal } } : {}), roundId: c.decision.round, questionId: c.decision.id,
+      ruling: { answerId: c.answer.id, ...(c.acceptance ? { answerer: { principal: rulerOf(c.answer).principal } } : {}), roundId: c.decision.round, questionId: c.decision.id,
         display: c.display, displayHash: c.displayHash,
         authority: { checkedAt: new Date().toISOString(), sourceFingerprint: c.decisionFingerprint, status: "current", comparison: "clear" } },
       evidence: { ...(c.directMention ? { directMention: c.directMention } : {}), readers, ...(arbitrator ? { arbitrator } : {}) },

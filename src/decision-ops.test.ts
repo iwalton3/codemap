@@ -1096,7 +1096,7 @@ test("round five: a differently worded confirmation is refused at the door", asy
       // Another clone, on a build that words the confirm differently, posts the same reading.
       const b = bindDecisions(u.root, {});
       if ("error" in b) throw new Error(b.error);
-      const payload = { ...c.ask, question: c.ask.question.replace("is that what you meant?", "did you mean this?") };
+      const payload = { ...c.ask, question: c.ask.question.replace("is that what they meant?", "did they mean this?") };
       const posted = { round: "R1", ref: c.ref, kind: "options" as const, payload, options: payload.options.map((o: any) => ({ label: o.label, effects: [] })), confirms: { answer: a, readings: [maps] } };
       const other = { id: confirmId(a, posted), ...posted };
       assert.notEqual(other.id, c.label);
@@ -1229,7 +1229,7 @@ test("GATE (codex round, overwritten): a Yes survives another clone's wording an
       const c = await confirmReading(u.root, { answer: a, maps }) as any;
       assert.equal(c.label, confirmId(a, { kind: "options", payload: c.ask, options: c.ask.options.map((o: any) => ({ label: o.label, effects: [] })) }));
       const b = bound(u);
-      await postConfirmEvent(b.cfg.path, b.cfg.universe, b.actor, otherClone(c, a, [maps], (q) => q.replace("is that what you meant?", "did you mean this?")));
+      await postConfirmEvent(b.cfg.path, b.cfg.universe, b.actor, otherClone(c, a, [maps], (q) => q.replace("is that what they meant?", "did they mean this?")));
       transcript(u.transcripts).ask("toolu_c", [c.ask], { [c.ask.question]: "Yes" }, later(2));
       await logQuestion(u.root, { toolUseId: "toolu_c", round: "R1" }, {}, u.transcripts);
       // A pull brings another clone's question numbered D1 — the ref the Yes acted on.

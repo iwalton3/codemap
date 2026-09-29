@@ -127,8 +127,13 @@ export interface FoldedAnswer {
     /** The reader could not tell which question the words answer, and why: nothing binds (H5). */
     unclear?: string;
   };
-  /** Bound by the person's pick on a confirm of these words: `answer` is that pick. */
-  confirmed?: { answer: string; at: string; maps: Mapping[] };
+  /** Bound by a person's pick on a confirm of these words: `answer` is that pick, `by` its
+   *  confirmer, who rules through it (R3). `by` on the answer stays the words' author. */
+  confirmed?: { answer: string; at: string; maps: Mapping[]; by: Actor };
+  /** Who rules through these words: the confirmer when a confirm bound them. Read it with `rulerOf`. */
+  ruledBy?: Actor;
+  /** Two people answered the same reading of these words differently: held unbound (R3). */
+  confirmDispute?: { readings: Mapping[][]; picks: string[] };
   /** Readings the person said were not what they meant — never offered again. */
   rejected?: Mapping[][];
   /** Accepted, but looks errant — shown, never silently applied as if ordinary (R19). */
@@ -161,7 +166,7 @@ export const WITHDRAW_IT = "Withdraw it", KEEP_IT = "Keep it";
 export function withdrawalQuestion(d: Pick<FoldedDecision, "id" | "ref" | "payload">, ruling: Pick<FoldedAnswer, "id" | "by" | "words">,
   reason: string, ref: string): AskedQuestion {
   return {
-    question: `${ref}: Withdraw ${ruling.by.principal}'s ruling ${ruling.id} on ${d.ref} (${d.id})? `
+    question: `${ref}: Withdraw ${rulerOf(ruling).principal}'s ruling ${ruling.id} on ${d.ref} (${d.id})? `
       + `The question was ${JSON.stringify(d.payload.question)}; the ruling said ${JSON.stringify(ruling.words)}. `
       + `Reported as possibly wrong or in conflict: ${JSON.stringify(reason)}`,
     options: [{ label: WITHDRAW_IT, description: "Retire this ruling; a new instruction needs a fresh question" },
@@ -443,16 +448,19 @@ export function confirmPayload(decisions: Map<string, FoldedDecision>, d: Folded
   // fold checks each line against the STORED reading's order, so a poster stores `canonicalMaps` too.
   const rendered = readings.map((r) => [...byDecision(canonicalMaps(r))].map(([id, picks]) => actionLine(decisions.get(id)!, picks)));
   // JSON-quoted, so words with a newline stay on one line and cannot pass for an action line.
-  const words = `You typed at ${a.givenAt}:\n${JSON.stringify(a.words)}`;
+  // Third person, one text for every viewer (plan 2.1): the fold re-renders it to check a posted
+  // confirm, so it cannot say "you" to whoever happens to answer — and anyone may confirm.
+  const who = a.by.principal;
+  const words = `${who} typed at ${a.givenAt}:\n${JSON.stringify(a.words)}`;
   const presentation = d.presentation ? `\nFrozen questionnaire context: ${canonical(d.presentation)}` : "";
   if (readings.length === 1) {
     return normalizeQuestion({
-      question: `${ref}: confirm how your words on ${d.ref} (answer ${a.id}, round ${d.round}) are read. ${words}${presentation}\n${rendered[0]!.join("\n")}\nAs of when you typed it, is that what you meant?`, header: "Confirm",
-      options: [{ label: CONFIRM_YES, description: "Bind exactly the action above, as of when you typed it" }, { label: CONFIRM_NO, description: "Not what I meant: ask the question again" }],
+      question: `${ref}: confirm how ${who}'s words on ${d.ref} (answer ${a.id}, round ${d.round}) are read. ${words}${presentation}\n${rendered[0]!.join("\n")}\nAs of when the words were typed, is that what they meant?`, header: "Confirm",
+      options: [{ label: CONFIRM_YES, description: "Bind exactly the action above, as of when the words were typed" }, { label: CONFIRM_NO, description: "Not what they meant: ask the question again" }],
     });
   }
   return normalizeQuestion({
-    question: `${ref}: your words on ${d.ref} (answer ${a.id}, round ${d.round}) were read two ways. ${words}${presentation}\n${rendered.map((r, i) => `Reading ${i + 1}:\n${r.join("\n")}`).join("\n")}\nWhich did you mean, as of when you typed it?`, header: "Confirm",
+    question: `${ref}: ${who}'s words on ${d.ref} (answer ${a.id}, round ${d.round}) were read two ways. ${words}${presentation}\n${rendered.map((r, i) => `Reading ${i + 1}:\n${r.join("\n")}`).join("\n")}\nWhich did they mean, as of when the words were typed?`, header: "Confirm",
     options: rendered.map((r, i) => ({ label: `Reading ${i + 1}`, description: r.join("; ") })),
   });
 }
@@ -791,6 +799,22 @@ export function foldDecisionsReport(events: LogEvent[]): { value: SharedDecision
  * refuses, so the write door can ask whether it would refuse a new event (plan 1.1).
  */
 function foldDecisionsWithRefusals(events: LogEvent[]): { value: SharedDecisions; refused: RefusedEvent[] } {
+  // Withdrawals apply after binds, so a confirm's Yes that its confirmer withdraws had already
+  // bound the words in place. Fold again without it until nothing more is excluded (plan 2.2):
+  // the words return to unconfirmed. The set only grows and is bounded by the picks.
+  const excluded = new Set<string>();
+  for (;;) {
+    const out = foldOnce(events, excluded);
+    const more = out.value.decisions.flatMap((d) => d.answers).map((a) => a.confirmed?.answer)
+      .filter((id): id is string => !!id && !excluded.has(id))
+      .filter((id) => out.value.decisions.some((c) => c.confirms && (c.withdrawn || c.answers.some((p) => p.id === id && p.withdrawn))
+        && c.answers.some((p) => p.id === id)));
+    if (!more.length) return out;
+    for (const id of more) excluded.add(id);
+  }
+}
+
+function foldOnce(events: LogEvent[], excludedPicks: ReadonlySet<string>): { value: SharedDecisions; refused: RefusedEvent[] } {
   const refused: RefusedEvent[] = [];
   const refuse = (e: LogEvent, why: string) => { refused.push({ id: e.id, kind: e.kind, why }); };
   const eventById = new Map(events.map((e) => [e.id, e]));
@@ -1138,20 +1162,37 @@ function foldDecisionsWithRefusals(events: LogEvent[]): { value: SharedDecisions
         ...(unclear ? { unclear } : {}),
       };
     }
-    // The person's own word on these words: the latest-given verified pick across every confirm
-    // of them decides (owner, P3.2 "Latest pick decides"; S0.2's "the later confirmation wins").
+    // A person's word on these words, from anyone who confirms them (R3). Picks group by the
+    // readings offered, across reposted confirms; within a group each person's latest pick stands
+    // for them, and two people answering the same reading differently HOLD the words unbound.
+    // Otherwise the latest-given pick decides (P3.2). A withdrawn Yes is not a pick (plan 2.2).
     // Typed words on a confirm are read like any reply and never carry this meaning.
-    let decided: { pick: FoldedAnswer; maps: Mapping[] | null } | undefined;
+    const groups = new Map<string, { rs: Mapping[][]; mine: Map<string, { pick: FoldedAnswer; maps: Mapping[] | null }> }>();
     for (const { a: p, c } of picks) {
-      if (c.confirms!.answer !== a.id || c.confirms!.invalid) continue;
+      if (c.confirms!.answer !== a.id || c.confirms!.invalid || excludedPicks.has(p.id)) continue;
       const rs = c.confirms!.readings, maps = meaning(p.options[0], rs);
       if (maps === undefined) continue;
       if (maps === null) (a.rejected ??= []).push(rs[0]!);
-      if (!decided || outranksByTime(p, decided.pick)) decided = { pick: p, maps };
+      const key = rs.map(mapsKey).sort().join("\n");
+      const g = groups.get(key) ?? { rs, mine: new Map() };
+      groups.set(key, g);
+      const prev = g.mine.get(p.by.principal);
+      if (!prev || outranksByTime(p, prev.pick)) g.mine.set(p.by.principal, { pick: p, maps });
     }
+    let decided: { pick: FoldedAnswer; maps: Mapping[] | null } | undefined;
+    for (const g of groups.values()) {
+      const said = [...g.mine.values()];
+      if (new Set(said.map((x) => (x.maps ? mapsKey(x.maps) : "no"))).size > 1) {
+        a.confirmDispute = { readings: g.rs, picks: said.map((x) => x.pick.id) };
+        continue;
+      }
+      for (const x of said) if (!decided || outranksByTime(x.pick, decided.pick)) decided = x;
+    }
+    if (a.confirmDispute) decided = undefined;
     if (decided?.maps) {
       // As of when the words were typed, from the pick that decided (S0.1): its id names the copies.
-      a.confirmed = { answer: decided.pick.id, at: decided.pick.givenAt, maps: decided.maps };
+      a.confirmed = { answer: decided.pick.id, at: decided.pick.givenAt, maps: decided.maps, by: decided.pick.by };
+      a.ruledBy = decided.pick.by;
       bind(decisions, answersById, d, a, decided.maps, decided.pick.id, decided.pick.seq);
     } else if (!decided && a.reading?.agree) {
       bind(decisions, answersById, d, a, a.reading.reader.maps, a.reading.id, readings.get(a.id)!.pos);
@@ -1252,7 +1293,7 @@ function foldDecisionsWithRefusals(events: LogEvent[]): { value: SharedDecisions
       for (const a of d.answers) a.cancelled = { by: e.id, reason: `question withdrawn: ${reason}` };
       return;
     }
-    for (const x of d.answers) if (x.by.principal === named.by.principal && !x.sourceAnswer) {
+    for (const x of d.answers) if (rulerOf(x).principal === rulerOf(named).principal && !x.sourceAnswer) {
       x.withdrawn = { by: e.id, reason };
       x.cancelled = { by: e.id, reason: `ruling withdrawn: ${reason}` };
     }
@@ -1277,26 +1318,26 @@ function foldDecisionsWithRefusals(events: LogEvent[]): { value: SharedDecisions
       // An agent never retires a ruling on its own: the person answers a relayed question.
       if (named) {
         const r = decisions.get(str(data?.relay) ?? "");
-        const theirs = r ? r.answers.filter((a) => a.verified && !a.sourceAnswer && !a.cancelled && a.by.principal === named.by.principal) : [];
+        const theirs = r ? r.answers.filter((a) => a.verified && !a.sourceAnswer && !a.cancelled && a.by.principal === rulerOf(named).principal) : [];
         const latest = theirs.reduce<FoldedAnswer | undefined>((x, a) => (!x || outranksByTime(a, x) ? a : x), undefined);
         // The whole question, not its text alone (F28): same options, same order.
         const why = !r || !sameQuestion(r.payload, withdrawalQuestion(d, named, data.reason, r.ref))
           ? "an agent withdraws a ruling only as the person's answer to the relayed withdrawal question"
-          : latest?.options[0] !== WITHDRAW_IT ? `${named.by.principal} has not answered "${WITHDRAW_IT}"`
+          : latest?.options[0] !== WITHDRAW_IT ? `${rulerOf(named).principal} has not answered "${WITHDRAW_IT}"`
           : !causal.saw(e.id, sourceEventId(latest.id)) ? "the withdrawal was written before the person's answer" : null;
         if (why) { refuseWithdrawal(why); continue; }
       } else {
         const why = withdrawalReviewRefusal(d, data.reason, data.review);
         if (why) { refuseWithdrawal(why); continue; }
       }
-    } else if (named && named.by.principal !== e.actor.principal) { refuseWithdrawal("only the person who gave a ruling withdraws it"); continue; }
+    } else if (named && rulerOf(named).principal !== e.actor.principal) { refuseWithdrawal("only the person who gave a ruling withdraws it"); continue; }
     // A direct page answer is given at append time. For a relayed question/message,
     // the recorder may have pulled after the person answered; its causal edge proves
     // the recorder's knowledge, not the person's act-time knowledge.
     const beforeOrConcurrent = sources.filter((a) => (a.via !== "direct" && a.via !== "questionnaire") || !causal.saw(sourceEventId(a.id), e.id));
     const visible = beforeOrConcurrent.filter((a) => causal.saw(e.id, sourceEventId(a.id)));
     const unseen = beforeOrConcurrent.filter((a) => !known.includes(a.id) || !visible.includes(a));
-    const peers = target ? beforeOrConcurrent.filter((a) => a.by.principal !== named!.by.principal) : beforeOrConcurrent;
+    const peers = target ? beforeOrConcurrent.filter((a) => rulerOf(a).principal !== rulerOf(named!).principal) : beforeOrConcurrent;
     const conflicts = [...new Set([...unseen, ...peers].map((a) => a.id))];
     // Already done, by the same act from someone else: the same outcome settles quietly.
     const same = (!target && !!d.withdrawn) || !!named?.withdrawn;
@@ -1397,7 +1438,7 @@ function foldDecisionsWithRefusals(events: LogEvent[]): { value: SharedDecisions
   }
   for (const d of decisions.values()) if (d.resolves) {
     const targets = d.resolves.answers.map((id) => answersById.get(id)?.a);
-    if (targets.some((a) => !a?.verified) || targets[0]!.by.principal === targets[1]!.by.principal
+    if (targets.some((a) => !a?.verified) || rulerOf(targets[0]!).principal === rulerOf(targets[1]!).principal
       || targets.some((a) => !d.payload.question.includes(JSON.stringify(a!.words)))) {
       d.resolutionInvalid = "it does not show two different people's exact verified rulings";
       refuseId(d.postingEvent, d.resolutionInvalid);
@@ -1411,8 +1452,8 @@ function foldDecisionsWithRefusals(events: LogEvent[]): { value: SharedDecisions
     const byPrincipal = new Map<string, FoldedAnswer>();
     for (const answer of d.answers) {
       if (!answer.verified || answer.resolvedOutBy || answer.cancelled) continue;
-      const prev = byPrincipal.get(answer.by.principal);
-      if (!prev || outranksByTime(answer, prev)) byPrincipal.set(answer.by.principal, answer);
+      const prev = byPrincipal.get(rulerOf(answer).principal);
+      if (!prev || outranksByTime(answer, prev)) byPrincipal.set(rulerOf(answer).principal, answer);
     }
     for (const choice of byPrincipal.values()) {
       const selected = d.resolves.answers.find((id) => choice.options[0] === `Preserve ${id}`);
@@ -1425,7 +1466,7 @@ function foldDecisionsWithRefusals(events: LogEvent[]): { value: SharedDecisions
   for (const [key, choices] of resolutions) {
     // Different principals' independent resolutions need another human decision. Time alone
     // cannot silently choose between them; their source answers remain candidates meanwhile.
-    if (new Set(choices.map((x) => x.answer.by.principal)).size > 1) continue;
+    if (new Set(choices.map((x) => rulerOf(x.answer).principal)).size > 1) continue;
     const latest = choices.reduce((best, x) => outranksByTime(x.answer, best.answer) ? x : best);
     const pair = key.split("\0");
     for (const t of decisions.values()) for (const a of t.answers)
@@ -1444,7 +1485,7 @@ function foldDecisionsWithRefusals(events: LogEvent[]): { value: SharedDecisions
     if (e.subject !== [...ids].sort().join("/")) { refuse(e, "a nomination's subject is its two answers"); continue; }
     const first = answersById.get(ids[0]), second = answersById.get(ids[1]);
     if (!first?.a.verified || !second?.a.verified || first.a.sourceAnswer || second.a.sourceAnswer
-      || first.a.by.principal === second.a.by.principal) { refuse(e, "a nomination compares two different people's own verified answers"); continue; }
+      || rulerOf(first.a).principal === rulerOf(second.a).principal) { refuse(e, "a nomination compares two different people's own verified answers"); continue; }
     const scope = new Set([...named(first.d), ...named(second.d)]);
     const issueScope = new Set([...namedIssues(first.d), ...namedIssues(second.d)].map(issueKey));
     if (!data.findings.every((f: string) => scope.has(f))
@@ -1760,7 +1801,7 @@ export function comparisonSource(s: SharedDecisions, answerId: string): AnswerSo
   const round = s.rounds.find((r) => r.id === d.round);
   const formQuestion = round?.questionnaire?.sections.flatMap((section) => section.questions.map((question) => ({ section, question })))
     .find((x) => x.question.id === d.id);
-  return { answerId, version: a.responseHash, principal: a.by.principal,
+  return { answerId, version: a.responseHash, principal: rulerOf(a).principal,
     questionId: d.id, questionVersion: d.hash,
     display: { prompt: d.payload.question, answerFormat: d.kind,
       context: JSON.stringify({ round: { id: round?.id, source: round?.source, notes: round?.notes },
@@ -1798,7 +1839,7 @@ export function comparisonCurrentVersions(s: SharedDecisions, request: Compariso
     const stillAuthoritative = !!d && !!a && !d.withdrawn && !a.cancelled && !a.withdrawn
       && (!relevant.length || relevant.every((issue) => !revisedOutOn(a, issue)
         && !d.answers.some((later) => later !== a && later.verified && !later.sourceAnswer
-          && later.by.principal === a.by.principal && !later.cancelled && !later.withdrawn
+          && rulerOf(later).principal === rulerOf(a).principal && !later.cancelled && !later.withdrawn
           && revisionCovers(later, issue) && outranksByTime(later, a))));
     current[source.answerId] = stillAuthoritative ? a!.responseHash : undefined;
   }
@@ -1942,8 +1983,8 @@ export function currentAnswersForIssue(d: FoldedDecision, issue: Pick<CanonicalI
   for (const a of d.answers) {
     if (!ranks(a) || lostOn(a, issue) || revisedOutOn(a, issue)
       || !revisionCovers(a, issue)) continue;
-    const prior = grouped.get(a.by.principal);
-    if (!prior || outranks(a, prior)) grouped.set(a.by.principal, a);
+    const prior = grouped.get(rulerOf(a).principal);
+    if (!prior || outranks(a, prior)) grouped.set(rulerOf(a).principal, a);
   }
   return [...grouped.values()];
 }
@@ -2008,7 +2049,7 @@ export function intentCandidates(s: SharedDecisions): IntentCandidate[] {
         if (!revisionCovers(a, { kind: "finding", id: finding })) continue;
         if (revisedOutOn(a, { kind: "finding", id: finding })) continue;
         if (lostOn(a, { kind: "finding", id: finding })) continue;
-        const key = `${d.id}\0${a.by.principal}\0${finding}`;
+        const key = `${d.id}\0${rulerOf(a).principal}\0${finding}`;
         const prev = current.get(key);
         if (!prev || outranksByTime(a, prev.a)) current.set(key, { d, a, finding });
       }
@@ -2016,14 +2057,14 @@ export function intentCandidates(s: SharedDecisions): IntentCandidate[] {
   }
   const all = [...current.values()];
   const out: IntentCandidate[] = [];
-  const source = ({ d, a }: { d: FoldedDecision; a: FoldedAnswer }) => ({ principal: a.by.principal,
+  const source = ({ d, a }: { d: FoldedDecision; a: FoldedAnswer }) => ({ principal: rulerOf(a).principal,
     via: a.via, words: a.words, options: a.options, question: d.payload, effects: d.options });
   const pairs = new Map<string, IntentCandidate>();
   for (let i = 0; i < all.length; i++) for (let j = i + 1; j < all.length; j++) {
     const x = all[i]!, y = all[j]!;
     if (x.finding !== y.finding) continue;
     const sx = x.a.sourceAnswer ?? x.a.id, sy = y.a.sourceAnswer ?? y.a.id;
-    if (sx === sy || x.a.by.principal === y.a.by.principal) continue;
+    if (sx === sy || rulerOf(x.a).principal === rulerOf(y.a).principal) continue;
     const key = [sx, sy].sort().join("\0");
     const prior = pairs.get(key);
     if (prior) { if (!prior.findings.includes(x.finding)) prior.findings.push(x.finding); continue; }
@@ -2040,7 +2081,7 @@ export function intentCandidates(s: SharedDecisions): IntentCandidate[] {
       for (const issue of namedIssues(d)) {
         if (!revisionCovers(a, issue) || revisedOutOn(a, issue)) continue;
         if (lostOn(a, issue)) continue;
-        const key = `${d.id}\0${a.by.principal}\0${issueKey(issue)}`;
+        const key = `${d.id}\0${rulerOf(a).principal}\0${issueKey(issue)}`;
         const prev = bugCurrent.get(key);
         if (!prev || outranksByTime(a, prev.a)) bugCurrent.set(key, { d, a, issue });
       }
@@ -2051,7 +2092,7 @@ export function intentCandidates(s: SharedDecisions): IntentCandidate[] {
     const x = bugAnswers[i]!, y = bugAnswers[j]!;
     if (issueKey(x.issue) !== issueKey(y.issue)) continue;
     const sx = x.a.sourceAnswer ?? x.a.id, sy = y.a.sourceAnswer ?? y.a.id;
-    if (sx === sy || x.a.by.principal === y.a.by.principal) continue;
+    if (sx === sy || rulerOf(x.a).principal === rulerOf(y.a).principal) continue;
     const pair = [sx, sy].sort().join("\0");
     const prior = pairs.get(pair);
     if (prior) {
@@ -2076,8 +2117,8 @@ export function intentCandidates(s: SharedDecisions): IntentCandidate[] {
       && scopes.some((scope) => revisionCovers(a, scope) && !revisedOutOn(a, scope) && !lostOn(a, scope)));
     const byPrincipal = new Map<string, FoldedAnswer>();
     for (const a of current) {
-      const prior = byPrincipal.get(a.by.principal);
-      if (!prior || outranksByTime(a, prior)) byPrincipal.set(a.by.principal, a);
+      const prior = byPrincipal.get(rulerOf(a).principal);
+      if (!prior || outranksByTime(a, prior)) byPrincipal.set(rulerOf(a).principal, a);
     }
     const distinct = [...byPrincipal.values()];
     for (let i = 0; i < distinct.length; i++) for (let j = i + 1; j < distinct.length; j++) {
@@ -2105,7 +2146,7 @@ export function intentCandidates(s: SharedDecisions): IntentCandidate[] {
       continue;
     }
     const x = bySource.get(n.answers[0]), y = bySource.get(n.answers[1]);
-    if (!x || !y || x.a.by.principal === y.a.by.principal) continue;
+    if (!x || !y || rulerOf(x.a).principal === rulerOf(y.a).principal) continue;
     pairs.set(pair, { answers: n.answers, decisions: [x.d.id, y.d.id], findings: n.findings,
       ...(n.issues?.length ? { issues: n.issues } : {}),
       sources: [source(x), source(y)], evidence: "nominated", nomination: { id: n.id, reason: n.reason },
@@ -2150,6 +2191,8 @@ export function waitingOnMe(s: SharedDecisions, today: string): WaitingItem[] {
       else if (p.reading && !p.reading.agree) item(`your words were read two different ways: "${p.words}"`);
       if (p.rejected?.length) item(`you said a reading of your words was not what you meant ("${p.words}": ${fmt(s, p.rejected.at(-1)!)}): answer ${d.ref} again`);
     }
+    for (const x of d.answers) if (x.confirmDispute)
+      item(`two people answered the same confirm of "${x.words}" differently (${x.confirmDispute.picks.join(", ")}): it binds nothing until one of them changes their answer`);
     // A confirm's own standing answer is words on it, never a ruling: only the request waits on
     // you (Q1.3), and only while its words have not gone to a reader.
     if (d.confirms) {
@@ -2185,6 +2228,13 @@ export function waitingOnMe(s: SharedDecisions, today: string): WaitingItem[] {
 }
 
 /** Given later than `y` — the ranking's time order, ignoring verification. */
+/**
+ * Who rules through an answer: its confirmer when a confirm bound it, else its author (plan 2.1,
+ * R3). Authority — withdrawal, comparison, sign-off, the `ruler:` line — keys on this; only a
+ * revision and a changed response key on the words' author, `a.by`.
+ */
+export const rulerOf = (a: Pick<FoldedAnswer, "by" | "ruledBy">): Actor => a.ruledBy ?? a.by;
+
 const outranksByTime = (x: FoldedAnswer, y: FoldedAnswer): boolean =>
   Date.parse(x.givenAt) !== Date.parse(y.givenAt) ? Date.parse(x.givenAt) > Date.parse(y.givenAt) : x.seq > y.seq;
 
@@ -2268,7 +2318,7 @@ export function ruledNotCarriedOut(s: SharedDecisions, isOpen: (finding: string)
     const a = standingForFinding(d, finding);
     for (const r of a?.ruled.filter((r) => r.finding === finding) ?? [])
       if (isOpen(finding) && !contested.has(finding))
-        out.push({ ...r, decision: d.id, round: d.round, ref: d.ref, answer: a!.id, ruler: a!.by.principal });
+        out.push({ ...r, decision: d.id, round: d.round, ref: d.ref, answer: a!.id, ruler: rulerOf(a!).principal });
   }
   return out;
 }
@@ -2301,8 +2351,8 @@ function holdSince(d: FoldedDecision, finding: string): string | undefined {
   let since = holdsWith(d, undefined, finding) ? d.postedAt : undefined;
   const byPrincipal = new Map<string, FoldedAnswer>();
   for (const a of given) {
-    const prior = byPrincipal.get(a.by.principal);
-    if (!prior || outranks(a, prior)) byPrincipal.set(a.by.principal, a);
+    const prior = byPrincipal.get(rulerOf(a).principal);
+    if (!prior || outranks(a, prior)) byPrincipal.set(rulerOf(a).principal, a);
     const now = [...byPrincipal.values()].some((current) => holdsWith(d, current, finding));
     if (now && since === undefined) since = a.givenAt;
     else if (!now) since = undefined;
@@ -2391,8 +2441,8 @@ export function heldIssues(s: SharedDecisions, isOpen: (key: string) => boolean)
     let began = holds(d, undefined, key) ? d.postedAt : undefined;
     const byPrincipal = new Map<string, FoldedAnswer>();
     for (const a of given) {
-      const prior = byPrincipal.get(a.by.principal);
-      if (!prior || outranks(a, prior)) byPrincipal.set(a.by.principal, a);
+      const prior = byPrincipal.get(rulerOf(a).principal);
+      if (!prior || outranks(a, prior)) byPrincipal.set(rulerOf(a).principal, a);
       const now = [...byPrincipal.values()].some((current) => holds(d, current, key));
       if (now && began === undefined) began = a.givenAt;
       else if (!now) began = undefined;

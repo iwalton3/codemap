@@ -20,7 +20,7 @@ import {
   CONFIRM_NO, CONFIRM_YES, NONE, canonicalMaps, briefManifest, briefListing, briefRefusal, readingRefusal, readerBrief as briefFor, bindRefusal, checkDecision, checkQuestionnaireDecisions, confirmPayload, confirmState, confirmedWords, decisionHash, logQuestionEvent,
   mapsKey, named, namedIssues, possiblySuperseded, postConfirmEvent, postRoundEvent, validMaps, loggedQuestionOnce,
   revisionRelayQuestion, withdrawalQuestion, withdrawalBriefContent, withdrawalBriefHash, withdrawalReviewRefusal, WITHDRAW_IT, type WithdrawalReview, type WithdrawalReviewReceipt, withdrawalScope, standingForIssue, checkListRevision, listRevisionItemIds, parseListRelayAnswer, type ListRevision,
-  readingsInDispute, intentCandidates, nominateComparisonEvent, recordAnswerEvent, submitQuestionnaireEvent, recordReadingEvent, ruledNotCarriedOut, standing, standingForFinding, waitingOnMe, awaitingReading, parked, withdrawDecisionEvent, reviseAnswerEvent, resolveConflictEvent,
+  readingsInDispute, intentCandidates, nominateComparisonEvent, recordAnswerEvent, submitQuestionnaireEvent, recordReadingEvent, ruledNotCarriedOut, standing, standingForFinding, waitingOnMe, awaitingReading, parked, withdrawDecisionEvent, reviseAnswerEvent, resolveConflictEvent, rulerOf,
   type AnswerVia, type BriefEntry, type FoldedDecision, type Mapping, type SharedDecisions,
 } from "../shared-decisions.js";
 import { decisionsView } from "./decision-holds.js";
@@ -90,7 +90,7 @@ export async function checkRound(root: string, r: NewRound): Promise<string | nu
       const sources = pair.map((id) => existing.decisions.flatMap((x) => x.answers).find((a) => a.id === id));
       if (sources.some((a) => !a?.verified) || sources.some((a) => !d.payload.question.includes(JSON.stringify(a!.words))))
         return `decision ${d.ref}: a resolution must show both exact verified human answers`;
-      if (sources[0]!.by.principal === sources[1]!.by.principal)
+      if (rulerOf(sources[0]!).principal === rulerOf(sources[1]!).principal)
         return `decision ${d.ref}: a resolution needs rulings from two different people`;
       // Semantic conflicts can cross questions and escape the mechanical candidate list.
       // The agent must compare the exact source intent before asking the person.
@@ -176,7 +176,7 @@ function alreadyRuled(s: SharedDecisions, posted: Decision[]) {
       for (const { issue, a } of rulings) {
         if (!a || !a.verified || seen.has(`${issue}\0${a.id}`)) continue;
         seen.add(`${issue}\0${a.id}`);
-        out.push({ issue, decision: d.id, ref: d.ref, answer: a.id, by: a.by.principal, words: a.words });
+        out.push({ issue, decision: d.id, ref: d.ref, answer: a.id, by: rulerOf(a).principal, words: a.words });
       }
     }
   }
@@ -406,9 +406,9 @@ export async function nominateComparison(root: string,
   const pair = ids.map((id) => found(w.s, id));
   if (pair.some((x) => !x?.a.verified || x.a.sourceAnswer)) return { error: "both answers must be verified original response ids" };
   const [left, right] = pair as [{ d: FoldedDecision; a: FoldedDecision["answers"][number] }, { d: FoldedDecision; a: FoldedDecision["answers"][number] }];
-  if (left.a.by.principal === right.a.by.principal) return { error: "comparison is between independent principals; a same-principal correction is not a conflict" };
+  if (rulerOf(left.a).principal === rulerOf(right.a).principal) return { error: "comparison is between independent principals; a same-principal correction is not a conflict" };
   const current = ({ d, a }: typeof left) => !a.cancelled && !a.resolvedOutBy && !a.elsewhere && !d.answers.some((other) =>
-    other !== a && other.verified && other.by.principal === a.by.principal
+    other !== a && other.verified && rulerOf(other).principal === rulerOf(a).principal
       && (Date.parse(other.givenAt) > Date.parse(a.givenAt)
         || (other.givenAt === a.givenAt && other.seq > a.seq)));
   if (!pair.every((x) => current(x!))) return { error: "a named answer is no longer current; nominate the current response instead" };

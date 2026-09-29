@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 import { isLogDamage } from "./log-damage.js";
 import {
   foldDecisions as foldPublished, decisionHash, checkDecision, heldFindings, standing, standingForFinding, waitingOnMe, readingsInDispute, ruledNotCarriedOut, awaitingReading, parked,
-  possiblySuperseded, confirmPayload, confirmState, supersededFindings, readerBrief, briefManifest, briefListing, readingRefusal, intentCandidates, CONFIRM_YES, CONFIRM_NO, withdrawalQuestion, WITHDRAW_IT, KEEP_IT,
+  possiblySuperseded, confirmPayload, confirmState, supersededFindings, readerBrief, briefManifest, briefListing, readingRefusal, intentCandidates, CONFIRM_YES, CONFIRM_NO, withdrawalQuestion, WITHDRAW_IT, KEEP_IT, rulerOf,
   type FoldedDecision, type SharedDecisions, type Mapping,
 } from "./shared-decisions.js";
 
@@ -372,7 +372,7 @@ test("A confirmed action must match its complete frozen presentation", () => {
   n = 1;
   const evs = clicked(), first = fold(evs), a = first.b.d1!.answers.at(-1)!.id;
   // The confirm's text is fixed when posted: one reworded, or forged, is one no build posts — a halt.
-  const reworded = confirmOf(first.b, "d1", a, leave, "D9", "c1", (p) => ({ ...p, question: p.question.replace("is that what you meant?", "did you mean this?") }));
+  const reworded = confirmOf(first.b, "d1", a, leave, "D9", "c1", (p) => ({ ...p, question: p.question.replace("is that what they meant?", "did they mean this?") }));
   assert.throws(() => fold([...evs, reworded, ...call(reworded.data.decision, CONFIRM_YES)]), (e: unknown) => isLogDamage(e) && e.entry.id === reworded.id);
   for (const forge of [
     (p: any) => ({ ...p, question: p.question.replace("D1 → No", "D1 → Settle") }),
@@ -1471,4 +1471,103 @@ test("F60: an empty multi-select to a logged question is the person's words for 
   assert.equal(a.free, true);
   assert.equal(ruled(b.d2!).length, 0, "nothing is approved");
   assert.ok(awaitingReading(out).some((u) => u.answer === A.id), "a reader reads it");
+});
+
+// --- plan 2: confirmation credit (R3) ----------------------------------------------------------
+
+const bobVia: any = { principal: "bob", via: { kind: "agent", model: "m" } };
+/** A logged call answered by `actor`'s principal, relayed by their agent. */
+const callBy = (actor: any, d: any, value: any, extra: any = {}) => {
+  const L = logQ([d.payload], { [d.payload.question]: value }, extra);
+  L.actor = actor;
+  return [L, answer(d, { kind: "question", question: L.id }, actor)];
+};
+/** Each event saw every one before it (and the round): a sequential history, so causality holds. */
+const linked = (evs: any[]) => {
+  evs.forEach((e, i) => { e.writer ??= `w-${e.id}`; e.writerPrev ??= "GENESIS"; e.after = [round.id, ...evs.slice(0, i).map((x) => x.id)]; });
+  return evs;
+};
+/** izzie's unread words on d1, and a confirm of reading them as "No". */
+const wordsAndConfirm = () => {
+  n = 1;
+  const evs = [msg(d1, "D1 actually leave it")], first = fold(evs), a = first.b.d1!.answers[0]!.id;
+  return { evs, a, C: confirmOf(first.b, "d1", a, leave) };
+};
+
+test("plan 2.1: the confirm reads in the third person, and anyone who confirms rules through the words", () => {
+  const { evs, a, C } = wordsAndConfirm();
+  const q = C.data.decision.payload.question as string;
+  assert.match(q, /izzie's words on D1/);
+  assert.ok(!/\byou\b|\byour\b/i.test(q), `no second person: ${q}`);
+  const { b } = fold([...evs, C, ...callBy(bobVia, C.data.decision, CONFIRM_YES)]);
+  const w = b.d1!.answers.find((x) => x.id === a)!;
+  assert.equal(w.by.principal, "izzie", "the words stay their author's");
+  assert.equal(w.confirmed?.by.principal, "bob");
+  assert.equal(rulerOf(w).principal, "bob", "the confirmer rules");
+  assert.equal(standing(b.d1!)?.id, a);
+});
+
+test("plan 2.1: withdrawing a confirmed ruling is the confirmer's act, not the author's", () => {
+  const { evs, a, C } = wordsAndConfirm();
+  const confirmed = [...evs, C, ...callBy(bobVia, C.data.decision, CONFIRM_YES)];
+  const byAuthor = ev("decision.withdrawn", { decision: "d1", answer: a, reason: "not mine to retract", knownAnswers: [a] }, person);
+  byAuthor.subject = "d1";
+  assert.throws(() => fold(linked([...confirmed, byAuthor])), (e: unknown) => isLogDamage(e) && e.entry.id === byAuthor.id);
+  const byConfirmer = ev("decision.withdrawn", { decision: "d1", answer: a, reason: "I read it wrong", knownAnswers: [a] }, { principal: "bob" });
+  byConfirmer.subject = "d1";
+  assert.ok(fold(linked([...confirmed, byConfirmer])).b.d1!.answers.find((x) => x.id === a)!.withdrawn);
+});
+
+test("plan 2.1: two people answering the same reading differently hold the words; one changing releases them", () => {
+  const { evs, a, C } = wordsAndConfirm();
+  const yes = callBy(agent, C.data.decision, CONFIRM_YES, { answeredAt: "2026-09-23T00:01:00Z" });
+  const no = callBy(bobVia, C.data.decision, CONFIRM_NO, { answeredAt: "2026-09-23T00:02:00Z", toolUseId: "tu-bob" });
+  const { b, out } = fold([...evs, C, ...yes, ...no]);
+  const w = b.d1!.answers.find((x) => x.id === a)!;
+  assert.ok(w.confirmDispute, "held");
+  assert.equal(w.confirmed, undefined, "the later pick does not win by time");
+  assert.equal(standing(b.d1!), undefined);
+  assert.ok(waitingOnMe(out, "2026-09-23").some((x) => /answered the same confirm/.test(x.why)));
+  const bobAgain = callBy(bobVia, C.data.decision, CONFIRM_YES, { answeredAt: "2026-09-23T00:03:00Z", toolUseId: "tu-bob-2" });
+  const after = fold([...evs, C, ...yes, ...no, ...bobAgain]).b.d1!.answers.find((x) => x.id === a)!;
+  assert.equal(after.confirmDispute, undefined);
+  assert.ok(after.confirmed, "agreement binds");
+});
+
+test("plan 2.2: withdrawing the Yes returns the words to unconfirmed", () => {
+  const { evs, a, C } = wordsAndConfirm();
+  const [L, P] = callBy(bobVia, C.data.decision, CONFIRM_YES);
+  const bound = fold([...evs, C, L, P]);
+  assert.ok(bound.b.d1!.answers.find((x) => x.id === a)!.confirmed, "the fixture binds first");
+  const pick = bound.b.c1!.answers.find((x) => x.verified)!.id;
+  const back = ev("decision.withdrawn", { decision: "c1", answer: pick, reason: "I misread it", knownAnswers: [pick] }, { principal: "bob" });
+  back.subject = "c1";
+  const { b, out } = fold(linked([...evs, C, L, P, back]));
+  const w = b.d1!.answers.find((x) => x.id === a)!;
+  assert.equal(w.confirmed, undefined, "unbound");
+  assert.equal(w.ruledBy, undefined);
+  assert.ok(w.free, "the words wait for a reading again");
+  assert.equal(standing(b.d1!), undefined, "nothing rules D1");
+  assert.ok(awaitingReading(out).some((u) => u.answer === a) || waits(out, "d1"));
+});
+
+test("plan 2.1: the author's revision voids the confirmation of the old words", () => {
+  const { evs, a, C } = wordsAndConfirm();
+  const later = msg(d1, "D1 settle it after all", "u2", "2026-09-23T00:05:00Z");
+  const { b } = fold([...evs, C, ...callBy(bobVia, C.data.decision, CONFIRM_YES), later]);
+  assert.ok(b.d1!.answers.find((x) => x.id === a)!.cancelled, "the confirmed words are replaced by their author's new words");
+});
+
+test("plan 2.1: her own ruling against another person's confirmed reading of her other words holds", () => {
+  n = 1;
+  const P0 = page(d1, { option: "Settle" });
+  const W = msg(d4, "and on D1, leave it");
+  const first = fold([P0, W]), a = first.b.d4!.answers.find((x) => x.id === W.id)!.id;
+  const C = confirmOf(first.b, "d4", a, [[{ decision: "d1", option: "No" }]]);
+  const byBob = fold(linked([P0, W, C, ...callBy(bobVia, C.data.decision, CONFIRM_YES)].map((e) => ({ ...e }))));
+  assert.equal(standing(byBob.b.d1!), undefined, "two people: no winner by time");
+  assert.ok(held(byBob.out, "F3", "comparison"), "held for a person to compare");
+  const byHer = fold(linked([P0, W, C, ...callBy(agent, C.data.decision, CONFIRM_YES)].map((e) => ({ ...e }))));
+  assert.equal(rulerOf(standing(byHer.b.d1!)!).principal, "izzie", "one person: her later word stands");
+  assert.ok(!held(byHer.out, "F3", "comparison"));
 });
