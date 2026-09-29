@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 import { isLogDamage } from "./log-damage.js";
 import {
   foldDecisions as foldPublished, decisionHash, checkDecision, heldFindings, standing, standingForFinding, waitingOnMe, readingsInDispute, ruledNotCarriedOut, awaitingReading, parked,
-  possiblySuperseded, confirmPayload, confirmState, supersededFindings, readerBrief, briefManifest, briefListing, readingRefusal, intentCandidates, CONFIRM_YES, CONFIRM_NO,
+  possiblySuperseded, confirmPayload, confirmState, supersededFindings, readerBrief, briefManifest, briefListing, readingRefusal, intentCandidates, CONFIRM_YES, CONFIRM_NO, withdrawalQuestion, WITHDRAW_IT, KEEP_IT,
   type FoldedDecision, type SharedDecisions, type Mapping,
 } from "./shared-decisions.js";
 
@@ -1357,4 +1357,118 @@ test("a reader brief binds the frozen questionnaire presentation", () => {
   assert.ok(Array.isArray(listed) && listed.some((x) => x.id === d.id));
   d.presentation!.question.prompt = "A different question";
   assert.match(String(briefListing(byId, d, a, brief, manifest)), /cannot be read onto|other labels/);
+});
+
+// --- plan 1.3: conflict handling (2026-09-28 pre-merge review) ----------------------------------
+
+/** A question withdrawal by alice held by bob's answer she never saw, on one base round. */
+const heldPair = () => {
+  const base: any = { ...round, id: "c-base", writer: "w-base", writerPrev: "GENESIS", after: [] };
+  const bob: any = { id: "c-bob", kind: "decision.answer.recorded", subject: "d1", actor: { principal: "bob" },
+    at: at(21), writer: "w-bob", writerPrev: "GENESIS", after: [base.id],
+    data: { decision: "d1", hash: h(d1), via: { kind: "direct", option: "No" } } };
+  const wq: any = { id: "c-withdraw", kind: "decision.withdrawn", subject: "d1", actor: { principal: "alice" },
+    at: at(22), writer: "w-alice", writerPrev: "GENESIS", after: [base.id],
+    data: { decision: "d1", reason: "obsolete question", knownAnswers: [] } };
+  const pick = (id: string, keep: string, actor: any = { principal: "carol" }, after = [wq.id, bob.id]): any => ({
+    id, kind: "decision.conflict.resolved", subject: "d1", actor, at: at(30), writer: `w-${id}`, writerPrev: "GENESIS", after,
+    data: { decision: "d1", withdrawal: wq.id, keep, reason: "read both" } });
+  return { base, bob, wq, pick };
+};
+const d1Of = (out: SharedDecisions) => out.decisions.find((x) => x.label === "d1")!;
+
+test("plan 1.3: two people withdrawing one question at once settles quietly, in either order", () => {
+  const { base, wq } = heldPair();
+  const other: any = { ...wq, id: "c-withdraw-2", actor: { principal: "bob" }, writer: "w-bob2", at: at(23) };
+  for (const events of [[base, wq, other], [base, other, wq]]) {
+    const d = d1Of(foldDecisions(events));
+    assert.ok(d.withdrawn, "the question is withdrawn");
+    assert.deepEqual(d.withdrawals!.map((w) => w.state).sort(), ["applied", "settled"],
+      "the second withdrawal is the same outcome, not a conflict");
+    assert.ok(!waitingOnMe(foldDecisions(events), "2026-09-23").some((x) => /conflicts/.test(x.why)));
+  }
+});
+
+test("plan 1.3: a held withdrawal releases when the conflicting answer is withdrawn by its author", () => {
+  const { base, bob, wq } = heldPair();
+  const bobTakesBack: any = { id: "c-bob-back", kind: "decision.withdrawn", subject: "d1", actor: { principal: "bob" },
+    at: at(24), writer: "w-bob", writerPrev: bob.id, after: [bob.id],
+    data: { decision: "d1", answer: bob.id, reason: "I answered the wrong question", knownAnswers: [bob.id] } };
+  const d = d1Of(foldDecisions([base, bob, wq, bobTakesBack]));
+  assert.equal(d.withdrawals!.find((w) => w.id === wq.id)!.state, "applied", "no new ruling needed once one side gives way");
+  assert.equal(d.withdrawn?.id, wq.id);
+});
+
+test("plan 1.3: a person who saw both sides picks one; an agent's pick is damage; two people disagreeing stay held", () => {
+  const { base, bob, wq, pick } = heldPair();
+  const keepW = pick("c-pick-w", "withdrawal");
+  let d = d1Of(foldDecisions([base, bob, wq, keepW]));
+  assert.equal(d.withdrawals![0]!.state, "applied");
+  assert.equal(d.withdrawals![0]!.resolvedBy, keepW.id);
+  assert.equal(d.withdrawn?.id, wq.id);
+
+  const keepBob = pick("c-pick-bob", bob.id);
+  const out = foldDecisions([base, bob, wq, keepBob]);
+  d = d1Of(out);
+  assert.equal(d.withdrawals![0]!.state, "overruled");
+  assert.equal(d.withdrawn, undefined);
+  assert.equal(standing(d)?.id, bob.id, "the kept answer stands");
+  assert.ok(!heldFindings(out, () => true).get("F3")?.some((x) => x.why === "withdrawal"), "the hold is gone");
+
+  const byAgent = pick("c-pick-agent", "withdrawal", { principal: "carol", via: { kind: "agent", model: "m" } });
+  assert.throws(() => foldDecisions([base, bob, wq, byAgent]), (e: unknown) => isLogDamage(e) && e.entry.id === byAgent.id);
+  const blind = pick("c-pick-blind", "withdrawal", { principal: "carol" }, [wq.id]);
+  assert.throws(() => foldDecisions([base, bob, wq, blind]), (e: unknown) => isLogDamage(e) && e.entry.id === blind.id,
+    "a pick by someone who never saw the other side");
+
+  const dave = pick("c-pick-dave", bob.id, { principal: "dave" });
+  assert.equal(d1Of(foldDecisions([base, bob, wq, keepW, dave])).withdrawals![0]!.state, "conflict",
+    "two people picking different sides stay held");
+});
+
+test("plan 1.3: withdrawing your own ruling while a colleague's answer stands is held, not refused at the door", () => {
+  const { base, bob } = heldPair();
+  const alice: any = { ...bob, id: "c-alice", actor: { principal: "alice" }, at: at(20), writer: "w-alice",
+    data: { ...bob.data, via: { kind: "direct", option: "Settle" } } };
+  const own: any = { id: "c-own", kind: "decision.withdrawn", subject: "d1", actor: { principal: "alice" },
+    at: at(25), writer: "w-alice", writerPrev: alice.id, after: [alice.id, bob.id],
+    data: { decision: "d1", answer: alice.id, reason: "I retract", knownAnswers: [alice.id, bob.id] } };
+  const d = d1Of(foldDecisions([base, alice, bob, own]));
+  assert.equal(d.withdrawals![0]!.state, "conflict");
+  assert.deepEqual(d.withdrawals![0]!.conflictingAnswers, [bob.id]);
+});
+
+test("F28: a relayed withdrawal counts only on the exact withdrawal question, options included", () => {
+  n = 1;
+  const ruling = page(d1, { option: "Settle" });
+  const first = fold([ruling]).out;
+  const folded1 = d1Of(first), r = folded1.answers.find((a) => a.id === ruling.id)!;
+  const reason = "it conflicts with D4";
+  const relayed = (multiSelect: boolean) => {
+    const payload = { ...withdrawalQuestion(folded1, r, reason, "D9"), multiSelect };
+    const rd = { id: "r9", round: "R2", ref: "D9", kind: "options", payload,
+      options: payload.options.map((o: any) => ({ label: o.label, effects: [] })) };
+    const posted = post("R2", [rd], { universe: "u" });
+    const [L, A] = call(rd, multiSelect ? [WITHDRAW_IT, KEEP_IT] : WITHDRAW_IT, { round: "R2" });
+    const w = ev("decision.withdrawn", { decision: "d1", answer: ruling.id, reason, knownAnswers: [ruling.id], relay: "r9" });
+    w.subject = "d1";
+    const evs = [ruling, posted, L, A, w];
+    evs.forEach((e, i) => { e.after = evs.slice(0, i).map((x) => x.id); e.writer = `w-${e.id}`; e.writerPrev = "GENESIS"; });
+    return evs;
+  };
+  assert.ok(d1Of(fold(relayed(false)).out).answers.find((a) => a.id === ruling.id)!.withdrawn, "the control: the exact question withdraws");
+  const evs = relayed(true);
+  assert.throws(() => fold(evs), (e: unknown) => isLogDamage(e) && e.entry.id === evs[4].id,
+    "the same text as a multi-select, answered with both, is not the person's answer to withdraw it");
+});
+
+test("F60: an empty multi-select to a logged question is the person's words for a reader, never approve-all", () => {
+  n = 1;
+  const [L, A] = call(d2, []);
+  const { b, out } = fold([L, A]);
+  const a = b.d2!.answers.find((x) => x.id === A.id)!;
+  assert.equal(a.words, "none selected");
+  assert.equal(a.free, true);
+  assert.equal(ruled(b.d2!).length, 0, "nothing is approved");
+  assert.ok(awaitingReading(out).some((u) => u.answer === A.id), "a reader reads it");
 });

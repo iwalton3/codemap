@@ -416,6 +416,10 @@ const server = createServer(async (req, res) => {
         source: "web" })],
       "/api/decisions/withdraw": ["withdraw decision", (root, body) => ops.withdrawDecision(root, {
         decision: String(body.decision ?? ""), answer: body.answer, reason: String(body.reason ?? "") })],
+      // A held withdrawal: the person picks a side (plan 1.3). Person-only; there is no MCP tool.
+      "/api/decisions/conflict/resolve": ["resolve a held withdrawal", (root, body) => ops.resolveDecisionConflict(root, {
+        decision: String(body.decision ?? ""), withdrawal: String(body.withdrawal ?? ""),
+        keep: String(body.keep ?? ""), reason: String(body.reason ?? "") })],
       "/api/decisions/revise": ["revise decision", (root, body) => ops.reviseDecision(root, {
         decision: String(body.decision ?? ""), revises: body.revises, findings: body.findings, issues: body.issues,
         resolves: body.resolves, option: body.option, words: body.words, list: body.list })],

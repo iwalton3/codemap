@@ -100,6 +100,8 @@ const MCP_FORBIDDEN = [
   // The person's own acts on a question; an agent's way in is the relayed variant, whose
   // proof the fold checks. The folds refuse an agent actor here too.
   "submitQuestionnaire", "approveDecisionWithdrawal", "reviseDecision",
+  // Picking a side of a held withdrawal: "one person who sees both sides" (owner, batch 5).
+  "resolveDecisionConflict",
 ];
 
 test("the join and recover flows are reachable from the web, not just a terminal", () => {

@@ -80,6 +80,7 @@ const DECISION_SHAPES: Record<string, Check> = {
   "decision.withdrawn": record({
     decision: text, reason: text, knownAnswers: list(text), answer: opt(text), relay: opt(text), review: opt(anyObj),
   }),
+  "decision.conflict.resolved": record({ decision: text, withdrawal: text, keep: text, reason: text }),
   "decision.reading.recorded": record({
     answer: text, asks: opt(string),
     reader: record({ agent: text, launchedAt: text, brief: text, unclear: opt(string), verdict: opt(list(mapping)),

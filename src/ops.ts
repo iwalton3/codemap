@@ -104,7 +104,7 @@ import { readFinding, readBug, idsStartingWith, readSpec, readOperation } from "
 import { isRemediation, type Ask, type FindingState, type Remediation, type Verdict } from "./shared-findings.js";
 export { reportDefect, type DefectContext, type DefectInput } from "./ops/defect.js";
 export { promoteAnnotation } from "./promote-annotation.js";
-export { postRound, decisionRounds, decisionRound, nominateComparison, logQuestion, relayAnswer, readerBrief, submitVerdict, recordReading, confirmReading, answerDirect, withdrawDecision, reportRuling, withdrawalReaderBrief, submitWithdrawalVerdict, revisionRelayBrief, reviseDecisionRelayed, reviseDecision, questionnaireList, noteWebPresence, webPresence, questionnaireDetail, submitQuestionnaire } from "./ops/decisions.js";
+export { postRound, decisionRounds, decisionRound, nominateComparison, logQuestion, relayAnswer, readerBrief, submitVerdict, recordReading, confirmReading, answerDirect, withdrawDecision, resolveDecisionConflict, reportRuling, withdrawalReaderBrief, submitWithdrawalVerdict, revisionRelayBrief, reviseDecisionRelayed, reviseDecision, questionnaireList, noteWebPresence, webPresence, questionnaireDetail, submitQuestionnaire } from "./ops/decisions.js";
 
 /**
  * Report back on whatever `review_queue` handed you — annotation or finding.
