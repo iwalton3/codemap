@@ -99,7 +99,7 @@ import {
   setLocalFindingPosted, relocateLocalFinding,
   backlogLocalFinding, releaseLocalFindingBacklog, rewitnessLocalFinding, assignLocalFinding,
 } from "./ops/annotations.js";
-import { commentBug, corroborateBugOp, requestOnBugOp, acceptFinding, backlogBugOp, releaseBugBacklogOp } from "./ops/bugs.js";
+import { commentBug, corroborateBugOp, requestOnBugOp, acceptFinding, backlogBugOp, releaseBugBacklogOp, fileSiteBug as fileSiteBugOn } from "./ops/bugs.js";
 import { readFinding, readBug, idsStartingWith, readSpec, readOperation } from "./store.js";
 import { isRemediation, type Ask, type FindingState, type Remediation, type Verdict } from "./shared-findings.js";
 export { reportDefect, type DefectContext, type DefectInput } from "./ops/defect.js";
@@ -684,6 +684,14 @@ export async function deferFinding(
   return acceptFinding(root, f.pr!, id, opts) as Promise<Record<string, unknown>>;
 }
 
+/** One site of a pattern finding, filed as its own bug (plan 3.4). The finding carries its pull request. */
+export async function fileSiteBug(
+  root: string, id: string, input: { site: string; anchors: string[]; title?: string; severity?: "low" | "medium" | "high" | "critical" },
+): Promise<Record<string, unknown>> {
+  const f = await readFinding(root, id).catch(() => null);
+  if (!f) return { error: `no finding "${id}" — ids come from \`findings\` or \`shared_findings\`${didYouMean(root, id)}` };
+  return fileSiteBugOn(root, f.pr!, id, input) as Promise<Record<string, unknown>>;
+}
 
 export { requestComparison, comparisonDetail, comparisonBrief, submitComparisonJudgment, recordComparisonJudgment, comparisonResolutionBrief, resolveComparison } from "./ops/comparisons.js";
 

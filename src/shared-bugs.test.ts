@@ -319,3 +319,30 @@ test("bug replay rejects stale or context-free agent reopens", () => {
   assert.equal(foldBugs(events).get("b")?.closed?.eventId, "4");
   assert.equal(foldBugs(events.slice(0, 3)).get("b")?.state, "created");
 });
+
+// --- plan 3.5: a bug made from a finding inherits its filer and confirmation ---------------
+
+test("plan 3.5: a bug an agent files from a person's confirmed finding is that person's, and confirmed", async () => {
+  const root = tmp();
+  try {
+    await fileBug(root, U, opus, { ...NEW, id: "bug_from_f", from: { pr: 7, finding: "f_1",
+      inherits: { author: izzie, corroboration: [{ actor: dana, verdict: "confirm", at: "2026-09-28T00:00:00Z", rationale: "reproduced" }] } } });
+    const b = await one(root);
+    assert.deepEqual(b.author, izzie, "the finding's filer, not the deferring agent");
+    assert.equal(b.state, "created", "stood behind, so not a proposal");
+    assert.equal(b.corroboration.length, 1);
+    assert.equal(b.corroboration[0]!.independent, true, "independence is judged against the inherited author");
+  } finally { discard(root); }
+});
+
+test("plan 3.5: an unconfirmed agent finding stays an agent proposal as a bug; a malformed inheritance inherits nothing", async () => {
+  const root = tmp();
+  try {
+    await fileBug(root, U, opus, { ...NEW, id: "bug_a", from: { pr: 7, finding: "f_2", inherits: { author: danasAgent, corroboration: [] } } });
+    await fileBug(root, U, opus, { ...NEW, id: "bug_b", from: { pr: 7, finding: "f_3", inherits: { author: {} as Actor, corroboration: [] } } });
+    const bugs = await readBugsShared(root, U);
+    assert.equal(bugs.get("bug_a")!.state, "issued");
+    assert.deepEqual(bugs.get("bug_a")!.author, danasAgent);
+    assert.deepEqual(bugs.get("bug_b")!.author, opus);
+  } finally { discard(root); }
+});

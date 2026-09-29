@@ -860,6 +860,19 @@ const tools: Tool[] = [
     },
   },
   {
+    name: "file_site_bug",
+    description: "File ONE site of a pattern finding as its own bug, when that site will not be fixed in this repair. A pattern finding closes only when every site its sort lists is fixed (verified) or filed this way. The bug inherits the finding's filer and confirmation and must cite symbols in the site's own file. The finding keeps its obligation — use `defer_finding` to move a whole finding instead.",
+    inputSchema: obj({
+      id: { type: "string", description: "The pattern finding's id." },
+      site: { type: "string", description: "The site, exactly as the sort lists it (a file path)." },
+      anchors: { type: "array", items: { type: "string" }, description: "Anchor ids of the symbols at that site." },
+      title: { type: "string" },
+      severity: { type: "string", enum: ["low", "medium", "high", "critical"] },
+    }, ["id", "site", "anchors"]),
+    mutates: true,
+    handler: (a, c) => ops.fileSiteBug(c.universe.path, String(a.id), { site: a.site, anchors: a.anchors, title: a.title, severity: a.severity }),
+  },
+  {
     name: "publish_bugs",
     description: "Send this machine's local bugs to the team. The BACKFILL path, not the ordinary one — with a sidecar configured `report_defect` already files into the shared log. What this is for is the backlog that predates the sidecar. `dryRun: true` counts without writing.",
     inputSchema: obj({

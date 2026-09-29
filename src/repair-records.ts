@@ -147,7 +147,10 @@ export function foldRepairRecords(input: LogEvent[]): RepairRecords {
     if (d.disagreements.length && (!d.arbitration || !nonempty(d.arbitration.reason) || !reported(d.arbitration.identity) || d.disagreements.some(x => !d.arbitration!.addresses.includes(x.id)))) sort.holds.push("unaddressed sort disagreement");
     if (d.prior) {
       const original = out.sorts.find(s => s.input.id === lineage(d.id))!;
-      if (JSON.stringify(d.coverage) !== JSON.stringify(original.input.coverage) || (original.input.kind === "pattern" && (d.kind !== "pattern" || JSON.stringify(d.sites) !== JSON.stringify(original.input.sites)))) sort.holds.push("correction cannot remove original coverage");
+      // A SUPERSET, not equality (B15: F22, F48): a correction may add a site or a claim the
+      // original missed, never drop one — the sort is the coverage authority.
+      const keeps = original.input.coverage.every((ref) => d.coverage.some((own) => own.findingId === ref.findingId && ref.claimIds.every((id) => own.claimIds.includes(id))));
+      if (!keeps || (original.input.kind === "pattern" && (d.kind !== "pattern" || !(original.input.sites ?? []).every((site) => d.sites?.includes(site))))) sort.holds.push("correction cannot remove original coverage");
     }
     sort.eligible = !sort.holds.length;
   }

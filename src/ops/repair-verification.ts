@@ -16,7 +16,9 @@ import { promisify } from "node:util";
 import { requireActor } from "../identity.js";
 import { sidecarWriteDoor, resolveSidecar, sidecarIdentity } from "../sidecar-config.js";
 import { findingKeyScope } from "../review-target.js";
-import { findingScope, foldFindings, isClosed, type SharedFinding } from "../shared-findings.js";
+import { findingScope, foldFindings, isClosed, isStandingBehind, type SharedFinding } from "../shared-findings.js";
+import { cachedBugs } from "../bugs-publish.js";
+import { readAnchorStore } from "../store.js";
 import { findingsProjection } from "../shared-projections.js";
 import { readCached } from "../materialize.js";
 import { emitEventChecked, readScopeChecked, type LogEvent } from "../eventlog.js";
@@ -212,7 +214,7 @@ export async function repairVerificationBrief(root: string, review: number | str
       predicate: c.sort.predicate, sites: c.sort.sites, refutationSubtype: c.sort.refutationSubtype, restsOn: c.sort.restsOn },
     evidence: { id: c.evidence.id, witnessCommit: c.evidence.witnessCommit, baseCommit: c.evidence.baseCommit, fixCommit: c.evidence.fixCommit,
       checks: [...new Set(c.evidence.reproducer.map((x) => x.command))], regression: c.evidence.regression.map(({ command, commit }) => ({ command, commit })),
-      patternEnumeration: c.evidence.patternEnumeration, inspected: c.evidence.inspected.map(({ source, commit }) => ({ source, commit })),
+      inspected: c.evidence.inspected.map(({ source, commit }) => ({ source, commit })),
       noCheckReason: c.evidence.noCheckReason, rulingIds: c.evidence.rulingIds, attribution: c.evidence.attribution },
     rulingContext: c.rulingContext };
   return { requestId: request.id, capsuleHash: request.capsuleHash, capsule: neutral, launch,
@@ -225,6 +227,35 @@ export async function repairVerificationBrief(root: string, review: number | str
       + "can be run, grade \"inspection\" with a no-check reason. A requirement or scope judgment is "
       + `decision-needed. Then call ${job.role === "verifier" ? "repair_verification" : "repair_arbitration"}. `
       + `To hand this job to a subagent instead, launch it with exactly: ${launch}` };
+}
+
+/**
+ * Each site a result files as a bug (plan 3.4): the bug exists, is still open, came from this
+ * finding with its filer and confirmation (3.5), and cites a symbol in the site's own file.
+ * Checked by the op at submission and again at application; the fold sees only that the field
+ * is there (R4's accepted gap — the bug lives in another scope).
+ */
+async function siteBugRefusal(root: string, events: LogEvent[], results: RepairClaimVerdict[]): Promise<string | undefined> {
+  const filed = (Array.isArray(results) ? results : []).flatMap((r) => (Array.isArray(r?.sites) ? r.sites : [])
+    .filter((s) => s?.bug !== undefined).map((s) => ({ findingId: r.findingId, site: s.site, bug: s.bug! })));
+  if (!filed.length) return undefined;
+  const cfg = resolveSidecar(root);
+  if (!cfg) return "a site bug needs this universe's sidecar";
+  const bugs = (await cachedBugs(root, cfg)).value;
+  const findings = foldFindings(events);
+  const files = new Map((await readAnchorStore(root)).anchors.map((a) => [a.id, a.file]));
+  for (const { findingId, site, bug: id } of filed) {
+    const bug = bugs.get(id), f = findings.get(findingId);
+    if (!bug) return `site ${site}: no bug ${id}`;
+    if (isClosed(bug.state)) return `site ${site}: bug ${id} is closed, and a site bug must still be open at closure`;
+    if (!f || bug.from?.finding !== findingId || bug.author.principal !== f.author?.principal)
+      return `site ${site}: bug ${id} was not filed from ${findingId} with its filer (file_site_bug)`;
+    const behind = f.corroboration.filter((c) => isStandingBehind(c.verdict));
+    if (!behind.every((c) => bug.corroboration.some((x) => x.actor.principal === c.actor.principal && x.verdict === c.verdict)))
+      return `site ${site}: bug ${id} does not carry ${findingId}'s confirmation`;
+    if (!bug.anchors.some((a) => !a.removed && files.get(a.anchorId) === site)) return `site ${site}: bug ${id} cites no symbol in ${site}`;
+  }
+  return undefined;
 }
 
 /** A claimed connection's own work, or a subagent's held until its launcher records it. */
@@ -248,6 +279,8 @@ export async function submitRepairVerification(root: string, review: number | st
   return submit(root, review, job, { results: input.results }, connection, (identity) => async (events) => {
     const request = foldRepairVerification(events).requests.find((r) => r.id === input.requestId);
     if (!request) return { error: "unknown request" };
+    const sites = await siteBugRefusal(root, events, input.results);
+    if (sites) return { error: sites };
     const data: RepairVerificationRun = { id: `run_${randomUUID()}`, requestId: request.id, capsuleHash: request.capsuleHash, slot: input.slot, identity, results: input.results };
     return { kind: "repair.verification-recorded", subject: data.id, data: { ...data } };
   });
@@ -294,6 +327,8 @@ export async function recordRepairVerification(root: string, review: number | st
     const request = foldRepairVerification(events).requests.find((r) => r.id === job.requestId);
     if (!request) return { error: "unknown request" };
     if (job.role === "verifier") {
+      const sites = await siteBugRefusal(root, events, body.results as RepairClaimVerdict[]);
+      if (sites) return { error: sites };
       const data: RepairVerificationRun = { id: `run_${randomUUID()}`, requestId: request.id, capsuleHash: request.capsuleHash, slot: job.slot!, identity, results: body.results as RepairClaimVerdict[] };
       return { kind: "repair.verification-recorded", subject: data.id, data: { ...data } };
     }
@@ -321,6 +356,9 @@ export async function applyRepairVerification(root: string, review: number | str
     if (!decision.complete || !["fixed", "factually-refuted", "invalid"].includes(decision.verdict)) return { error: decision.reasons.join("; ") || "no complete independent verdict" };
     if ([...records.runs, ...records.arbitrations].some((x) => x.requestId === request.id && verifierIdentityKey(x.identity) === verifierIdentityKey(identity)))
       return { error: "a verifier cannot apply the verdict it gave" };
+    // "Still open at closure": a site bug closed since the runs means the site is neither.
+    const sites = await siteBugRefusal(root, events, records.runs.filter((x) => x.requestId === request.id).flatMap((x) => x.results.filter((r) => r.findingId === target.findingId)));
+    if (sites) return { error: sites };
     const data: RepairVerificationApplication = { id: `apply_${randomUUID()}`, requestId: request.id, capsuleHash: request.capsuleHash,
       findingId: target.findingId, openEpoch: target.openEpoch, claimHash: target.claimHash, outcome: decision.verdict as "fixed" | "factually-refuted" | "invalid",
       contextHash: repairVerificationHash(current.rulingContext), reason: input.reason, identity };

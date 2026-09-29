@@ -7,7 +7,8 @@ import { requestRepairVerification, pendingRepairJobs, repairVerificationBrief, 
 import { repairRecords } from "./ops/repairs.js";
 import { RepairConnection } from "./verifier-boundary.js";
 import { headCommit } from "./git.js";
-import { readFinding } from "./store.js";
+import { readFinding, readAnchorStore } from "./store.js";
+import * as ops from "./ops.js";
 import type { RepairClaimVerdict } from "./repair-verification.js";
 import type { RepairSortInput, RepairEvidenceInput } from "./repair-records.js";
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
@@ -20,7 +21,7 @@ import { resolveSidecar } from "./sidecar-config.js";
 import { findingScope } from "./shared-findings.js";
 import { findingKeyScope } from "./review-target.js";
 const ok = (result: unknown) => assert.equal((result as { error?: string }).error, undefined, JSON.stringify(result));
-async function fixture(count = 1, decomposed = false, changeEvidence?: (evidence: Omit<RepairEvidenceInput, "id">, root: string) => void, holdBeforeRequest?: "legacy" | "typed") {
+async function fixture(count = 1, decomposed = false, changeEvidence?: (evidence: Omit<RepairEvidenceInput, "id">, root: string) => void, holdBeforeRequest?: "legacy" | "typed", sortOver: Partial<RepairSortInput> = {}) {
   const t = await team(["owner@acme.test", "fixer@acme.test"]);
   const root = t.all[0]!.repo, peer = t.all[1]!.repo, ids: string[] = [];
   for (let i = 0; i < count; i++) {
@@ -33,7 +34,7 @@ async function fixture(count = 1, decomposed = false, changeEvidence?: (evidence
     ok(claims); extra = (claims as { claims: { id: string }[] }).claims[0]!.id;
   }
   const sort: Omit<RepairSortInput, "id"> = { classification: "mechanical", kind: "isolated", source: "approved owner worklist",
-    coverage: ids.map(id => ({ findingId: id, claimIds: [`${id}:original`, ...(decomposed ? [extra] : [])] })), restsOn: [], provenance: "owner-reviewed", assessments: [], disagreements: [] };
+    coverage: ids.map(id => ({ findingId: id, claimIds: [`${id}:original`, ...(decomposed ? [extra] : [])] })), restsOn: [], provenance: "owner-reviewed", assessments: [], disagreements: [], ...sortOver };
   const posted = await postRepairSort(root, 7, sort);
   ok(posted);
   const sortId = (posted as { id: string }).id;
@@ -296,4 +297,25 @@ test("a subagent verifier counts only from its own transcript; the requester's s
     assert.equal(result?.complete, true);
     assert.ok(!("launchedByParticipant" in (result ?? {})), "the fixer-launched grade is gone");
   } finally { discard(dir); f.t.dispose(); }
+});
+
+test("plan 3.4: a pattern closes only with every sorted site fixed or filed as an open, inherited bug at that site", async () => {
+  const f = await fixture(1, false, undefined, undefined, { kind: "pattern", predicate: "missing guard", sites: ["src/pay.ts"] });
+  try {
+    const h = new RepairConnection("owner@acme.test"); assert.equal(h.claim().ok, true);
+    ok(await repairVerificationBrief(f.root, 7, { requestId: f.requestId, role: "verifier", slot: 1 }, h));
+    const bare = await submitRepairVerification(f.root, 7, { requestId: f.requestId, slot: 1, results: f.results() }, h);
+    assert.match(JSON.stringify(bare), /disposition for every site its sort lists/);
+    const ghost = await submitRepairVerification(f.root, 7, { requestId: f.requestId, slot: 1,
+      results: f.results().map((r) => ({ ...r, sites: [{ site: "src/pay.ts", bug: "bug_nothing" }] })) }, h);
+    assert.match(String((ghost as { error?: string }).error), /no bug bug_nothing/);
+    const anchor = (await readAnchorStore(f.root)).anchors.find((a) => a.file === "src/pay.ts")!;
+    const other = (await readAnchorStore(f.root)).anchors.find((a) => a.file !== "src/pay.ts");
+    if (other) assert.match(String((await ops.fileSiteBug(f.root, f.ids[0]!, { site: "src/pay.ts", anchors: [other.id] })).error), /not in src\/pay.ts/);
+    const filed = await ops.fileSiteBug(f.root, f.ids[0]!, { site: "src/pay.ts", anchors: [anchor.id] }) as { id: string };
+    ok(filed);
+    const withBug = await submitRepairVerification(f.root, 7, { requestId: f.requestId, slot: 1,
+      results: f.results().map((r) => ({ ...r, sites: [{ site: "src/pay.ts", bug: filed.id }] })) }, h);
+    ok(withBug);
+  } finally { f.t.dispose(); }
 });

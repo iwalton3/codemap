@@ -202,3 +202,11 @@ test("design and scope judgments remain decision-needed even with a principal wo
   assert.equal(records.sorts[0]!.eligible, false);
   assert.match(records.sorts[0]!.holds.join(), /explicit decision/);
 });
+
+test("B15: a correction may ADD a site the original missed, never drop one", () => {
+  const first = sort({ kind: "pattern", predicate: "missing guard", sites: ["api", "batch"] });
+  const grown = foldRepairRecords(chain([sorted(first), sorted(sort({ id: "s2", prior: "s1", reason: "found a third", kind: "pattern", predicate: "missing guard", sites: ["api", "batch", "cli"] }))]));
+  assert.ok(!grown.sorts[1]!.holds.some((h) => /original coverage/.test(h)), grown.sorts[1]!.holds.join("; "));
+  const shrunk = foldRepairRecords(chain([sorted(first), sorted(sort({ id: "s2", prior: "s1", reason: "only api", kind: "pattern", predicate: "missing guard", sites: ["api", "cli"] }))]));
+  assert.ok(shrunk.sorts[1]!.holds.some((h) => /original coverage/.test(h)));
+});

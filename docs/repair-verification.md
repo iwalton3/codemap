@@ -72,6 +72,18 @@ The owner's bar ("Your approved bar only"):
 findings have no repair verification, so an agent's close there is always an ask. Bugs keep their
 agent close path until the bug follow-up.
 
+**A pattern closes site by site** (plan 3.4). The sites are the arbitrated SORT's list, never the
+evidence record's own enumeration, which is kept out of the verifier brief. A `fixed` result gives
+each site a disposition: fixed, or filed as a bug with `file_site_bug`. That bug inherits the
+finding's filer and confirmation, must still be open when the verdict is applied, and must cite a
+symbol in the site's own file. The op checks each bug at submission and again at application. The
+fold checks only that every site has a disposition, because the bug lives in another scope. A
+correction of a sort may add sites or claims, never drop one.
+
+Any bug made from a finding (`defer_finding`, `file_site_bug`) keeps the finding's filer and
+the verdicts that stood behind it (plan 3.5). An agent deferring a person's confirmed finding
+therefore files it as a confirmed bug of theirs, not as an agent proposal.
+
 Regression runs never close anything. Partial coverage never closes a whole finding; code
 evidence cannot settle a scope or requirement judgment (`decision-needed`).
 

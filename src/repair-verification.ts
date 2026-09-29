@@ -25,6 +25,8 @@ export interface RepairClaimVerdict {
   noCheckReason?: string;
   /** Why the pinned check actually tests the claim — or that it does not (plan 3.3, "real basis"). */
   basis?: { tests: boolean; reason: string };
+  /** A pattern's sites, from the SORT: each fixed (no bug) or filed as a bug (plan 3.4). */
+  sites?: { site: string; bug?: string }[];
 }
 export interface RepairVerificationRun {
   id: string; requestId: string; capsuleHash: string; slot: 1 | 2; identity: VerifierIdentity; results: RepairClaimVerdict[];
@@ -73,8 +75,15 @@ function resultError(r: RepairClaimVerdict, c: RepairVerificationCapsule): strin
   if (r.verdict === "invalid" && c.sort.refutationSubtype !== "assumed") return "only a reviewer's refuted assumption closes as invalid";
   if (r.verdict === "factually-refuted" && c.sort.refutationSubtype === "assumed") return "a refuted assumption closes as invalid, not as a factual refutation";
   const refutes = r.verdict !== "fixed";
-  if (c.sort.kind === "pattern" && (!c.evidence.patternEnumeration || c.sort.sites?.some((site) => !c.evidence.patternEnumeration!.expected.includes(site)
-    || !c.evidence.patternEnumeration!.actual.includes(site)))) return "pattern enumeration omits an original site";
+  // Every site the arbitrated sort lists is fixed or filed as a bug — the sort is the coverage
+  // authority, never the evidence's own enumeration (plan 3.4). The fold checks the field is
+  // there; the op checks each bug (R4's accepted gap).
+  if (c.sort.kind === "pattern" && r.verdict === "fixed") {
+    const sites = c.sort.sites ?? [];
+    if (!Array.isArray(r.sites) || r.sites.length !== sites.length || new Set(r.sites.map((s) => s?.site)).size !== sites.length
+      || !sites.every((site) => r.sites!.some((s) => s?.site === site))) return "a pattern closes only with a disposition for every site its sort lists";
+    if (r.sites.some((s) => s.bug !== undefined && !text(s.bug))) return "a site filed as a bug names the bug";
+  }
   const observed = (command: string, commit: string, phase: string, outcome: string) =>
     r.executions.some((x) => x.command === command && x.commit === commit && x.phase === phase && x.outcome === outcome);
   // A check the fixer could not run (outcome unknown) pins nothing: inspection stays open.

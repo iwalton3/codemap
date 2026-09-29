@@ -881,7 +881,8 @@ const acceptInHome = homed(async function acceptFinding(
     category: f.category,
     anchors: witnesses,
     createdCommit: headCommit(root) ?? undefined,
-    from: { pr, finding: findingId },
+    from: { pr, finding: findingId, inherits: { author: f.author, corroboration: f.corroboration
+      .map(({ actor, verdict, at, rationale }) => ({ actor, verdict, at, rationale })) } },
   }));
   const link = await shared.findingToBug(root, pr, findingId, id);
   if ("error" in link) return link;
@@ -890,6 +891,43 @@ const acceptInHome = homed(async function acceptFinding(
     note: "accepted — the finding stays on the pull request and the bug now carries the obligation",
     ...rejected(errors),
   };
+});
+
+/**
+ * One site of a pattern finding, filed as its own bug (plan 3.4). A pattern closes when every
+ * site is fixed or filed; a site's bug inherits the finding's filer and confirmation (3.5) and
+ * cites only symbols in that site's file. The finding keeps its obligation — it does not move
+ * to the bug the way `defer_finding` moves it — and the id is derived from finding and site, so
+ * filing the same site twice is one bug.
+ */
+export const fileSiteBug = homed(async function fileSiteBug(
+  root: string, pr: number | string, findingId: string, input: { site: string; anchors: string[]; title?: string; severity?: BugSeverity },
+) {
+  const log = bugLog(root);
+  if (!log) return { error: "no sidecar configured for this universe — a site bug is a shared bug" };
+  if ("error" in log) return log;
+  if (typeof input?.site !== "string" || !input.site.trim()) return { error: "name the site: the file path the pattern's sort lists" };
+  const shared = await import("../ops-shared.js");
+  const f = await shared.findingRecord(root, pr, findingId);
+  if ("error" in f) return f;
+  const { ids, witnesses, errors } = await witnessRefs(root, input.anchors ?? [], f.sourceRef, { includeOrphans: true });
+  if (!ids.length) return { error: errors.join("; ") || "a site bug cites the symbols at that site" };
+  const files = new Map((await readAnchorStore(root)).anchors.map((a) => [a.id, a.file]));
+  const elsewhere = ids.filter((id) => files.get(id) !== input.site);
+  if (elsewhere.length) return { error: `${elsewhere.join(", ")} ${elsewhere.length === 1 ? "is" : "are"} not in ${input.site}: a site bug cites a symbol in the site's own file` };
+  const id = bugIdFor(`${findingId}@${input.site}`);
+  await onBugLog(log, root, (logRoot, universe, actor) => fileBug(logRoot, universe, actor, {
+    id,
+    title: input.title ?? `${f.text.split("\n")[0]!.slice(0, 100)} — ${input.site}`,
+    text: `One site of ${findingId}: ${input.site}.\n\n${f.text}`,
+    severity: input.severity ?? f.severity,
+    category: f.category,
+    anchors: witnesses,
+    createdCommit: headCommit(root) ?? undefined,
+    from: { pr, finding: findingId, inherits: { author: f.author, corroboration: f.corroboration
+      .map(({ actor, verdict, at, rationale }) => ({ actor, verdict, at, rationale })) } },
+  }));
+  return { ok: true, id, finding: findingId, site: input.site, ...rejected(errors) };
 });
 
 /**

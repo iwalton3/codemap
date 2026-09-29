@@ -35,12 +35,22 @@ import { emitEvent, mintId, readScope, causality, type LogEvent } from "./eventl
 import { applyRevision, newContestState, type Contested } from "./contest.js";
 import { issueClaimHash, validateApplicationCapsule, type ApplicationAttempt } from "./ruling-application.js";
 import {
-  isClosed, mayTransition, mayRevise, needsHumanAck,
+  isClosed, mayTransition, mayRevise, needsHumanAck, isStandingBehind,
   isAsk, type Ask, type Corroboration, type ExternalRef, type FindingComment,
   type FindingState, type Verdict,
 } from "./shared-findings.js";
 
 export { isClosed, needsHumanAck, mayTransition, mayRevise };
+
+const VERDICTS: readonly Verdict[] = ["confirm", "partial", "refute", "unsure"];
+/** A well-formed inheritance, or undefined: a malformed one inherits nothing. */
+function inheritanceOf(v: unknown): BugInheritance | undefined {
+  const x = v as BugInheritance | undefined;
+  const actor = (a: unknown): a is Actor => !!a && typeof (a as Actor).principal === "string" && !!(a as Actor).principal;
+  if (!x || !actor(x.author) || !Array.isArray(x.corroboration)) return undefined;
+  if (!x.corroboration.every((c) => c && actor(c.actor) && VERDICTS.includes(c.verdict) && typeof c.at === "string" && typeof c.rationale === "string")) return undefined;
+  return x;
+}
 export type { Ask, Verdict, FindingState as BugState };
 
 /**
@@ -280,6 +290,12 @@ function foldBugsInternal(events: LogEvent[], replay: ApplicationReplay): Map<st
         for (const a of anchorsIn(d)) addAnchor(existing, a, e.actor, e.at);
         continue;
       }
+      // A bug made from a finding keeps that finding's filer and the verdicts behind it (plan 3.5),
+      // so an agent deferring a person's confirmed finding does not file it as an agent proposal.
+      const inherits = inheritanceOf((d as any)?.inherits);
+      const author = inherits?.author ?? e.actor;
+      const inherited: Corroboration[] = (inherits?.corroboration ?? []).map((c) => ({ ...c,
+        independent: isIndependent(c.actor, author), errorIndependent: isErrorIndependent(c.actor, author) }));
       out.set(e.subject, {
         id: e.subject,
         title,
@@ -288,14 +304,14 @@ function foldBugsInternal(events: LogEvent[], replay: ApplicationReplay): Map<st
         category: str(d, "category"),
         anchors: anchorsIn(d).map((a) => ({ ...a, by: e.actor, at: e.at })),
         createdCommit: str(d, "createdCommit"),
-        author: e.actor,
+        author,
         createdAt: e.at,
         filedAt: str(d, "filedAt"),
         // Same rule as a finding, from `via` and not from a prefix on a name: an
-        // agent PROPOSES a bug, a person stands behind one.
-        state: isAgentActor(e.actor) ? "issued" : "created",
+        // agent PROPOSES a bug, a person stands behind one — or stood behind the finding.
+        state: isAgentActor(author) && !inherited.some((c) => isStandingBehind(c.verdict)) ? "issued" : "created",
         openEpoch: e.id,
-        corroboration: [],
+        corroboration: inherited,
         thread: [],
         tracking: [],
         from: (() => {
@@ -579,15 +595,21 @@ export interface NewBug {
   createdCommit?: string;
   /** Set only when publishing something that already existed here. See `SharedBug.filedAt`. */
   filedAt?: string;
-  from?: { pr: string | number; finding: string };
+  /** The finding it came from. `inherits` is that finding's filer and the verdicts that stood
+   *  behind it: a bug made from a finding keeps both (plan 3.5; owner, batch 7). */
+  from?: { pr: string | number; finding: string; inherits?: BugInheritance };
 }
+
+/** What a bug made from a finding carries over. The op sets it and the fold trusts it — the
+ *  finding lives in another scope, which a fold cannot read (R4's accepted gap). */
+export interface BugInheritance { author: Actor; corroboration: { actor: Actor; verdict: Verdict; at: string; rationale: string }[] }
 
 export async function fileBug(logRoot: string, universe: string, actor: Actor, b: NewBug): Promise<string> {
   const id = b.id ?? "bug_" + mintId();
   await emit(logRoot, universe, actor, id, "bug.filed", {
     title: b.title, text: b.text, severity: b.severity ?? "medium", category: b.category,
     anchors: b.anchors, createdCommit: b.createdCommit, filedAt: b.filedAt,
-    ...(b.from ? { fromPr: String(b.from.pr), fromFinding: b.from.finding } : {}),
+    ...(b.from ? { fromPr: String(b.from.pr), fromFinding: b.from.finding, ...(b.from.inherits ? { inherits: b.from.inherits } : {}) } : {}),
   });
   return id;
 }
