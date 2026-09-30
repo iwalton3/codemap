@@ -32,3 +32,24 @@ export async function rulingReferences(logRoot: string, universe: string, e: Log
       .some((a) => `${roundId}:${String(a?.questionId)}` === questionId && questionnaireAnswerId(x.id, String(a.questionId)) === answerId)));
   return answered ? [] : refused(`no answer ${answerId} to ${questionId} in ${at}`);
 }
+
+/**
+ * An operation sign-off's references into the decisions log (rows 139-140): the answer it
+ * relays and the decision it answers exist in the scope the capsule names.
+ */
+export async function signoffReferences(logRoot: string, e: LogEvent): Promise<Refusal[]> {
+  const r = ((e.data as Data | undefined)?.capsule as { ruling?: Record<string, unknown> } | undefined)?.ruling;
+  const { answerId, decisionId, sourceScope } = r ?? {};
+  // The fold refuses a capsule without these.
+  if (typeof answerId !== "string" || typeof decisionId !== "string" || typeof sourceScope !== "string" || !sourceScope.startsWith("decisions/")) return [];
+  const refused = (why: string): Refusal[] => [{ id: e.id, kind: e.kind, cls: "reference", why }];
+  const events = await readScope(logRoot, sourceScope);
+  const decided = events.some((x) => (x.kind === "decision.confirm.posted" && x.id === decisionId)
+    || (x.kind === "decision.round.posted" && (((x.data as Data | undefined)?.decisions as { id?: unknown }[] | undefined) ?? [])
+      .some((q) => `${x.id}:${String(q?.id)}` === decisionId)));
+  if (!decided) return refused(`no decision ${decisionId} in ${sourceScope}`);
+  const answered = events.some((x) => x.id === answerId || (x.kind === "decision.questionnaire.submitted"
+    && (((x.data as Data | undefined)?.staged as { answers?: { questionId?: unknown }[] } | undefined)?.answers ?? [])
+      .some((a) => questionnaireAnswerId(x.id, String(a?.questionId)) === answerId)));
+  return answered ? [] : refused(`no answer ${answerId} in ${sourceScope}`);
+}

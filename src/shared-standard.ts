@@ -53,6 +53,7 @@ import { emitEvent } from "./write.js";
 import { foldHaltingOnDamage } from "./log-damage.js";
 import { standardEventShape } from "./log-shape.js";
 import { applyRevision, newContestState } from "./contest.js";
+import { signoffReferences } from "./ruling-references.js";
 
 /** The EVIDENCE half — audits, pointers, populations, problems, debt. Per universe. */
 export const standardScope = (universe: string): string => `standard/${universe}`;
@@ -121,7 +122,14 @@ export const standardDoor = (logRoot: string, scope: string): DoorFold => async 
   const more = (await Promise.all(others.filter((s) => s !== scope).map((s) => readScope(logRoot, s)))).flat();
   return foldStandardReport(sortEvents([...events, ...more]));
 };
-registerDoor((scope) => scope.startsWith("standard/") || scope.startsWith("law/"), standardDoor);
+registerDoor((scope) => scope.startsWith("standard/") || scope.startsWith("law/"), (logRoot, scope) => {
+  const fold = standardDoor(logRoot, scope);
+  return async (events, minted) => {
+    const own = await fold(events, minted);
+    const refs = minted.kind === "spec.operation-signoff-applied" ? await signoffReferences(logRoot, minted) : [];
+    return { refused: [...own.refused, ...refs] };
+  };
+});
 
 export const publishSpecDrafted = (logRoot: string, scope: string, actor: Actor, spec: Spec) =>
   put(logRoot, scope, actor, "spec.drafted", spec.id, { spec });

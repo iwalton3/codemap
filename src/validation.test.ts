@@ -16,6 +16,7 @@ import { createFinding, findingScope, foldFindings, readFindings, setState } fro
 import { isLogDamage } from "./log-damage.js";
 import { judge } from "./validation.js";
 import "./shared-decisions.js";   // registers the decisions door
+import "./shared-standard.js";    // and the law door
 import { testEvent } from "./test-events.js";
 import { lockoutOf } from "./lockout.js";
 
@@ -92,5 +93,16 @@ test("the decisions door checks what a round and a logged question name: finding
       data: { session: "s", toolUseId: "t", questions: [], answers: {}, rounds: ["never-posted"], answeredAt: "2026-08-01T00:00:00Z" } });
     const r2 = await door([], logged);
     assert.ok(r2.refused.some((r) => r.id === "q1" && /no round never-posted/.test(r.why)), JSON.stringify(r2.refused));
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("the law door checks what an operation sign-off relays: a decision and an answer that exist", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codemap-srefs-"));
+  try {
+    const door = doorFor(root, "law/standard")!;
+    const signoff = testEvent({ id: "s1", kind: "spec.operation-signoff-applied", subject: "op_1", seq: 1,
+      data: { capsule: { ruling: { answerId: "a_none", decisionId: "d_none", sourceScope: "decisions/acme/api" } } } });
+    const r = await door([], signoff);
+    assert.ok(r.refused.some((x) => x.id === "s1" && /no decision d_none in decisions\/acme\/api/.test(x.why)), JSON.stringify(r.refused));
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
