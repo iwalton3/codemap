@@ -892,6 +892,8 @@ function foldStandardWithRefusals(events: LogEvent[]): { value: SharedStandard; 
         if (!ack.rationale?.trim()) { refuse(e, "an acknowledgement needs a rationale"); break; }
         if (!ACK_PRIORITIES.includes(ack.priority)) { refuse(e, "an acknowledgement needs a known priority"); break; }
         if (!ack.revalidateBy || !ISO_DATE.test(ack.revalidateBy)) { refuse(e, "an acknowledgement needs a revalidate-by date"); break; }
+        // Evidence names law that must exist (docs/sidecar-references.md, rows 151-164).
+        if (ack.basis === "debt" && !requirements.has(ack.requirementId!)) { refuse(e, `no rule ${ack.requirementId} to owe a debt on`); break; }
         // A GAP must still be MINTED BEFORE RATIFICATION, and only this end binds a writer
         // whose tool did not check. `Acknowledgement.operationId` calls that asymmetry
         // "structural rather than advisory" because the local path takes an operation in a
@@ -939,6 +941,7 @@ function foldStandardWithRefusals(events: LogEvent[]): { value: SharedStandard; 
         // the same predicate to a teammate's file. See `auditClaimStands` for what each
         // clause is and which of them the two ends used to disagree about.
         if (!auditClaimStands(audit)) { refuse(e, "the audit's claim does not stand on its evidence"); break; }
+        if (!requirements.has(audit.requirementId)) { refuse(e, `no rule ${audit.requirementId} to audit`); break; }
         // An observation resets the deadline of the POINTER it names, so a trigger owes
         // exactly what it claims to have looked at: a covering audit every active pointer,
         // a `differential` one the subset it examined, an `ad-hoc` one none at all.
@@ -997,6 +1000,10 @@ function foldStandardWithRefusals(events: LogEvent[]): { value: SharedStandard; 
         // problem arriving at the record that exists to make auditing cheaper. Refused in
         // `declarePointer` and restated here, because the tool binds only writers who ask.
         if (!p.rationale?.trim()) { refuse(e, "a pointer needs a rationale"); break; }
+        // A PENDING pointer names the rule and criterion its draft's ratification will mint,
+        // so it may name ids that do not exist yet (owner, Q1); an active one may not.
+        if (p.state !== "pending" && !requirements.has(p.requirementId)) { refuse(e, `no rule ${p.requirementId} to point at`); break; }
+        if (p.state !== "pending" && p.criterionId && !criteria.has(p.criterionId)) { refuse(e, `no criterion ${p.criterionId}`); break; }
         // A pointer with NO witnesses can never fire, and a pointer that cannot fire reads
         // as coverage while providing none — the `never fires → false calm` pathology
         // arriving at declaration time rather than through a rate. `declarePointer` refuses
@@ -1096,6 +1103,7 @@ function foldStandardWithRefusals(events: LogEvent[]): { value: SharedStandard; 
         const pin = obj(e.data, "pin") as PopulationPredicate | undefined;
         if (!pin?.id || !pin.requirementId) { refuse(e, "a population needs an id and its rule"); break; }
         if (pin.basis !== "lint" && pin.basis !== "not-expressible") { refuse(e, "a population's basis is lint or not-expressible"); break; }
+        if (!requirements.has(pin.requirementId)) { refuse(e, `no rule ${pin.requirementId} to range over`); break; }
         if (!Array.isArray(pin.members)) { refuse(e, "a population lists its members"); break; }
         // Zero members is GREEN and green reads as conformant, so an empty lint pin is
         // refused — the default failure mode here, not an edge case. Restated at the fold
@@ -1156,6 +1164,8 @@ function foldStandardWithRefusals(events: LogEvent[]): { value: SharedStandard; 
         // Same rule as the audit it rests on: a problem is exactly as shareable as its
         // evidence, and branch-local work is nobody else's.
         if (p.provisional) { refuse(e, "a provisional problem does not enter the log"); break; }
+        if (!requirements.has(p.requirementId)) { refuse(e, `no rule ${p.requirementId} for the problem`); break; }
+        if (!audits.has(p.auditId)) { refuse(e, `no audit ${p.auditId} provoked it`); break; }
         const { disposition, adjudicatedBy, adjudicatedAt, adjudicationReason, ...raised } = p;
         problems.set(p.id, { ...raised, origin: "sync" });
         break;

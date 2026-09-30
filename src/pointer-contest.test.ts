@@ -12,8 +12,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { scenario, who, concurrently, settle, type Scenario } from "./scenario.js";
 import { readScope } from "./eventlog.js";
-import { foldStandard, standardScope, publishPointerDeclared, publishPointerRestated } from "./shared-standard.js";
-import type { BugWitness } from "./schema.js";
+import { foldStandard, standardScope, publishOperation, publishPointerDeclared, publishPointerRestated, publishSpecDrafted } from "./shared-standard.js";
+import { requirementIdFor, type BugWitness } from "./schema.js";
+import { ratifyWithReview } from "./test-approve.js";
 
 const U = "acme/api";
 const SCOPE = standardScope(U);
@@ -26,8 +27,13 @@ async function team(fn: (s: Scenario) => Promise<void>) {
   const s = await scenario(["izzie@x.com", "dana@x.com"]);
   try {
     const izzie = who(s, "izzie@x.com");
+    // An active pointer names a rule that exists (docs/sidecar-references.md, row 156).
+    await publishSpecDrafted(izzie.sidecar, SCOPE, izzie.actor, { id: "sp_1", title: "T", status: "draft", author: izzie.actor, createdAt: "2026-08-01T00:00:00.000Z" });
+    await publishOperation(izzie.sidecar, SCOPE, izzie.actor, { id: "op_1", specId: "sp_1", kind: "add_requirement", ord: 0, title: "Credit cap",
+      section: "Credit", statement: "Credit is capped.", provenance: "p", rationale: "r", reversibility: "reversible" });
+    await ratifyWithReview(izzie.sidecar, SCOPE, izzie.actor, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1"]);
     await publishPointerDeclared(izzie.sidecar, SCOPE, izzie.actor, {
-      id: "pt_1", requirementId: "r_x", universe: U,
+      id: "pt_1", requirementId: requirementIdFor("op_1"), universe: U,
       target: { kind: "anchor", id: "a_credit" },
       rationale: "the one function that applies the cap",
       witnesses: BASE, state: "active",

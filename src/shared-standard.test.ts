@@ -65,6 +65,15 @@ const fold = async (root: string) => foldStandard(await readScope(root, SCOPE));
 const withdraw = (root: string, actor: typeof izzie, specId: string, at: string, reason: string) =>
   publishSpecWithdrawn(root, SCOPE, actor, specId, at, reason);
 
+/** The rules evidence may name (docs/sidecar-references.md, rows 151-164): ratified, so they exist. */
+const RULE = requirementIdFor("op_1");
+const RULE2 = requirementIdFor("op_rule2");
+async function ruled(t: string) {
+  const root = await log(t);
+  await ratified(root, [{ ...ADD, id: "op_rule2", ord: 1, title: "Second rule", statement: "Another." }]);
+  return root;
+}
+
 async function log(t: string) {
   const root = tmp(t);
   await ensureSidecar(root, izzie);
@@ -153,15 +162,15 @@ test("the same events fold to the same standard, which is what lets two clones a
 });
 
 test("THE FOLD REFUSES AN AGENT'S ADJUDICATION, because a remote clone sees only the row", async () => {
-  const root = await log("adjudicate");
+  const root = await ruled("adjudicate");
   try {
     const audit: Audit = {
-      id: "au_1", requirementId: "r_x", outcome: "nonconformant",
+      id: "au_1", requirementId: RULE, outcome: "nonconformant",
       evidence: { read: ["a_credit"] }, witnesses: [{ anchorId: "a_credit", bodyHash: "h1:sha256:abc" }], finding: "does not enforce USD",
       auditor: opus, at: "2026-08-03T00:00:00.000Z",
     };
     const problem: Problem = {
-      id: "pr_1", requirementId: "r_x", auditId: "au_1",
+      id: "pr_1", requirementId: RULE, auditId: "au_1",
       summary: "creditLine does not enforce USD", raisedBy: opus, raisedAt: "2026-08-03T00:00:01.000Z",
     };
     await publishAudit(root, SCOPE, opus, audit);
@@ -193,14 +202,14 @@ test("THE FOLD REFUSES AN AGENT'S ADJUDICATION, because a remote clone sees only
  * in the fix queue for ever with nothing saying what would close it.
  */
 test("THE FOLD REFUSES A VERDICT THAT IS NOT ONE, and a decision with no reason", async () => {
-  const root = await log("verdict");
+  const root = await ruled("verdict");
   try {
     await publishAudit(root, SCOPE, opus, {
-      id: "au_1", requirementId: "r_x", outcome: "nonconformant", evidence: { read: ["a_1"] },
+      id: "au_1", requirementId: RULE, outcome: "nonconformant", evidence: { read: ["a_1"] },
       witnesses: [{ anchorId: "a_1", bodyHash: "h1:sha256:abc" }], finding: "no currency check", auditor: opus, at: "2026-08-03T00:00:00.000Z",
     });
     await publishProblemRaised(root, SCOPE, opus, {
-      id: "pr_1", requirementId: "r_x", auditId: "au_1",
+      id: "pr_1", requirementId: RULE, auditId: "au_1",
       summary: "the rule says USD and nothing enforces one",
       raisedBy: opus, raisedAt: "2026-08-03T00:00:01.000Z",
     });
@@ -220,14 +229,14 @@ test("THE FOLD REFUSES A VERDICT THAT IS NOT ONE, and a decision with no reason"
 });
 
 test("a disposition smuggled into a raise payload is dropped", async () => {
-  const root = await log("smuggle");
+  const root = await ruled("smuggle");
   try {
     await publishAudit(root, SCOPE, opus, {
-      id: "au_1", requirementId: "r_x", outcome: "nonconformant", evidence: { read: ["a_1"] },
+      id: "au_1", requirementId: RULE, outcome: "nonconformant", evidence: { read: ["a_1"] },
       witnesses: [{ anchorId: "a_1", bodyHash: "h1:sha256:abc" }], finding: "no", auditor: opus, at: "2026-08-03T00:00:00.000Z",
     });
     await publishProblemRaised(root, SCOPE, opus, {
-      id: "pr_1", requirementId: "r_x", auditId: "au_1", summary: "smuggled",
+      id: "pr_1", requirementId: RULE, auditId: "au_1", summary: "smuggled",
       raisedBy: opus, raisedAt: "2026-08-03T00:00:01.000Z",
       disposition: "code-wrong", adjudicatedBy: opus, adjudicatedAt: "2026-08-03T00:00:01.000Z",
     } as Problem);
@@ -327,10 +336,10 @@ test("a spec ratifies once, so a replayed or duplicated event cannot apply it tw
  * that forgets.
  */
 test("the fold refuses an agent's debt acknowledgement", async () => {
-  const root = await log("ackgate");
+  const root = await ruled("ackgate");
   try {
     const base = {
-      id: "ack_1", basis: "debt" as const, requirementId: "r_x", rationale: "living with it",
+      id: "ack_1", basis: "debt" as const, requirementId: RULE, rationale: "living with it",
       priority: "high" as const, revalidateBy: "2027-01-01", state: "active" as const,
       grantedAt: "2026-08-01T00:00:00.000Z",
     };
@@ -402,10 +411,10 @@ test("THE FOLD REFUSES A GAP MINTED AFTER RATIFICATION, which is the third laund
 });
 
 test("the fold refuses a conformant audit that touched no code", async () => {
-  const root = await log("auditgate");
+  const root = await ruled("auditgate");
   try {
     const base: Audit = {
-      id: "au_1", requirementId: "r_x", outcome: "conformant", evidence: {},
+      id: "au_1", requirementId: RULE, outcome: "conformant", evidence: {},
       witnesses: [], finding: "looks fine to me", auditor: opus, at: "2026-08-03T00:00:00.000Z",
     };
     await damage(probe.publishAudit(root, SCOPE, opus, base),
@@ -467,12 +476,12 @@ test("the fold drops provisional work, which is never the team's", async () => {
   const root = await log("provgate");
   try {
     await damage(probe.publishAudit(root, SCOPE, opus, {
-      id: "au_1", requirementId: "r_x", outcome: "nonconformant", evidence: { read: ["a_1"] },
+      id: "au_1", requirementId: RULE, outcome: "nonconformant", evidence: { read: ["a_1"] },
       witnesses: [{ anchorId: "a_1", bodyHash: "h1:sha256:abc" }], finding: "broken on my branch", auditor: opus,
       at: "2026-08-03T00:00:00.000Z", provisional: true,
     }), "a branch audit is about work in progress, not the codebase");
     await damage(probe.publishProblemRaised(root, SCOPE, opus, {
-      id: "pr_1", requirementId: "r_x", auditId: "au_1", summary: "branch-local",
+      id: "pr_1", requirementId: RULE, auditId: "au_1", summary: "branch-local",
       raisedBy: opus, raisedAt: "2026-08-03T00:00:01.000Z", provisional: true,
     }), "and so is a problem raised from one");
   } finally { discard(root); }
@@ -647,7 +656,7 @@ test("the fold drops a `demonstrated` vacuity check that records no method", asy
 });
 
 const PTR = {
-  id: "pt_1", requirementId: "r_x", target: { kind: "node" as const, id: "n_credit" },
+  id: "pt_1", requirementId: RULE, target: { kind: "node" as const, id: "n_credit" },
   rationale: "the doc describing the pattern",
   witnesses: [{ anchorId: "a_credit", bodyHash: "h1:sha256:abc" }],
   state: "active" as const, declaredBy: opus, declaredAt: "2026-08-11T00:00:00.000Z",
@@ -659,7 +668,7 @@ const PTR = {
  * directly rather than being derived by replaying operations.
  */
 test("a pointer folds through its three acts, and the guards bind at this end too", async () => {
-  const root = await log("pointer");
+  const root = await ruled("pointer");
   try {
     await publishPointerDeclared(root, SCOPE, opus, PTR);
     let p = (await fold(root)).pointers;
@@ -686,7 +695,7 @@ test("a pointer folds through its three acts, and the guards bind at this end to
 });
 
 test("the fold refuses a pointer nobody can evaluate, and one that arrives pre-retired", async () => {
-  const root = await log("pointer-guards");
+  const root = await ruled("pointer-guards");
   try {
     await damage(probe.publishPointerDeclared(root, SCOPE, opus, { ...PTR, id: "pt_mute", rationale: "   " }), "no rationale, nothing to judge");
     await damage(probe.publishPointerDeclared(root, SCOPE, opus, { ...PTR, id: "pt_bad", target: { kind: "spec" as never, id: "x" } }),
@@ -707,14 +716,14 @@ test("the fold refuses a pointer nobody can evaluate, and one that arrives pre-r
 });
 
 const POP = {
-  id: "pop_1", requirementId: "r_x", basis: "lint" as const, lint: ["a_lint"],
+  id: "pop_1", requirementId: RULE, basis: "lint" as const, lint: ["a_lint"],
   witnesses: [{ anchorId: "a_lint", bodyHash: "h1:sha256:abc" }],
   members: [{ id: "GET /orders", state: "conforms" as const }, { id: "GET /invoices", state: "violates" as const }],
   state: "active" as const, pinnedBy: izzie, pinnedAt: "2026-08-14T00:00:00.000Z",
 };
 
 test("a population pin folds, and supersedes the one it names in the same act", async () => {
-  const root = await log("population");
+  const root = await ruled("population");
   try {
     await publishPopulationPinned(root, SCOPE, izzie, POP);
     assert.deepEqual((await fold(root)).populations.map((p) => [p.id, p.state]), [["pop_1", "active"]]);
@@ -739,7 +748,7 @@ test("a population pin folds, and supersedes the one it names in the same act", 
  * only writers who ask, which is the one-end mistake this subsystem has shipped four times.
  */
 test("the fold refuses an empty pin, and an agent narrowing a population", async () => {
-  const root = await log("population-guards");
+  const root = await ruled("population-guards");
   try {
     await damage(probe.publishPopulationPinned(root, SCOPE, izzie, { ...POP, id: "pop_empty", members: [] }),
       "zero members is green, and green reads as conformant");
@@ -776,10 +785,10 @@ test("the fold refuses an empty pin, and an agent narrowing a population", async
  * this rule" is how one of them stops participating in conformance.
  */
 test("a covering audit folds, and the fold restates the gates the tool cannot bind", async () => {
-  const root = await log("scrub");
+  const root = await ruled("scrub");
   try {
     const base = {
-      id: "sc_1", requirementId: "r_x", outcome: "indeterminate" as const, evidence: {},
+      id: "sc_1", requirementId: RULE, outcome: "indeterminate" as const, evidence: {},
       observations: [] as { pointerId: string; firing: boolean }[],
       finding: "looked; nothing watches it", trigger: "scrub" as const,
       witnesses: [], auditor: opus, at: "2026-08-18T00:00:00.000Z",
@@ -796,7 +805,7 @@ test("a covering audit folds, and the fold restates the gates the tool cannot bi
     // that skips an ACTIVE pointer buys a fresh coverage period without having looked at
     // it. The fold reads the pointer state from its OWN map — the team's view of what was
     // active, not the writer's account of it.
-    await publishPointerDeclared(root, SCOPE, opus, { ...PTR, id: "pt_w", requirementId: "r_x" });
+    await publishPointerDeclared(root, SCOPE, opus, { ...PTR, id: "pt_w", requirementId: RULE });
     await damage(probe.publishAudit(root, SCOPE, opus, { ...base, id: "sc_skip", at: "2026-08-19T00:00:00.000Z" }),
       "an omitted pointer is an unlooked-at rule");
 
@@ -837,7 +846,7 @@ test("the scrub policy is one decision, and one that cannot do its job is droppe
  * left holding TWO active populations, which is a state nothing else models.
  */
 test("an agent cannot narrow a population by omitting what it supersedes", async () => {
-  const root = await log("population-supersede");
+  const root = await ruled("population-supersede");
   try {
     await publishPopulationPinned(root, SCOPE, izzie, POP);
     assert.deepEqual((await fold(root)).populations.map((p) => [p.id, p.state]), [["pop_1", "active"]]);
@@ -859,7 +868,7 @@ test("an agent cannot narrow a population by omitting what it supersedes", async
  * `spec.ratified` pins its operation list against.
  */
 test("a rule holds exactly one active population, whatever order the events arrive in", async () => {
-  const root = await log("population-order");
+  const root = await ruled("population-order");
   try {
     // The superseding pin arrives FIRST, naming a pin this fold has not seen.
     await publishPopulationPinned(root, SCOPE, izzie, {
@@ -874,7 +883,7 @@ test("a rule holds exactly one active population, whatever order the events arri
 });
 
 test("the fold blocks an agent erasing a populated rule by declaring it inexpressible", async () => {
-  const root = await log("population-inexpressible");
+  const root = await ruled("population-inexpressible");
   try {
     await publishPopulationPinned(root, SCOPE, izzie, POP);
     // Replacing a lint pin of 2 members with "no lint can express this" drops both — it is
@@ -896,12 +905,12 @@ test("the fold blocks an agent erasing a populated rule by declaring it inexpres
 });
 
 test("the fold refuses a covering audit observing pointers that are not on the rule", async () => {
-  const root = await log("scrub-phantom");
+  const root = await ruled("scrub-phantom");
   try {
-    await publishPointerDeclared(root, SCOPE, opus, { ...PTR, id: "pt_mine", requirementId: "r_x" });
-    await publishPointerDeclared(root, SCOPE, opus, { ...PTR, id: "pt_other", requirementId: "r_other" });
+    await publishPointerDeclared(root, SCOPE, opus, { ...PTR, id: "pt_mine", requirementId: RULE });
+    await publishPointerDeclared(root, SCOPE, opus, { ...PTR, id: "pt_other", requirementId: RULE2 });
     const base = {
-      id: "sc_1", requirementId: "r_x", finding: "looked", outcome: "indeterminate" as const,
+      id: "sc_1", requirementId: RULE, finding: "looked", outcome: "indeterminate" as const,
       evidence: {}, witnesses: [], trigger: "scrub" as const, auditor: opus, at: "2026-08-23T00:00:00.000Z",
     };
     // A phantom fabricates history for a pointer on ANOTHER rule: `pointerRates` tallies by
@@ -1375,7 +1384,7 @@ test("the fold refuses an operation added to a spec that is already ratified", a
  */
 test("the fold refuses an acknowledgement with no release condition", async () => {
   const base = {
-    id: "ack_1", basis: "debt" as const, requirementId: "req_1", rationale: "scheduled for Q4",
+    id: "ack_1", basis: "debt" as const, requirementId: RULE, rationale: "scheduled for Q4",
     priority: "high" as const, revalidateBy: "2027-01-01",
     grantedBy: izzie, grantedAt: "2026-08-01T00:00:00.000Z", state: "active" as const,
   };
@@ -1385,14 +1394,14 @@ test("the fold refuses an acknowledgement with no release condition", async () =
     ["no priority", { priority: undefined }],
     ["no rationale", { rationale: "  " }],
   ] as const) {
-    const root = await log("ack-bad");
+    const root = await ruled("ack-bad");
     try {
       await rejected(probe.publishAckGranted(root, SCOPE, izzie, { ...base, ...bad } as Acknowledgement), `${what} must not fold`);
     } finally { discard(root); }
   }
   // The well-formed one folds, so the four above are refused for their field and not
   // because this path refuses everything.
-  const good = await log("ack-good");
+  const good = await ruled("ack-good");
   try {
     await publishAckGranted(good, SCOPE, izzie, base as Acknowledgement);
     assert.equal((await fold(good)).acknowledgements.length, 1);
@@ -1731,9 +1740,13 @@ test("plan 1.3: a draft edit that raced the adoption did not land, and is record
 });
 
 test("plan 1.3: two different adjudications at once hold the problem; the same one twice settles quietly", async () => {
-  const root = await log("adj");
+  const root = await ruled("adj");
   try {
-    const P: Problem = { id: "pr_1", requirementId: "r_x", auditId: "au_1", summary: "s", raisedBy: opus, raisedAt: "2026-08-01T00:00:00.000Z" };
+    await publishAudit(root, SCOPE, opus, {
+      id: "au_1", requirementId: RULE, outcome: "nonconformant", evidence: { read: ["a_1"] },
+      witnesses: [{ anchorId: "a_1", bodyHash: "h1:sha256:abc" }], finding: "no", auditor: opus, at: "2026-08-01T00:00:00.000Z",
+    });
+    const P: Problem = { id: "pr_1", requirementId: RULE, auditId: "au_1", summary: "s", raisedBy: opus, raisedAt: "2026-08-01T00:00:00.000Z" };
     await publishProblemRaised(root, SCOPE, opus, P);
     const before = await heads(root);
     await publishAdjudication(root, SCOPE, izzie, "pr_1", "code-wrong", "fix the code", "2026-08-02T00:00:00.000Z");
