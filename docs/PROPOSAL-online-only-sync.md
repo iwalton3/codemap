@@ -1,9 +1,10 @@
 # PROPOSAL — online-only sync: the git remote is the serializer
 
-> **Kind: proposal, UNRATIFIED.** Drafted 2026-09-29 for the owner to review and mark up. Nothing
-> here is decided until the owner rules; the open decisions are numbered **D1…** so they can be
-> answered by number. Where this disagrees with `docs/sidecar-architecture.md`, that document still
-> governs until this one is ratified.
+> **Kind: RATIFIED 2026-09-30.** Drafted 2026-09-29; the owner's rulings are in § "Owner rulings,
+> 2026-09-30" and § "Planning rulings, 2026-09-30", which settle D1–D10. The work plan is the
+> `ez-plan` run `2026-09-30-online-only-sync` (`.git/plan/`, untracked). Where this disagrees with
+> `docs/sidecar-architecture.md`, this document governs until that one is rewritten for the linear
+> model. § "Open decisions" is kept as the questions that were asked; the rulings answer them.
 
 ## Why
 
@@ -74,7 +75,7 @@ questionnaires, the backlog.
 
 ## Owner rulings, 2026-09-30
 
-Verbatim first; the reading under each is not ratified.
+Verbatim first; the reading under each was ratified with the rest on 2026-09-30.
 
 - **Tampering is out of scope.** *"I mean they can [force-push], but the app won't do it. Tampering
   with the git repo itself is out of scope for us to protect against."* Reading: the app never
@@ -153,7 +154,55 @@ Verbatim first; the reading under each is not ratified.
   "upgrade codemap" line, because the old build's refusal shows only a short sample and otherwise
   reads as damage that `docs/log-repair.md` invites someone to repair away.
 
-## Open decisions (for the owner)
+## Planning rulings, 2026-09-30
+
+Given while the plan was drafted; the owner's words verbatim, the session's reading after each.
+
+- **The goal** (the session's wording, approved as written): *"Shared state is online-only. The git
+  remote is the one serializer, and every event on it was validated, by its own precondition and its
+  references, against the log exactly as it stood before it."*
+- **Every kind is validated, with foreign keys.** *"Every Kind, FKs for all item types where
+  applicable (we previously descoped this in the past due to fold conflicts, it is in scope now)"*.
+  Reading: replay re-runs each write's own precondition against the tip, for every kind, not only
+  the kinds checked today (decisions, the standard).
+- **Newer versus damage.** *"Anything that parses and isn't expected, existing expected FK checks
+  failing means damage, corrupt data is damage"*. Reading: three outcomes. *Newer* (parses but is
+  not expected, or a reference resolves to a kept event this build cannot fold: *"Newer, not
+  damage"*) blocks pushes and allows reads. *Damage* (bytes that are not JSON, or a reference check
+  on expected data that fails) locks the application. *Not a foreign key*: *"local-only generated
+  items that aren't synced are NOT FKs for the purposes of damage and sync blocking, it might just be
+  a stale checkout that becomes valid later."* Anchors are local-only, so a finding citing an anchor
+  never fails a reference check.
+- **Dead sessions.** *"Try applying it when the session dies, if it fails it's shown as a conflict on
+  next open"*; for a dead MCP session, *"Same as a closed tab"*. Reading: the server attempts the
+  session's staged ops (a transaction all-or-nothing); a refusal becomes a local conflict shown by
+  the next MCP session or web page on this machine.
+- **Sort corrections: later supersedes, except removing sites.** *"Later one supersedes"*, narrowed
+  by *"Narrowing needs a ruling"*: a correction made after the previous one replaces it, except one
+  that REMOVES sites, which needs a logged ruling citing why those sites are not instances. Adding
+  sites or rewording is free. R5's ruling requirement (33db8ed) survives for removal only.
+- **Dangling references in the live sidecar.** *"We should measure first to see what the extent of
+  the reference issues might be on current codemap-sidecar."* The plan measures, then asks per class.
+- **K5, K7, K8, the migration check, push metrics** — *"Approve all as written"*:
+  - K5: withdrawing one side of a confirm dispute releases the dispute;
+  - K7: re-filing a site bug refreshes the confirmations it inherited from its finding;
+  - K8: a finding on an open pull request judges its repair's source against the PR's head branch
+    (`linkedBranches`);
+  - the migration check: identical projections, except differences each traced to a named deleted
+    concurrency hold;
+  - record push latency and rate at every sync, warn above 6 per minute, never throttle.
+- **Critical (blocks the merge):** *"A write vanishes silently, Invalid data reaches remote, Old build
+  not stopped"*. A spurious conflict (a refusal where nothing the write depended on changed) is not
+  critical and is filed as a bug.
+- **Acceptance:** *"Same bar + cutover test + mutation test the system to ensure corrupted sidecars
+  and corrupted writes with broken FKs reject"*. Reading: `npm test` green; every new rule with a
+  check observed failing at the commit before it; `main`'s build run against the tripwire; the
+  migration run on a copy of the live sidecar; mutation tests for corrupt bytes, a truncated shard, a
+  dangling shared reference, and staged ops with a broken reference or a precondition the tip no
+  longer meets; one review round sorted by `/triage-review` before anything is applied. The merge,
+  push, live migration and prod update wait for the owner: *"Wait for my word"*.
+
+## Open decisions (as asked; answered by the rulings above)
 
 - **D1 — Does an act sync inline or in the background?** *Recommended: inline for single acts.* The
   op stages, syncs and returns the outcome, so a rejection reaches the caller while it is still
@@ -217,5 +266,5 @@ failure this table exists to catch. They are carried into the rework as ordinary
 
 ## Next
 
-The owner marks up this document and answers D1–D10. A plan follows from the ratified version. No
-code before that.
+Ratified 2026-09-30. The plan is `ez-plan` run `2026-09-30-online-only-sync`; the rework is on the
+branch `online-only-sync`, cut from the ratifying commit.
