@@ -344,7 +344,7 @@ describe("shared review UI", { skip: pw ? false : "playwright not resolvable (se
     // meaning here — neither writer's `after` names the other's event — and the
     // whole detector turns on it. Writing the events directly is the only way to be
     // sure the fixture is testing that rather than two sequential edits.
-    const { appendEvents, mintId } = await import("../eventlog.js");
+    const { appendLinear, mintId } = await import("../eventlog.js");
     const { findingScope } = await import("../shared-findings.js");
     // NOT the workspace universe id: `universeKey` lowercases, and a mkdtemp name
     // contains uppercase, so the two namespaces differ. The sidecar scope is
@@ -358,11 +358,11 @@ describe("shared review UI", { skip: pw ? false : "playwright not resolvable (se
     const created = testEvent({ id: mintId(), kind: "finding.created", subject: "f_contest", actor: izzie,
       writer: "w_izzie_clone_a",
       data: { targetKind: "anchor", targetId: anchorId, text: "evidence", comment: "the ask", severity: "medium" } });
-    await appendEvents(side, scope, "w_izzie_clone_a", [created]);
+    await appendLinear(side, scope, [created]);
     // Both name `created` as what they had seen — and NOT each other.
-    await appendEvents(side, scope, "w_izzie_clone_a", [testEvent({ id: mintId(), kind: "finding.revised", subject: "f_contest",
+    await appendLinear(side, scope, [testEvent({ id: mintId(), kind: "finding.revised", subject: "f_contest",
       actor: izzie, writer: "w_izzie_clone_a", writerPrev: created.id, after: [created.id], data: { now: { severity: "critical" } } })]);
-    await appendEvents(side, scope, "w_dana_clone_a", [testEvent({ id: mintId(), kind: "finding.revised", subject: "f_contest",
+    await appendLinear(side, scope, [testEvent({ id: mintId(), kind: "finding.revised", subject: "f_contest",
       actor: dana, writer: "w_dana_clone_a", after: [created.id], data: { now: { severity: "low" } } })]);
 
     const { page, errors } = await open(`/u/${universe}/shared/900/`);
@@ -403,7 +403,7 @@ describe("shared review UI", { skip: pw ? false : "playwright not resolvable (se
     // The distinction the whole classification exists for. `offTree` must render as
     // information, never as an action item, or the queue fills with other people's
     // branches.
-    const { appendEvents, mintId } = await import("../eventlog.js");
+    const { appendLinear, mintId } = await import("../eventlog.js");
     const { findingScope } = await import("../shared-findings.js");
     const { universeKey } = await import("../sidecar-config.js");
     const { writeSnapshot } = await import("../store.js");
@@ -416,7 +416,7 @@ describe("shared review UI", { skip: pw ? false : "playwright not resolvable (se
     await writeSnapshot(root, "cafebabe", "feature/elsewhere", [{ ...live, id: "a_only_on_branch" }], "2026-08-22T00:00:00Z");
 
     const scope = findingScope(`${uKey}/pr-901`);
-    await appendEvents(side, scope, "w_izzie_clone_a", [testEvent({
+    await appendLinear(side, scope, [testEvent({
       id: mintId(), kind: "finding.created", subject: "f_offtree", actor: izzie, writer: "w_izzie_clone_a",
       data: { targetKind: "anchor", targetId: "a_only_on_branch", text: "evidence", comment: "about a branch symbol" },
     })]);
@@ -434,7 +434,7 @@ describe("shared review UI", { skip: pw ? false : "playwright not resolvable (se
   });
 
   test("an agent's relocation proposal is visible and a person applies it", async () => {
-    const { appendEvents, mintId } = await import("../eventlog.js");
+    const { appendLinear, mintId } = await import("../eventlog.js");
     const { findingScope } = await import("../shared-findings.js");
     const { universeKey } = await import("../sidecar-config.js");
     const izzie = { principal: "izzie@x.com" };
@@ -445,8 +445,8 @@ describe("shared review UI", { skip: pw ? false : "playwright not resolvable (se
     const created = testEvent({ id: mintId(), kind: "finding.created", subject: "f_moved", actor: izzie,
       writer: "w_izzie_clone_a",
       data: { targetKind: "anchor", targetId: "a_vanished", text: "evidence", comment: "about a renamed symbol" } });
-    await appendEvents(side, scope, "w_izzie_clone_a", [created]);
-    await appendEvents(side, scope, "w_izzie_clone_a", [testEvent({
+    await appendLinear(side, scope, [created]);
+    await appendLinear(side, scope, [testEvent({
       id: mintId(), kind: "finding.relocation", subject: "f_moved", actor: opus,
       writer: "w_izzie_clone_a", writerPrev: created.id, after: [created.id],
       data: { kind: "moved", to: anchorId, rationale: "renamed in abc123; same body, new name" },
@@ -473,7 +473,7 @@ describe("shared review UI", { skip: pw ? false : "playwright not resolvable (se
   test("a linked branch's finding is acted on from its pull request's page, in the branch's own review", async () => {
     // The pull request page lists its linked branches' findings, but every button used
     // to send the PAGE's number, so the act landed in a scope that has no such finding.
-    const { appendEvents, mintId } = await import("../eventlog.js");
+    const { appendLinear, mintId } = await import("../eventlog.js");
     const { findingScope } = await import("../shared-findings.js");
     const { universeKey } = await import("../sidecar-config.js");
     const { findingKeyScope, branchKey } = await import("../review-target.js");
@@ -485,8 +485,8 @@ describe("shared review UI", { skip: pw ? false : "playwright not resolvable (se
     const created = testEvent({ id: mintId(), kind: "finding.created", subject: "f_onbranch", actor: izzie,
       writer: "w_izzie_clone_a",
       data: { targetKind: "anchor", targetId: "a_vanished2", text: "evidence", comment: "on the branch", branch: "feature/linked" } });
-    await appendEvents(side, scope, "w_izzie_clone_a", [created]);
-    await appendEvents(side, scope, "w_izzie_clone_a", [testEvent({
+    await appendLinear(side, scope, [created]);
+    await appendLinear(side, scope, [testEvent({
       id: mintId(), kind: "finding.relocation", subject: "f_onbranch", actor: opus,
       writer: "w_izzie_clone_a", writerPrev: created.id, after: [created.id],
       data: { kind: "moved", to: anchorId, rationale: "renamed in def456" },
@@ -516,7 +516,7 @@ describe("shared review UI", { skip: pw ? false : "playwright not resolvable (se
     // §7 lets a blocked scope render its rows explicitly non-authoritative, which
     // is only worth anything if the page actually says so — and the failure mode
     // is a banner nobody notices, so this asserts on the rows too.
-    const { appendEvents, mintId } = await import("../eventlog.js");
+    const { appendLinear, mintId } = await import("../eventlog.js");
     const { findingScope } = await import("../shared-findings.js");
     const { universeKey } = await import("../sidecar-config.js");
     const scope = findingScope(`${universeKey(root)}/pr-903`);
@@ -524,8 +524,8 @@ describe("shared review UI", { skip: pw ? false : "playwright not resolvable (se
     const base = { kind: "finding.created", subject: "f_forked", actor: izzie, at: "t",
       data: { targetKind: "anchor", targetId: anchorId, text: "evidence", comment: "the ask" } };
     // Two events of ONE writer both opening the chain: a copied clone id.
-    await appendEvents(side, scope, "w_copied", [testEvent({ ...base, id: mintId(), writerPrev: "GENESIS", writer: "w_copied" })]);
-    await appendEvents(side, scope, "w_copied", [testEvent({
+    await appendLinear(side, scope, [testEvent({ ...base, id: mintId(), writerPrev: "GENESIS", writer: "w_copied" })]);
+    await appendLinear(side, scope, [testEvent({
       id: mintId(), kind: "finding.commented", subject: "f_forked", actor: izzie,
       writer: "w_copied", writerPrev: "GENESIS", data: { body: "from the other clone" },
     })]);
