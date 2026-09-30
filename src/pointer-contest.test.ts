@@ -1,17 +1,17 @@
 /**
- * Two auditors re-baselining one pointer from two branches.
+ * Two auditors re-baselining one pointer.
  *
- * A re-baseline REWRITES a value, which is the one shape in the shared design that can
- * genuinely conflict — everything else is append-only or a latch. The fold resolved it to
- * whoever folded last, silently, and in load-bearing code (a pricing engine is the case
- * that prompted this) the discarded side is an observation of the other direction the
- * codebase is being taken in. Both are correct. Keeping the residue is not arbitration;
- * it is handing whoever audits next the context that was being thrown away.
+ * A re-baseline REWRITES a value. Under the merge-era log two auditors restating apart were
+ * kept as a contest. The log is linear now (owner, D6: delete every hold keyed on "neither
+ * writer saw the other"), so a restatement is a sequential act: one written after reading the
+ * other supersedes it, and one replayed after a restatement its writer never read is refused
+ * and its author told — the observation it would silently replace was never read.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { scenario, who, concurrently, settle, type Scenario } from "./scenario.js";
+import { scenario, who, settle, inSequence, type Scenario } from "./scenario.js";
 import { readScope } from "./eventlog.js";
+import { begin, dropOp, staged, syncSession } from "./sync-engine.js";
 import { foldStandard, standardScope, publishOperation, publishPointerDeclared, publishPointerRestated, publishSpecDrafted } from "./shared-standard.js";
 import { requirementIdFor, type BugWitness } from "./schema.js";
 import { ratifyWithReview } from "./test-approve.js";
@@ -19,6 +19,7 @@ import { ratifyWithReview } from "./test-approve.js";
 const U = "acme/api";
 const SCOPE = standardScope(U);
 const BASE: BugWitness[] = [{ anchorId: "a_credit", bodyHash: "h2:d0:sha256:aaa" }];
+const W = (h: string): BugWitness[] => [{ anchorId: "a_credit", bodyHash: `h2:d0:sha256:${h}` }];
 
 const pointerOf = async (s: Scenario, principal: string) =>
   foldStandard(await readScope(who(s, principal).sidecar, SCOPE)).pointers[0]!;
@@ -44,49 +45,43 @@ async function team(fn: (s: Scenario) => Promise<void>) {
   } finally { s.dispose(); }
 }
 
-test("two auditors re-baselining one pointer apart is CONTESTED, not last-writer-wins", async () => {
-  await team(async (s) => {
-    await concurrently(
-      s,
-      "izzie@x.com", (p) => publishPointerRestated(p.sidecar, SCOPE, p.actor, "pt_1", "2026-08-12T00:00:00.000Z",
-        [{ anchorId: "a_credit", bodyHash: "h2:d0:sha256:izzie" }]),
-      "dana@x.com", (p) => publishPointerRestated(p.sidecar, SCOPE, p.actor, "pt_1", "2026-08-12T00:00:01.000Z",
-        [{ anchorId: "a_credit", bodyHash: "h2:d0:sha256:dana" }]),
-    );
-    await settle(s);
+test("a restatement replayed after one its writer never read is refused, and the one that landed stands", async () => {
+  for (const mine of ["izzie", "dana"]) {  // different from dana's, then identical to it
+    await team(async (s) => {
+      const izzie = who(s, "izzie@x.com"), dana = who(s, "dana@x.com");
+      begin(izzie.sidecar);
+      await publishPointerRestated(izzie.sidecar, SCOPE, izzie.actor, "pt_1", "2026-08-12T00:00:00.000Z", W(mine));
+      await publishPointerRestated(dana.sidecar, SCOPE, dana.actor, "pt_1", "2026-08-12T00:00:01.000Z", W("dana"));
+      const refused = await syncSession(izzie.sidecar, izzie.actor);
+      assert.ok("error" in refused && refused.conflicts?.length, `izzie's restatement must be refused: ${JSON.stringify(refused)}`);
+      assert.deepEqual(refused.conflicts!.map((c) => c.kind), ["pointer.restated"]);
+      assert.match(refused.conflicts![0]!.why, /another restatement landed that this one did not see/);
 
-    for (const p of ["izzie@x.com", "dana@x.com"]) {
-      const pt = await pointerOf(s, p);
-      const c = (pt.contested ?? []).find((x) => x.field === "witnesses");
-      assert.ok(c, `${p} folded no contest — the other auditor's baseline was thrown away`);
-      // Both sides survive, and each names WHO, because that is the context the residue
-      // exists to hand over. A conflict whose sides are anonymous is one nobody acts on.
-      const sides = [c!.held.by, c!.incoming.by].sort();
-      assert.deepEqual(sides, ["dana@x.com", "izzie@x.com"]);
-    }
-  });
+      // Dropped, re-read, restated: sequential now, so it supersedes.
+      assert.ok(dropOp(izzie.sidecar, staged(izzie.sidecar)[0]!.event.id).ok);
+      await settle(s);
+      await publishPointerRestated(izzie.sidecar, SCOPE, izzie.actor, "pt_1", "2026-08-12T00:00:02.000Z", W("izzie2"));
+      await settle(s);
+      for (const p of ["izzie@x.com", "dana@x.com"]) {
+        const pt = await pointerOf(s, p);
+        assert.deepEqual(pt.witnesses, W("izzie2"), `${p} folds the restatement made having read dana's`);
+        assert.equal(pt.restatedBy?.principal, "izzie@x.com");
+      }
+    });
+  }
 });
 
-test("…and two auditors who agree raise NOTHING — the residue is not noise", async () => {
-  // The trap this guards: `applyRevision` compares with `===`, so a witness ARRAY is
-  // never equal to an identical one. Without an order-insensitive comparator every
-  // concurrent restate contests, including the ordinary case where both auditors
-  // baselined the same code and agree completely — the eager failure that trains people
-  // to clear the state without reading it.
+test("a restatement made after reading the previous one supersedes it", async () => {
   await team(async (s) => {
-    const same: BugWitness[] = [
-      { anchorId: "a_credit", bodyHash: "h2:d0:sha256:agreed" },
-      { anchorId: "a_other", bodyHash: "h2:d0:sha256:agreed2" },
-    ];
-    await concurrently(
+    await inSequence(
       s,
-      "izzie@x.com", (p) => publishPointerRestated(p.sidecar, SCOPE, p.actor, "pt_1", "2026-08-12T00:00:00.000Z", same),
-      // Same set, opposite order — `watched()` makes no ordering promise, so order must
-      // not decide whether two auditors are held to disagree.
-      "dana@x.com", (p) => publishPointerRestated(p.sidecar, SCOPE, p.actor, "pt_1", "2026-08-12T00:00:01.000Z", [...same].reverse()),
+      "izzie@x.com", (p) => publishPointerRestated(p.sidecar, SCOPE, p.actor, "pt_1", "2026-08-12T00:00:00.000Z", W("izzie")),
+      "dana@x.com", (p) => publishPointerRestated(p.sidecar, SCOPE, p.actor, "pt_1", "2026-08-12T00:00:01.000Z", W("dana")),
     );
-    await settle(s);
-    const pt = await pointerOf(s, "izzie@x.com");
-    assert.deepEqual(pt.contested ?? [], [], "agreeing is not conflict");
+    for (const p of ["izzie@x.com", "dana@x.com"]) {
+      const pt = await pointerOf(s, p);
+      assert.deepEqual(pt.witnesses, W("dana"));
+      assert.equal(pt.restatedBy?.principal, "dana@x.com");
+    }
   });
 });

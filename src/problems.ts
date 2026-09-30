@@ -38,7 +38,7 @@ import {
 } from "./store.js";
 import { isAgentActor, requireActor } from "./identity.js";
 import type { ActorInput } from "./identity.js";
-import { disposition as shareDisposition, shareAdjudication, shareProblemRaised, shareProblemConflictResolved } from "./standard-publish.js";
+import { disposition as shareDisposition, shareAdjudication, shareProblemRaised } from "./standard-publish.js";
 import { auditsFor, type ServedAudit } from "./audits.js";
 
 const mint = () => "pr_" + randomBytes(6).toString("hex");
@@ -161,8 +161,9 @@ export async function adjudicate(
   if (isErr(who)) return who;
   const p = await readProblem(root, problemId);
   if (!p) return { error: `no problem "${problemId}"` };
+  // Owner, Q5: "no-op when identical, refusal when it differs". The fold says the same.
+  if (p.disposition === disposition) return { ok: true, problem: p };
   if (p.disposition) return { error: `${problemId} was already adjudicated as \`${p.disposition}\`` };
-  if (p.held?.length) return { error: `${problemId} is held between two adjudications (${p.held.map((h) => `${h.disposition} by ${h.by.principal}`).join(", ")}): a person who has read both picks one` };
 
   const at = now();
   const next: Problem = {
@@ -172,23 +173,6 @@ export async function adjudicate(
   if ("error" in d) return d;
   if (d.local) await writeLocalProblem(root, next);
   return { ok: true, problem: next };
-}
-
-/** A person picks one of two adjudications written at the same time (plan 1.3). */
-export async function keepProblemVerdict(
-  root: string, problemId: string, input: { keep: string; reason: string } & ActorInput,
-): Promise<{ ok: true; problem: Problem | null } | Err> {
-  const who = principal(root, input, "pick a side of a held problem");
-  if (isErr(who)) return who;
-  const reason = input.reason?.trim();
-  if (!reason) return { error: "say why this side" };
-  const p = await readProblem(root, problemId);
-  if (!p) return { error: `no problem "${problemId}"` };
-  if (!p.held?.length) return { error: `${problemId} is not held` };
-  if (!p.held.some((h) => h.event === input.keep)) return { error: `keep one of ${p.held.map((h) => `${h.event} (${h.disposition})`).join(", ")}` };
-  const d = shareDisposition(await shareProblemConflictResolved(root, problemId, input.keep, reason));
-  if ("error" in d) return d;
-  return { ok: true, problem: await readProblem(root, problemId) };
 }
 
 // --- reading (state is derived, never stored) --------------------------------

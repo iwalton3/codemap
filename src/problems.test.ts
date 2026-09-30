@@ -131,6 +131,19 @@ test("an agent cannot adjudicate, and there is no close verb to reach for instea
   } finally { discard(root); }
 });
 
+test("adjudicating again: the same verdict is a no-op, a different one is refused (owner, Q5)", async () => {
+  const { root, anchors } = await universe();
+  try {
+    const { problem } = await disagreement(root, anchors);
+    ok(await adjudicate(root, problem.id, "code-wrong", "the rule stands"));
+    const again = ok(await adjudicate(root, problem.id, "code-wrong", "still stands"));
+    assert.equal(again.problem.adjudicationReason, "the rule stands", "nothing new was written; the first stands");
+    const other = await adjudicate(root, problem.id, "accepted", "live with it");
+    assert.match((other as { error: string }).error, /already adjudicated as `code-wrong`/);
+    assert.equal((await listProblems(root))[0]!.disposition, "code-wrong");
+  } finally { discard(root); }
+});
+
 test("an un-adjudicated problem never reaches the fix queue", async () => {
   const { root, anchors } = await universe();
   try {

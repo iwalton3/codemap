@@ -52,8 +52,13 @@ import { causality, readScope, registerDoor, scopesOnDisk, sortEvents, type Door
 import { emitEvent } from "./write.js";
 import { foldHaltingOnDamage } from "./log-damage.js";
 import { standardEventShape } from "./log-shape.js";
-import { applyRevision, newContestState } from "./contest.js";
 import { signoffReferences } from "./ruling-references.js";
+
+/**
+ * Picks between concurrent verdicts, from before the log was linear. Old logs may hold them; the
+ * fold skips them (the hold they settled no longer exists) and the door refuses minting one.
+ */
+const RETIRED_KINDS = new Set(["spec.conflict.resolved", "problem.conflict.resolved"]);
 
 /** The EVIDENCE half — audits, pointers, populations, problems, debt. Per universe. */
 export const standardScope = (universe: string): string => `standard/${universe}`;
@@ -118,6 +123,7 @@ const evidenceScopes = async (logRoot: string): Promise<string[]> =>
 export const standardDoor = (logRoot: string, scope: string): DoorFold => async (events, minted) => {
   const wrong = standardEventShape(minted);
   if (wrong) return { refused: [{ id: minted.id, why: wrong }] };
+  if (RETIRED_KINDS.has(minted.kind)) return { refused: [{ id: minted.id, why: `${minted.kind} is no longer written: the log is linear, so there are no concurrent verdicts to pick between` }] };
   const others = scope === LAW_SCOPE ? await evidenceScopes(logRoot) : [LAW_SCOPE];
   const more = (await Promise.all(others.filter((s) => s !== scope).map((s) => readScope(logRoot, s)))).flat();
   return foldStandardReport(sortEvents([...events, ...more]));
@@ -182,13 +188,6 @@ export const publishSpecRatified = (
 export const publishSpecWithdrawn = (
   logRoot: string, scope: string, actor: Actor, specId: string, at: string, reason: string,
 ) => put(logRoot, scope, actor, "spec.withdrawn", specId, { at, reason });
-
-/** A person picks one side of a held verdict (plan 1.3): `keep` is the id of the verdict that stands. */
-export const publishSpecConflictResolved = (logRoot: string, scope: string, actor: Actor, specId: string, keep: string, reason: string) =>
-  put(logRoot, scope, actor, "spec.conflict.resolved", specId, { keep, reason });
-
-export const publishProblemConflictResolved = (logRoot: string, scope: string, actor: Actor, problemId: string, keep: string, reason: string) =>
-  put(logRoot, scope, actor, "problem.conflict.resolved", problemId, { keep, reason });
 
 export const publishAckGranted = (logRoot: string, scope: string, actor: Actor, ack: Acknowledgement) =>
   put(logRoot, scope, actor, "ack.granted", ack.id, { ack });
@@ -271,26 +270,6 @@ const str = (d: unknown, k: string): string | undefined => {
  * build does not model, and folding what it does understand is better than answering
  * nothing. What it must never do is drop a row it cannot PARSE — see `CorruptProjection`.
  */
-/** The one rewritable value on a pointer, and therefore the only one that can conflict. */
-const POINTER_CONTESTABLE = ["witnesses"] as const;
-
-/**
- * Do two baselines say the same thing?
- *
- * Identity is wrong here — two identical witness arrays are different objects, so `===`
- * would raise a contest on every concurrent restate, including the ordinary case where
- * both auditors baselined the same hashes and agree completely. Order-insensitive on
- * `anchorId`, because the set is what the baseline means and `watched()` makes no
- * ordering promise.
- */
-function sameBaseline(a: unknown, b: unknown): boolean {
-  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
-  const key = (w: BugWitness) => `${w.anchorId}\0${w.bodyHash}`;
-  const left = [...(a as BugWitness[])].map(key).sort();
-  const right = [...(b as BugWitness[])].map(key).sort();
-  return left.every((k, i) => k === right[i]);
-}
-
 /**
  * Is this actor barred from rewriting or pulling this operation, because somebody ELSE's
  * pending approval hangs off it?
@@ -391,8 +370,7 @@ export interface RefusedStandardEvent { id: string; kind: string; why: string }
 
 /**
  * The fold, HALTING on damage (`LogDamage`) and naming the entry, and the refusals that are not
- * damage — races. The write door asks it whether a new event would be applied (plan 1.1). A
- * ratification that lands `conflicted` is reported too: the act is kept, its application is not.
+ * damage — races. The write door asks it whether a new event would be applied (plan 1.1).
  */
 export function foldStandardReport(events: LogEvent[]): { value: SharedStandard; refused: RefusedStandardEvent[] } {
   return foldHaltingOnDamage(events, foldStandardWithRefusals, standardEventShape);
@@ -417,69 +395,13 @@ function foldStandardWithRefusals(events: LogEvent[]): { value: SharedStandard; 
   const acknowledgements = new Map<string, Acknowledgement>();
   const audits = new Map<string, Audit>();
   const problems = new Map<string, Problem>();
-  const contest = newContestState();
   const causal = causality(events);
-
-  // Opposing verdicts on one item, written concurrently (plan 1.3; owner, "split by kind"): a
-  // ratification and a withdrawal of one spec, or two different adjudications of one problem.
-  // Neither applies until a person who saw both picks one; the other side then did not land.
-  // Found up front because the pick is necessarily later in fold order than both sides.
-  const verdicts = new Map<string, LogEvent[]>(), picks = new Map<string, LogEvent[]>();
-  const push = (m: Map<string, LogEvent[]>, k: string, e: LogEvent) => m.set(k, [...(m.get(k) ?? []), e]);
-  for (const e of events) {
-    if (e.kind === "spec.ratified" || e.kind === "spec.withdrawn") push(verdicts, `spec:${e.subject}`, e);
-    else if (e.kind === "problem.adjudicated") push(verdicts, `problem:${e.subject}`, e);
-    else if (e.kind === "spec.conflict.resolved") push(picks, `spec:${e.subject}`, e);
-    else if (e.kind === "problem.conflict.resolved") push(picks, `problem:${e.subject}`, e);
-  }
-  const opposed = (a: LogEvent, b: LogEvent) => a.kind === "problem.adjudicated"
-    ? str(a.data, "disposition") !== str(b.data, "disposition") : a.kind !== b.kind;
-  const heldSides = new Map<string, Set<string>>();
-  for (const [k, vs] of verdicts) for (const a of vs) for (const b of vs) {
-    if (a.id < b.id && opposed(a, b) && !causal.saw(a.id, b.id) && !causal.saw(b.id, a.id))
-      heldSides.set(k, new Set([...(heldSides.get(k) ?? []), a.id, b.id]));
-  }
-  const kept = new Map<string, string>();
-  for (const [k, ps] of picks) {
-    const sides = heldSides.get(k);
-    const latest = new Map<string, LogEvent>();
-    for (const p of ps) {
-      const keep = str(p.data, "keep");
-      if (!sides || !keep || !sides.has(keep) || !str(p.data, "reason")?.trim()) { refuse(p, "a resolution names one side of a held conflict and why"); continue; }
-      if (p.actor.via) { refuse(p, "picking a side is a person's act"); continue; }
-      if (![...sides].every((id) => causal.saw(p.id, id))) { refuse(p, "a resolution is by someone who saw every side"); continue; }
-      latest.set(p.actor.principal, p);
-    }
-    // Each person's latest pick stands for them; two people picking differently stay held.
-    const keeps = new Set([...latest.values()].map((p) => str(p.data, "keep")));
-    if (keeps.size === 1) kept.set(k, [...keeps][0]!);
-  }
-  /** "held" while undecided, "lost" when a person kept another side, undefined otherwise. */
-  const holdOf = (e: LogEvent, k: string): "held" | "lost" | undefined =>
-    !heldSides.get(k)?.has(e.id) || kept.get(k) === e.id ? undefined : kept.has(k) ? "lost" : "held";
-  // What moved a spec out of draft, so a write that raced it is recorded for its author.
-  const closedBy = new Map<string, string>();
-  const late = (e: LogEvent, specId: string, raced: string, why: string) => {
-    const sp = specs.get(specId);
-    if (sp) specs.set(specId, { ...sp, lateActs: [...(sp.lateActs ?? []), { id: e.id, kind: e.kind, by: e.actor, at: e.at, raced, why }] });
-  };
-  /** A draft edit refused because the spec left draft: a race when its writer never saw that. */
-  const notDraft = (e: LogEvent, specId: string, why: string) => {
-    const by = closedBy.get(specId);
-    if (by && !causal.saw(e.id, by)) late(e, specId, by, why);
-    refuse(e, why);
-  };
-
-  const holdSpec = (e: LogEvent, sp: Spec, hold: "held" | "lost", act: "ratify" | "withdraw") => {
-    if (hold === "lost") {
-      const k = kept.get(`spec:${sp.id}`)!;
-      late(e, sp.id, k, "a person kept the other side");
-      refuse(e, `did not land: a person kept ${k}`);
-      return;
-    }
-    specs.set(sp.id, { ...sp, held: [...(sp.held ?? []), { event: e.id, act, by: e.actor, at: str(e.data, "at") ?? e.at }] });
-    refuse(e, "held: a ratification and a withdrawal of this spec were written at the same time");
-  };
+  // The ratification that adopted each spec: withdrawing a ratified spec retires law, so a
+  // withdrawal written without having seen the adoption was a withdrawal of a draft, and is
+  // refused rather than applied to something its writer never saw.
+  const adoptedBy = new Map<string, string>();
+  // The last restatement of each pointer: a restatement that did not see it is stale.
+  const restatedBy = new Map<string, string>();
 
   for (let i = 0; i < events.length; i++) {
     const e = events[i]!;
@@ -507,7 +429,7 @@ function foldStandardWithRefusals(events: LogEvent[]): { value: SharedStandard; 
         // An operation for a spec this fold has not seen drafted is kept: the drafting shard
         // may simply not have arrived, the same allowance `spec.ratified` makes above.
         const sp = specs.get(op.specId);
-        if (sp && sp.status !== "draft") { notDraft(e, sp.id, "the spec is no longer a draft"); break; }
+        if (sp && sp.status !== "draft") { refuse(e, "the spec is no longer a draft"); break; }
         operations.set(op.id, { ...op, origin: "sync" });
         break;
       }
@@ -529,7 +451,7 @@ function foldStandardWithRefusals(events: LogEvent[]): { value: SharedStandard; 
         const next = obj(e.data, "spec") as Spec | undefined;
         const sp = next?.id ? specs.get(next.id) : undefined;
         if (!next || !sp) { refuse(e, "only a draft spec is revised"); break; }
-        if (sp.status !== "draft") { notDraft(e, sp.id, "only a draft spec is revised"); break; }
+        if (sp.status !== "draft") { refuse(e, "only a draft spec is revised"); break; }
         if (!next.title?.trim()) { refuse(e, "a spec needs a title"); break; }
         // See `spec.operation.revised` for the argument. Same biconditional, over the
         // framing rather than the operation.
@@ -548,7 +470,7 @@ function foldStandardWithRefusals(events: LogEvent[]): { value: SharedStandard; 
         if (!next || !cur) { refuse(e, "no such operation"); break; }
         const sp = specs.get(cur.specId);
         if (!sp) { refuse(e, "only a draft's operations are corrected or pulled"); break; }
-        if (sp.status !== "draft") { notDraft(e, sp.id, "only a draft's operations are corrected or pulled"); break; }
+        if (sp.status !== "draft") { refuse(e, "only a draft's operations are corrected or pulled"); break; }
         // A kind change is a different operation validated against fields this one was
         // never written with; the tool refuses it and so does this.
         if (next.kind !== cur.kind) { refuse(e, "a correction cannot change an operation's kind"); break; }
@@ -650,10 +572,7 @@ function foldStandardWithRefusals(events: LogEvent[]): { value: SharedStandard; 
         // still carrying `withdrawnBy`/`withdrawnAt` — a spec that is both, which no verb
         // can undo, since a second ratification breaks here and a withdrawal refuses a spec
         // that is already withdrawn.
-        const hold = sp && holdOf(e, `spec:${sp.id}`);
-        if (sp && hold) { holdSpec(e, sp, hold, "ratify"); break; }
         if (!sp || sp.status !== "draft") { refuse(e, "only a draft is ratified"); break; }
-        if (sp.held?.length) { refuse(e, "the spec is held between a ratification and a withdrawal: a person picks one"); break; }
         // Adoption is a principal's act, and a remote clone sees only this row. Without
         // this the tool's gate binds nobody but the machine that ran it.
         if (e.actor.via) { refuse(e, "ratification is a person's act"); break; }
@@ -670,7 +589,7 @@ function foldStandardWithRefusals(events: LogEvent[]): { value: SharedStandard; 
         // not pull — and pins it, and the withdrawn rule is created on every clone. It even
         // reads as reviewed, because `operationContent` omits `removed` so the witness still
         // matches. Filtering here also makes the count differ from `pinned`, which the
-        // existing length check below turns into `conflicted` rather than a silent drop.
+        // length check below refuses rather than dropping silently.
         const mine = (pinned
           ? pinned.map((id) => operations.get(id)).filter((o): o is Operation => !!o && !o.removed)
           : [...operations.values()].filter((o) => o.specId === sp.id && !o.removed))
@@ -697,11 +616,6 @@ function foldStandardWithRefusals(events: LogEvent[]): { value: SharedStandard; 
         // reason every other gate is: this row reaching a teammate's clone was never seen
         // by their MCP call. Without it the witness binds one machine, and the machine it
         // binds is the one whose operator already chose to run the check.
-        //
-        // `conflicted` rather than a skip, exactly as a moved base is: the ratification
-        // really happened and the honest record says so; what did not happen is the
-        // application. A silent skip would leave the spec `draft` on the receiving clone
-        // with nothing saying why.
         const unread = !reviewComplete(reviewGap(sp, mine, [...reviews.values()], e.actor.principal));
         // The `add_requirement` operations this ratification carries, so a criterion naming
         // one can be checked against what actually landed rather than against a derived id.
@@ -711,7 +625,7 @@ function foldStandardWithRefusals(events: LogEvent[]): { value: SharedStandard; 
         // `applyOperation` skips an operation it cannot apply — a criterion aimed at a
         // non-`add_requirement`, a move with an empty end, an amend whose rule is gone. In
         // a bare loop each skip is silent, so a spec with one malformed operation folded
-        // `ratified` and NOT `conflicted`, carrying every OTHER operation: a partial
+        // `ratified`, carrying every OTHER operation: a partial
         // application, on the one surface that promises adoption is all-or-nothing, and
         // invisible because the spec looks adopted and the missing rule looks unproposed.
         //
@@ -722,17 +636,14 @@ function foldStandardWithRefusals(events: LogEvent[]): { value: SharedStandard; 
         const dryR = new Map(requirements), dryC = new Map(criteria);
         const allApply = mine.every((op) =>
           applyOperation(dryR, dryC, op, sp, e.actor, at, witnesses[op.id] ?? [], creating));
-        // `conflicted` rather than a skip, for the reason the moved-base case is: the
-        // ratification really happened and the honest record says so; what did not happen
-        // is the application.
+        // Refused whole, and the spec stays a draft: nothing of it applies, and at replay its
+        // author is told (owner, D6 — no ratified-but-applied-nothing state on a linear log).
         if (stale || unread || !allApply || (pinned && mine.length !== pinned.length)) {
-          specs.set(sp.id, { ...sp, status: "ratified", ratifiedBy: e.actor, ratifiedAt: at, conflicted: true });
-          closedBy.set(sp.id, e.id);
           refuse(e, `the ratification does not apply: ${[stale && "an operation's base moved", unread && "the ratifier has not signed off the text", !allApply && "an operation does not apply", pinned && mine.length !== pinned.length && "the pinned operations are not all live"].filter(Boolean).join("; ")}`);
           break;
         }
         specs.set(sp.id, { ...sp, status: "ratified", ratifiedBy: e.actor, ratifiedAt: at });
-        closedBy.set(sp.id, e.id);
+        adoptedBy.set(sp.id, e.id);
         for (const op of mine) applyOperation(requirements, criteria, op, sp, e.actor, at, witnesses[op.id] ?? [], creating);
 
         // Bind what the operations produced. The LOCAL path does this at ratification
@@ -785,10 +696,9 @@ function foldStandardWithRefusals(events: LogEvent[]): { value: SharedStandard; 
       }
       case "spec.withdrawn": {
         const sp = specs.get(e.subject);
-        const hold = sp && holdOf(e, `spec:${sp.id}`);
-        if (sp && hold) { holdSpec(e, sp, hold, "withdraw"); break; }
         if (!sp || sp.status === "withdrawn" || sp.status === "repealed") { refuse(e, "the spec is already withdrawn or repealed"); break; }
-        if (sp.held?.length) { refuse(e, "the spec is held between a ratification and a withdrawal: a person picks one"); break; }
+        const adoption = adoptedBy.get(sp.id);
+        if (adoption && !causal.saw(e.id, adoption)) { refuse(e, "the spec was ratified after its withdrawer read it: withdrawing it now would retire law they never saw adopted"); break; }
         // A withdrawal with no reason. `withdrawSpec` refuses one — "it stays on the record
         // as the act it is" — and the fold did not, so a client that skipped the field
         // removed rules from every clone's standard with nothing on the record saying why.
@@ -877,14 +787,7 @@ function foldStandardWithRefusals(events: LogEvent[]): { value: SharedStandard; 
             }
           }
         }
-        // `conflicted` CLEARED, not carried. A withdrawal this clone refused above marks
-        // the spec, and `{ ...sp }` would spread that mark onto the retry that succeeds —
-        // so a correctly withdrawn spec would read "the log and this clone disagree" for
-        // ever. The mark exists to be actionable, and one that never clears is noise on
-        // the most authoritative record here.
-        const { conflicted: _resolved, ...cleared } = sp;
-        specs.set(sp.id, { ...cleared, status: "withdrawn", withdrawnBy: e.actor, withdrawnAt: at });
-        if (cleared.status === "draft") closedBy.set(sp.id, e.id);
+        specs.set(sp.id, { ...sp, status: "withdrawn", withdrawnBy: e.actor, withdrawnAt: at });
         break;
       }
       case "ack.granted": {
@@ -913,7 +816,7 @@ function foldStandardWithRefusals(events: LogEvent[]): { value: SharedStandard; 
         if (ack.basis === "gap") {
           const op = ack.operationId ? operations.get(ack.operationId) : undefined;
           if (!op || op.kind !== "add_requirement") { refuse(e, "a gap is raised on an add_requirement operation"); break; }
-          if (specs.get(op.specId)?.status === "ratified") { notDraft(e, op.specId, "a gap is raised only while its spec is a draft"); break; }
+          if (specs.get(op.specId)?.status === "ratified") { refuse(e, "a gap is raised only while its spec is a draft"); break; }
         }
         // A GAP folds PENDING: it is part of an argument nobody has adopted yet, and it
         // silences nothing until ratification binds it — in the same act that creates the
@@ -1050,18 +953,13 @@ function foldStandardWithRefusals(events: LogEvent[]): { value: SharedStandard; 
           // What it loses is only that the ratifier did not see it, and a detector declared
           // after ratification never was seen.
           if (sp.status === "draft") pointers.set(p.id, { ...declared, state: "pending", origin: "sync" });
-          // RATIFIED AND APPLIED. A conflicted ratification carries `status: "ratified"` and
-          // applied NOTHING — no requirement, no criterion — so activating here mints a
-          // live detector watching a criterion that does not exist and a rule that was
-          // never created. `declarePointer` could not produce that state: it reads both
-          // records first. Checking the criterion rather than the flag, because the flag
-          // says why and this needs to know whether the thing being watched is there.
+          // Ratified AND its criterion exists. A ratification pins its operations, so a spec
+          // can be ratified without this one; activating then would mint a live detector
+          // watching a criterion nobody created. Checked on the criterion, not the status.
           else if (sp.status === "ratified" && criteria.has(criterionIdFor(against.id))) {
             pointers.set(p.id, { ...declared, state: "active", origin: "sync" });
           }
-          // Ratified but the criterion never landed — a conflicted adoption. Left PENDING,
-          // not activated and not dropped: the proposal really was made, and a later
-          // withdrawal or a clean re-ratification is what decides it.
+          // Ratified without this operation: left PENDING, not activated and not dropped.
           else if (sp.status === "ratified") {
             pointers.set(p.id, { ...declared, state: "pending", origin: "sync" });
           }
@@ -1083,15 +981,12 @@ function foldStandardWithRefusals(events: LogEvent[]): { value: SharedStandard; 
         if (!p || p.state !== "active") { refuse(e, "no such active pointer"); break; }
         const witnesses = obj(e.data, "witnesses") as BugWitness[] | undefined;
         if (!Array.isArray(witnesses)) { refuse(e, "a restatement carries witnesses"); break; }
-        // A re-baseline REWRITES a value, which is the one shape in this design that can
-        // genuinely conflict — everything else is append-only or a latch. Two auditors
-        // restating one pointer from two branches were silently resolved to whoever
-        // folded last, and in load-bearing code that is where the other auditor's
-        // observation was worth most. Both sides are correct; the fold keeps the residue
-        // and hands it to whoever audits next rather than picking.
-        const next: Pointer = { ...p, witnesses, restatedBy: e.actor, restatedAt: str(e.data, "at") ?? e.at };
-        applyRevision(next, e, { witnesses }, POINTER_CONTESTABLE, contest, causal, sameBaseline);
-        pointers.set(p.id, next);
+        // A re-baseline REWRITES a value, so one written without having seen the previous
+        // re-baseline would silently replace an observation its writer never read.
+        const prior = restatedBy.get(p.id);
+        if (prior && !causal.saw(e.id, prior)) { refuse(e, "another restatement landed that this one did not see: re-read the pointer and restate again"); break; }
+        pointers.set(p.id, { ...p, witnesses, restatedBy: e.actor, restatedAt: str(e.data, "at") ?? e.at });
+        restatedBy.set(p.id, e.id);
         break;
       }
       case "pointer.retired": {
@@ -1180,20 +1075,16 @@ function foldStandardWithRefusals(events: LogEvent[]): { value: SharedStandard; 
       }
       case "problem.adjudicated": {
         const p = problems.get(e.subject);
-        const hold = p && holdOf(e, `problem:${p.id}`);
-        if (p && hold === "held") {
-          problems.set(p.id, { ...p, held: [...(p.held ?? []), { event: e.id, disposition: str(e.data, "disposition") ?? "", by: e.actor, at: e.at, reason: str(e.data, "reason") ?? "" }] });
-          refuse(e, "held: another person adjudicated this problem differently at the same time");
-          break;
-        }
-        if (p && hold === "lost") { refuse(e, `did not land: a person kept ${kept.get(`problem:${p.id}`)}`); break; }
-        // The same verdict twice (two people at once) is the same outcome and settles quietly.
-        if (p?.disposition && p.disposition === str(e.data, "disposition")) break;
-        if (!p || p.disposition) { refuse(e, "no such open problem"); break; }
-        if (p.held?.length) { refuse(e, "the problem is held between two adjudications: a person picks one"); break; }
+        if (!p) { refuse(e, "no such problem"); break; }
         // The fold must not be more permissive than the tool: adjudication is a
         // principal's act, and a remote clone sees only this row.
         if (e.actor.via) { refuse(e, "adjudication is a person's act"); break; }
+        // A second adjudication: the same verdict is a no-op, a different one is refused
+        // (owner, Q5: "no-op when identical, refusal when it differs"). The first stands.
+        if (p.disposition) {
+          if (p.disposition !== str(e.data, "disposition")) refuse(e, `already adjudicated as ${p.disposition}`);
+          break;
+        }
         const disposition = str(e.data, "disposition");
         // Both of the tool's remaining checks, restated. Neither bound this end, and the
         // effect of the first is not cosmetic: an unrecognised verdict still counts as
@@ -1211,10 +1102,7 @@ function foldStandardWithRefusals(events: LogEvent[]): { value: SharedStandard; 
         });
         break;
       }
-      // Validated up front with the holds they settle; nothing to apply at their own position.
-      case "spec.conflict.resolved":
-      case "problem.conflict.resolved":
-        break;
+      // Unknown kinds and `RETIRED_KINDS`: skipped, never refused.
       default: break;
     }
   }
@@ -1281,8 +1169,7 @@ function applyOperation(
    * True when the operation applied; FALSE when it could not and was skipped.
    *
    * It used to return `void`, and a skip inside the caller's loop is a PARTIAL
-   * ratification: the spec lands `ratified` and NOT `conflicted` with one of its
-   * operations silently absent, on a surface whose whole promise is that adoption is
+   * ratification: the spec lands `ratified` with one of its operations silently absent, on a surface whose whole promise is that adoption is
    * all-or-nothing. The caller now dry-runs this over throwaway maps first — with this
    * function, so the check cannot drift from the thing it checks.
    */
@@ -1325,7 +1212,7 @@ function applyOperation(
     // That is not merely an ugly row. `shared-projections.ts` binds `r.section` against
     // `section TEXT NOT NULL` and `node:sqlite` throws on an undefined bind, so the merged
     // fold then fails on every subsequent read — permanently, from an append-only log
-    // nobody can edit. Refusing here makes the whole ratification `conflicted` instead.
+    // nobody can edit. Refusing here refuses the whole ratification instead.
     if (!op.title?.trim() || !op.section?.trim() || !op.statement?.trim() || !op.provenance?.trim()) return false;
     // The operation event was published when the operation was ADDED, before anything
     // bound a requirement to it — so the id is derived here rather than read off a field

@@ -257,7 +257,7 @@ test("every read on the standard ops surface goes through the scope marker", () 
     "acknowledgeDebt", "releaseAcknowledgement", "recordAudit", "recordVacuityCheck",
     "promoteProvisionalAudit", "raiseProblem", "adjudicate", "declarePointer", "proposePointer",
     "restatePointer", "retirePointer", "pinPopulation", "declareNotExpressible",
-    "setScrubPolicy", "keepSpecVerdict", "keepProblemVerdict",
+    "setScrubPolicy",
   ]);
   const exported = [...src.matchAll(/^export (?:const|async function) (\w+)/gm)].map((m) => m[1]!);
   const reads = exported.filter((n) => !WRITES.has(n));

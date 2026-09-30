@@ -1000,22 +1000,6 @@ export interface Spec {
   ratifiedBy?: Actor;
   ratifiedAt?: string;
   /**
-   * Adopted against a base that had already moved, so the fold applied NOTHING from it.
-   *
-   * Set by the fold, never written by a caller: it is a function of the log and every
-   * clone derives the same answer. The spec stays `ratified` because that act really
-   * happened — what did not happen is the application, and saying so is the honest record.
-   */
-  conflicted?: boolean;
-  /**
-   * A ratification and a withdrawal written concurrently: neither applies until a person who
-   * saw both picks one (`spec.conflict.resolved`; plan 1.3, owner's "split by kind"). Set by
-   * the fold; while it is set the spec is still a draft that nothing may adopt or withdraw.
-   */
-  held?: { event: string; act: "ratify" | "withdraw"; by: Actor; at: string }[];
-  /** Writes that raced this spec's adoption or withdrawal and did not land, for their authors. */
-  lateActs?: LateAct[];
-  /**
    * Withdrawal — taking a spec back. See `withdrawSpec`.
    *
    * The spec stays in the log and keeps its ratification: deleting a ratified spec would
@@ -1700,13 +1684,8 @@ export interface Problem {
   adjudicatedBy?: Actor;
   adjudicatedAt?: string;
   adjudicationReason?: string;
-  /** Two different verdicts written concurrently: open until a person picks one (plan 1.3). */
-  held?: { event: string; disposition: string; by: Actor; at: string; reason: string }[];
   origin?: string;
 }
-
-/** An act that raced another and did not land: shown to its author as "did not land: raced X". */
-export interface LateAct { id: string; kind: string; by: Actor; at: string; raced: string; why: string }
 
 /**
  * A requirement's id, DERIVED from the operation that creates it.
@@ -2183,16 +2162,6 @@ export interface Pointer {
    * from, which was the universe by construction back then.
    */
   universe?: string;
-  /**
-   * Two writers re-baselined this pointer without having seen each other.
-   *
-   * Kept rather than resolved, and that is the point: both baselines are CORRECT —
-   * they are observations from two directions the codebase is being taken in, not a
-   * disagreement to adjudicate. Silently keeping the last one destroys the context an
-   * auditor needs most in exactly the load-bearing code where two branches touch one
-   * rule at once. The fold cannot pick and must not pretend to.
-   */
-  contested?: Contested[];
   /**
    * The observable. **Aim as HIGH up the abstraction ladder as it reaches** — a lint
    * covers a population and survives any single site changing, a doc-of-a-pattern covers

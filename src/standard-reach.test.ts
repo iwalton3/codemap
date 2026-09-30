@@ -121,8 +121,6 @@ const MCP_EXEMPT: Record<string, string> = {
   reorganizeRequirement: "PRINCIPAL only",
   adjudicate: "PRINCIPAL only",
   acknowledgeDebt: "PRINCIPAL only",
-  keepSpecVerdict: "PRINCIPAL only: picking a side of a held verdict (plan 1.3)",
-  keepProblemVerdict: "PRINCIPAL only: picking a side of a held verdict (plan 1.3)",
   releaseAcknowledgement: "open to any actor, but it is the reader of the queue who notices",
 };
 

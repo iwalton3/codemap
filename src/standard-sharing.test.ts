@@ -347,7 +347,6 @@ test("a shared ratification reports what the FOLD did, not what it was asked to 
     assert.match(race.error, /the ratification does not apply: an operation's base moved/);
     const kept = await readSpec(b, mine.id);
     assert.equal(kept!.status, "draft");
-    assert.equal(kept!.conflicted, undefined);
     // And the standard is A's text, on both clones — B's once it folds the log again, which
     // its refused append no longer does for it.
     assert.equal(await materializeStandard(b, resolveSidecar(b)!), true);

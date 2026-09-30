@@ -119,8 +119,6 @@ const STANDARD_SHAPES: Record<string, Check> = {
   "scrub.policy": record({ policy: anyObj }),
   "problem.raised": record({ problem: record({ id: text }) }),
   "problem.adjudicated": record({ disposition: string, reason: string, at: opt(string) }),
-  "spec.conflict.resolved": record({ keep: text, reason: text }),
-  "problem.conflict.resolved": record({ keep: text, reason: text }),
 };
 
 const check = (shapes: Record<string, Check>, e: LogEvent): string | null => {

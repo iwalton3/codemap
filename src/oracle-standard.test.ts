@@ -46,7 +46,7 @@ import { universeKey } from "./sidecar-config.js";
 import { readAcknowledgements, readAudits } from "./store.js";
 import { readAnchorStore, readSpecs, readOperations } from "./store.js";
 import {
-  draftSpec, addOperation, ratifySpec, listRequirements, getSpec, pendingSpecs,
+  draftSpec, addOperation, ratifySpec, listRequirements, getSpec, pendingSpecs, withdrawSpec,
 } from "./requirements.js";
 import { ratifyReviewed } from "./test-approve.js";
 import { acknowledgeGap, listAcknowledgements } from "./acknowledgements.js";
@@ -193,7 +193,7 @@ test("the standard is one law across machines, and a race for it has one winner"
       // Izzie's amendment is still her draft, on both machines; nothing of it is law.
       for (const m of [izzie, ben]) {
         assert.deepEqual((await pendingSpecs(m.repo)).map((s) => s.spec.id), [izzieSpec]);
-        assert.equal((await readSpecs(m.repo, {})).some((s) => s.conflicted), false, "no conflicted ratification exists to land");
+        assert.equal((await readSpecs(m.repo, {})).find((s) => s.id === izzieSpec)?.status, "draft", "a refused ratification leaves nothing ratified");
       }
     });
 
@@ -274,6 +274,70 @@ test("the standard is one law across machines, and a race for it has one winner"
         "and his branch-local problem is still his, untouched by any of this");
     });
 
+    await checkSettled(t, ledger);
+  } finally {
+    t.dispose();
+  }
+});
+
+/**
+ * Opposing verdicts on one item, written apart. Under the merge-era log each held until a person
+ * picked a side (`*.conflict.resolved`); on the linear log the later sync is replayed against the
+ * earlier and refused (owner, D6), and nothing waits for a pick.
+ */
+test("opposing verdicts written apart: the later sync is refused, and the earlier stands on every clone", async () => {
+  const t: Team = await team([OWNER, MATE]);
+  const ledger = new Ledger();
+  try {
+    const izzie = who(t, OWNER), ben = who(t, MATE);
+    const transfer = await anchorFor(izzie, "src/pay.ts", "transfer");
+    const { specId } = await adopt(izzie, "Refund policy", [{
+      title: "Refunds are positive", section: "Payments/Refunds", statement: "A refund must be a positive amount.",
+    }]);
+    await settle(t);
+
+    // Ben withdraws the DRAFT he read; izzie ratifies it before his withdrawal syncs.
+    begin(ben.sidecar);
+    ok(await withdrawSpec(ben.repo, specId, { reason: "superseded by the ledger spec" }));
+    ok(await ratifyReviewed(izzie.repo, specId));
+    const withdrawal = await syncSession(ben.sidecar, ben.actor);
+    assert.ok("error" in withdrawal && withdrawal.conflicts?.length, `ben's withdrawal must be refused: ${JSON.stringify(withdrawal)}`);
+    assert.deepEqual(withdrawal.conflicts!.map((c) => c.kind), ["spec.withdrawn"]);
+    assert.match(withdrawal.conflicts![0]!.why, /ratified after its withdrawer read it/);
+    assert.ok(dropOp(ben.sidecar, staged(ben.sidecar)[0]!.event.id).ok);
+    await settle(t);
+    for (const m of [izzie, ben]) {
+      assert.equal((await readSpecs(m.repo, {})).find((s) => s.id === specId)?.status, "ratified", `${m.actor.principal}: the ratification stands`);
+      assert.deepEqual((await listRequirements(m.repo)).map((r) => r.status), ["ratified"], `${m.actor.principal}: no rule was retired by a withdrawal of a draft`);
+    }
+
+    // Two problems; izzie and ben adjudicate each apart — differently, then identically.
+    const ruleId = (await listRequirements(ben.repo))[0]!.id;
+    const problems: string[] = [];
+    for (const finding of ["refund() negates", "refund() rounds down"]) {
+      const audit = ok(await recordAudit(ben.repo, {
+        requirementId: ruleId, outcome: "nonconformant", finding, evidence: { read: [transfer] }, agent: true, model: "claude-opus-5",
+      }));
+      problems.push(ok(await raiseProblem(ben.repo, { auditId: audit.id, summary: finding, agent: true, model: "claude-opus-5" })).id);
+    }
+    await settle(t);
+    for (const [problem, mine, theirs] of [[problems[0]!, "code-wrong", "accepted"], [problems[1]!, "code-wrong", "code-wrong"]] as const) {
+      begin(izzie.sidecar);
+      ok(await adjudicate(izzie.repo, problem, mine, "the rule stands"));
+      ok(await adjudicate(ben.repo, problem, theirs, "the business decided"));
+      const r = await syncSession(izzie.sidecar, izzie.actor);
+      if (mine !== theirs) {
+        assert.ok("error" in r && r.conflicts?.length, `a different verdict must be refused: ${JSON.stringify(r)}`);
+        assert.match(r.conflicts![0]!.why, new RegExp(`already adjudicated as ${theirs}`));
+        assert.ok(dropOp(izzie.sidecar, staged(izzie.sidecar)[0]!.event.id).ok);
+        assert.ok(!("error" in await syncSession(izzie.sidecar, izzie.actor)));
+      } else assert.ok(!("error" in r), `the same verdict is a no-op, not a refusal: ${JSON.stringify(r)}`);
+      await settle(t);
+      for (const m of [izzie, ben]) {
+        const p = (await listProblems(m.repo)).find((x) => x.id === problem)!;
+        assert.deepEqual([p.disposition, p.adjudicatedBy?.principal], [theirs, MATE], `${m.actor.principal}: the first verdict stands`);
+      }
+    }
     await checkSettled(t, ledger);
   } finally {
     t.dispose();

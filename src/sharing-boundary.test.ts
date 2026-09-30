@@ -327,7 +327,7 @@ const BOTH_ENDS: { what: string; fold: [string, RegExp]; publish: [string, RegEx
   },
   {
     what: "an agent's adjudication of a problem",
-    fold: ["src/shared-standard.ts", /!p \|\| p\.disposition\) \{ refuse\(e, .*?\); break; \}[\s\S]{0,400}?if \(e\.actor\.via\) \{ refuse\(e, .*?\); break; \}/],
+    fold: ["src/shared-standard.ts", /if \(!p\) \{ refuse\(e, "no such problem"\); break; \}[\s\S]{0,400}?if \(e\.actor\.via\) \{ refuse\(e, .*?\); break; \}/],
     publish: ["src/problems.ts", /principal\(root, input, "adjudicate a problem"\)/],
   },
   {
