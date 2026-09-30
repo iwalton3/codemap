@@ -2392,7 +2392,7 @@ async function handle(msg: any): Promise<void> {
         const out = locked ? await withLock(universe.path, run) : await run();
         // Every call from a session holding staged writes says so (plan 4.1): "sync and push often".
         const held = shared.stagedCount(ws.universes.map((u) => u.path));
-        const reminder = held ? { staged: `${held} shared write(s) staged by this session and not yet synced — \`sync\` to push them (all or none), \`staged\` to see them, \`discard\` to drop them.` } : {};
+        const reminder = held ? { reminder: `${held} shared write(s) staged by this session and not yet synced — \`sync\` to push them (all or none), \`staged\` to see them, \`discard\` to drop them.` } : {};
         const shown = held && out && typeof out === "object" && !Array.isArray(out) ? { ...out, ...reminder } : held ? { result: out, ...reminder } : out;
         send({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(shown, null, 2) }] } });
       } catch (e: any) {

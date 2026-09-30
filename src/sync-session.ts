@@ -42,6 +42,8 @@ export const isTabId = (s: unknown): s is string => typeof s === "string" && /^[
 
 /** How long a tab may go without polling before it counts as closed: three 15-second polls. */
 export const TAB_GONE_MS = 45_000;
+/** `CODEMAP_TAB_GONE_MS` shortens it for a test that closes a tab and cannot wait the real time. */
+const tabGoneMs = (): number => Number(process.env.CODEMAP_TAB_GONE_MS) || TAB_GONE_MS;
 
 function pidAlive(pid: number): boolean {
   try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === "EPERM"; }
@@ -57,7 +59,7 @@ export function sessionGone(session: string, row: SessionRow | null, now = Date.
   // A tab belongs to the server that served it (`row.pid`): gone when its polls stop, or
   // when that server is.
   if (row?.kind === "web" || session.startsWith("web:")) {
-    return !row || now - Date.parse(row.seen) > TAB_GONE_MS || !pidAlive(row.pid);
+    return !row || now - Date.parse(row.seen) > tabGoneMs() || !pidAlive(row.pid);
   }
   // Anything else IS a process, and its id carries the pid; the row's is whoever touched it.
   const pid = Number(session.split(":")[1]);
