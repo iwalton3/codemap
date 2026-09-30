@@ -152,12 +152,12 @@ test("a crash fragment is SEALED IN and goes loud — it is never quietly delete
   const root = tmp("heal");
   try {
     await ensureSidecar(root, izzie);
-    const scope = "notes/x";
-    await emitEvent(root, scope, izzie, "note.one", "n1");
+    const scope = "scratch/x";
+    await emitEvent(root, scope, izzie, "test.one", "n1");
     const shard = join(root, shardOf(root, scope));
 
     appendFileSync(shard, `{"id":"m1-torn","ki`);          // killed mid-append
-    await emitEvent(root, scope, izzie, "note.two", "n2");
+    await emitEvent(root, scope, izzie, "test.two", "n2");
 
     // Truncating the fragment instead was tried and reverted: disk corruption that eats
     // an event this shard already SERVED produces identical bytes, so deleting it loses
@@ -179,15 +179,15 @@ test("an event the disk ate is not silently dropped by the next append", async (
   const root = tmp("eaten");
   try {
     await ensureSidecar(root, izzie);
-    const scope = "notes/z";
-    await emitEvent(root, scope, izzie, "note.one", "n1");
+    const scope = "scratch/z";
+    await emitEvent(root, scope, izzie, "test.one", "n1");
     const shard = join(root, shardOf(root, scope));
     assert.equal((await readShard(shard)).length, 1, "it was READ once — that is the point");
 
     const size = readFileSync(shard).length;
     truncateSync(shard, size - 2);                          // the disk eats its tail
 
-    await emitEvent(root, scope, izzie, "note.two", "n2");
+    await emitEvent(root, scope, izzie, "test.two", "n2");
     const after = await readScopeChecked(root, scope);
     assert.equal(after.status, "blocked");
     assert.equal(after.diagnostic?.reason, "corrupt-shard",
@@ -199,15 +199,15 @@ test("a whole event that merely lost its newline is KEPT", async () => {
   const root = tmp("heal-keep");
   try {
     await ensureSidecar(root, izzie);
-    const scope = "notes/y";
-    await emitEvent(root, scope, izzie, "note.one", "n1");
+    const scope = "scratch/y";
+    await emitEvent(root, scope, izzie, "test.one", "n1");
     const shard = join(root, shardOf(root, scope));
     const line = readFileSync(shard, "utf8").trim();
 
     // Killed AFTER the JSON and before the terminator. It parses, every build has
     // counted it, and truncating it would delete a real event.
     appendFileSync(shard, line.replace(/"id":"[^"]+"/, '"id":"m1-late"'));
-    await emitEvent(root, scope, izzie, "note.two", "n2");
+    await emitEvent(root, scope, izzie, "test.two", "n2");
 
     const ids = (await readShard(shard)).map((e) => e.id);
     assert.ok(ids.includes("m1-late"), "a readable event must survive the repair");

@@ -30,8 +30,9 @@ import type { Actor } from "./schema.js";
 import type { NodeVersion, NodeCitation, LogicalNodeType } from "./schema.js";
 import { winningVersionAt } from "./doc-version.js";
 import type { AnchorIndex } from "./anchor-resolve.js";
-import { mintId, readScope, type LogEvent } from "./eventlog.js";
+import { mintId, readScope, registerDoor, type LogEvent } from "./eventlog.js";
 import { emitEvent } from "./write.js";
+import { collector, foldJudged, registerReport, type RefusalClass, type Refusal } from "./validation.js";
 
 export const docScope = (universe: string): string => `docs/${universe}`;
 
@@ -76,8 +77,20 @@ type Data = Record<string, unknown>;
  * the same shape as a review's accepted set, and merge-free for the same reason.
  */
 export function foldDocs(events: LogEvent[]): Map<string, SharedDoc> {
+  return foldJudged(events, foldDocsReport).value;
+}
+
+/** The fold and every event it did not apply, classed (plan 3.1). The door and the scans read this. */
+export function foldDocsReport(events: LogEvent[]): { value: Map<string, SharedDoc>; refused: Refusal[] } {
+  const { refused, refuse } = collector();
+  return { value: foldDocsWith(events, refuse), refused };
+}
+
+function foldDocsWith(events: LogEvent[], refuse: (e: LogEvent, cls: RefusalClass, why: string) => void): Map<string, SharedDoc> {
   const out = new Map<string, SharedDoc>();
   const byVersion = new Map<string, NodeVersion>();
+  // Each version id's first event, so a repeat can be told apart (owner, Q5).
+  const written = new Map<string, string>();
 
   for (const e of events) {
     const d = e.data as Data | undefined;
@@ -88,13 +101,13 @@ export function foldDocs(events: LogEvent[]): Map<string, SharedDoc> {
       // citations check earns its place — `citations: "bad"` parses, passes every
       // other test here, and then throws on `.map()`, which is not one bad doc but
       // every shared doc in the universe becoming unreadable for everyone, forever.
-      if (!v || typeof v.versionId !== "string" || v.nodeId !== e.subject) continue;
-      if (v.citations !== undefined && !Array.isArray(v.citations)) continue;
+      if (!v || typeof v.versionId !== "string" || v.nodeId !== e.subject) { refuse(e, "shape", "a version needs an id and its own node"); continue; }
+      if (v.citations !== undefined && !Array.isArray(v.citations)) { refuse(e, "shape", "a version's citations are a list"); continue; }
       // The discriminator, and there is nothing sensible to default it to. Dropped
       // HERE rather than at the copy below, for the reason the version-id check
       // spells out: past the `out.set` the node exists with no versions, which reads
       // as "written and empty" rather than "never arrived".
-      if (typeof v.type !== "string") continue;
+      if (typeof v.type !== "string") { refuse(e, "shape", "a version needs a type"); continue; }
       // The load-bearing half of the narrowing. There is no server and no central
       // validation, so the FOLD is the only gate that binds every writer — including
       // an older client, a hand-written line, or a future one that forgets. The
@@ -111,13 +124,17 @@ export function foldDocs(events: LogEvent[]): Map<string, SharedDoc> {
       // event arriving and being silently dropped by the fold, which is the both-ends
       // rule doing its job — the fold is the gate that binds writers this build did not
       // write, and a publish check only binds writers who ask.
-      if (v.generatedBy) continue;
+      if (v.generatedBy) { refuse(e, "state", "analyzer output is not published"); continue; }
       // A version id is written once, and once per SCOPE — not per node, because
       // `doc.accepted` carries no node and resolves the id globally. So the drop
       // has to come BEFORE the doc is created: a node whose every version collides
       // with another node's used to be left as an existing doc with no versions,
       // which reads as "written and empty" rather than "never arrived".
-      if (byVersion.has(v.versionId)) continue;
+      if (byVersion.has(v.versionId)) {
+        if (written.get(v.versionId) !== JSON.stringify([e.subject, v])) refuse(e, "state", `version ${v.versionId} is already written`);
+        continue;
+      }
+      written.set(v.versionId, JSON.stringify([e.subject, v]));
       let doc = out.get(e.subject);
       if (!doc) { doc = { nodeId: e.subject, versions: [], authors: new Map() }; out.set(e.subject, doc); }
       const copy: NodeVersion = {
@@ -150,7 +167,7 @@ export function foldDocs(events: LogEvent[]): Map<string, SharedDoc> {
       const versionId = typeof d?.versionId === "string" ? d.versionId : null;
       const anchorId = typeof d?.anchorId === "string" ? d.anchorId : null;
       const bodyHash = typeof d?.bodyHash === "string" ? d.bodyHash : null;
-      if (!versionId || !anchorId || !bodyHash) continue;
+      if (!versionId || !anchorId || !bodyHash) { refuse(e, "shape", "an acceptance needs a version, an anchor and a hash"); continue; }
       // Its OWN node's version. The id resolves globally, so an acceptance under a
       // colliding id would otherwise reach into another node's version and add a
       // hash nobody claimed there — the false-provenance direction, and silent.
@@ -164,6 +181,9 @@ export function foldDocs(events: LogEvent[]): Map<string, SharedDoc> {
       // record-against-record, so it fails before any reader-side resolution could
       // run, and it used to fail by leaving nothing behind.
       if (!cite) {
+        // The version is a shared reference; the anchor is not (an id another build derives
+        // differently), so only a missing version is refused.
+        if (!v) refuse(e, "reference", `node ${e.subject} has no version ${versionId}`);
         const doc = out.get(e.subject);
         if (doc) (doc.unmatched ??= []).push({ versionId, anchorId, bodyHash, why: v ? "no-citation" : "no-version" });
         continue;
@@ -197,6 +217,10 @@ export function resolveDoc(doc: SharedDoc, liveHashes: AnchorIndex): NodeVersion
   return winningVersionAt(doc.versions, liveHashes);
 }
 
+registerReport((scope) => scope.startsWith("docs/"), foldDocsReport);
+// No reference leaves the scope: a version's node is its own subject, and citations are anchors.
+registerDoor((scope) => scope.startsWith("docs/"), () => (events) => ({ refused: foldDocsReport(events).refused }));
+
 // ---------------------------------------------------------------------------
 // Writing
 // ---------------------------------------------------------------------------
@@ -218,7 +242,7 @@ export interface NewDocVersion {
   /**
    * ONLY for an id this machine's own store minted — never from an opaque caller,
    * which is why `shareDoc` strips it. Version ids are unique per SCOPE and not per
-   * node: `foldDocs` drops any repeat, so a colliding id costs THAT node its doc for
+   * node: `foldDocs` refuses a differing repeat, so a colliding id costs THAT node its doc for
    * the whole team.
    *
    * It exists because the pending overlay identifies a local row with its own

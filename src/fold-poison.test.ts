@@ -6,7 +6,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { shardFor, causality, type LogEvent } from "./eventlog.js";
 import { readFindings } from "./shared-findings.js";
-import { publishDocVersion, readDocs } from "./shared-docs.js";
+import { publishDocVersion, readDocs, docScope } from "./shared-docs.js";
+import { appendUnfolded } from "./test-door.js";
 import { fixtureHash } from "./fixture-hash.js";
 import { discard } from "./test-tmp.js";
 
@@ -86,10 +87,10 @@ test("a doc version with malformed citations does not poison the universe", asyn
       nodeId: "n_good", type: "concept", title: "a real doc", summary: "s", body: "b",
       citations: [{ anchorId: "a_1", acceptedHashes: [fixtureHash("abc", 2)] }],
     });
-    await publishDocVersion(side, U, izzie, {
-      nodeId: "n_bad", type: "concept", title: "t", summary: "s", body: "b",
-      citations: "bad" as unknown as [],
-    });
+    const bad = { nodeId: "n_bad", type: "concept", title: "t", summary: "s", body: "b", citations: "bad" as unknown as [] };
+    await assert.rejects(publishDocVersion(side, U, izzie, bad), /citations are a list/, "this build refuses to write it");
+    // A build without the door writes it anyway: a shape this build does not write, so reads go on.
+    await appendUnfolded(side, docScope(U), izzie, "doc.version", "n_bad", { version: { ...bad, versionId: "nv_bad" } });
 
     const docs = await readDocs(side, U);
     assert.deepEqual([...docs.keys()], ["n_good"], "the healthy doc survives its neighbour");

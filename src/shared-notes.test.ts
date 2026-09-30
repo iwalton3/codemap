@@ -15,6 +15,8 @@ import * as shared from "./ops-shared.js";
 import { annotate } from "./ops.js";
 import { resolveSidecar } from "./sidecar-config.js";
 import { discard } from "./test-tmp.js";
+import { appendUnfolded } from "./test-door.js";
+import { LogDamage } from "./log-damage.js";
 
 const izzie: Actor = { principal: "izzie@x.com" };
 const dana: Actor = { principal: "dana@x.com" };
@@ -74,18 +76,21 @@ test("answers are append-only and keep every voice", async () => {
 
 test("an agent may answer a question and may not declare it settled", async () => {
   // Same act, same rule, as closing a finding: enforced in the FOLD, so a client
-  // that emits it anyway is ignored by every reader rather than just its own.
+  // that emits it anyway is damage to every reader, not just its own.
   const root = tmp("agent");
   try {
     const id = await createNote(root, U, izzie, { ...NEW, kind: "question" });
     await answerNote(root, U, "a_1", opus, id, "answered");
-    await resolveNote(root, U, "a_1", opus, id, true);
+    await assert.rejects(resolveNote(root, U, "a_1", opus, id, true), /person's act/);
     const n = (await notesForTarget(root, U, "a_1"))[0]!;
     assert.equal(n.answers.length, 1, "the answer landed");
     assert.equal(n.resolved, undefined, "the close did not");
 
     await resolveNote(root, U, "a_1", izzie, id, true, "documented in the node");
     assert.equal((await notesForTarget(root, U, "a_1"))[0]!.resolved?.by.principal, "izzie@x.com");
+
+    await appendUnfolded(root, noteScope(U, bucketFor("a_1")), opus, "note.resolved", id, { resolved: false });
+    await assert.rejects(notesForTarget(root, U, "a_1"), LogDamage);
   } finally { discard(root); }
 });
 
@@ -384,8 +389,8 @@ test("a person closing a mirrored question closes the team's copy too", async ()
 /**
  * And an agent's close does NOT travel — but is not silent about it.
  *
- * `foldNotes` drops a `note.resolved` from an agent actor outright, so mirroring one
- * would append an event every reader ignores and report it as shared. Closing its own
+ * `foldNotes` refuses a `note.resolved` from an agent actor, so mirroring one
+ * would fail after the local close succeeded. Closing its own
  * local question is deliberate (`fde46ce`); closing it for the team is a person's act.
  */
 test("an agent closes its own question locally and is told the team's is still open", async () => {

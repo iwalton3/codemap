@@ -233,8 +233,9 @@ test("publishing a version that already has an id keeps it, so the two copies ar
     assert.equal(doc.versions[0]!.versionId, "nv_local1");
     assert.equal(doc.versions[0]!.createdAt, "2026-01-02T03:04:05.000Z", "and the time it was WRITTEN, not the time it was sent");
 
-    // Re-publishing it is idempotent — the fold writes a version id once.
-    await publishDocVersion(root, U, dana, { ...DOC, versionId: "nv_local1", body: "different" } as never);
+    // The same version again is a no-op; a different one under its id is refused (owner, Q5).
+    await publishDocVersion(root, U, izzie, { ...DOC, versionId: "nv_local1", createdAt: "2026-01-02T03:04:05.000Z" } as never);
+    await assert.rejects(publishDocVersion(root, U, dana, { ...DOC, versionId: "nv_local1", body: "different" } as never), /already written/);
     const again = (await readDocs(root, U)).get("n_payments")!;
     assert.equal(again.versions.length, 1, "a second copy of one version is not a second version");
     assert.equal(again.versions[0]!.body, DOC.body, "and the first write is the one that stands");

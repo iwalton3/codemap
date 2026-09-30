@@ -391,8 +391,8 @@ export async function resolveAnnotation(
   // left the other open for everybody else, permanently, with no surface saying so.
   // Local first and never conditional on it: the write above has already succeeded.
   //
-  // NOT for an agent. `foldNotes` drops a `note.resolved` from an agent actor outright,
-  // so mirroring one would append an event every reader ignores and report it as shared.
+  // NOT for an agent. `foldNotes` refuses a `note.resolved` from an agent actor,
+  // so mirroring one would fail after the local close had succeeded.
   // An agent closing its own local question is deliberate (`fde46ce`); closing it for
   // the team is a person's act. So the divergence is REPORTED instead — the thing this
   // codebase prefers to a quiet no-op every time it has had to choose.

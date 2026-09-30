@@ -27,9 +27,10 @@
 import { createHash } from "node:crypto";
 import type { Actor, BugSeverity } from "./schema.js";
 import { isAgentActor } from "./identity.js";
-import { mintId, readScope, causality, type LogEvent } from "./eventlog.js";
+import { mintId, readScope, causality, registerDoor, type LogEvent } from "./eventlog.js";
 import { emitEvent } from "./write.js";
 import { applyRevision, newContestState, type Contested } from "./contest.js";
+import { collector, foldJudged, registerReport, type RefusalClass, type Refusal } from "./validation.js";
 
 export type NoteKind = "note" | "question" | "finding" | "pointer";
 
@@ -106,19 +107,39 @@ const str = (d: Data | undefined, k: string): string | undefined => {
 
 const KINDS: readonly string[] = ["note", "question", "finding", "pointer"];
 
+/** The fold and every event it did not apply, classed (plan 3.1). The door and the scans read this. */
+export function foldNotesReport(events: LogEvent[]): { value: Map<string, SharedNote>; refused: Refusal[] } {
+  const { refused, refuse } = collector();
+  return { value: foldNotesWith(events, refuse), refused };
+}
+
+/** The fold for a READ: a refused linear event is damage and locks; see `validation.ts`. */
 export function foldNotes(events: LogEvent[]): Map<string, SharedNote> {
+  return foldJudged(events, foldNotesReport).value;
+}
+
+function foldNotesWith(events: LogEvent[], refuse: (e: LogEvent, cls: RefusalClass, why: string) => void): Map<string, SharedNote> {
   const out = new Map<string, SharedNote>();
+  // Each note's creating payload: the same bytes again are one act seen twice, different ones
+  // are a claim on an id already taken (owner, Q5).
+  const created = new Map<string, string>();
   const contest = newContestState();
   const causal = causality(events);
   for (const e of events) {
     const d = e.data as Data | undefined;
 
     if (e.kind === "note.created") {
-      if (out.has(e.subject)) continue;
+      if (out.has(e.subject)) {
+        if (created.get(e.subject) !== JSON.stringify(d ?? null)) refuse(e, "state", `note ${e.subject} already exists`);
+        continue;
+      }
       const text = str(d, "text");
       const targetId = str(d, "targetId");
       const targetKind = str(d, "targetKind");
-      if (!text || !targetId || !NOTE_TARGET_KINDS.includes(targetKind as NoteTargetKind)) continue;
+      if (!text || !targetId || !NOTE_TARGET_KINDS.includes(targetKind as NoteTargetKind)) {
+        refuse(e, "shape", `a note needs text and a target that is one of ${NOTE_TARGET_KINDS.join(", ")}`); continue;
+      }
+      created.set(e.subject, JSON.stringify(d ?? null));
       const kind = str(d, "kind");
       out.set(e.subject, {
         id: e.subject,
@@ -137,7 +158,10 @@ export function foldNotes(events: LogEvent[]): Map<string, SharedNote> {
     }
 
     const n = out.get(e.subject);
-    if (!n) continue;
+    if (!n) {
+      if (e.kind.startsWith("note.")) refuse(e, "reference", `no note ${e.subject} in this bucket`);
+      continue;
+    }
 
     switch (e.kind) {
       case "note.revised": {
@@ -152,7 +176,7 @@ export function foldNotes(events: LogEvent[]): Map<string, SharedNote> {
       }
       case "note.answered": {
         const body = str(d, "body");
-        if (!body) break;
+        if (!body) { refuse(e, "shape", "an answer needs a body"); break; }
         n.answers.push({ id: e.id, actor: e.actor, at: e.at, body });
         break;
       }
@@ -160,7 +184,11 @@ export function foldNotes(events: LogEvent[]): Map<string, SharedNote> {
         // An agent may answer a question, and may not declare it settled: closing
         // out is the same human act it is on a finding. Enforced HERE because a
         // write-time check only ever protects the honest writer.
-        if (isAgentActor(e.actor)) break;
+        if (isAgentActor(e.actor)) { refuse(e, "state", "closing or re-opening a shared note is a person's act"); break; }
+        // `from`: what its author decided against. Absent on events written before it.
+        const from = str(d, "from");
+        const now = n.resolved ? "resolved" : "open";
+        if (from && from !== now) { refuse(e, "state", `the note is ${now}; this was decided when it was ${from}`); break; }
         n.resolved = d?.resolved === false ? undefined : { at: e.at, by: e.actor, reason: str(d, "reason") };
         break;
       }
@@ -168,6 +196,31 @@ export function foldNotes(events: LogEvent[]): Map<string, SharedNote> {
   }
   return out;
 }
+
+/**
+ * The references a note makes OUTSIDE its bucket (docs/sidecar-references.md, rows 84-85): a
+ * note on a proposal names a spec or operation that must have been drafted in the law log (or a
+ * pre-split `standard/<universe>`). Existence only — a withdrawn spec or a removed operation is
+ * still something to talk about. A node target is never checked: an unpublished or analyzer
+ * node is local, not a foreign key (owner, Q2), and a published one needs no check to resolve.
+ */
+async function outsideReferences(logRoot: string, scope: string, e: LogEvent): Promise<Refusal[]> {
+  if (e.kind !== "note.created") return [];
+  const d = e.data as Data | undefined;
+  const targetKind = str(d, "targetKind"), targetId = str(d, "targetId");
+  if ((targetKind !== "spec" && targetKind !== "operation") || !targetId) return [];
+  const universe = /^notes\/(.+)\/[^/]+$/.exec(scope)?.[1];
+  const law = [...await readScope(logRoot, "law/standard"), ...universe ? await readScope(logRoot, `standard/${universe}`) : []];
+  const found = targetKind === "spec"
+    ? law.some((x) => x.kind === "spec.drafted" && (x.data as { spec?: { id?: unknown } } | undefined)?.spec?.id === targetId)
+    : law.some((x) => x.kind === "spec.operation" && (x.data as { operation?: { id?: unknown } } | undefined)?.operation?.id === targetId);
+  return found ? [] : [{ id: e.id, kind: e.kind, cls: "reference", why: `no ${targetKind} ${targetId} has been drafted` }];
+}
+
+registerReport((scope) => scope.startsWith("notes/"), foldNotesReport);
+registerDoor((scope) => scope.startsWith("notes/"), (logRoot, scope) => async (events, minted) => ({
+  refused: [...foldNotesReport(events).refused, ...await outsideReferences(logRoot, scope, minted)],
+}));
 
 // ---------------------------------------------------------------------------
 // Writing
@@ -198,8 +251,15 @@ export async function createNote(logRoot: string, universe: string, actor: Actor
 export const answerNote = (logRoot: string, universe: string, targetId: string, actor: Actor, id: string, body: string) =>
   emit(logRoot, universe, targetId, actor, id, "note.answered", { body });
 
-export const resolveNote = (logRoot: string, universe: string, targetId: string, actor: Actor, id: string, resolved: boolean, reason?: string) =>
-  emit(logRoot, universe, targetId, actor, id, "note.resolved", { resolved, ...(reason ? { reason } : {}) });
+export async function resolveNote(
+  logRoot: string, universe: string, targetId: string, actor: Actor, id: string, resolved: boolean, reason?: string,
+): Promise<LogEvent> {
+  // `from`: a replay onto a note a teammate has since closed or re-opened is refused rather
+  // than silently overwriting their call (plan 3.1).
+  const current = (await notesForTarget(logRoot, universe, targetId)).find((n) => n.id === id);
+  const from = current ? { from: current.resolved ? "resolved" : "open" } : {};
+  return emit(logRoot, universe, targetId, actor, id, "note.resolved", { resolved, ...from, ...(reason ? { reason } : {}) });
+}
 
 export const reviseNote = (logRoot: string, universe: string, targetId: string, actor: Actor, id: string, now: Record<string, unknown>) =>
   emit(logRoot, universe, targetId, actor, id, "note.revised", { now });

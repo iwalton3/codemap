@@ -2180,7 +2180,7 @@ export async function answerSharedNote(root: string, targetId: string, id: strin
 /**
  * Close (or re-open) a shared note.
  *
- * The refusal covers BOTH directions, because `foldNotes` does: it drops any
+ * The refusal covers BOTH directions, because `foldNotes` does: it refuses any
  * `note.resolved` from an agent actor, resolved or not. Refusing only the close left
  * re-opening as an append the op answered `{ok:true}` for and every reader ignored —
  * the silent no-op `mustExist` exists to end on the finding side.
@@ -2198,7 +2198,7 @@ export async function resolveSharedNote(root: string, targetId: string, id: stri
     return {
       error: resolved
         ? "an agent may answer a question, not declare it settled — reply instead and let a person close it"
-        : "an agent may not re-open the team's note either — the fold ignores both, so this would look like it worked",
+        : "an agent may not re-open the team's note either — the team's log refuses both",
     };
   }
   await resolveNote(b.cfg.path, b.cfg.universe, targetId, b.actor, id, resolved, reason);
