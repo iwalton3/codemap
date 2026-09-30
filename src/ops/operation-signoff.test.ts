@@ -1,5 +1,6 @@
 import { isLogDamage } from '../log-damage.js';
 import { test } from 'node:test';
+import { standardEventShape } from '../log-shape.js';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -83,9 +84,18 @@ test('Alice exact approval applied by Bob agent signs only the named operation a
     assert.ok(application);
     for (const corrupt of [undefined, { ...(application.data!.capsule as any), ruling: { ...(application.data!.capsule as any).ruling, selected: [PLAN_ONLY] } }, { ...(application.data!.capsule as any), reader: undefined }]) {
       const forged = { ...application, data: { capsule: corrupt } };
-      // No conforming build writes it, so a log holding it halts on it (plan 1.2).
-      assert.throws(() => foldStandard(events.filter(e => e.id !== application.id).concat(forged)),
-        (e: unknown) => isLogDamage(e) && e.entry.id === application.id);
+      // No conforming build writes it: a shape this build does not write is newer and skipped
+      // (owner, batch 1); anything else the fold refuses halts on it.
+      const others = events.filter(e => e.id !== application.id);
+      assert.notEqual(JSON.stringify(foldStandard(events).witnesses), JSON.stringify(foldStandard(others).witnesses),
+        'control: the genuine application does sign something, so "signs nothing" below can fail');
+      if (standardEventShape(forged as never)) {
+        assert.equal(JSON.stringify(foldStandard(others.concat(forged as never)).witnesses), JSON.stringify(foldStandard(others).witnesses),
+          'skipped: it signs nothing');
+      } else {
+        assert.throws(() => foldStandard(others.concat(forged as never)),
+          (e: unknown) => isLogDamage(e) && e.entry.id === application.id);
+      }
     }
   }
   finally {

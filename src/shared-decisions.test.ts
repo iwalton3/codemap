@@ -8,6 +8,7 @@
  * depended on recording order is run in both orders (`both`).
  */
 import { test } from "node:test";
+import { decisionEventShape } from "./log-shape.js";
 import assert from "node:assert/strict";
 import { isLogDamage } from "./log-damage.js";
 import {
@@ -116,15 +117,22 @@ const both = (name: string, make: () => { first: any[]; second: any[] }, check: 
 });
 
 /**
- * A case whose last event no conforming build writes: the fold HALTS on it, naming it (plan 1.2),
- * and the log without it is as `check` says — the "binds nothing" the case was written to pin.
+ * A case whose last event no conforming build writes, and the log without it is as `check`
+ * says — the "binds nothing" the case was written to pin. The fold HALTS on it, naming it, when
+ * the fold refuses it; when its shape is not this build's it is newer or dev-era and is SKIPPED
+ * (owner: batch 1, Q7), so the log folds exactly as without it. Never a TypeError, never applied.
  */
 const halts = (name: string, extra: () => any[], check: (b: B, out: SharedDecisions) => boolean, which = (evs: any[]) => evs.length - 1) => test(name, () => {
   n = 1;
   const events = extra(), i = which(events), bad = events[i];
   let got: unknown;
   try { fold(events); } catch (e) { got = e; }
-  assert.ok(isLogDamage(got) && got.entry.id === bad.id, `${name}: the fold must halt on ${bad?.id}, got ${isLogDamage(got) ? `${got.entry.id}: ${got.entry.why}` : String(got)}`);
+  if (got === undefined && decisionEventShape(bad)) {
+    const { out, b } = fold(events);
+    assert.ok(check(b, out), `${name}: skipped, so the log folds as without it — ${dump(b, out)}`);
+  } else {
+    assert.ok(isLogDamage(got) && got.entry.id === bad.id, `${name}: the fold must halt on ${bad?.id}, got ${isLogDamage(got) ? `${got.entry.id}: ${got.entry.why}` : String(got)}`);
+  }
   const { out, b } = fold(events.filter((_, k) => k !== i));
   assert.ok(check(b, out), dump(b, out));
 });
@@ -880,7 +888,7 @@ test("posting refuses what the rulings forbid, and accepts the same decision wit
   assert.match(checkDecision(D("dl", "D9", q("D9: is F1 real?", ["A", "A"]), [{ label: "A", effects: [settle("F1")] }, { label: "A", effects: [] }]))!, /share a label/);
 });
 
-test("each garbage event halts the fold, naming it — never thrown on as a TypeError, never dropped", () => {
+test("each garbage event halts the fold naming it, or is skipped as a shape — never a TypeError, never applied", () => {
   n = 1;
   const junk: any[] = [
     ev("decision.round.posted", { round: { id: "RX", source: "x" }, decisions: [null, "str", { id: "dx", round: "RX", ref: "D1", kind: "options", payload: { question: "q", options: [null] }, options: [{ label: "a" }] },
@@ -900,9 +908,12 @@ test("each garbage event halts the fold, naming it — never thrown on as a Type
     ev("decision.reading.recorded", { answer: "nope", reader: { agent: "a1", verdict: "x" } }),
     ev("decision.reading.recorded", null),
   ];
-  // Each one is damage, and the fold halts on it by name — never a TypeError, never a drop (plan 1.2).
+  // A shape this build does not write is newer, skipped (owner, batch 1); anything else the
+  // fold refuses halts on it by name.
+  const clean = JSON.stringify(foldDecisions([round]).decisions);
   for (const e of junk) {
-    assert.throws(() => foldDecisions([round, e]), (x: unknown) => isLogDamage(x) && x.entry.id === e.id, JSON.stringify(e.data)?.slice(0, 80));
+    if (decisionEventShape(e)) assert.equal(JSON.stringify(foldDecisions([round, e]).decisions), clean, JSON.stringify(e.data)?.slice(0, 80));
+    else assert.throws(() => foldDecisions([round, e]), (x: unknown) => isLogDamage(x) && x.entry.id === e.id, JSON.stringify(e.data)?.slice(0, 80));
   }
 });
 

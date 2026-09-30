@@ -114,7 +114,9 @@ const evidenceScopes = async (logRoot: string): Promise<string[]> =>
  * scopes, so the door reads the other half: law beside an evidence write, as a read folds it;
  * every evidence scope beside a law write, because law written before the split sits there.
  */
-export const standardDoor = (logRoot: string, scope: string): DoorFold => async (events) => {
+export const standardDoor = (logRoot: string, scope: string): DoorFold => async (events, minted) => {
+  const wrong = standardEventShape(minted);
+  if (wrong) return { refused: [{ id: minted.id, why: wrong }] };
   const others = scope === LAW_SCOPE ? await evidenceScopes(logRoot) : [LAW_SCOPE];
   const more = (await Promise.all(others.filter((s) => s !== scope).map((s) => readScope(logRoot, s)))).flat();
   return foldStandardReport(sortEvents([...events, ...more]));

@@ -10,6 +10,7 @@
 import { appendChecked, appendEvents, causalHeads, EVENT_SCHEMA, GENESIS, mintId, readScope, readShard, shardFor, SIDECAR_PROTOCOL, sortEvents, writerFor, type LogEvent } from "./eventlog.js";
 import { join } from "node:path";
 import { isLogDamage, type DamagedEntry } from "./log-damage.js";
+import { shapeCheckFor } from "./log-shape.js";
 import { foldStandardReport } from "./shared-standard.js";
 import type { Acknowledgement, Actor, Audit, BugWitness, Operation, Pointer, PopulationPredicate, Problem, ProposalWitness, ScrubPolicy, Spec, VacuityCheck } from "./schema.js";
 
@@ -87,8 +88,11 @@ export const probe = standardActs((l, s, a, kind, subject, data) => foldWithNext
 export async function foldWithNext<T>(
   logRoot: string, scope: string, report: (events: LogEvent[]) => { value: T; refused: { id: string; why: string }[] },
   actor: Actor, kind: string, subject: string, data: Record<string, unknown>, opts: { unseen?: string[] } = {},
-): Promise<{ id: string; value?: T; refused?: { id: string; why: string }; damage?: DamagedEntry }> {
+): Promise<{ id: string; value?: T; refused?: { id: string; why: string }; damage?: DamagedEntry; newer?: string }> {
   const events = sortEvents(await readScope(logRoot, scope));
+  // A shape this build does not write is newer: skipped on read, refused by the door.
+  const wrong = shapeCheckFor(scope)?.({ kind, subject, data } as LogEvent);
+  if (wrong) return { id: "(not minted)", newer: wrong };
   const seen = opts.unseen ? events.filter((e) => !opts.unseen!.includes(e.id)) : events;
   const e: LogEvent = { sidecarProtocol: SIDECAR_PROTOCOL, eventSchema: EVENT_SCHEMA, id: mintId(), kind, subject, actor,
     at: new Date().toISOString(), writer: opts.unseen ? "w_teammate" : "w_here", writerPrev: GENESIS, after: causalHeads(seen), data };

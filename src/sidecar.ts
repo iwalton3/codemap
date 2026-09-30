@@ -32,6 +32,7 @@ import {
   doorFor, maxSeq, mintId, readScope, sortEvents, writerFor, type DoorFold, type LogEvent, type ShardDamage, type StagedEvent,
 } from "./eventlog.js";
 import { withoutOverlay } from "./sync-session.js";
+import { pushGate } from "./validation.js";
 import { allQueuedIds, drop, getMeta, markConflict, markInflight, markLanded, markStaged, pending, setMeta, setTx, stage } from "./sync-queue.js";
 import { shapeCheckFor } from "./log-shape.js";
 import { recordLockout } from "./lockout.js";
@@ -135,18 +136,12 @@ const branchOf = (root: string): string => g(root, ["symbolic-ref", "--short", "
  * and, in a scope that has one, an event not in the shape its kind is written in (plan 1.2):
  * the transport sees the same damage a read halts on, or it would publish what locks the team.
  */
+/**
+ * Bytes that are not JSON. A wrong SHAPE is not damage any more: it parses, so it is newer
+ * than this build (owner, batch 1) — reads skip it, pushes block (`newerIn`).
+ */
 function shardDamage(text: string, as: string): ShardDamage[] {
-  const out = splitShard(text, as).damage;
-  const check = shapeCheckFor(dirname(as));
-  if (!check) return out;
-  text.split("\n").forEach((line, i) => {
-    if (!line.trim()) return;
-    let e: LogEvent;
-    try { e = JSON.parse(line) as LogEvent; } catch { return; }
-    const why = check(e);
-    if (why) out.push({ shard: as, line: i + 1, sample: line.slice(0, 80), id: e.id, kind: e.kind, why });
-  });
-  return out.sort((a, b) => a.line - b.line);
+  return splitShard(text, as).damage;
 }
 
 /** Lock this clone on the first damaged line, the way a read that met it would (plan 1.2). */
@@ -1419,6 +1414,10 @@ async function linearHeld(
     // Replay. Written to disk op by op, because a fold may read another scope (the standard
     // folds law beside evidence) and must see what this replay already put there.
     const ops = opts.inline ? [] : pending(root, session);
+    if (ops.length || opts.inline) {
+      const blocked = await pushGate(root);
+      if (blocked) { forgetInline(); return { error: blocked, staged: stagedIds() }; }
+    }
     markInflight(root, ops.map((o) => o.event.id));
     const cache = new Map<string, LogEvent[]>();
     const scopeEvents = async (s: string): Promise<LogEvent[]> => {

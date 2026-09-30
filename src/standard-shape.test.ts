@@ -1,12 +1,13 @@
 /**
- * The standard fold's `?.trim()` sites, each fed a field that is not text: the fold HALTS
- * naming the entry, never throws a TypeError from somewhere inside it (plan 1.2, owner batch 2:
- * "Rule, for decisions + standard"). One shape check at entry makes all eleven unreachable.
+ * The standard fold's `?.trim()` sites, each fed a field that is not text: never a TypeError
+ * from somewhere inside it. The shape check at entry makes all eleven unreachable. A wrong
+ * shape parses, so it is NEWER than this build (owner, batch 1): the read skips it, and the
+ * door refuses it at replay.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { foldStandard } from "./shared-standard.js";
-import { isLogDamage } from "./log-damage.js";
+import { foldStandard, standardDoor } from "./shared-standard.js";
+import { standardEventShape } from "./log-shape.js";
 import type { LogEvent } from "./eventlog.js";
 
 const alice = { principal: "alice" };
@@ -32,8 +33,11 @@ const cases: [string, LogEvent[]][] = [
 ];
 
 for (const [name, events] of cases) {
-  test(`halts naming the entry, not a TypeError: ${name}`, () => {
-    const bad = events.at(-1)!.id;
-    assert.throws(() => foldStandard(events), (e: unknown) => isLogDamage(e) && e.entry.id === bad);
+  test(`a wrong shape is skipped and refused at the door, never a TypeError: ${name}`, async () => {
+    const bad = events.at(-1)!;
+    assert.ok(standardEventShape(bad), "the shape check names it");
+    assert.doesNotThrow(() => foldStandard(events));
+    const door = await standardDoor("/nonexistent", "standard/u")(events.slice(0, -1), bad);
+    assert.ok(door.refused.some((r) => r.id === bad.id));
   });
 }

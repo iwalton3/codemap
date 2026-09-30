@@ -16,7 +16,7 @@
  *   order, so refusing one is what the merge-era folds always did: drop it. Phase 7's
  *   migration decides what they become.
  */
-import { LogDamage } from "./log-damage.js";
+import { LogDamage, namesAny } from "./log-damage.js";
 import type { LogEvent } from "./eventlog.js";
 
 export type RefusalClass = "shape" | "older" | "newer" | "state" | "reference";
@@ -35,11 +35,15 @@ export function collector(): { refused: Refusal[]; refuse: (e: LogEvent, cls: Re
 export function judge(events: LogEvent[], refused: Refusal[]): Refusal[] {
   if (!refused.length) return [];
   const byId = new Map(events.map((e) => [e.id, e]));
+  const skipped = refused.filter((r) => r.cls === "shape" || r.cls === "newer" || r.cls === "older")
+    .map((r) => byId.get(r.id)).filter((e): e is LogEvent => !!e);
   const newer: Refusal[] = [];
   for (const r of refused) {
     const e = byId.get(r.id);
     if (!e || typeof e.seq !== "number" || r.cls === "older") continue;
     if (r.cls === "shape" || r.cls === "newer") { newer.push(r); continue; }
+    // Refused for naming an event this build skipped: newer too (owner, batch 2).
+    if (namesAny(e, skipped, events)) { newer.push({ ...r, cls: "newer" }); continue; }
     throw new LogDamage({ id: r.id, kind: r.kind, why: r.why });
   }
   return newer;
@@ -60,3 +64,12 @@ export function registerReport(match: (scope: string) => boolean, report: Report
   reports.push({ match, report });
 }
 export const reportFor = (scope: string): Report<unknown> | undefined => reports.find((r) => r.match(scope))?.report;
+
+/**
+ * What stops a push: the sidecar holds data newer than this build (owner: "in the mean time
+ * all pushes get blocked. Reads would still be allowed"). Registered by the damage scan, which
+ * reads every fold and so cannot be imported by the transport.
+ */
+let gate: ((logRoot: string) => Promise<string | null>) | null = null;
+export function registerPushGate(g: (logRoot: string) => Promise<string | null>): void { gate = g; }
+export const pushGate = (logRoot: string): Promise<string | null> => gate ? gate(logRoot) : Promise.resolve(null);

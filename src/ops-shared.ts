@@ -35,6 +35,7 @@ import { witnessDrift, realDrift } from "./reviews.js";
 import { originSlug, headCommit, currentBranch, isAncestor, defaultBranch, revParse, trunkBase, hasObject, branchHead, trunkRef } from "./git.js";
 import { prIsMerged, prMergedAt, mergedAfter, landingOf, knownPrHead } from "./pr.js";
 import { fetchReviewThreads, type GhRunner } from "./pr-push.js";
+import { pullLinear } from "./sidecar.js";
 import { ensureSidecar, sync as sidecarSync, receive as sidecarReceive, healMerge, readManifests, checkPeers, currentManifest, sidecarLineage, isSameSidecar, inboundDamage } from "./sidecar.js";
 import { lockoutMessage, lockoutOf } from "./lockout.js";
 import { recheckLockout, scanForDamage } from "./damage-scan.js";
@@ -304,6 +305,13 @@ async function releaseLockout(logRoot: string): Promise<{ error: string } | null
   if (!lockoutOf(logRoot)) return null;
   const inbound = await inboundDamage(logRoot);
   if (inbound && "error" in inbound) return inbound;
+  // A fetched tip with no unreadable bytes may be the repair: move to it, so damage that
+  // arrived in this tree can leave the same way. It cannot make a locked clone worse, and the
+  // pull still refuses to destroy anything of this clone's own.
+  if (!inbound) {
+    const moved = await pullLinear(logRoot);
+    if ("error" in moved) return moved;
+  }
   const still = await recheckLockout(logRoot, inbound ? {
     id: inbound.id ?? "(unreadable bytes)", kind: inbound.kind ?? "(unreadable bytes)",
     why: inbound.why ?? "the line is not JSON, so no build can read the event it held",

@@ -2510,7 +2510,10 @@ export function supersededFindings(s: SharedDecisions): Map<string, { decision: 
 // --- writing --------------------------------------------------------------------------
 
 /** The decisions fold, as the write door asks it (plan 1.1). */
-export const decisionsDoor: DoorFold = (events) => foldDecisionsReport(events);
+export const decisionsDoor: DoorFold = (events, minted) => {
+  const wrong = decisionEventShape(minted);
+  return wrong ? { refused: [{ id: minted.id, why: wrong }] } : foldDecisionsReport(events);
+};
 registerDoor((scope) => scope.startsWith("decisions/"), () => decisionsDoor);
 
 /** One write, folded at the door: refused with the fold's reason, never appended to be refused later. */

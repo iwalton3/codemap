@@ -312,29 +312,18 @@ test("hostile history: each shape is refused in its own scope, and nowhere else"
 
     await settled("the repair");
 
-    // 5 — the point of all of it.
-    await step("with two scopes blocked the team still works", async () => {
-      await verified(
-        "a new doc, after all that",
-        document(ben.repo, {
-          id: "n_ledger", type: "concept", title: "Ledger",
-          summary: "records what moved", anchors: ["src/ledger.ts#Ledger"],
-        }).then(() => publishLocalDocs(ben.repo)),
-        async () => ((await sharedDocs(ben.repo) as any).docs ?? []).some((d: any) => d.nodeId === "n_ledger"),
-      );
-      // A brand-new scope, opened after the damage, is unaffected by any of it.
-      await shareFinding(ana.repo, 24, { targetKind: "anchor", targetId: "a_24", text: "life goes on" });
-    });
-
-    await settled("carrying on");
-
-    await step("and the new work reached everybody", async () => {
+    // 5 — newer data on the remote blocks every push until an upgrade re-folds it; reads carry
+    //     on (owner, batch 1: "in the mean time all pushes get blocked. Reads would still be
+    //     allowed"). pr-21 still holds an event from a newer protocol.
+    await step("with a newer event on the remote, a write is refused and says why; reads carry on", async () => {
+      const w = await shareFinding(ana.repo, 24, { targetKind: "anchor", targetId: "a_24", text: "life goes on" })
+        .catch((e: unknown) => ({ error: String((e as Error)?.message ?? e) })) as { error?: string };
+      assert.match(w.error ?? "", /newer than it[\s\S]*upgraded/, "the write is refused until an upgrade");
       for (const m of t.all) {
-        const docs = (await sharedDocs(m.repo) as any).docs.map((d: any) => d.nodeId).sort();
-        assert.deepEqual(docs, ["n_ledger", "n_transfer"], `${m.machine} is missing a doc`);
-        const f = await sharedFindings(m.repo, 24) as any;
-        assert.deepEqual(f.findings.map((x: any) => x.text), ["life goes on"]);
-        assert.equal(f.scope, undefined, "a scope opened after the damage carries none of it");
+        const docs = (await sharedDocs(m.repo) as any).docs.map((d: any) => d.nodeId);
+        assert.deepEqual(docs, ["n_transfer"], `${m.machine} still reads the team's docs`);
+        const f = await sharedFindings(m.repo, 22) as any;
+        assert.ok(f.findings.some((x: any) => x.text === "honest finding on 22"), "and its findings");
       }
     });
   } finally { t.dispose(); }

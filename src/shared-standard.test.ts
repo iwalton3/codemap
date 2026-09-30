@@ -33,6 +33,17 @@ import type { DamagedEntry } from "./log-damage.js";
  * written: no conforming build writes it — the write door refuses it — so in a log it is
  * damage and the fold halts on it (plan 1.2). What it would have done is not a question.
  */
+/** A shape this build does not write: newer (owner, batch 1) — never applied, never a halt. */
+async function newer(p: Promise<{ newer?: string; refused?: unknown }>, why: string): Promise<string> {
+  const r = await p;
+  assert.ok(r.newer, `${why} — got ${JSON.stringify(r.refused ?? "applied")}`);
+  return r.newer!;
+}
+/** Never applied: newer when the shape is not this build's, damage when the fold refuses it. */
+async function rejected(p: Promise<{ newer?: string; damage?: DamagedEntry; refused?: unknown }>, why: string): Promise<void> {
+  const r = await p;
+  assert.ok(r.newer || r.damage, `${why} — got ${JSON.stringify(r.refused ?? "applied")}`);
+}
 async function damage(p: Promise<{ damage?: DamagedEntry; refused?: unknown }>, why: string): Promise<DamagedEntry> {
   const r = await p;
   assert.ok(r.damage, `${why} — got ${JSON.stringify(r.refused ?? "applied")}`);
@@ -1376,7 +1387,7 @@ test("the fold refuses an acknowledgement with no release condition", async () =
   ] as const) {
     const root = await log("ack-bad");
     try {
-      await damage(probe.publishAckGranted(root, SCOPE, izzie, { ...base, ...bad } as Acknowledgement), `${what} must not fold`);
+      await rejected(probe.publishAckGranted(root, SCOPE, izzie, { ...base, ...bad } as Acknowledgement), `${what} must not fold`);
     } finally { discard(root); }
   }
   // The well-formed one folds, so the four above are refused for their field and not
@@ -1624,16 +1635,16 @@ test("the fold refuses to ratify a spec that was withdrawn", async () => {
  * everything — and the assertion that a LATER good event still folds is the actual claim:
  * the bad one did not poison the run.
  */
-test("a malformed event halts the fold, naming it — never a TypeError, never a silent drop", async () => {
+test("a malformed event is newer, named — never a TypeError, never folded", async () => {
   const root = await log("unbindable");
   try {
     await publishSpecDrafted(root, SCOPE, opus, SPEC);
     await publishOperation(root, SCOPE, opus, ADD);
     // The good events fold; each malformed one is named, whatever the arm behind it checks.
     assert.equal((await fold(root)).operations.length, 1);
-    assert.match((await damage(probe.publishSpecDrafted(root, SCOPE, opus, { id: "sp_bad", status: "draft", author: opus } as never), "a spec with no title")).why,
+    assert.match(await newer(probe.publishSpecDrafted(root, SCOPE, opus, { id: "sp_bad", status: "draft", author: opus } as never), "a spec with no title"),
       /not the shape a spec.drafted/);
-    await damage(probe.publishProblemRaised(root, SCOPE, opus, { id: "pr_bad", state: "awaitingAdjudication" } as never), "a problem about no rule");
+    await rejected(probe.publishProblemRaised(root, SCOPE, opus, { id: "pr_bad", state: "awaitingAdjudication" } as never), "a problem about no rule");
   } finally { discard(root); }
 });
 

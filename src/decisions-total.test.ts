@@ -9,7 +9,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { foldDecisions } from "./shared-decisions.js";
+import { decisionsDoor, foldDecisions } from "./shared-decisions.js";
+import { decisionEventShape } from "./log-shape.js";
 import { sortEvents, type LogEvent } from "./eventlog.js";
 import { foldHaltingOnDamage, isLogDamage, LogDamage } from "./log-damage.js";
 
@@ -57,10 +58,19 @@ const cases: [string, string, string, (string | number)[], unknown][] = [
   ["a comparison resolution with no person", "comparison", "decision.comparison.resolved", ["resolution", "human"], null],
   ["a confirm whose reading names an option that does not exist", "confirm", "decision.confirm.posted", ["decision", "confirms", "readings", 0, 0, "option"], "x"],
 ];
+// A shape this build does not write is NEWER (owner, batch 1): skipped on read, refused at the
+// door, never halted on. Anything the fold itself refuses still halts, naming the entry.
 for (const [name, scope, kind, path, v] of cases) {
-  test(`halts naming the entry: ${name}`, () => {
+  test(`a wrong entry is newer or halts, never a TypeError: ${name}`, async () => {
     const { events, id } = damaged(scope, kind, path, v);
-    assert.equal(halts(events).entry.id, id);
+    const bad = events.find((e) => e.id === id)!;
+    if (decisionEventShape(bad)) {
+      assert.doesNotThrow(() => foldDecisions(events), "a shape is newer: the read carries on");
+      const door = await decisionsDoor(events.filter((e) => e.id !== id), bad);
+      assert.ok(door.refused.some((r) => r.id === id), "and the door refuses it at replay");
+    } else {
+      assert.equal(halts(events).entry.id, id);
+    }
   });
 }
 

@@ -51,22 +51,41 @@ export function foldHaltingOnDamage<T, R extends Refusal>(
   // reader already drops the copy. A folder handed both must not read it as two acts.
   const seen = new Set<string>();
   events = events.filter((e) => !seen.has(e.id) && !!seen.add(e.id));
-  for (const e of events) {
-    const why = shape(e);
-    if (why) throw new LogDamage({ id: e.id, kind: e.kind, why });
-  }
+  // A wrong shape is newer than this build (or a dev-era one, owner Q7) and is skipped, never
+  // halted on (owner, batch 1). The door refuses it at replay; `newerIn` blocks pushes on it.
+  const original = events;
+  const skipped = events.filter((e) => !!shape(e));
+  events = events.filter((e) => !shape(e));
   let out: { value: T; refused: R[] };
   try { out = report(events); } catch (err) {
     if (isLogDamage(err)) throw err;
     throw new LogDamage(culprit(events, report, err));
   }
   for (const r of out.refused) {
+    // Refused for naming an event this build skipped as newer: newer too, not damage (owner,
+    // batch 2: "a reference that resolves to a kept event this build can't fold" is newer).
+    if (namesAny(events.find((e) => e.id === r.id), skipped, original)) continue;
     let again: R | undefined;
     try { again = report(causalContext(events, r.id)).refused.find((x) => x.id === r.id); }
     catch (err) { throw new LogDamage(culprit(events, report, err)); }
     if (again) throw new LogDamage({ id: r.id, kind: r.kind, why: again.why });
   }
   return out;
+}
+
+/**
+ * Whether `e` names one of `skipped` anywhere in its payload: by event id, an `id` the skipped
+ * event carries in its own payload (a request names itself `request.id`), or a subject the
+ * skipped event CREATED — the first event of that subject in `all`. A skipped event that merely
+ * shares a subject (another answer to one decision) excuses nothing.
+ */
+export function namesAny(e: LogEvent | undefined, skipped: LogEvent[], all: LogEvent[]): boolean {
+  if (!e || !skipped.length) return false;
+  const text = JSON.stringify({ subject: e.subject, data: e.data });
+  const created = (s: LogEvent): boolean => all.find((x) => x.subject === s.subject)?.id === s.id;
+  const ids = (s: LogEvent): string[] => [s.id, ...(s.subject !== e.subject || created(s) ? [s.subject] : []),
+    ...Object.values(s.data ?? {}).map((v) => (v as { id?: unknown } | null)?.id).filter((v): v is string => typeof v === "string")];
+  return skipped.some((s) => ids(s).some((id) => id === s.id ? text.includes(id) : text.includes(`"${id}"`)));
 }
 
 /**
