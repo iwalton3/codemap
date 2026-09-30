@@ -280,9 +280,12 @@ test("acting on a linked branch finding through its pull request acts in the fin
     const set = await shared.settleContest(u.root, 12, id, "severity", "high") as Record<string, unknown>;
     assert.doesNotMatch(String(set.error), /no finding/);
 
-    const bug = await shared.findingToBug(u.root, 12, id, "b_1") as Record<string, unknown>;
+    // A promotion names a bug that exists (docs/sidecar-references.md, row 23).
+    const { reportBug } = await import("./ops/bugs.js");
+    const reported = await reportBug(u.root, { title: "t", description: "d", anchors: [u.filter.id] }) as { id: string };
+    const bug = await shared.findingToBug(u.root, 12, id, reported.id) as Record<string, unknown>;
     assert.equal(bug.error, undefined, String(bug.error));
-    assert.ok(JSON.stringify(await own()).includes("b_1"), "promoted on the branch's record");
+    assert.ok(JSON.stringify(await own()).includes(reported.id), "promoted on the branch's record");
 
     for (const r of [
       await shared.upstreamFinding(u.root, 12, "f_nope", { system: "jira", key: "X" }),

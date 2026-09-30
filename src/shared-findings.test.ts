@@ -13,6 +13,8 @@ import {
   type SharedFinding, type FindingState,
 } from "./shared-findings.js";
 import { discard } from "./test-tmp.js";
+import { appendUnfolded } from "./test-door.js";
+import { LogDamage } from "./log-damage.js";
 
 const izzie: Actor = { principal: "izzie@x.com" };
 const dana: Actor = { principal: "dana@x.com" };
@@ -302,7 +304,8 @@ test("posting is a latch — the duplicate publish this log exists to prevent", 
   try {
     const id = await createFinding(root, 264, izzie, NEW);
     await markPosted(root, 264, izzie, id, { key: "1", url: "https://gh/1" });
-    await markPosted(root, 264, dana, id, { key: "2", url: "https://gh/2" });
+    await markPosted(root, 264, izzie, id, { key: "1", url: "https://gh/1" });   // the same record again: a no-op
+    await assert.rejects(markPosted(root, 264, dana, id, { key: "2", url: "https://gh/2" }), /already posted as 1/);
     const f = await one(root);
     assert.equal(f.posted?.url, "https://gh/1", "the first post is the record");
     assert.equal(alreadyPosted([f]).size, 1);
@@ -617,9 +620,12 @@ test("an agent may not decline an ask", async () => {
   try {
     const id = await createFinding(root, 264, izzie, NEW);
     await setState(root, 264, opus, id, "refuted", "not reachable");
-    await declineAsk(root, 264, opus, id, "changed my mind");
+    await assert.rejects(declineAsk(root, 264, opus, id, "changed my mind"), /person's act/);
     const f = await one(root);
-    assert.equal(f.pending?.ask, "refute", "the fold ignores it — a write-time check only binds the honest writer");
+    assert.equal(f.pending?.ask, "refute");
+    // Both ends: the fold refuses it too, so a build without the door writing it is damage.
+    await appendUnfolded(root, findingScope(264), opus, "finding.askDeclined", id, { reason: "changed my mind" });
+    await assert.rejects(readFindings(root, 264), LogDamage);
   } finally { discard(root); }
 });
 
@@ -629,7 +635,7 @@ test("declining without a reason is dropped", async () => {
   try {
     const id = await createFinding(root, 264, izzie, NEW);
     await setState(root, 264, opus, id, "refuted", "not reachable");
-    await declineAsk(root, 264, izzie, id, "");
+    await assert.rejects(declineAsk(root, 264, izzie, id, ""), /needs a reason/);
     assert.equal((await one(root)).pending?.ask, "refute");
   } finally { discard(root); }
 });

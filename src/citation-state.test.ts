@@ -7,7 +7,9 @@ import { spawnSync } from "node:child_process";
 import type { Anchor, State } from "./schema.js";
 import { writeStore, writeSnapshot, retainOrphans } from "./store.js";
 import { classifyCitations, needsAttention } from "./citation-state.js";
-import { relocate, createFinding, readFindings, ackQueue } from "./shared-findings.js";
+import { relocate, createFinding, readFindings, ackQueue, findingScope } from "./shared-findings.js";
+import { appendUnfolded } from "./test-door.js";
+import { LogDamage } from "./log-damage.js";
 import type { Actor } from "./schema.js";
 import { fixtureHash } from "./fixture-hash.js";
 import { discard } from "./test-tmp.js";
@@ -102,10 +104,13 @@ test("an agent may NOT apply one — a mis-targeted finding is worse than an unt
   const root = tmp();
   try {
     const id = await createFinding(root, PR, izzie, NEW);
-    await relocate(root, PR, opus, id, "moved", "renamed", { to: "a_new", apply: true });
+    await assert.rejects(relocate(root, PR, opus, id, "moved", "renamed", { to: "a_new", apply: true }), /person's act/);
     const f = (await readFindings(root, PR)).get(id)!;
-    assert.equal(f.target.id, "a_old", "the fold ignored it, not just the writer");
+    assert.equal(f.target.id, "a_old");
     assert.equal(f.relocation, undefined);
+    // Both ends: a build without the door appending it anyway is damage, never a quiet re-point.
+    await appendUnfolded(root, findingScope(PR), opus, "finding.relocation", id, { kind: "moved", to: "a_new", apply: true, rationale: "r" });
+    await assert.rejects(readFindings(root, PR), LogDamage);
   } finally { discard(root); }
 });
 
@@ -136,7 +141,7 @@ test("`moved` without a destination is not a proposal", async () => {
   const root = tmp();
   try {
     const id = await createFinding(root, PR, izzie, NEW);
-    await relocate(root, PR, izzie, id, "moved", "it went somewhere");
+    await assert.rejects(relocate(root, PR, izzie, id, "moved", "it went somewhere"), /needs where to/);
     assert.equal((await readFindings(root, PR)).get(id)!.relocation, undefined);
   } finally { discard(root); }
 });

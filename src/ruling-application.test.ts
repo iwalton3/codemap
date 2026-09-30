@@ -186,9 +186,9 @@ test("acceptance capsule requires exact selected human disposition and preserves
   assert.equal(accepted.state, "accepted");
   assert.deepEqual(accepted.closed?.by, human);
   assert.equal(f.fold([f.created, f.app("02", cap), f.reopen("03", "02"), f.app("04", cap)]).get(f.id)!.state, "created");
-  // A capsule in a dev-era version is damage: the fold halts on it rather than refusing it.
+  // A capsule in a dev-era version is skipped, never locked on (owner, Q7: "fold or skip").
   const old = structuredClone(cap) as any; old.version = 1;
-  assert.throws(() => f.fold([f.created, f.app("02", old)]), (e: unknown) => isLogDamage(e) && e.entry.id === "02");
+  assert.equal(f.fold([f.created, f.app("02", old)]).get(f.id)!.state, "issued");
   for (const mutate of [
     (c: any) => c.acceptance.by = agent,
     (c: any) => c.acceptance.findingId = "other",

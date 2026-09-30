@@ -408,6 +408,9 @@ export type AdmissionCheck = (events: LogEvent[]) => Promise<Admission>;
 export async function appendChecked(
   logRoot: string, scope: string, actor: Actor, check: AdmissionCheck, fold?: DoorFold,
 ): Promise<LogEvent | { error: string }> {
+  // The scope's registered door when the caller brings none: a local append is validated
+  // exactly as a replay would be, or the read of it is what refuses — as damage.
+  fold ??= doorFor(logRoot, scope);
   return withSidecarLock(logRoot, async () => {
     const events = await readScope(logRoot, scope);
     const admission = await check(events);

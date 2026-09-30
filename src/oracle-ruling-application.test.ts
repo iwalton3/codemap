@@ -4,7 +4,8 @@ import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, readFileSync, statS
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { team, settle, whileApart, type Member } from "./oracle.js";
+import { team, settle, type Member } from "./oracle.js";
+import { begin, discard as discardTx, syncSession } from "./sync-engine.js";
 import { shareFinding, closeFinding, sharedFindings } from "./ops-shared.js";
 import { postRound, answerDirect, withdrawDecision } from "./ops/decisions.js";
 import { applicationReaderBrief, submitApplicationVerdict, recordApplicationVerdict, applyRuling } from "./ops/ruling-application.js";
@@ -145,7 +146,7 @@ test("two clones preserve one-shot application across reopen and delayed duplica
   } finally { t.dispose(); discard(tx); }
 });
 
-test("an already-closed issue spends nothing, and a concurrent ordinary close spends the ruling only if the application is the close that happened", async () => {
+test("an already-closed issue spends nothing, and an application racing an ordinary close is refused at replay", async () => {
   const t = await team([A, B]);
   const tx = mkdtempSync(join(tmpdir(), "codemap-oracle-application-tx-"));
   try {
@@ -163,27 +164,24 @@ test("an already-closed issue spends nothing, and a concurrent ordinary close sp
       assert.equal(issue.applications?.length ?? 0, 0, "a refusal never spends the pair");
     }
 
+    // Racing an ordinary close: the application is staged, the close lands, and the replay
+    // refuses the application — it closed nothing, so it spent nothing, and it never landed.
     const racing = await fileAndRule(a, "race-d", "RACE", "D1");
     await settle(t);
-    let application = "";
-    await whileApart(t,
-      A, async (m) => { application = await applyWithReader(m, racing.id, racing.answer, tx,
-        "a12345673", "5e55a0a0-0000-0000-0000-000000000003"); },
-      B, async (m) => {
-        const result = await withPerson(() => closeFinding(m.repo, 7, racing.id, "invalid", "independent human close")) as any;
-        assert.equal(result.state, "invalid", JSON.stringify(result));
-      });
-    // Which close the fold reaches first is the log's order, not the test's. Either way the
-    // clones agree, and an application that closed nothing spent nothing (owner: "spend only
-    // when a closure actually executes"; the fold cases are in ruling-application.test.ts).
-    const seen = (await readBoth(a, b, racing.id)).map((issue) => {
+    begin(a.sidecar);
+    await applyWithReader(a, racing.id, racing.answer, tx, "a12345673", "5e55a0a0-0000-0000-0000-000000000003");
+    const closedFirst = await withPerson(() => closeFinding(b.repo, 7, racing.id, "invalid", "independent human close")) as any;
+    assert.equal(closedFirst.state, "invalid", JSON.stringify(closedFirst));
+    const replayed = await syncSession(a.sidecar, a.actor);
+    assert.ok("error" in replayed, "the application's replay is refused");
+    assert.deepEqual(replayed.conflicts?.map((c) => c.kind), ["finding.rulingApplied"]);
+    assert.match(replayed.conflicts![0]!.why, /no longer open/);
+    discardTx(a.sidecar);
+    await settle(t);
+    for (const issue of await readBoth(a, b, racing.id)) {
       assert.equal(issue.state, "invalid");
-      const attempt = issue.applications?.find((x) => x.eventId === application);
-      assert.ok(attempt, JSON.stringify(issue.applications));
-      if (attempt.status !== "executed") assert.match(attempt.reason ?? "", /nothing was spent/);
-      return attempt.status;
-    });
-    assert.equal(seen[0], seen[1]);
+      assert.equal(issue.applications?.length ?? 0, 0, "nothing of the application landed, so nothing was spent");
+    }
   } finally { t.dispose(); discard(tx); }
 });
 

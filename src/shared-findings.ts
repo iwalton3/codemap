@@ -1,4 +1,4 @@
-import { LogDamage } from "./log-damage.js";
+import { collector, foldJudged, registerReport, type RefusalClass, type Refusal } from "./validation.js";
 import { foldRepairRecords, type RepairFindingMap } from "./repair-records.js";
 import { foldRepairVerification, type RepairVerificationApplication } from "./repair-verification.js";
 /**
@@ -34,7 +34,7 @@ import { foldRepairVerification, type RepairVerificationApplication } from "./re
 
 import { ISO_DATE, type Actor, type BugSeverity, type BugWitness } from "./schema.js";
 import { isAgentActor, isIndependent, isErrorIndependent, reviewerKey } from "./identity.js";
-import { mintId, readScope, causality, type LogEvent } from "./eventlog.js";
+import { mintId, readScope, causality, registerDoor, type LogEvent } from "./eventlog.js";
 import { emitEvent } from "./write.js";
 import { applyRevision, newContestState, type Contested } from "./contest.js";
 import { issueClaimHash, validateApplicationCapsule, type ApplicationAttempt } from "./ruling-application.js";
@@ -678,10 +678,16 @@ interface ApplicationReplay {
   all: LogEvent[];
   causal: ReturnType<typeof causality>;
   snapshots: Map<string, Map<string, SharedFinding>>;
+  /** Where the top-level fold records what it did not apply. Snapshots record nothing. */
+  refuse?: (e: LogEvent, cls: RefusalClass, why: string) => void;
 }
 
 function foldFindingsInternal(events: LogEvent[], replay: ApplicationReplay): Map<string, SharedFinding> {
   const out = new Map<string, SharedFinding>();
+  const refuse = replay.refuse ?? (() => {});
+  // Each finding's creating payload, so a second creation can be told apart: the same bytes
+  // are one act seen twice, different ones are a claim on an id already taken (owner, Q5).
+  const created = new Map<string, string>();
   // Who currently holds each contestable scalar, and which two writes each open
   // contest is between. Bookkeeping for the fold, not state anyone reads, so it
   // is kept out of SharedFinding.
@@ -697,7 +703,7 @@ function foldFindingsInternal(events: LogEvent[], replay: ApplicationReplay): Ma
   const atAct = (e: LogEvent): SharedFinding | undefined => {
     let snapshot = replay.snapshots.get(e.id);
     if (!snapshot) {
-      snapshot = foldFindingsInternal(replay.all.filter((prior) => replay.causal.saw(e.id, prior.id)), replay);
+      snapshot = foldFindingsInternal(replay.all.filter((prior) => replay.causal.saw(e.id, prior.id)), { ...replay, refuse: undefined });
       replay.snapshots.set(e.id, snapshot);
     }
     return snapshot.get(e.subject);
@@ -708,11 +714,17 @@ function foldFindingsInternal(events: LogEvent[], replay: ApplicationReplay): Ma
     const d = e.data as Data | undefined;
 
     if (e.kind === "finding.created") {
-      if (out.has(e.subject)) continue; // a second creation of one id is not a thing
+      if (out.has(e.subject)) {
+        if (created.get(e.subject) !== JSON.stringify(d ?? null)) refuse(e, "state", `finding ${e.subject} already exists`);
+        continue;
+      }
       const text = str(d, "text");
       const targetId = str(d, "targetId");
       const targetKind = str(d, "targetKind");
-      if (!text || !targetId || (targetKind !== "anchor" && targetKind !== "node")) continue;
+      if (!text || !targetId || (targetKind !== "anchor" && targetKind !== "node")) {
+        refuse(e, "shape", "a finding needs text and an anchor or node target"); continue;
+      }
+      created.set(e.subject, JSON.stringify(d ?? null));
       out.set(e.subject, {
         id: e.subject,
         target: { kind: targetKind, id: targetId },
@@ -744,14 +756,17 @@ function foldFindingsInternal(events: LogEvent[], replay: ApplicationReplay): Ma
     }
 
     const f = out.get(e.subject);
-    if (!f) continue; // an event about a finding this scope has never seen
+    if (!f) {
+      if (e.kind.startsWith("finding.")) refuse(e, "reference", `no finding ${e.subject} in this scope`);
+      continue;
+    }
 
     switch (e.kind) {
       case "finding.revised": {
         const was = (d?.was as Record<string, unknown>) ?? {};
         const now = (d?.now as Record<string, unknown>) ?? {};
         // A person may revise anyone's; an agent only while nobody has stood behind it.
-        if (!mayRevise(f, e.actor)) break;
+        if (!mayRevise(f, e.actor)) { refuse(e, "state", "an agent may not revise a finding somebody has stood behind"); break; }
         applyRevision(f, e, now, CONTESTABLE, contest, causal);
         f.revisions.push({ at: e.at, by: e.actor, was });
         // Assigned field by field rather than through a dynamic key: a revision is
@@ -768,7 +783,7 @@ function foldFindingsInternal(events: LogEvent[], replay: ApplicationReplay): Ma
 
       case "finding.corroborated": {
         const verdict = str(d, "verdict") as Verdict | undefined;
-        if (verdict !== "confirm" && verdict !== "partial" && verdict !== "refute" && verdict !== "unsure") break;
+        if (verdict !== "confirm" && verdict !== "partial" && verdict !== "refute" && verdict !== "unsure") { refuse(e, "shape", `unknown verdict ${String(verdict)}`); break; }
         // One entry per REVIEWER — the person, plus the model if one spoke for
         // them. A re-review replaces that reviewer's own opinion and nobody else's,
         // and never collapses two: the disagreement IS the signal, and keying on
@@ -788,7 +803,7 @@ function foldFindingsInternal(events: LogEvent[], replay: ApplicationReplay): Ma
 
       case "finding.remediated": {
         const state = str(d, "state");
-        if (!isRemediation(state)) break;
+        if (!isRemediation(state)) { refuse(e, "shape", `unknown remediation ${String(state)}`); break; }
         // Latest wins. It is an observation, and a later look at the code supersedes an
         // earlier one — unlike corroboration, where the disagreement IS the data.
         f.remediation = {
@@ -804,13 +819,13 @@ function foldFindingsInternal(events: LogEvent[], replay: ApplicationReplay): Ma
         // event, because a teammate's clone applies the log without ever seeing that
         // check and a guard in one end binds one machine. Twelve defects of this exact
         // shape are on record in this subsystem.
-        if (isAgentActor(e.actor)) break;
+        if (isAgentActor(e.actor)) { refuse(e, "state", "backlogging is a person's act"); break; }
         const until = str(d, "until"), reason = str(d, "reason");
         // No deadline, no backlogging. The whole point of the record is that it comes
         // back; one without a date is the permanent silent silencing that
         // `acknowledgements` refuses for the same reason, and every deferral in the
         // measured data was in exactly that state.
-        if (!until || !ISO_DATE.test(until) || !reason) break;
+        if (!until || !ISO_DATE.test(until) || !reason) { refuse(e, "shape", "a backlog needs a reason and a deadline"); break; }
         // The DATE part only — see the same slice in `foldBugs`. `ISO_DATE` admits a
         // trailing `T`, and `until` is compared lexicographically against a date.
         const day = until.slice(0, 10);
@@ -838,12 +853,12 @@ function foldFindingsInternal(events: LogEvent[], replay: ApplicationReplay): Ma
         // one could bring back every one, which is the same queue-clearing move from the
         // other side. Deleting the field rather than dating it — it is back, and
         // the events remain the history.
-        if (isAgentActor(e.actor)) break;
+        if (isAgentActor(e.actor)) { refuse(e, "state", "bringing a finding back is a person's act"); break; }
         // The writer refuses an empty reason and the fold did not, which is the
         // guard-at-one-end shape this contract exists to forbid: a buggy or older
         // client could un-backlog a finding with no record of why, and every clone
         // would apply it.
-        if (!str(d, "reason")) break;
+        if (!str(d, "reason")) { refuse(e, "shape", "a release needs a reason"); break; }
         delete f.backlogged;
         break;
 
@@ -853,13 +868,13 @@ function foldFindingsInternal(events: LogEvent[], replay: ApplicationReplay): Ma
         // nothing else can touch. What it must never do is look like a witness captured
         // when the claim was made — `witnessAttached` is what keeps those distinguishable.
         const w = witnessOf(obj(d, "witness"));
-        if (!w) break;
+        if (!w) { refuse(e, "shape", "a rewitness needs a witness"); break; }
         const { anchorId } = w;
         // Never over an existing witness. A witness is the evidence a finding was filed
         // against; replacing it would silently re-baseline every drift answer that
         // depends on it, which is the "amendment re-baselines the witnesses away" problem
         // one subsystem over. Repair is for findings that have none.
-        if (f.witness) break;
+        if (f.witness) { refuse(e, "state", "the finding already has a witness"); break; }
         // Both ends FOR AN ANCHOR TARGET. `checkWitnessTarget` refuses this at the tool
         // with a sentence; the fold refuses it too, or a hostile or buggy client can point
         // any replaying clone's drift answers at code the finding was never about. A wrong
@@ -871,7 +886,7 @@ function foldFindingsInternal(events: LogEvent[], replay: ApplicationReplay): Ma
         // what makes every clone agree. So the tool refuses it and the fold cannot. Said
         // out loud because "both ends" is the contract here and a comment claiming it
         // where it does not hold is worse than the gap.
-        if (f.target.kind === "anchor" && anchorId !== f.target.id) break;
+        if (f.target.kind === "anchor" && anchorId !== f.target.id) { refuse(e, "state", "a witness must be of the finding's own anchor"); break; }
         f.witness = w;
         f.witnessAttached = { by: e.actor, at: e.at };
         // Arm a backlog that had NO witness to wake early on. One is allowed — the
@@ -885,7 +900,7 @@ function foldFindingsInternal(events: LogEvent[], replay: ApplicationReplay): Ma
 
       case "finding.commented": {
         const body = str(d, "body");
-        if (!body) break;
+        if (!body) { refuse(e, "shape", "a comment needs a body"); break; }
         f.thread.push({ id: e.id, actor: e.actor, at: e.at, body, inReplyTo: str(d, "inReplyTo") });
         break;
       }
@@ -902,15 +917,21 @@ function foldFindingsInternal(events: LogEvent[], replay: ApplicationReplay): Ma
           key: str(d, "key"), url: str(d, "url"), at: e.at, by: e.actor,
         };
         // Also a latch. Two people publishing the same finding is the duplicate
-        // this log exists to prevent, so the FIRST one is the record.
-        if (e.kind === "finding.posted") { if (!f.posted) f.posted = ref; }
-        else if (!f.upstream) f.upstream = ref;
+        // this log exists to prevent, so the FIRST one is the record. The same record again
+        // is a no-op; a different one is refused (owner, Q5).
+        const held = e.kind === "finding.posted" ? f.posted : f.upstream;
+        if (held) {
+          if (held.system !== ref.system || held.key !== ref.key || held.url !== ref.url)
+            refuse(e, "state", `the finding is already ${e.kind === "finding.posted" ? "posted" : "upstreamed"} as ${held.key ?? held.url ?? held.system}`);
+          break;
+        }
+        if (e.kind === "finding.posted") f.posted = ref; else f.upstream = ref;
         break;
       }
 
       case "finding.assigned": {
         const kind = str(d, "kind");
-        if (kind !== "investigate" && kind !== "fix" && kind !== "answer") break;
+        if (kind !== "investigate" && kind !== "fix" && kind !== "answer") { refuse(e, "shape", `unknown assignment ${String(kind)}`); break; }
         f.assignment = { kind, by: e.actor, at: e.at, note: str(d, "note") };
         // A fresh ask means the previous ANSWER no longer stands — the rule
         // `assignAnnotation` has always followed, and the fold did not. Without it
@@ -928,7 +949,7 @@ function foldFindingsInternal(events: LogEvent[], replay: ApplicationReplay): Ma
 
       case "finding.outcome": {
         const result = str(d, "result");
-        if (result !== "fixed" && result !== "answered" && result !== "declined") break;
+        if (result !== "fixed" && result !== "answered" && result !== "declined") { refuse(e, "shape", `unknown outcome ${String(result)}`); break; }
         // Reporting is not resolving: the agent says what it did, the human closes.
         const entry: NonNullable<SharedFinding["outcome"]> = {
           result, detail: str(d, "detail") ?? "",
@@ -944,7 +965,7 @@ function foldFindingsInternal(events: LogEvent[], replay: ApplicationReplay): Ma
 
       case "finding.requested": {
         const ask = str(d, "ask");
-        if (!isAsk(ask)) break;
+        if (!isAsk(ask)) { refuse(e, "shape", `unknown ask ${String(ask)}`); break; }
         const record = { ask, by: e.actor, at: e.at, rationale: str(d, "rationale") ?? "" };
         // One outstanding ask; a second SUPERSEDES it, and the superseded one keeps its
         // rationale in `asks` rather than only in the raw log.
@@ -957,12 +978,12 @@ function foldFindingsInternal(events: LogEvent[], replay: ApplicationReplay): Ma
 
       case "finding.askDeclined": {
         const reason = str(d, "reason");
-        if (!reason) break;                       // "declined" with no why is not an answer
+        if (!reason) { refuse(e, "shape", "declining needs a reason"); break; }
         // A person's call, like granting one. An agent that wants its own ask off the
         // queue asks for something else, which supersedes it.
-        if (isAgentActor(e.actor)) break;
+        if (isAgentActor(e.actor)) { refuse(e, "state", "declining an ask is a person's act"); break; }
         const open = (f.asks ??= []).find((a) => !a.settled);
-        if (!open) break;
+        if (!open) { refuse(e, "state", "there is no open ask to decline"); break; }
         open.settled = { as: "declined", by: e.actor, at: e.at, reason };
         f.pending = undefined;
         break;
@@ -970,12 +991,16 @@ function foldFindingsInternal(events: LogEvent[], replay: ApplicationReplay): Ma
 
       case "finding.stateChanged": {
         const next = str(d, "state") as FindingState | undefined;
-        if (!next || !["issued", "created", "invalid", "refuted", "resolved", "withdrawn", "accepted"].includes(next)) break;
+        if (!next || !["issued", "created", "invalid", "refuted", "resolved", "withdrawn", "accepted"].includes(next)) {
+          refuse(e, "shape", `unknown finding state ${String(next)}`); break;
+        }
         // The ordinary closure gate still applies; an agent reopen needs a
         // separate event with the closure it observed.
         // Legacy human reopens remain valid; agents use an observed-closure act.
-        if (isClosed(f.state) && !isClosed(next) && isAgentActor(e.actor)) break;
-        if (!mayTransitionFinding(f, e.actor, next)) break;
+        if (isClosed(f.state) && !isClosed(next) && isAgentActor(e.actor)) { refuse(e, "state", "an agent reopens only through the closure it observed"); break; }
+        if (!mayTransitionFinding(f, e.actor, next)) { refuse(e, "state", `the finding is ${f.state}; it may not become ${next} by this actor`); break; }
+        const from = str(d, "from");
+        if (from && from !== f.state) { refuse(e, "state", `the finding is ${f.state}; it may not become ${next} — this was decided when it was ${from}`); break; }
         f.state = next;
         // An ask is answered by the act it asked for — and SETTLED, not erased. Clearing
         // `pending` alone took the rationale with it, so a finding closed on an agent's
@@ -998,8 +1023,10 @@ function foldFindingsInternal(events: LogEvent[], replay: ApplicationReplay): Ma
 
       case "finding.reopened": {
         const next = str(d, "state") as FindingState | undefined;
-        if (next !== "created" && next !== "issued") break;
-        if (!isClosed(f.state) || !f.closed?.eventId || str(d, "observedClosure") !== f.closed.eventId) break;
+        if (next !== "created" && next !== "issued") { refuse(e, "shape", `a reopen goes to created or issued, not ${String(next)}`); break; }
+        if (!isClosed(f.state) || !f.closed?.eventId || str(d, "observedClosure") !== f.closed.eventId) {
+          refuse(e, "state", "the closure this reopen observed is not the finding's current one"); break;
+        }
         f.state = next;
         f.openEpoch = e.id;
         f.closed = undefined;
@@ -1011,12 +1038,16 @@ function foldFindingsInternal(events: LogEvent[], replay: ApplicationReplay): Ma
         const application = d as unknown as RepairVerificationApplication;
         const prior = replay.all.filter(p => replay.causal.saw(e.id, p.id));
         const verification = foldRepairVerification([...prior, e]);
-        if (!verification.applications.some(a => a.id === application?.id)) break;
+        if (!verification.applications.some(a => a.id === application?.id)) {
+          refuse(e, "state", verification.rejected.find((r) => r.eventId === e.id)?.reason ?? "no verified application matches this repair"); break;
+        }
         const act = atAct(e);
         if (!act || isClosed(act.state) || act.contested?.length || act.openEpoch !== application.openEpoch
-          || issueClaimHash("finding", act) !== application.claimHash) break;
+          || issueClaimHash("finding", act) !== application.claimHash) { refuse(e, "state", "the finding was not open with this claim"); break; }
         const once = `${application.requestId}\0${application.findingId}\0${application.openEpoch}`;
-        if (repairSpent.has(once)) break;
+        if (repairSpent.has(once)) { refuse(e, "state", "this verification has already been applied"); break; }
+        if (isClosed(f.state) || f.contested?.length || f.openEpoch !== application.openEpoch
+          || issueClaimHash("finding", f) !== application.claimHash) refuse(e, "state", "the finding was no longer open with this claim");
         if (!isClosed(f.state) && !f.contested?.length && f.openEpoch === application.openEpoch
           && issueClaimHash("finding", f) === application.claimHash) {
           repairSpent.add(once);
@@ -1031,16 +1062,21 @@ function foldFindingsInternal(events: LogEvent[], replay: ApplicationReplay): Ma
       case "finding.rulingApplied": {
         // No build ever published a version 1 or 2 capsule: one here is damage, not a refusal (plan 1.1).
         const version = (d?.capsule as { version?: unknown } | undefined)?.version;
-        if (version === 1 || version === 2)
-          throw new LogDamage({ id: e.id, kind: e.kind, why: `a ruling application in a dev-era capsule (version ${version}); this build writes version 3` });
+        // Skipped, never locked on (owner, Q7: "fold or skip").
+        if (version === 1 || version === 2) {
+          refuse(e, "older", `a ruling application in a dev-era capsule (version ${version}); this build writes version 3`); break;
+        }
         const attempts = (f.applications ??= []);
         const checked = validateApplicationCapsule(d?.capsule, "finding", e.subject);
         if ("error" in checked) {
           attempts.push({ eventId: e.id, at: e.at, by: e.actor, status: "refused", reason: checked.error });
+          refuse(e, "state", checked.error);
           break;
         }
         const capsule = checked.capsule;
         if (spent.has(capsule.key)) {
+          const first = attempts.find((a) => a.status === "executed" && a.key === capsule.key);
+          if (JSON.stringify(first?.capsule) !== JSON.stringify(capsule)) refuse(e, "state", "this ruling was already applied to this finding");
           attempts.push({ eventId: e.id, at: e.at, by: e.actor, status: "duplicate", key: capsule.key, capsule });
           break;
         }
@@ -1050,6 +1086,7 @@ function foldFindingsInternal(events: LogEvent[], replay: ApplicationReplay): Ma
           || issueClaimHash("finding", act) !== capsule.issue.claimHash) {
           attempts.push({ eventId: e.id, at: e.at, by: e.actor, status: "refused",
             key: capsule.key, capsule, reason: "issue was not open with this claim in the act-time view" });
+          refuse(e, "state", "the finding was not open with this claim");
           break;
         }
         // Spent only by a closure that happens (owner: "spend only when a closure actually
@@ -1059,6 +1096,7 @@ function foldFindingsInternal(events: LogEvent[], replay: ApplicationReplay): Ma
           || issueClaimHash("finding", f) !== capsule.issue.claimHash) {
           attempts.push({ eventId: e.id, at: e.at, by: e.actor, status: "refused",
             key: capsule.key, capsule, reason: "issue was no longer open with this claim when this was applied; nothing was spent" });
+          refuse(e, "state", "the finding was no longer open with this claim");
           break;
         }
         spent.add(capsule.key);
@@ -1071,13 +1109,13 @@ function foldFindingsInternal(events: LogEvent[], replay: ApplicationReplay): Ma
 
       case "finding.relocation": {
         const kind = str(d, "kind");
-        if (kind !== "moved" && kind !== "gone") break;
+        if (kind !== "moved" && kind !== "gone") { refuse(e, "shape", `unknown relocation ${String(kind)}`); break; }
         const to = str(d, "to");
-        if (kind === "moved" && !to) break;    // "it moved" without where is not a proposal
+        if (kind === "moved" && !to) { refuse(e, "shape", "a move needs where to"); break; }
         const apply = d?.apply === true;
         // The same gate as everything else: an agent proposes, a person applies.
         // A proposal from anyone is recorded; an APPLIED one from an agent is not.
-        if (apply && isAgentActor(e.actor)) break;
+        if (apply && isAgentActor(e.actor)) { refuse(e, "state", "applying a relocation is a person's act"); break; }
         f.relocation = { kind, ...(to ? { to } : {}), by: e.actor, at: e.at, rationale: str(d, "rationale") ?? "", ...(apply ? { applied: true } : {}) };
         if (apply) {
           if (kind === "moved" && to) f.target = { ...f.target, id: to };
@@ -1088,7 +1126,7 @@ function foldFindingsInternal(events: LogEvent[], replay: ApplicationReplay): Ma
 
       case "finding.promotedToBug": {
         const bug = str(d, "bug");
-        if (!bug) break;
+        if (!bug) { refuse(e, "shape", "a promotion needs the bug"); break; }
         // Both records survive and cross-link: the PR history should still show the
         // finding was raised there. Promotion transfers the OBLIGATION, so the
         // finding stops asking for a decision — its successor is asking.
@@ -1096,7 +1134,7 @@ function foldFindingsInternal(events: LogEvent[], replay: ApplicationReplay): Ma
         // A LATCH, like `posted`. Two people accepting one finding offline is the
         // duplicate this log exists to prevent; `bugIdFor` already makes them mint
         // the same id, and the latch is what holds if one of them passes another.
-        if (f.bug) break;
+        if (f.bug) { if (f.bug !== bug) refuse(e, "state", `the finding is already promoted to ${f.bug}`); break; }
         f.bug = bug;
         f.pending = undefined;
         // …and the outstanding ASK goes with it, for the same reason `pending` does: the
@@ -1111,8 +1149,54 @@ function foldFindingsInternal(events: LogEvent[], replay: ApplicationReplay): Ma
   return out;
 }
 
+/** The fold and every event it did not apply, classed (plan 3.1). The door and the scans read this. */
+export function foldFindingsReport(events: LogEvent[]): { value: RepairFindingMap<SharedFinding>; refused: Refusal[] } {
+  const { refused, refuse } = collector();
+  const value = foldFindingsWith(events, refuse);
+  return { value, refused };
+}
+
+/**
+ * The universe a findings scope belongs to (`findings/<universe>/pr-<n>` or `/b-<hash>`), or
+ * null for a bare key, which only tests write.
+ */
+function universeOfFindingScope(scope: string): string | null {
+  const m = /^findings\/(.+)\/(?:pr|b)-[^/]+$/.exec(scope);
+  return m ? m[1]! : null;
+}
+
+/**
+ * The references a findings event makes OUTSIDE its scope (docs/sidecar-references.md, row 23):
+ * a promotion names a bug that must already be filed in the universe's bug scope.
+ */
+async function outsideReferences(logRoot: string, scope: string, e: LogEvent): Promise<Refusal[]> {
+  if (e.kind !== "finding.promotedToBug") return [];
+  const bug = str(e.data as Data | undefined, "bug");
+  const universe = universeOfFindingScope(scope);
+  if (!bug || !universe) return [];
+  const bugs = await readScope(logRoot, `bugs/${universe}`);
+  return bugs.some((b) => b.kind === "bug.filed" && b.subject === bug)
+    ? [] : [{ id: e.id, kind: e.kind, cls: "reference", why: `no bug ${bug} has been filed in bugs/${universe}` }];
+}
+
+registerReport((scope) => scope.startsWith("findings/"), foldFindingsReport);
+// The findings scope's door: the finding fold, the repair records that share the scope, and
+// what the scope's events name elsewhere.
+registerDoor((scope) => scope.startsWith("findings/"), (logRoot, scope) => async (events, minted) => ({
+  refused: [
+    ...foldRepairRecords(events).rejected.map((r) => ({ id: r.eventId, why: r.reason })),
+    ...foldFindingsReport(events).refused,
+    ...await outsideReferences(logRoot, scope, minted),
+  ],
+}));
+
+/** The fold for a READ: a refused linear event is damage and locks; see `validation.ts`. */
 export function foldFindings(events: LogEvent[]): RepairFindingMap<SharedFinding> {
-  const out: RepairFindingMap<SharedFinding> = foldFindingsInternal(events, { all: events, causal: causality(events), snapshots: new Map() });
+  return foldJudged(events, foldFindingsReport).value;
+}
+
+function foldFindingsWith(events: LogEvent[], refuse: ApplicationReplay["refuse"]): RepairFindingMap<SharedFinding> {
+  const out: RepairFindingMap<SharedFinding> = foldFindingsInternal(events, { all: events, causal: causality(events), snapshots: new Map(), refuse });
   out.repairRecords = foldRepairRecords(events);
   const verification = foldRepairVerification(events);
   out.repairVerification = verification;
@@ -1313,7 +1397,9 @@ export async function setState(
     }
     return { error: `an agent may not move ${id} from ${current.state} to ${next} — request it instead` };
   }
-  return emit(logRoot, pr, actor, id, "finding.stateChanged", { state: next, ...(reason ? { reason } : {}) });
+  // `from`: what the author decided against. A replay onto a finding that has since moved is
+  // refused rather than silently re-disposing a teammate's close (plan 3.1).
+  return emit(logRoot, pr, actor, id, "finding.stateChanged", { state: next, from: current.state, ...(reason ? { reason } : {}) });
 }
 
 export async function readFindings(logRoot: string, pr: number | string): Promise<Map<string, SharedFinding>> {

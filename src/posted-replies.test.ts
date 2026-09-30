@@ -119,7 +119,8 @@ test("the first place it landed is the one that sticks", async () => {
     await withEnv({ CODEMAP_SIDECAR: undefined, CODEMAP_AGENT_MODEL: undefined }, async () => {
       const created = await shared.shareFinding(u.root, 264, NEW) as { id: string };
       await shared.recordPublished(u.root, 264, created.id, { key: "9001", url: "first" });
-      await shared.recordPublished(u.root, 264, created.id, { key: "9002", url: "second" });
+      // A different place is refused (owner, Q5: "refusal when it differs"), not silently kept second.
+      await assert.rejects(shared.recordPublished(u.root, 264, created.id, { key: "9002", url: "second" }), /already posted as 9001/);
       const v = await shared.sharedFindings(u.root, 264) as { findings: { posted?: string }[] };
       assert.equal(v.findings[0]!.posted, "first");
     });

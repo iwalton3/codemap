@@ -186,8 +186,8 @@ test("walkthroughs ride the same loop", async () => {
 test("a sync gained-count reports what actually arrived", async () => {
   const t = await team();
   try {
-    await createFinding(t.a, 264, izzie, NEW);
-    await corroborate(t.a, 264, izzie, "f_x", "confirm", "n/a"); // event about an unknown id, still an event
+    const id = await createFinding(t.a, 264, izzie, NEW);
+    await corroborate(t.a, 264, izzie, id, "confirm", "n/a");
     await sync(t.a, izzie);
     const r = await sync(t.b, dana) as { gained: number };
     assert.equal(r.gained, 2);
