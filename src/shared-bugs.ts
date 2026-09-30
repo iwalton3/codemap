@@ -27,14 +27,14 @@
  * from a rename from a deletion that ignored the defect.
  */
 
-import { LogDamage } from "./log-damage.js";
 import { createHash } from "node:crypto";
+import { collector, foldJudged, registerReport, type RefusalClass, type Refusal } from "./validation.js";
 import { ISO_DATE, type Actor, type BugSeverity, type BugWitness } from "./schema.js";
 import { isAgentActor, isIndependent, isErrorIndependent, reviewerKey } from "./identity.js";
-import { mintId, readScope, causality, type LogEvent } from "./eventlog.js";
+import { mintId, readScope, causality, registerDoor, type LogEvent } from "./eventlog.js";
 import { emitEvent } from "./write.js";
 import { applyRevision, newContestState, type Contested } from "./contest.js";
-import { issueClaimHash, validateApplicationCapsule, type ApplicationAttempt } from "./ruling-application.js";
+import { issueClaimHash, questionnaireAnswerId, validateApplicationCapsule, type ApplicationAttempt } from "./ruling-application.js";
 import {
   isClosed, mayTransition, mayRevise, needsHumanAck, isStandingBehind,
   isAsk, type Ask, type Corroboration, type ExternalRef, type FindingComment,
@@ -223,6 +223,13 @@ const severity = (d: Data | undefined, k = "severity"): BugSeverity | undefined 
   return v && SEVERITIES.includes(v) ? (v as BugSeverity) : undefined;
 };
 
+/** An event's anchor list has an entry that is not a witnessed citation: a shape this build never writes. */
+function malformedAnchors(d: Data | undefined): boolean {
+  const raw = d?.anchors;
+  if (raw === undefined) return false;
+  return !Array.isArray(raw) || anchorsIn(d).length !== raw.length;
+}
+
 /** Anchor citations off an event, ignoring anything that is not a witnessed id. */
 function anchorsIn(d: Data | undefined): { anchorId: string; bodyHash: string; deleted?: true }[] {
   const raw = d?.anchors;
@@ -236,7 +243,7 @@ function anchorsIn(d: Data | undefined): { anchorId: string; bodyHash: string; d
     // not there", which a later reader can act on.
     const bodyHash = str(a as Data, "bodyHash");
     // A deletion marker that is not exactly `true` is malformed, and read as a body it
-    // would call the deletion's own absence a fix — dropped, as the findings fold drops it.
+    // would call the deletion's own absence a fix; `malformedAnchors` refuses the event.
     const deleted = (a as Data).deleted;
     if (deleted !== undefined && deleted !== true) continue;
     if (anchorId && bodyHash) out.push({ anchorId, bodyHash, ...(deleted ? { deleted: true as const } : {}) });
@@ -247,18 +254,12 @@ function anchorsIn(d: Data | undefined): { anchorId: string; bodyHash: string; d
 /** The scalars one person owns — the only ones that can be contested. */
 const CONTESTABLE = ["title", "text", "severity", "category"] as const;
 
-/**
- * Every bug in a universe, folded from its events.
- *
- * Malformed and ratchet-breaking events are skipped rather than fatal, for the reason
- * they are in `foldFindings`: they arrive from other people's clients, and a store
- * that refuses to load — or that lets one bad client rewrite everyone's state — is
- * worse than one that ignores a record.
- */
 interface ApplicationReplay {
   all: LogEvent[];
   causal: ReturnType<typeof causality>;
   snapshots: Map<string, Map<string, SharedBug>>;
+  /** Where the top-level fold records what it did not apply. Snapshots record nothing. */
+  refuse?: (e: LogEvent, cls: RefusalClass, why: string) => void;
 }
 
 function foldBugsInternal(events: LogEvent[], replay: ApplicationReplay): Map<string, SharedBug> {
@@ -266,10 +267,11 @@ function foldBugsInternal(events: LogEvent[], replay: ApplicationReplay): Map<st
   const contest = newContestState();
   const causal = causality(events);
   const spent = new Set<string>();
+  const refuse = replay.refuse ?? (() => {});
   const atAct = (e: LogEvent): SharedBug | undefined => {
     let snapshot = replay.snapshots.get(e.id);
     if (!snapshot) {
-      snapshot = foldBugsInternal(replay.all.filter((prior) => replay.causal.saw(e.id, prior.id)), replay);
+      snapshot = foldBugsInternal(replay.all.filter((prior) => replay.causal.saw(e.id, prior.id)), { ...replay, refuse: undefined });
       replay.snapshots.set(e.id, snapshot);
     }
     return snapshot.get(e.subject);
@@ -281,7 +283,8 @@ function foldBugsInternal(events: LogEvent[], replay: ApplicationReplay): Map<st
     if (e.kind === "bug.filed") {
       const title = str(d, "title");
       const text = str(d, "text");
-      if (!title || !text) continue;
+      if (!title || !text) { refuse(e, "shape", "a bug needs a title and text"); continue; }
+      if (malformedAnchors(d)) { refuse(e, "shape", "every anchor needs an id and a witness hash"); continue; }
       const existing = out.get(e.subject);
       if (existing) {
         // A second filing of one id is not a second bug — `bugIdFor` makes two people
@@ -326,7 +329,10 @@ function foldBugsInternal(events: LogEvent[], replay: ApplicationReplay): Map<st
     }
 
     const b = out.get(e.subject);
-    if (!b) continue; // an event about a bug this universe has never seen
+    if (!b) {
+      if (e.kind.startsWith("bug.")) refuse(e, "reference", `no bug ${e.subject} in this scope`);
+      continue;
+    }
 
     switch (e.kind) {
       case "bug.revised": {
@@ -335,7 +341,7 @@ function foldBugsInternal(events: LogEvent[], replay: ApplicationReplay): Map<st
         // A person may revise anyone's; an agent only while nobody has stood behind it.
         // Same gate as a finding's, from the same function — the two folds spelling one
         // rule out separately is how they drift.
-        if (!mayRevise(b, e.actor)) break;
+        if (!mayRevise(b, e.actor)) { refuse(e, "state", "this actor may not revise the bug"); break; }
         applyRevision(b, e, now, CONTESTABLE, contest, causal);
         b.revisions.push({ at: e.at, by: e.actor, was });
         if (typeof now.title === "string") b.title = now.title;
@@ -349,26 +355,30 @@ function foldBugsInternal(events: LogEvent[], replay: ApplicationReplay): Map<st
       case "bug.anchored": {
         // Grow-only. Two people citing different code on one bug are both right, and
         // this is the one place findings' scalar-revision semantics do not transfer.
+        if (malformedAnchors(d)) { refuse(e, "shape", "every anchor needs an id and a witness hash"); break; }
         for (const a of anchorsIn(d)) addAnchor(b, a, e.actor, e.at);
         break;
       }
 
       case "bug.unanchored": {
         const anchorId = str(d, "anchorId");
-        if (!anchorId) break;
+        if (!anchorId) { refuse(e, "shape", "an unanchoring needs the anchor"); break; }
         // A person's act. An agent dropping the evidence for a defect is the
         // false-provenance failure `witness` exists to prevent, and a bug that
         // silently stops pointing anywhere is worse than one pointing at moved code.
-        if (isAgentActor(e.actor)) break;
+        if (isAgentActor(e.actor)) { refuse(e, "state", "removing a bug's evidence is a person's act"); break; }
         const hit = b.anchors.find((x) => x.anchorId === anchorId);
-        if (!hit || hit.removed) break;
-        hit.removed = { by: e.actor, at: e.at, reason: str(d, "reason") ?? "removed" };
+        if (!hit) { refuse(e, "state", `the bug does not cite ${anchorId}`); break; }
+        const reason = str(d, "reason") ?? "removed";
+        // The same removal again is a no-op; a different one is refused (owner, Q5).
+        if (hit.removed) { if (hit.removed.reason !== reason) refuse(e, "state", `${anchorId} is already removed from the bug`); break; }
+        hit.removed = { by: e.actor, at: e.at, reason };
         break;
       }
 
       case "bug.corroborated": {
         const verdict = str(d, "verdict") as Verdict | undefined;
-        if (verdict !== "confirm" && verdict !== "refute" && verdict !== "unsure") break;
+        if (verdict !== "confirm" && verdict !== "refute" && verdict !== "unsure") { refuse(e, "shape", `unknown verdict ${String(verdict)}`); break; }
         // One entry per REVIEWER — the person plus the model that spoke for them.
         // See `reviewerKey`: keying on the principal alone let one person's second
         // model quietly overwrite their first, and the disagreement IS the signal.
@@ -384,16 +394,17 @@ function foldBugsInternal(events: LogEvent[], replay: ApplicationReplay): Map<st
       }
 
       case "bug.backlogged": {
-        // BOTH ENDS. `backlogBug` refuses an agent with a sentence; this drops the event,
+        // BOTH ENDS. `backlogBug` refuses an agent with a sentence; this refuses the event,
         // because a teammate's clone applies the log without ever seeing that check and a
         // guard in one end binds one machine. Twelve defects of exactly this shape are on
         // record across this subsystem.
-        if (isAgentActor(e.actor)) break;
+        if (isAgentActor(e.actor)) { refuse(e, "state", "backlogging is a person's act"); break; }
         const until = str(d, "until"), reason = str(d, "reason");
         // No deadline, no backlogging. A record whose whole point is that it comes back
         // and which has no date is the permanent silent silencing `acknowledgements`
         // refuses for the same reason.
-        if (!until || !ISO_DATE.test(until) || !reason) break;
+        if (!until || !ISO_DATE.test(until) || !reason) { refuse(e, "shape", "a backlog needs a reason and a deadline"); break; }
+        if (malformedAnchors(d)) { refuse(e, "shape", "every witness needs an id and a hash"); break; }
         // The DATE part only. `ISO_DATE` admits a trailing `T` and a full timestamp, and
         // every reader compares this lexicographically against a date — so anything past
         // the tenth character sorts after the deadline and the record sleeps a day longer
@@ -425,16 +436,16 @@ function foldBugsInternal(events: LogEvent[], replay: ApplicationReplay): Map<st
         // could bring back every one, which is the same queue-clearing move from the other
         // side. Deleting the field rather than dating it — it is back, and the events
         // remain the history.
-        if (isAgentActor(e.actor)) break;
+        if (isAgentActor(e.actor)) { refuse(e, "state", "bringing a bug back is a person's act"); break; }
         // The writer refuses an empty reason; so does the fold, or a buggy or older client
         // could un-backlog a bug with no record of why and every clone would apply it.
-        if (!str(d, "reason")) break;
+        if (!str(d, "reason")) { refuse(e, "shape", "a release needs a reason"); break; }
         delete b.backlogged;
         break;
 
       case "bug.commented": {
         const body = str(d, "body");
-        if (!body) break;
+        if (!body) { refuse(e, "shape", "a comment needs a body"); break; }
         b.thread.push({ id: e.id, actor: e.actor, at: e.at, body, inReplyTo: str(d, "inReplyTo") });
         break;
       }
@@ -449,26 +460,32 @@ function foldBugsInternal(events: LogEvent[], replay: ApplicationReplay): Map<st
         const url = str(d, "url");
         // A reference to nowhere is not tracking. One of the two is enough — a Jira
         // key without a base URL is still what somebody types into search.
-        if (!key && !url) break;
+        if (!key && !url) { refuse(e, "shape", "tracking needs a key or a url"); break; }
         const ref: ExternalRef = { system, key, url, at: e.at, by: e.actor };
         const i = b.tracking.findIndex((t) => t.system === system);
         if (i < 0) { b.tracking.push(ref); break; }
         // Latched per system. Replacing one is a person's act: an agent re-pointing a
         // bug at a different ticket detaches the team's conversation from it silently.
-        if (!isAgentActor(e.actor)) b.tracking[i] = ref;
+        // The same ticket again is a no-op (owner, Q5).
+        if (isAgentActor(e.actor)) {
+          const held = b.tracking[i]!;
+          if (held.key !== key || held.url !== url) refuse(e, "state", `the bug is already tracked in ${system} as ${held.key ?? held.url}; replacing it is a person's act`);
+          break;
+        }
+        b.tracking[i] = ref;
         break;
       }
 
       case "bug.assigned": {
         const kind = str(d, "kind");
-        if (kind !== "investigate" && kind !== "fix" && kind !== "answer") break;
+        if (kind !== "investigate" && kind !== "fix" && kind !== "answer") { refuse(e, "shape", `unknown assignment ${String(kind)}`); break; }
         b.assignment = { kind, by: e.actor, at: e.at, note: str(d, "note") };
         break;
       }
 
       case "bug.outcome": {
         const result = str(d, "result");
-        if (result !== "fixed" && result !== "answered" && result !== "declined") break;
+        if (result !== "fixed" && result !== "answered" && result !== "declined") { refuse(e, "shape", `unknown outcome ${String(result)}`); break; }
         // Reporting is not resolving: the agent says what it did, a person closes.
         b.outcome = {
           result, detail: str(d, "detail") ?? "",
@@ -480,15 +497,17 @@ function foldBugsInternal(events: LogEvent[], replay: ApplicationReplay): Map<st
 
       case "bug.requested": {
         const ask = str(d, "ask");
-        if (!isAsk(ask)) break;
+        if (!isAsk(ask)) { refuse(e, "shape", `unknown ask ${String(ask)}`); break; }
         b.pending = { ask, by: e.actor, at: e.at, rationale: str(d, "rationale") ?? "" };
         break;
       }
 
       case "bug.reopened": {
         const next = str(d, "state") as FindingState | undefined;
-        if (next !== "created" && next !== "issued") break;
-        if (!isClosed(b.state) || !b.closed?.eventId || str(d, "observedClosure") !== b.closed.eventId) break;
+        if (next !== "created" && next !== "issued") { refuse(e, "shape", `a reopen goes to created or issued, not ${String(next)}`); break; }
+        if (!isClosed(b.state) || !b.closed?.eventId || str(d, "observedClosure") !== b.closed.eventId) {
+          refuse(e, "state", "the closure this reopen observed is not the bug's current one"); break;
+        }
         b.state = next;
         b.openEpoch = e.id;
         b.closed = undefined;
@@ -497,18 +516,22 @@ function foldBugsInternal(events: LogEvent[], replay: ApplicationReplay): Map<st
       }
 
       case "bug.rulingApplied": {
-        // No build ever published a version 1 or 2 capsule: one here is damage, not a refusal (plan 1.1).
+        // Skipped, never locked on (owner, Q7: "fold or skip").
         const version = (d?.capsule as { version?: unknown } | undefined)?.version;
-        if (version === 1 || version === 2)
-          throw new LogDamage({ id: e.id, kind: e.kind, why: `a ruling application in a dev-era capsule (version ${version}); this build writes version 3` });
+        if (version === 1 || version === 2) {
+          refuse(e, "older", `a ruling application in a dev-era capsule (version ${version}); this build writes version 3`); break;
+        }
         const attempts = (b.applications ??= []);
         const checked = validateApplicationCapsule(d?.capsule, "bug", e.subject);
         if ("error" in checked) {
           attempts.push({ eventId: e.id, at: e.at, by: e.actor, status: "refused", reason: checked.error });
+          refuse(e, "state", checked.error);
           break;
         }
         const capsule = checked.capsule;
         if (spent.has(capsule.key)) {
+          const first = attempts.find((a) => a.status === "executed" && a.key === capsule.key);
+          if (JSON.stringify(first?.capsule) !== JSON.stringify(capsule)) refuse(e, "state", "this ruling was already applied to this bug");
           attempts.push({ eventId: e.id, at: e.at, by: e.actor, status: "duplicate", key: capsule.key, capsule });
           break;
         }
@@ -518,6 +541,7 @@ function foldBugsInternal(events: LogEvent[], replay: ApplicationReplay): Map<st
           || issueClaimHash("bug", act) !== capsule.issue.claimHash) {
           attempts.push({ eventId: e.id, at: e.at, by: e.actor, status: "refused",
             key: capsule.key, capsule, reason: "issue was not open with this claim in the act-time view" });
+          refuse(e, "state", "the bug was not open with this claim");
           break;
         }
         // Spent only by a closure that happens (owner: "spend only when a closure actually
@@ -527,6 +551,7 @@ function foldBugsInternal(events: LogEvent[], replay: ApplicationReplay): Map<st
           || issueClaimHash("bug", b) !== capsule.issue.claimHash) {
           attempts.push({ eventId: e.id, at: e.at, by: e.actor, status: "refused",
             key: capsule.key, capsule, reason: "issue was no longer open with this claim when this was applied; nothing was spent" });
+          refuse(e, "state", "the bug was no longer open with this claim");
           break;
         }
         spent.add(capsule.key);
@@ -539,10 +564,14 @@ function foldBugsInternal(events: LogEvent[], replay: ApplicationReplay): Map<st
 
       case "bug.stateChanged": {
         const next = str(d, "state") as FindingState | undefined;
-        if (!next || !["issued", "created", "invalid", "refuted", "resolved", "withdrawn"].includes(next)) break;
+        if (!next || !["issued", "created", "invalid", "refuted", "resolved", "withdrawn"].includes(next)) {
+          refuse(e, "shape", `unknown bug state ${String(next)}`); break;
+        }
         // Legacy human reopens remain valid; agents use an observed-closure act.
-        if (isClosed(b.state) && !isClosed(next) && isAgentActor(e.actor)) break;
-        if (!mayTransition(b, e.actor, next)) break;
+        if (isClosed(b.state) && !isClosed(next) && isAgentActor(e.actor)) { refuse(e, "state", "an agent reopens only through the closure it observed"); break; }
+        if (!mayTransition(b, e.actor, next)) { refuse(e, "state", `the bug is ${b.state}; it may not become ${next} by this actor`); break; }
+        const from = str(d, "from");
+        if (from && from !== b.state) { refuse(e, "state", `the bug is ${b.state}; it may not become ${next} — this was decided when it was ${from}`); break; }
         b.state = next;
         if (isClosed(next)) b.closed = { eventId: e.id, at: e.at, by: e.actor, reason: str(d, "reason") ?? next };
         else { b.closed = undefined; b.openEpoch = e.id; }
@@ -554,9 +583,77 @@ function foldBugsInternal(events: LogEvent[], replay: ApplicationReplay): Map<st
   return out;
 }
 
-export function foldBugs(events: LogEvent[]): Map<string, SharedBug> {
-  return foldBugsInternal(events, { all: events, causal: causality(events), snapshots: new Map() });
+/** The fold and every event it did not apply, classed (plan 3.1). The door and the scans read this. */
+export function foldBugsReport(events: LogEvent[]): { value: Map<string, SharedBug>; refused: Refusal[] } {
+  const { refused, refuse } = collector();
+  const value = foldBugsInternal(events, { all: events, causal: causality(events), snapshots: new Map(), refuse });
+  return { value, refused };
 }
+
+/** The fold for a READ: a refused linear event is damage and locks; see `validation.ts`. */
+export function foldBugs(events: LogEvent[]): Map<string, SharedBug> {
+  return foldJudged(events, foldBugsReport).value;
+}
+
+/**
+ * The findings scope a bug's `fromPr` names: `findings/<u>/pr-<n>` or `findings/<u>/b-<hex>`.
+ * A copy of `findingKeyScope`'s layout, which cannot be imported here (review-target ->
+ * sidecar-config -> store -> this module); `bugs-validation.test.ts` pins the two together.
+ */
+export function findingScopeOfBugKey(universe: string, key: string): string | null {
+  if (/^\d+$/.test(key)) return `findings/${universe}/pr-${key}`;
+  if (!key.startsWith("branch:") || key.length === "branch:".length) return null;
+  const hex = createHash("sha256").update(`${universe}\0branch\0${key.slice("branch:".length)}`).digest("hex").slice(0, 40);
+  return `findings/${universe}/b-${hex}`;
+}
+
+/**
+ * The references a bug event makes OUTSIDE its scope (docs/sidecar-references.md): a filing from
+ * a finding names that finding (rows 70-71), and a ruling application names the round, the
+ * decision and the answer in `decisions/<u>` (rows 78-80). Raw events, not the decisions fold:
+ * shared-decisions imports this module.
+ */
+async function outsideReferences(logRoot: string, scope: string, e: LogEvent): Promise<Refusal[]> {
+  const universe = scope.slice("bugs/".length);
+  const d = e.data as Data | undefined;
+  const refused = (why: string): Refusal[] => [{ id: e.id, kind: e.kind, cls: "reference", why }];
+  if (e.kind === "bug.filed") {
+    const pr = str(d, "fromPr"), finding = str(d, "fromFinding");
+    if (!pr || !finding) return [];
+    const at = findingScopeOfBugKey(universe, pr);
+    if (!at) return [{ id: e.id, kind: e.kind, cls: "shape", why: `"${pr}" is not a pull request number or a branch key` }];
+    const findings = await readScope(logRoot, at);
+    return findings.some((f) => f.kind === "finding.created" && f.subject === finding) ? [] : refused(`no finding ${finding} in ${at}`);
+  }
+  if (e.kind === "bug.rulingApplied") {
+    const r = (d?.capsule as { version?: unknown; ruling?: Record<string, unknown> } | undefined);
+    const { answerId, roundId, questionId } = r?.ruling ?? {};
+    // The fold refuses a capsule without these, and skips a dev-era one.
+    if (r?.version !== 3 || typeof answerId !== "string" || typeof roundId !== "string" || typeof questionId !== "string") return [];
+    const at = `decisions/${universe}`;
+    const events = await readScope(logRoot, at);
+    const round = events.find((x) => x.kind === "decision.round.posted" && x.id === roundId);
+    if (!round) return refused(`no round ${roundId} in ${at}`);
+    // A decision's id is `<round event id>:<its label>`.
+    const labels = ((round.data as Data | undefined)?.decisions as { id?: unknown }[] | undefined) ?? [];
+    const label = labels.map((x) => String(x?.id)).find((l) => `${roundId}:${l}` === questionId);
+    if (label === undefined) return refused(`round ${roundId} posted no decision ${questionId}`);
+    // An answer names its decision by id, or by label when that label is unique.
+    const answered = events.some((x) =>
+      ((x.kind === "decision.answer.recorded" || x.kind === "decision.answer.revised") && x.id === answerId
+        && [questionId, label].includes((x.data as Data | undefined)?.decision as string))
+      || (x.kind === "decision.questionnaire.submitted" && ((x.data as any)?.staged?.answers ?? [])
+        .some((a: { questionId?: unknown }) => `${roundId}:${String(a?.questionId)}` === questionId
+          && questionnaireAnswerId(x.id, String(a.questionId)) === answerId)));
+    return answered ? [] : refused(`no answer ${answerId} to ${questionId} in ${at}`);
+  }
+  return [];
+}
+
+registerReport((scope) => scope.startsWith("bugs/"), foldBugsReport);
+registerDoor((scope) => scope.startsWith("bugs/"), (logRoot, scope) => async (events, minted) => ({
+  refused: [...foldBugsReport(events).refused, ...await outsideReferences(logRoot, scope, minted)],
+}));
 
 /**
  * Add a citation, or refresh the witness on one already there.
@@ -669,7 +766,7 @@ export async function readBugsShared(logRoot: string, universe: string): Promise
 }
 
 /**
- * Drop a citation. A person only — the fold ignores an agent's, so refusing here is
+ * Drop a citation. A person only — the fold refuses an agent's too, so refusing here is
  * about giving a reason instead of a silent no-op.
  */
 export async function unanchorBug(
@@ -683,7 +780,7 @@ export async function unanchorBug(
 
 /**
  * Move a bug's state. Refuses up front where the ratchet forbids it — the fold would
- * ignore the event anyway, and a silent no-op is a worse answer than an error.
+ * refuse the event anyway, and here the refusal can say why.
  */
 export async function setBugState(
   logRoot: string, universe: string, actor: Actor, id: string, next: FindingState, reason?: string,
@@ -703,7 +800,8 @@ export async function setBugState(
         : `an agent may not move ${id} from ${current.state} to ${next} — request it instead`,
     };
   }
-  return emit(logRoot, universe, actor, id, "bug.stateChanged", { state: next, ...(reason ? { reason } : {}) });
+  // `from`: what the author decided against, so a replay onto a bug that has since moved is refused (plan 3.1).
+  return emit(logRoot, universe, actor, id, "bug.stateChanged", { state: next, from: current.state, ...(reason ? { reason } : {}) });
 }
 
 /**

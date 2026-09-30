@@ -88,6 +88,9 @@ const hash = (value: unknown): string => "sha256:" + createHash("sha256").update
 export const applicationDisplayHash = (display: ApplicationCapsuleV1["ruling"]["display"]): string => hash(display);
 export const applicationKey = (answerId: string, issueKey: string): string =>
   "apply_" + createHash("sha256").update(JSON.stringify(["codemap-ruling-application-v1", answerId, issueKey])).digest("hex");
+/** An answer given through a questionnaire has no event of its own: its id derives from the submission. */
+export const questionnaireAnswerId = (submission: string, questionId: string): string =>
+  "qans_" + createHash("sha256").update(`${submission}\0${questionId}`).digest("hex").slice(0, 24);
 
 /** Claim meaning only. State, assignments, comments and observation times are separate. */
 export function issueClaimHash(kind: "finding" | "bug", issue: Record<string, any>): string {

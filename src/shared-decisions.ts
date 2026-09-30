@@ -29,6 +29,7 @@ import { emitEventChecked } from "./write.js";
 import { foldHaltingOnDamage } from "./log-damage.js";
 import { decisionEventShape } from "./log-shape.js";
 import { isAgentActor } from "./identity.js";
+import { questionnaireAnswerId } from "./ruling-application.js";
 import { canonicalIssueKey, type CanonicalIssueReference } from "./decision-issues.js";
 import { questionnaireVersion, stageSubmission, validateQuestionnaire, type Questionnaire, type QuestionnaireAnswer, type StagedSubmission } from "./questionnaire.js";
 import { canonical, codeUnitOrder, normalizeQuestion, sameQuestion } from "./transcript.js";
@@ -1063,7 +1064,7 @@ function foldOnce(events: LogEvent[], excludedPicks: ReadonlySet<string>): { val
         seenQuestionnaireAttempts.add(attemptKey);
         for (const entry of entries) {
           const { d, answer, via, meta } = entry!;
-          const answerId = "qans_" + createHash("sha256").update(`${e.id}\0${answer.questionId}`).digest("hex").slice(0, 24);
+          const answerId = questionnaireAnswerId(e.id, answer.questionId);
           acceptAnswer(e, pos, { decision: d.id, hash: d.hash, via, questionnaireMeta: meta }, answerId);
         }
         break;

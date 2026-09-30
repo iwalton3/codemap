@@ -21,6 +21,9 @@ import {
   fileBug, foldBugs, isTracked, needsHumanAck, promoteBug, readBugsShared, requestOnBug,
   resolveBugContest, reviseBug, setBugState, trackBug, unanchorBug, witnessesOf,
 } from "./shared-bugs.js";
+import { createFinding } from "./shared-findings.js";
+import { appendUnfolded } from "./test-door.js";
+import { LogDamage } from "./log-damage.js";
 import { discard } from "./test-tmp.js";
 
 const izzie: Actor = { principal: "izzie@x.com" };
@@ -64,20 +67,14 @@ test("an agent may not close a bug somebody stood behind — the WRITE path says
   } finally { discard(root); }
 });
 
-test("and the FOLD says so too — an event from a client that did not ask is ignored", async () => {
+test("and the FOLD says so too — an event from a client that did not ask is damage", async () => {
   const root = tmp();
   try {
     const id = await fileBug(root, U, izzie, NEW);
     await promoteBug(root, U, izzie, id);
     // Straight past `setBugState`'s refusal, the way an older or wrong client would.
-    await commentOnBug(root, U, opus, id, "closing this");
-    const events = sortEvents(await readScope(root, bugScope(U)));
-    events.push({
-      ...events[0]!, id: "zzz", kind: "bug.stateChanged", actor: opus,
-      data: { state: "resolved" }, after: events.map((e) => e.id),
-    });
-    assert.equal(foldBugs(events).get(id)!.state, "created",
-      "the write-time check protects the honest writer and nobody else");
+    await appendUnfolded(root, bugScope(U), opus, "bug.stateChanged", id, { state: "resolved" });
+    await assert.rejects(readBugsShared(root, U), LogDamage);
   } finally { discard(root); }
 });
 
@@ -131,7 +128,7 @@ test("a citation with no witness is not a citation — staleness would be undete
   const root = tmp();
   try {
     const id = await fileBug(root, U, izzie, NEW);
-    await anchorBug(root, U, izzie, id, [{ anchorId: "a_9" } as never]);
+    await assert.rejects(anchorBug(root, U, izzie, id, [{ anchorId: "a_9" } as never]), /witness hash/);
     assert.deepEqual(citedAnchors(await one(root)), ["a_1"]);
   } finally { discard(root); }
 });
@@ -143,7 +140,8 @@ test("a tracking reference latches per system — the FIRST ticket is the ticket
   try {
     const id = await fileBug(root, U, izzie, NEW);
     await trackBug(root, U, izzie, id, { key: "ACME-1", url: "https://jira/ACME-1" });
-    await trackBug(root, U, danasAgent, id, { key: "ACME-2" });
+    await trackBug(root, U, danasAgent, id, { key: "ACME-1", url: "https://jira/ACME-1" });   // the same ticket again: a no-op
+    await assert.rejects(trackBug(root, U, danasAgent, id, { key: "ACME-2" }), /replacing it is a person's act/);
     const b = await one(root);
     assert.equal(b.tracking.length, 1);
     assert.equal(b.tracking[0]!.key, "ACME-1", "an agent may not re-point it at another ticket");
@@ -168,7 +166,7 @@ test("a reference to nowhere is refused by the fold — neither key nor url is n
   const root = tmp();
   try {
     const id = await fileBug(root, U, izzie, NEW);
-    await trackBug(root, U, izzie, id, { system: "jira" });
+    await assert.rejects(trackBug(root, U, izzie, id, { system: "jira" }), /key or a url/);
     assert.equal(isTracked(await one(root)), false);
   } finally { discard(root); }
 });
@@ -191,6 +189,7 @@ test("the bug id a finding becomes is derived, so two people converge on ONE bug
     assert.equal(id, bugIdFor("f_31a"), "derived, not minted");
     assert.notEqual(id, bugIdFor("f_31b"));
 
+    await createFinding(root, "acme/api/pr-264", izzie, { id: "f_31a", targetKind: "anchor", targetId: "a_1", text: "t" });
     // Two people accept the same finding offline, each witnessing the code they can see.
     await fileBug(root, U, izzie, { ...NEW, id, from: { pr: 264, finding: "f_31a" } });
     await fileBug(root, U, dana, {
@@ -325,6 +324,7 @@ test("bug replay rejects stale or context-free agent reopens", () => {
 test("plan 3.5: a bug an agent files from a person's confirmed finding is that person's, and confirmed", async () => {
   const root = tmp();
   try {
+    await createFinding(root, "acme/api/pr-7", izzie, { id: "f_1", targetKind: "anchor", targetId: "a_1", text: "t" });
     await fileBug(root, U, opus, { ...NEW, id: "bug_from_f", from: { pr: 7, finding: "f_1",
       inherits: { author: izzie, corroboration: [{ actor: dana, verdict: "confirm", at: "2026-09-28T00:00:00Z", rationale: "reproduced" }] } } });
     const b = await one(root);
@@ -338,6 +338,7 @@ test("plan 3.5: a bug an agent files from a person's confirmed finding is that p
 test("plan 3.5: an unconfirmed agent finding stays an agent proposal as a bug; a malformed inheritance inherits nothing", async () => {
   const root = tmp();
   try {
+    for (const f of ["f_2", "f_3"]) await createFinding(root, "acme/api/pr-7", danasAgent, { id: f, targetKind: "anchor", targetId: "a_1", text: "t" });
     await fileBug(root, U, opus, { ...NEW, id: "bug_a", from: { pr: 7, finding: "f_2", inherits: { author: danasAgent, corroboration: [] } } });
     await fileBug(root, U, opus, { ...NEW, id: "bug_b", from: { pr: 7, finding: "f_3", inherits: { author: {} as Actor, corroboration: [] } } });
     const bugs = await readBugsShared(root, U);
