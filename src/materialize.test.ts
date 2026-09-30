@@ -425,9 +425,9 @@ test("a scope that repairs itself stops being blocked", async () => {
  * shape `normalize.test.ts`'s golden vector gives `HASH_SCHEME`, and for the same
  * reason — a manual version number that can be forgotten is silent and total.
  *
- * The log deliberately exercises the two rules that a fold change is most likely
- * to touch: one person's two clones disagreeing (a contest, keyed on the writer)
- * and one person's two models disagreeing (two corroborations, keyed on the model).
+ * The log deliberately exercises two rules that a fold change is likely to touch:
+ * one person's two clones revising one field apart (merge-era, so both apply) and
+ * one person's two models disagreeing (two corroborations, keyed on the model).
  */
 const GOLDEN_LOG: LogEvent[] = (() => {
   const dana: Actor = { principal: "dana@x.com" };
@@ -456,7 +456,7 @@ test("the fold's output is pinned — change it and bump MATERIALIZER_VERSION", 
   const folded = [...foldFindings(GOLDEN_LOG)];
   assert.equal(
     createHash("sha256").update(JSON.stringify(folded)).digest("hex").slice(0, 32),
-    "a913c76ce90a0f5e03d70946b9ab0a6b",
+    "8245f827b4eb5e899ed78dbda5415adb",
     "the fold produces something different from what MATERIALIZER_VERSION "
     + `${MATERIALIZER_VERSION} was set for — bump it, or fix the fold`,
   );
@@ -467,9 +467,9 @@ test("…and the vector actually contains the two rules it claims to", () => {
   // the assertions the digest is standing in for.
   const f = foldFindings(GOLDEN_LOG).get("f_gold")!;
   assert.equal(f.corroboration.length, 2, "two models, two opinions");
-  const c = (f.contested ?? []).find((c) => c.field === "severity");
-  assert.ok(c, "two clones, one contest");
-  assert.deepEqual([c.held.writer, c.incoming.writer], ["w_laptop", "w_desktop"]);
+  // Merge-era revisions (no `seq`) fold as they always did: both apply, the later stands.
+  assert.equal(f.severity, "low");
+  assert.equal(f.revisions.length, 2);
   // Both corroborators are agents speaking for a DIFFERENT principal than the author,
   // so the two independence axes agree here. They come apart elsewhere — see
   // `lifecycle-guard.test.ts` — and what this pins is that the fold emits both.

@@ -1,9 +1,9 @@
 /**
  * The graph fold, rule by rule against `docs/plan-sharing-the-rest.md` §0.
  *
- * The design is deliberately cheap — wall-clock wins, and anything the ordering actually
- * changed goes to a queue — so the tests are about the two places cheap can go wrong:
- * picking differently on two clones, and losing a write without saying so.
+ * The design is deliberately cheap — the last publication in log order is served (owner, Q6:
+ * "Correct push order is what matters") — so the tests are about picking differently on two
+ * clones, and losing a write without saying so.
  */
 
 import { test } from "node:test";
@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import { testEvent } from "./test-events.js";
 import { sortEvents, type LogEvent } from "./eventlog.js";
 import type { Actor } from "./schema.js";
-import { foldGraph, divergedNodes, graphScope } from "./shared-graph.js";
+import { foldGraph, graphScope } from "./shared-graph.js";
 import { discard } from "./test-tmp.js";
 
 const izzie: Actor = { principal: "izzie@x.com" };
@@ -24,6 +24,7 @@ interface Pub {
   after?: string[];
   at?: string;
   node?: string;
+  seq?: number;
   edges?: { to: string; type: string; order?: number; generatedBy?: string }[];
 }
 
@@ -31,6 +32,7 @@ const pub = (p: Pub): LogEvent => testEvent({
   id: p.id, kind: "graph.published", subject: p.node ?? "n_flow",
   actor: p.by, writer: p.writer ?? `w_${p.by.principal}`, after: p.after ?? [],
   at: p.at ?? "2026-08-24T00:00:00Z",
+  ...(p.seq !== undefined ? { seq: p.seq } : {}),
   data: { nodeId: p.node ?? "n_flow", commit: "c1", edges: p.edges ?? [] },
 });
 
@@ -78,58 +80,38 @@ test("analyzer output is refused at the FOLD, not only at the publish surface", 
   assert.deepEqual(w.winner.edges.map((e) => e.to), ["n_a"]);
 });
 
-// --- fast-forward, or queue it ----------------------------------------------
+// --- push order decides -------------------------------------------------------
 
-test("a plain sequence is a FAST-FORWARD — nothing for anyone to look at", () => {
-  const events = [
+test("a plain sequence: the later publication is served", () => {
+  const w = wiring([
     pub({ id: "0000000001-aa", by: izzie, at: "2026-08-24T01:00:00Z", edges: [{ to: "n_a", type: "step_of" }] }),
     pub({ id: "0000000002-bb", by: ben, writer: "w_b", after: ["0000000001-aa"], at: "2026-08-24T02:00:00Z",
       edges: [{ to: "n_b", type: "step_of" }] }),
-  ];
-  const w = wiring(events)!;
+  ])!;
   assert.deepEqual(w.winner.edges.map((e) => e.to), ["n_b"], "ben saw izzie and rewired: his answer");
-  assert.equal(w.reordered, undefined, "wall-clock and causal order agree, so there is nothing to queue");
-  assert.deepEqual(divergedNodes(fold(events)), []);
+  assert.deepEqual(Object.keys(w).sort(), ["nodeId", "winner"], "nothing else to look at");
 });
 
-test("a causally LATER write with an EARLIER clock is queued, and the clock still wins", () => {
-  // The case the detector exists for, and the reason it is not "detect concurrency":
-  // these two are causally ordered — ben saw izzie — so no concurrency test would fire.
-  // What is wrong is the CLOCK, and the only way to see it is that the two orders
-  // disagree about the winner.
-  const events = [
-    pub({ id: "0000000001-aa", by: izzie, at: "2026-08-24T09:00:00Z", edges: [{ to: "n_a", type: "step_of" }] }),
-    // Ben's laptop is an hour slow. He saw izzie's write and replaced it.
-    pub({ id: "0000000002-bb", by: ben, writer: "w_b", after: ["0000000001-aa"], at: "2026-08-24T08:00:00Z",
+test("the clock decides nothing: a later push with an earlier clock is served", () => {
+  // Ben's laptop is an hour slow. Wall-clock order used to serve izzie's and queue his.
+  const w = wiring([
+    pub({ id: "0000000001-aa", by: izzie, at: "2026-08-24T09:00:00Z", seq: 1, edges: [{ to: "n_a", type: "step_of" }] }),
+    pub({ id: "0000000002-bb", by: ben, writer: "w_b", at: "2026-08-24T08:00:00Z", seq: 2,
       edges: [{ to: "n_b", type: "step_of" }] }),
-  ];
-  const w = wiring(events)!;
-  assert.deepEqual(w.winner.edges.map((e) => e.to), ["n_a"], "wall-clock is served, per the owner's rule");
-  assert.ok(w.reordered, "and the disagreement is RECORDED, or ben's write vanishes with nobody told");
-  assert.equal(w.reordered!.causal.actor.principal, "ben@x.com", "the queue can name whose write the order lost");
-  assert.deepEqual(divergedNodes(fold(events)).map((x) => x.nodeId), ["n_flow"]);
+  ])!;
+  assert.deepEqual(w.winner.edges.map((e) => e.to), ["n_b"]);
 });
 
-test("concurrent writes are queued only when the two orders actually disagree", () => {
-  // Two people wiring one node apart. Whether this is queued depends on whether the
-  // clock and the canonical tie-break pick the same winner — which is the point: the
-  // question is never "did they write concurrently", it is "did the ordering matter".
-  const later = pub({ id: "0000000002-bb", by: ben, writer: "w_b", at: "2026-08-24T02:00:00Z",
-    edges: [{ to: "n_b", type: "step_of" }] });
-  const earlier = pub({ id: "0000000001-aa", by: izzie, at: "2026-08-24T01:00:00Z",
-    edges: [{ to: "n_a", type: "step_of" }] });
-  const w = wiring([earlier, later])!;
-  assert.deepEqual(w.winner.edges.map((e) => e.to), ["n_b"], "the later clock wins");
-  assert.equal(
-    w.reordered, undefined,
-    "canonical order puts the higher id last too, so both orders agree and this is a fast-forward",
-  );
+test("publications written apart: the one pushed later is served, whatever its id or clock", () => {
+  // Izzie's was minted later and carries the later clock; ben's reached the remote second.
+  const w = wiring([
+    pub({ id: "0000000009-zz", by: izzie, at: "2026-08-24T02:00:00Z", seq: 1, edges: [{ to: "n_a", type: "step_of" }] }),
+    pub({ id: "0000000001-aa", by: ben, writer: "w_b", at: "2026-08-24T01:00:00Z", seq: 2, edges: [{ to: "n_b", type: "step_of" }] }),
+  ])!;
+  assert.deepEqual(w.winner.edges.map((e) => e.to), ["n_b"]);
 });
 
-test("every clone picks the same winner when two writes share a timestamp", () => {
-  // `at` alone is not a total order. Without the id tie-break two clones holding the
-  // same events could serve different wiring, which is CONVERGENCE gone — the property
-  // every other rule here is in service of.
+test("every clone picks the same winner, whatever order the events arrived in", () => {
   const same = "2026-08-24T01:00:00Z";
   const a = pub({ id: "0000000001-aa", by: izzie, at: same, edges: [{ to: "n_a", type: "step_of" }] });
   const b = pub({ id: "0000000002-bb", by: ben, writer: "w_b", at: same, edges: [{ to: "n_b", type: "step_of" }] });
@@ -212,79 +194,6 @@ test("the merged read does not double an edge two people both drew", async () =>
     await writeGraph(root, { edges: [{ from: "n_flow", to: "n_a", type: "step_of", order: 0 }] });
 
     assert.equal((await readGraph(root)).edges.length, 1, "one edge, drawn twice, is one edge");
-  } finally { discard(root); }
-});
-
-test("a reordering reaches the review queue, and a repair closes it", async () => {
-  // The end of the loop. The fold DETECTS a reorder; without this it shows up only if
-  // somebody goes looking, which is the same as not detecting it.
-  const { mkdtempSync, mkdirSync, rmSync, writeFileSync } = await import("node:fs");
-  const { tmpdir } = await import("node:os");
-  const { join } = await import("node:path");
-  const { spawnSync } = await import("node:child_process");
-  const { db } = await import("./db.js");
-  const { readAnnotations } = await import("./store.js");
-  const { init, document: documentNode } = await import("./ops.js");
-  const { queueDivergedWiring, DIVERGED_WIRING_CATEGORY } = await import("./ops/graph.js");
-  const { graphProjection } = await import("./shared-projections.js");
-
-  const root = mkdtempSync(join(tmpdir(), "codemap-wq-"));
-  try {
-    mkdirSync(join(root, "src"), { recursive: true });
-    writeFileSync(join(root, "src/pay.ts"), "export function transfer(c: number) { return c; }\n");
-    spawnSync("git", ["init", "-q"], { cwd: root });
-    spawnSync("git", ["add", "-A"], { cwd: root });
-    spawnSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "i"], { cwd: root });
-    await init(root);
-    const side = join(root, "side");
-    mkdirSync(side, { recursive: true });
-    spawnSync("git", ["init", "-q"], { cwd: side });
-    writeFileSync(join(root, ".codemap", "sidecar"), side);
-    const doc = await documentNode(root, {
-      id: "n_flow", type: "process", title: "Intake", summary: "s", body: "b",
-      anchors: ["src/pay.ts#transfer"],
-    }) as { error?: string };
-    assert.equal(doc.error, undefined, `document failed: ${doc.error}`);
-
-    // The fold's answer, planted: the clock and causality disagree about the winner.
-    // From the resolver, not the basename: `universeKey` lower-cases, so a hand-built
-    // scope string silently misses the one the ops use.
-    const { resolveSidecar } = await import("./sidecar-config.js");
-    const scope = `graph/${resolveSidecar(root)!.universe}`;
-    const receipt = (who: string, at: string, id: string, to: string) => ({
-      nodeId: "n_flow", commit: "c1", edges: [{ to, type: "step_of" as any }],
-      actor: { principal: who }, at, eventId: id,
-    });
-    graphProjection.write(db(root), scope, new Map([["n_flow", {
-      nodeId: "n_flow",
-      winner: receipt("izzie@x", "2026-08-24T09:00:00Z", "e1", "n_a"),
-      reordered: { causal: receipt("ben@x", "2026-08-24T08:00:00Z", "e2", "n_b") },
-    }]]));
-    db(root).prepare("INSERT INTO shared_scope(scope,fingerprint,folded_at,events,status) VALUES(?,?,?,?,?)")
-      .run(scope, "planted", "now", 2, "complete");
-
-    const first = await queueDivergedWiring(root) as any;
-    assert.equal(first.filed, 1, "the reorder is filed where a person will see it");
-    const items = (await readAnnotations(root)).annotations
-      .filter((a) => a.category === DIVERGED_WIRING_CATEGORY && !a.resolved);
-    assert.equal(items.length, 1);
-    assert.match(items[0]!.text, /causally later/, "and the item says WHY it matters, not just that it happened");
-    assert.match(items[0]!.text, /ben@x/, "naming the writer whose decision lost to a clock");
-
-    // Idempotent: it runs on every sync, and one that re-asked would bury the answer.
-    const again = await queueDivergedWiring(root) as any;
-    assert.deepEqual({ f: again.filed, q: again.alreadyQueued }, { f: 0, q: 1 });
-
-    // The repair: the fold stops reporting it, so the clone closes its own item.
-    graphProjection.write(db(root), scope, new Map([["n_flow", {
-      nodeId: "n_flow", winner: receipt("ben@x", "2026-08-24T10:00:00Z", "e3", "n_b"),
-    }]]));
-    const after = await queueDivergedWiring(root) as any;
-    assert.equal(after.closed, 1, "a repair closes the item — its own text promises that");
-    assert.equal(
-      (await readAnnotations(root)).annotations
-        .filter((a) => a.category === DIVERGED_WIRING_CATEGORY && !a.resolved).length, 0,
-    );
   } finally { discard(root); }
 });
 

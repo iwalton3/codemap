@@ -14,8 +14,7 @@
  *
  * **Anchors are a grow-only set, not a revisable scalar.** The local bug carries
  * `addAnchors` and whole-witness refresh, and two people adding different anchors
- * offline are not in conflict — collapsing them to a contested array would either
- * lose one addition or ask somebody to arbitrate a disagreement that does not exist.
+ * offline are not in conflict — collapsing them to one value would lose one addition.
  * Removal is a person's act and lands as a TOMBSTONE, so it converges with a
  * concurrent addition instead of racing it.
  *
@@ -28,12 +27,11 @@
  */
 
 import { createHash } from "node:crypto";
-import { collector, foldJudged, registerReport, type RefusalClass, type Refusal } from "./validation.js";
+import { collector, foldJudged, registerReport, staleRevision, wasOf, type RefusalClass, type Refusal } from "./validation.js";
 import { ISO_DATE, type Actor, type BugSeverity, type BugWitness } from "./schema.js";
 import { isAgentActor, isIndependent, isErrorIndependent, reviewerKey } from "./identity.js";
 import { mintId, readScope, causality, registerDoor, type LogEvent } from "./eventlog.js";
 import { emitEvent } from "./write.js";
-import { applyRevision, newContestState, type Contested } from "./contest.js";
 import { issueClaimHash, validateApplicationCapsule, type ApplicationAttempt } from "./ruling-application.js";
 import { rulingReferences } from "./ruling-references.js";
 import {
@@ -128,7 +126,6 @@ export interface SharedBug {
   closed?: { eventId?: string; at: string; by: Actor; reason: string };
 
   revisions: { at: string; by: Actor; was: Record<string, unknown> }[];
-  contested?: Contested[];
 
   /**
    * The bug is real, it is not being fixed now, and it WILL come back.
@@ -252,9 +249,6 @@ function anchorsIn(d: Data | undefined): { anchorId: string; bodyHash: string; d
   return out;
 }
 
-/** The scalars one person owns — the only ones that can be contested. */
-const CONTESTABLE = ["title", "text", "severity", "category"] as const;
-
 interface ApplicationReplay {
   all: LogEvent[];
   causal: ReturnType<typeof causality>;
@@ -265,8 +259,6 @@ interface ApplicationReplay {
 
 function foldBugsInternal(events: LogEvent[], replay: ApplicationReplay): Map<string, SharedBug> {
   const out = new Map<string, SharedBug>();
-  const contest = newContestState();
-  const causal = causality(events);
   const spent = new Set<string>();
   const refuse = replay.refuse ?? (() => {});
   const atAct = (e: LogEvent): SharedBug | undefined => {
@@ -353,7 +345,8 @@ function foldBugsInternal(events: LogEvent[], replay: ApplicationReplay): Map<st
         // Same gate as a finding's, from the same function — the two folds spelling one
         // rule out separately is how they drift.
         if (!mayRevise(b, e.actor)) { refuse(e, "state", "this actor may not revise the bug"); break; }
-        applyRevision(b, e, now, CONTESTABLE, contest, causal);
+        const stale = staleRevision(e, b as unknown as Record<string, unknown>);
+        if (stale) { refuse(e, "state", stale); break; }
         b.revisions.push({ at: e.at, by: e.actor, was });
         if (typeof now.title === "string") b.title = now.title;
         if (typeof now.text === "string") b.text = now.text;
@@ -722,8 +715,12 @@ export const reportOnBug = (logRoot: string, universe: string, actor: Actor, id:
 export const anchorBug = (logRoot: string, universe: string, actor: Actor, id: string, anchors: BugWitness[]) =>
   emit(logRoot, universe, actor, id, "bug.anchored", { anchors });
 
-export const reviseBug = (logRoot: string, universe: string, actor: Actor, id: string, now: Record<string, unknown>, was: Record<string, unknown> = {}) =>
-  emit(logRoot, universe, actor, id, "bug.revised", { now, was });
+/** Rewrite a bug's prose. `was` as `revise` on a finding: a replay onto a moved bug is refused. */
+export async function reviseBug(
+  logRoot: string, universe: string, actor: Actor, id: string, now: Record<string, unknown>, was?: Record<string, unknown>,
+): Promise<LogEvent> {
+  return emit(logRoot, universe, actor, id, "bug.revised", { now, was: was ?? wasOf((await readBugsShared(logRoot, universe)).get(id), now) });
+}
 
 /**
  * Backlog a bug: real, not now, and it comes back.
@@ -794,22 +791,6 @@ export async function setBugState(
 }
 
 /**
- * Clear a contested field by stating what it should be. A person only, for the reason
- * `resolveContest` gives on findings: agents do not arbitrate between people.
- */
-export async function resolveBugContest(
-  logRoot: string, universe: string, actor: Actor, id: string, field: string, value: unknown,
-): Promise<LogEvent | { error: string }> {
-  if (isAgentActor(actor)) {
-    return { error: `${field} is contested between two people — an agent may not decide it. Ask, or leave it for them.` };
-  }
-  const b = (await readBugsShared(logRoot, universe)).get(id);
-  if (!b) return { error: `no bug ${id}` };
-  if (!b.contested?.some((c) => c.field === field)) return { error: `${field} is not contested on ${id}` };
-  return emit(logRoot, universe, actor, id, "bug.revised", { now: { [field]: value } });
-}
-
-/**
  * What is waiting on a person.
  *
  * Deliberately NOT including drift: whether a bug's code moved is a local join, so a
@@ -819,5 +800,5 @@ export async function resolveBugContest(
 export function bugAckQueue(bugs: Iterable<SharedBug>): SharedBug[] {
   return [...bugs].filter((b) =>
     !isClosed(b.state)
-    && (needsHumanAck(b) || !!b.pending || !!b.contested?.length));
+    && (needsHumanAck(b) || !!b.pending));
 }

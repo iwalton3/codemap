@@ -2585,7 +2585,7 @@ class BugsPage extends Component {
           <span class="bchip ${b.state}">${b.state}</span>
           ${when(!!b.pending, () => html`<span class="bchip ask" title="${b.pending.by} · ${String(b.pending.at).slice(0, 10)} — ${b.pending.rationale || 'no rationale given'}">${ASK_LABEL[b.pending.ask] || 'asked: ' + b.pending.ask}</span>`)}
           ${when(!b.pending && b.reported && b.reported.result === 'fixed', () => html`<span class="bchip ask" title="${b.reported.by} reported this fixed on ${String(b.reported.at).slice(0, 10)} — being reported fixed is not being closed">reported fixed</span>`)}
-          ${when(b.waitingOnYou && !b.pending, () => html`<span class="bchip poss" title="promoted, corroborated or contested — this one needs a person">needs you</span>`)}
+          ${when(b.waitingOnYou && !b.pending, () => html`<span class="bchip poss" title="promoted or corroborated — this one needs a person">needs you</span>`)}
           ${when(b.possiblyFixed, () => html`<span class="bchip poss" title="cited code changed since filing — possibly fixed">possibly fixed</span>`,
             () => when(b.codeChanged, () => html`<span class="bchip changed" title="cited code changed since filing">code changed</span>`))}
           ${when(b.tracked, () => html`<span class="bchip" title="${b.tracking.map(t => t.system + ' ' + (t.key || t.url)).join(', ')}">tracked</span>`)}
@@ -2693,17 +2693,6 @@ class BugsPage extends Component {
       ${when(!!this.state.note, () => html`<div class="note">${this.state.note}</div>`)}
       <md-content text="${b.text}"></md-content>
 
-      ${when(!!b.contestedFields.length, () => html`<div class="sec warn">contested</div>
-        ${each(b.contestedFields, c => html`<div class="contest">
-          <div class="dim">${c.field} — two people set this without seeing each other</div>
-          <div><b>${c.held.by}</b>: ${String(c.held.value)}</div>
-          <div><b>${c.incoming.by}</b>: ${String(c.incoming.value)}</div>
-          <div class="bactions">
-            <button on-click="${() => this.act('settle', { field: c.field, value: c.held.value }, 'settle')}">keep ${c.held.by}'s</button>
-            <button on-click="${() => this.act('settle', { field: c.field, value: c.incoming.value }, 'settle')}">keep ${c.incoming.by}'s</button>
-          </div>
-        </div>`, c => c.field)}`)}
-
       <div class="sec">cited code (${b.anchors.length})${when(b.staleAnchors, () => html` · <span class="warn">${b.staleAnchors} stale</span>`)}</div>
       ${each(b.anchors, a => html`<a class="banchor ${a.stale ? 'stale' : ''} ${a.present ? '' : 'gone'} ${a.removed ? 'dropped' : ''}" href="${href(anchorUrl(u, a.id))}">
         <span class="basym">${a.symbol}</span>
@@ -2742,7 +2731,7 @@ class BugsPage extends Component {
       <div class="crumbs">${u} <span class="sep">·</span> bugs (${d.bugs.length} ${cur})${when(d.shared > 0, () => html` <span class="sep">·</span> ${d.shared} shared`)}</div>
       <div class="dtoggle bugfilter"><span class="dim">show</span>
         ${chip('open', 'open', d.open, 'the default — a closed bug is history, not work')}
-        ${chip('queue', 'needs you', d.waitingOnYou, 'promoted, corroborated, contested, asked about, or the code moved')}
+        ${chip('queue', 'needs you', d.waitingOnYou, 'promoted, corroborated, asked about, or the code moved')}
         ${chip('asked', 'asked to close', d.asked, 'an agent is asking you to close it, or has reported it fixed — narrower than “needs you”, and the queue to work after a fixing pass')}
         ${chip('backlog', 'backlogged', d.backlogged, 'real, not now, and it comes back — deferred with a deadline. Its own list, so the queues above mean “what we are doing”; a bug here is never hidden from search')}
         ${chip('all', 'all', (d.counts ? Object.values(d.counts).reduce((a, b) => a + b, 0) : null))}

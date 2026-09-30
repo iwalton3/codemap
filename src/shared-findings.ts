@@ -1,4 +1,4 @@
-import { collector, foldJudged, registerReport, type RefusalClass, type Refusal } from "./validation.js";
+import { collector, foldJudged, registerReport, staleRevision, wasOf, type RefusalClass, type Refusal } from "./validation.js";
 import { rulingReferences } from "./ruling-references.js";
 import { foldRepairRecords, type RepairFindingMap } from "./repair-records.js";
 import { foldRepairVerification, type RepairVerificationApplication } from "./repair-verification.js";
@@ -37,7 +37,6 @@ import { ISO_DATE, type Actor, type BugSeverity, type BugWitness } from "./schem
 import { isAgentActor, isIndependent, isErrorIndependent, reviewerKey } from "./identity.js";
 import { mintId, readScope, causality, registerDoor, type LogEvent } from "./eventlog.js";
 import { emitEvent } from "./write.js";
-import { applyRevision, newContestState, type Contested } from "./contest.js";
 import { issueClaimHash, validateApplicationCapsule, type ApplicationAttempt } from "./ruling-application.js";
 
 /**
@@ -386,16 +385,6 @@ export interface SharedFinding {
    */
   relocation?: { kind: "moved" | "gone"; to?: string; by: Actor; at: string; rationale: string; applied?: boolean };
   /**
-   * Fields two people set to different values without having seen each other.
-   *
-   * Nothing is lost and nothing is arbitrated: both values are here, both are in
-   * the log, and the finding keeps working. A PERSON clears it by re-submitting
-   * the value they want, which lands as an event causally after both and so
-   * resolves identically on every machine. Agents never clear it — same instinct
-   * as the ack queue: a machine may propose, a person decides.
-   */
-  contested?: Contested[];
-  /**
    * Where this machine's copy came from. Set by the STORE from the row's
    * `source_scope`, never by the fold — the fold's output describes the finding, not
    * this clone's provenance for it, and a value the fold never produced would break
@@ -664,9 +653,6 @@ const witnessOf = (w: Data | undefined): BugWitness | undefined => {
   return w!.deleted === true ? { anchorId, bodyHash, deleted: true } : undefined;
 };
 
-/** Fields whose value is a single scalar somebody owns — the only contestable ones. */
-const CONTESTABLE = ["text", "comment", "severity", "category", "line"] as const;
-
 /**
  * Every finding in a scope, folded from its events.
  *
@@ -689,14 +675,6 @@ function foldFindingsInternal(events: LogEvent[], replay: ApplicationReplay): Ma
   // Each finding's creating payload, so a second creation can be told apart: the same bytes
   // are one act seen twice, different ones are a claim on an id already taken (owner, Q5).
   const created = new Map<string, string>();
-  // Who currently holds each contestable scalar, and which two writes each open
-  // contest is between. Bookkeeping for the fold, not state anyone reads, so it
-  // is kept out of SharedFinding.
-  const contest = newContestState();
-
-  // What each writer had folded when they wrote — the log's own notion of
-  // causality, so the fold and `causalHeads` cannot drift apart on it.
-  const causal = causality(events);
   const spent = new Set<string>();
   // A verification application is one-shot per finding epoch, spent only by a closure that
   // happens here — like `spent` for ruling applications (F34).
@@ -768,7 +746,8 @@ function foldFindingsInternal(events: LogEvent[], replay: ApplicationReplay): Ma
         const now = (d?.now as Record<string, unknown>) ?? {};
         // A person may revise anyone's; an agent only while nobody has stood behind it.
         if (!mayRevise(f, e.actor)) { refuse(e, "state", "an agent may not revise a finding somebody has stood behind"); break; }
-        applyRevision(f, e, now, CONTESTABLE, contest, causal);
+        const stale = staleRevision(e, f as unknown as Record<string, unknown>);
+        if (stale) { refuse(e, "state", stale); break; }
         f.revisions.push({ at: e.at, by: e.actor, was });
         // Assigned field by field rather than through a dynamic key: a revision is
         // the one event that rewrites the finding's substance, so what it is allowed
@@ -1043,13 +1022,13 @@ function foldFindingsInternal(events: LogEvent[], replay: ApplicationReplay): Ma
           refuse(e, "state", verification.rejected.find((r) => r.eventId === e.id)?.reason ?? "no verified application matches this repair"); break;
         }
         const act = atAct(e);
-        if (!act || isClosed(act.state) || act.contested?.length || act.openEpoch !== application.openEpoch
+        if (!act || isClosed(act.state) || act.openEpoch !== application.openEpoch
           || issueClaimHash("finding", act) !== application.claimHash) { refuse(e, "state", "the finding was not open with this claim"); break; }
         const once = `${application.requestId}\0${application.findingId}\0${application.openEpoch}`;
         if (repairSpent.has(once)) { refuse(e, "state", "this verification has already been applied"); break; }
-        if (isClosed(f.state) || f.contested?.length || f.openEpoch !== application.openEpoch
+        if (isClosed(f.state) || f.openEpoch !== application.openEpoch
           || issueClaimHash("finding", f) !== application.claimHash) refuse(e, "state", "the finding was no longer open with this claim");
-        if (!isClosed(f.state) && !f.contested?.length && f.openEpoch === application.openEpoch
+        if (!isClosed(f.state) && f.openEpoch === application.openEpoch
           && issueClaimHash("finding", f) === application.claimHash) {
           repairSpent.add(once);
           f.state = application.outcome === "fixed" ? "resolved" : application.outcome === "invalid" ? "invalid" : "refuted";
@@ -1348,29 +1327,15 @@ export const relocate = (logRoot: string, pr: number | string, actor: Actor, id:
   kind: "moved" | "gone", rationale: string, opts: { to?: string; apply?: boolean } = {}) =>
   emit(logRoot, pr, actor, id, "finding.relocation", { kind, rationale, ...(opts.to ? { to: opts.to } : {}), ...(opts.apply ? { apply: true } : {}) });
 
-/** Rewrite a finding's substance. The one event that can contest. */
-export const revise = (logRoot: string, pr: number | string, actor: Actor, id: string, now: Record<string, unknown>, was: Record<string, unknown> = {}) =>
-  emit(logRoot, pr, actor, id, "finding.revised", { now, was });
-
 /**
- * Clear a contested field by stating what the value should be.
- *
- * A person only: agents may not resolve a disagreement between people, for the
- * same reason they may not close a finding somebody stood behind. It is an
- * ordinary revision — which is the point. It is written having seen both sides,
- * so it is causally after both, so every machine folds it the same way and the
- * contest clears everywhere without anybody arbitrating.
+ * Rewrite a finding's substance. `was` is what its author read — the finding as it reads here
+ * unless the caller read it elsewhere; a replay onto a finding that has since moved is refused
+ * (`staleRevision`).
  */
-export async function resolveContest(
-  logRoot: string, pr: number | string, actor: Actor, id: string, field: string, value: unknown,
-): Promise<LogEvent | { error: string }> {
-  if (isAgentActor(actor)) {
-    return { error: `${field} is contested between two people — an agent may not decide it. Ask, or leave it for them.` };
-  }
-  const f = (await readFindings(logRoot, pr)).get(id);
-  if (!f) return { error: `no finding ${id}` };
-  if (!f.contested?.some((c) => c.field === field)) return { error: `${field} is not contested on ${id}` };
-  return emit(logRoot, pr, actor, id, "finding.revised", { now: { [field]: value } });
+export async function revise(
+  logRoot: string, pr: number | string, actor: Actor, id: string, now: Record<string, unknown>, was?: Record<string, unknown>,
+): Promise<LogEvent> {
+  return emit(logRoot, pr, actor, id, "finding.revised", { now, was: was ?? wasOf((await readFindings(logRoot, pr)).get(id), now) });
 }
 
 /**
@@ -1421,11 +1386,7 @@ export async function readFindings(logRoot: string, pr: number | string): Promis
 export function ackQueue(findings: Iterable<SharedFinding>): SharedFinding[] {
   return [...findings].filter((f) =>
     !isClosed(f.state) && !f.bug
-    // A CONTESTED field is waiting on a person by construction: the fold refuses to
-    // pick and only a person may state the value. Leaving it out meant the one
-    // thing nobody else can resolve was the one thing the queue did not show —
-    // found by a browser test that could not make the badge appear.
-    && (needsHumanAck(f) || !!f.pending || !!f.contested?.length
+    && (needsHumanAck(f) || !!f.pending
       // An unapplied relocation proposal is waiting on a person by the same rule.
       || (!!f.relocation && !f.relocation.applied)));
 }

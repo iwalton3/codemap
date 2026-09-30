@@ -99,12 +99,12 @@ export const findingsProjection: Projection<Map<string, SharedFinding>> = {
     indexApplications(d, scope, value.values());
     const ins = d.prepare(
       "INSERT INTO findings(id,pr,target_kind,target_id,state,severity,category,line,"
-      + "author,created_at,needs_ack,contested,origin,source_scope,ord,body) "
-      + "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+      + "author,created_at,needs_ack,origin,source_scope,ord,body) "
+      + "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
     );
     const adopt = d.prepare(
       "UPDATE findings SET pr=?,target_kind=?,target_id=?,state=?,severity=?,category=?,line=?,"
-      + "author=?,created_at=?,needs_ack=?,contested=?,origin=?,source_scope=?,ord=?,body=? "
+      + "author=?,created_at=?,needs_ack=?,origin=?,source_scope=?,ord=?,body=? "
       + "WHERE pr=? AND id=? AND source_scope IS NULL",
     );
     // Keyed on (pr, id) and LOCAL rows only. An id looked up across every scope was the
@@ -123,7 +123,7 @@ export const findingsProjection: Projection<Map<string, SharedFinding>> = {
         pr, f.target.kind, f.target.id, f.state,
         f.severity ?? null, f.category ?? null, f.line ?? null,
         f.author.principal, f.createdAt,
-        needsHumanAck(f) ? 1 : 0, f.contested?.length ? 1 : 0,
+        needsHumanAck(f) ? 1 : 0,
         "sync", scope, i, body,
       ];
       if (!candidate.get(pr, f.id)) { ins.run(f.id, ...cols as any); continue; }
@@ -200,11 +200,11 @@ export const bugsProjection: Projection<Map<string, SharedBug>> = {
     d.prepare("DELETE FROM bugs WHERE source_scope = ?").run(scope);
     indexApplications(d, scope, value.values());
     const ins = d.prepare(
-      "INSERT INTO bugs(id,title,state,severity,author,created_at,needs_ack,contested,tracked,"
-      + "origin,source_scope,ord,body) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+      "INSERT INTO bugs(id,title,state,severity,author,created_at,needs_ack,tracked,"
+      + "origin,source_scope,ord,body) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
     );
     const adopt = d.prepare(
-      "UPDATE bugs SET title=?,state=?,severity=?,author=?,created_at=?,needs_ack=?,contested=?,"
+      "UPDATE bugs SET title=?,state=?,severity=?,author=?,created_at=?,needs_ack=?,"
       + "tracked=?,origin=?,source_scope=?,ord=?,body=? WHERE id=?",
     );
     const candidate = d.prepare("SELECT title, body, source_scope FROM bugs WHERE id = ?");
@@ -216,7 +216,7 @@ export const bugsProjection: Projection<Map<string, SharedBug>> = {
       const body = JSON.stringify({ ...b, origin: undefined });
       const cols = [
         b.title, b.state, b.severity, b.author.principal, b.createdAt,
-        bugNeedsAck(b) ? 1 : 0, b.contested?.length ? 1 : 0, b.tracking.length ? 1 : 0,
+        bugNeedsAck(b) ? 1 : 0, b.tracking.length ? 1 : 0,
         "sync", scope, i, body,
       ];
       const row = candidate.get(b.id) as { title: string; body: string; source_scope: string | null } | undefined;
@@ -643,11 +643,6 @@ export const triageProjection: Projection<Map<string, TriageEntry>> = {
  * **Replaces only what it owns.** `DELETE ... WHERE source_scope = ?`, never by node:
  * a bare delete would take this clone's own edges, which are the one thing here the log
  * cannot put back.
- *
- * The DIVERGENCE is not stored. It is derived from the same events on every clone, so a
- * column for it would be a second copy of something the fold already answers — and the
- * queue that consumes it is local by the same rule that keeps the contested-triage item
- * local.
  */
 export const graphProjection: Projection<Map<string, SharedWiring>> = {
   write(d: DatabaseSync, scope: string, value: Map<string, SharedWiring>): void {

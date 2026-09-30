@@ -74,6 +74,10 @@ by the fold.
 
 ### Merge: fast-forward, or queue it
 
+> **Superseded 2026-09-30** (owner, Q6: "Correct push order is what matters"): the last
+> publication in log order is served; `reordered`, the wall-clock rule and the
+> `diverged-wiring` queue are gone. Kept as history.
+
 **Owner's rule, and it is sharper than "detect divergence": if the interleave produces a
 different answer than a plain wall-clock replay, the reordering deserves an agent's
 eyes.** Git's fast-forward versus a real merge, and it makes the detector decidable

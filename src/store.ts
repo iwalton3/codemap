@@ -1530,7 +1530,7 @@ export async function readBug(root: string, id: string): Promise<SharedBug | nul
 
 const bugRow = (b: SharedBug): unknown[] => [
   b.id, b.title, b.state, b.severity, b.author.principal, b.createdAt,
-  needsHumanAck(b) ? 1 : 0, b.contested?.length ? 1 : 0, b.tracking.length ? 1 : 0,
+  needsHumanAck(b) ? 1 : 0, b.tracking.length ? 1 : 0,
   // `origin` is never written from here — this path only ever writes local rows.
   JSON.stringify({ ...b, origin: undefined }),
 ];
@@ -1554,8 +1554,8 @@ export async function writeLocalBug(root: string, bug: SharedBug): Promise<void>
     );
   }
   d.prepare(
-    "INSERT OR REPLACE INTO bugs(id,title,state,severity,author,created_at,needs_ack,contested,tracked,body) "
-    + "VALUES(?,?,?,?,?,?,?,?,?,?)",
+    "INSERT OR REPLACE INTO bugs(id,title,state,severity,author,created_at,needs_ack,tracked,body) "
+    + "VALUES(?,?,?,?,?,?,?,?,?)",
   ).run(...bugRow(bug) as any);
 }
 
@@ -1570,8 +1570,8 @@ export async function writeLocalBug(root: string, bug: SharedBug): Promise<void>
 export async function writeLocalBugs(root: string, bugs: SharedBug[]): Promise<void> {
   const d = db(root);
   const ins = d.prepare(
-    "INSERT INTO bugs(id,title,state,severity,author,created_at,needs_ack,contested,tracked,body) "
-    + "VALUES(?,?,?,?,?,?,?,?,?,?)",
+    "INSERT INTO bugs(id,title,state,severity,author,created_at,needs_ack,tracked,body) "
+    + "VALUES(?,?,?,?,?,?,?,?,?)",
   );
   d.exec("BEGIN");
   try {
@@ -1914,7 +1914,7 @@ const findingRow = (f: SharedFinding, pr: string): unknown[] => [
   f.id, pr, f.target.kind, f.target.id, f.state,
   f.severity ?? null, f.category ?? null, f.line ?? null,
   f.author.principal, f.createdAt,
-  findingNeedsAck(f) ? 1 : 0, f.contested?.length ? 1 : 0,
+  findingNeedsAck(f) ? 1 : 0,
   // Never written from here — this path only ever writes local rows.
   JSON.stringify({ ...f, origin: undefined, pr: undefined }),
 ];
@@ -1940,7 +1940,7 @@ export async function writeLocalFinding(root: string, f: SharedFinding, pr: numb
   }
   d.prepare(
     "INSERT OR REPLACE INTO findings(id,pr,target_kind,target_id,state,severity,category,line,"
-    + "author,created_at,needs_ack,contested,body) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+    + "author,created_at,needs_ack,body) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
   ).run(...findingRow(f, String(pr)) as any);
 }
 

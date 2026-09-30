@@ -27,10 +27,9 @@
 import { createHash } from "node:crypto";
 import type { Actor, BugSeverity } from "./schema.js";
 import { isAgentActor } from "./identity.js";
-import { mintId, readScope, causality, registerDoor, type LogEvent } from "./eventlog.js";
+import { mintId, readScope, registerDoor, type LogEvent } from "./eventlog.js";
 import { emitEvent } from "./write.js";
-import { applyRevision, newContestState, type Contested } from "./contest.js";
-import { collector, foldJudged, registerReport, type RefusalClass, type Refusal } from "./validation.js";
+import { collector, foldJudged, registerReport, staleRevision, wasOf, type RefusalClass, type Refusal } from "./validation.js";
 
 export type NoteKind = "note" | "question" | "finding" | "pointer";
 
@@ -55,24 +54,7 @@ export interface SharedNote {
   answers: NoteAnswer[];
   resolved?: { at: string; by: Actor; reason?: string };
   revisions: { at: string; by: Actor; was: Record<string, unknown> }[];
-  /**
-   * Fields two people set differently without having seen each other.
-   *
-   * Same rule and the same code as a finding's — `note.revised` used to overwrite
-   * these scalars unconditionally, so two people editing one note concurrently
-   * resolved to whoever happened to fold last. Nothing was destroyed (`revisions`
-   * keeps both) but nobody was ever asked to arbitrate, which is the entire job of
-   * this field.
-   */
-  contested?: Contested[];
 }
-
-/**
- * The scalars one person owns, and the only ones that can conflict.
- *
- * `answers` is append-only and `resolved` is a latch, so neither is here.
- */
-const CONTESTABLE = ["text", "category", "severity", "line"] as const;
 
 /**
  * What a note can be ABOUT.
@@ -123,8 +105,6 @@ function foldNotesWith(events: LogEvent[], refuse: (e: LogEvent, cls: RefusalCla
   // Each note's creating payload: the same bytes again are one act seen twice, different ones
   // are a claim on an id already taken (owner, Q5).
   const created = new Map<string, string>();
-  const contest = newContestState();
-  const causal = causality(events);
   for (const e of events) {
     const d = e.data as Data | undefined;
 
@@ -166,7 +146,8 @@ function foldNotesWith(events: LogEvent[], refuse: (e: LogEvent, cls: RefusalCla
     switch (e.kind) {
       case "note.revised": {
         const now = (d?.now as Record<string, unknown>) ?? {};
-        applyRevision(n, e, now, CONTESTABLE, contest, causal);
+        const stale = staleRevision(e, n as unknown as Record<string, unknown>);
+        if (stale) { refuse(e, "state", stale); break; }
         n.revisions.push({ at: e.at, by: e.actor, was: (d?.was as Record<string, unknown>) ?? {} });
         if (typeof now.text === "string") n.text = now.text;
         if (typeof now.category === "string") n.category = now.category;
@@ -261,8 +242,13 @@ export async function resolveNote(
   return emit(logRoot, universe, targetId, actor, id, "note.resolved", { resolved, ...from, ...(reason ? { reason } : {}) });
 }
 
-export const reviseNote = (logRoot: string, universe: string, targetId: string, actor: Actor, id: string, now: Record<string, unknown>) =>
-  emit(logRoot, universe, targetId, actor, id, "note.revised", { now });
+/** `was`: each changed field as this author reads it, so a replay onto a moved note is refused (`staleRevision`). */
+export async function reviseNote(
+  logRoot: string, universe: string, targetId: string, actor: Actor, id: string, now: Record<string, unknown>,
+): Promise<LogEvent> {
+  const current = (await notesForTarget(logRoot, universe, targetId)).find((n) => n.id === id);
+  return emit(logRoot, universe, targetId, actor, id, "note.revised", { now, was: wasOf(current, now) });
+}
 
 /** Everything anyone has written about one target. One bucket, one read. */
 export async function notesForTarget(logRoot: string, universe: string, targetId: string): Promise<SharedNote[]> {

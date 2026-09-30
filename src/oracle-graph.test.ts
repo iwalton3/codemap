@@ -1,5 +1,5 @@
 /**
- * Workflow 8 — the wiring travels, and a reordering reaches a person.
+ * Workflow 8 — the wiring travels, and push order decides whose is served.
  *
  * What this adds over `shared-graph.test.ts`, which pins every fold rule against
  * hand-built events: the rules are only worth anything if two real clones, writing
@@ -13,22 +13,19 @@
  * - **The `orphan` claim.** A teammate's node arriving unwired used to be reported as
  *   "nothing folds this, nothing projects it". No unit test could see it, because it
  *   needs a node from one machine and a graph on another.
- * - **The queue fires on a real reorder**, not a planted projection. The unit test
- *   plants rows; this makes two clones actually disagree.
+ * - **Push order, through the real transport.** A publication staged with a slow clock
+ *   and pushed second is what every clone serves (owner, Q6).
  *
  * The six properties run after every step.
  */
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readdirSync } from "node:fs";
-import { join, relative, sep } from "node:path";
-import { team, who, whileApart, settle, appendRaw, type Team } from "./oracle.js";
+import { team, who, settle, type Team } from "./oracle.js";
 import { Ledger, checkAlways, checkSettled } from "./oracle-properties.js";
 import { document, connect, flow, eventMatrix } from "./ops.js";
-import { publishLocalDocs, publishLocalGraph, sharedGraph, sharedSync } from "./ops-shared.js";
-import { queueDivergedWiring, DIVERGED_WIRING_CATEGORY } from "./ops/graph.js";
-import { readAnnotations } from "./store.js";
+import { publishLocalDocs, publishLocalGraph, sharedSync } from "./ops-shared.js";
+import { readGraph } from "./store.js";
 import { begin, dropOp, staged, syncSession } from "./sync-engine.js";
 import { stage } from "./sync-queue.js";
 import { currentSession } from "./sync-session.js";
@@ -36,12 +33,10 @@ import { currentSession } from "./sync-session.js";
 const OWNER = "izzie@acme.test";
 const MATE = "ben@acme.test";
 
-const openWiringItems = async (repo: string): Promise<string[]> =>
-  (await readAnnotations(repo)).annotations
-    .filter((a) => a.category === DIVERGED_WIRING_CATEGORY && !a.resolved)
-    .map((a) => a.target.id);
+const edgesFrom = async (repo: string, node: string): Promise<string[]> =>
+  (await readGraph(repo)).edges.filter((e) => e.from === node).map((e) => e.type).sort();
 
-test("a flow one person wrote is walkable by another, and a reorder reaches the queue", async () => {
+test("a flow one person wrote is walkable by another, and the later push is served", async () => {
   const t: Team = await team([OWNER, MATE]);
   const ledger = new Ledger();
   const step = async (what: string, fn: () => Promise<void>) => {
@@ -127,8 +122,8 @@ test("a flow one person wrote is walkable by another, and a reorder reaches the 
       );
     });
 
-    // 3 — THE CONTROL. Ordinary sequential wiring is a fast-forward: nothing to look at.
-    await step("ben rewires it having SEEN izzie's — a fast-forward, nothing queued", async () => {
+    // 3 — ordinary sequential wiring.
+    await step("ben rewires it having SEEN izzie's, and both serve his", async () => {
       const c = await connect(ben.repo, {
         edges: [{ from: "n_post", to: "n_intake", type: "step_of", order: 0 }],
       }) as { shareError?: string };
@@ -136,23 +131,15 @@ test("a flow one person wrote is walkable by another, and a reorder reaches the 
       await settle(t);
       await checkSettled(t, ledger);
 
-      for (const m of [izzie, ben]) {
-        assert.deepEqual(await openWiringItems(m.repo), [], `${m.actor.principal} was asked to look at a decision`);
-      }
+      for (const m of [izzie, ben]) assert.deepEqual(await edgesFrom(m.repo, "n_post"), ["step_of"]);
     });
 
-    // 4 — the case the queue exists for, and it is NOT concurrency detection: what is
-    //     wrong is the CLOCK. Manufactured, because two clones in one process share a
-    //     real one.
-    //
-    //     Rewritten BEFORE the push, deliberately. Rewriting history that has already
-    //     travelled makes two versions of one event id, which blocks the scope — correct,
-    //     covered by workflow 4, and not what this step is about. Here the rewritten line
-    //     is the only version anyone ever sees.
-    await step("a publication carries an earlier clock than the one it saw", async () => {
+    // 4 — the clock decides nothing. Manufactured, because two clones in one process share
+    //     a real one; rewritten while staged, so the slow version is the only one that exists.
+    await step("a publication pushed later, with an earlier clock, is what both serve", async () => {
       await settle(t);
-      // Both rewire the SAME node, so their publications compete. Izzie first; ben has
-      // pulled her work in the settle above, so his is the causally later one.
+      // Both rewire the SAME node, so their publications compete. Izzie pushes first; ben's
+      // is staged without her touches edge, and replaces the set when it lands.
       const a = await connect(izzie.repo, {
         edges: [{ from: "n_post", to: "n_intake", type: "touches" }],
       }) as { shareError?: string };
@@ -177,102 +164,17 @@ test("a flow one person wrote is walkable by another, and a reorder reaches the 
 
       await settle(t);
       await checkSettled(t, ledger);
-    });
-
-    await step("both clones queue it, and both name the writer whose decision lost", async () => {
       for (const m of [izzie, ben]) {
-        const g = await sharedGraph(m.repo) as any;
-        assert.equal(g.error, undefined, `${m.actor.principal} cannot read the shared graph: ${g.error}`);
-        assert.ok(
-          g.reordered.length > 0,
-          `${m.actor.principal} does not see the reorder — a write lost to a clock with nobody told`,
-        );
-        // DERIVED identically on every clone, which is exactly why the queue item is
-        // local and never mirrored: one team fact, not one shared question per machine.
-        const items = await openWiringItems(m.repo);
-        assert.deepEqual(items, ["n_post"], `${m.actor.principal} was not asked to look at it`);
-        const text = (await readAnnotations(m.repo)).annotations
-          .find((a) => a.category === DIVERGED_WIRING_CATEGORY && !a.resolved)!.text;
-        assert.match(text, /causally later/, "the item says WHY it matters, not just that it happened");
-        assert.match(text, new RegExp(MATE), "and names the writer whose decision lost to a clock");
-      }
-    });
-
-    await step("a repair closes it on both machines, with no shared lifecycle", async () => {
-      // The repair is an ordinary publication carrying a commit — no special authority.
-      // Every clone's fold stops reporting the divergence and each closes its own item,
-      // which is what makes a LOCAL derived item correct rather than merely cheaper.
-      const c = await connect(izzie.repo, {
-        edges: [{ from: "n_post", to: "n_intake", type: "depends_on" }],
-      }) as { added: number; shareError?: string };
-      assert.equal(c.added, 1, "the repair is a real change — a no-op publishes nothing and settles nothing");
-      assert.equal(c.shareError, undefined, `the repair did not publish: ${c.shareError}`);
-      await settle(t);
-      // `settle` syncs, and `sharedSync` runs the queue pass — but run it once more so a
-      // failure here is about the reverse pass rather than about sync ordering.
-      for (const m of [izzie, ben]) await queueDivergedWiring(m.repo);
-      await checkSettled(t, ledger);
-
-      for (const m of [izzie, ben]) {
-        assert.deepEqual(
-          await openWiringItems(m.repo), [],
-          `${m.actor.principal}'s item outlived the divergence its own text promised it would go with`,
-        );
+        assert.deepEqual(await edgesFrom(m.repo, "n_post"), ["depends_on", "step_of"],
+          `${m.actor.principal} serves the earlier clock, not the later push`);
       }
     });
 
     await step("and ben's flow still walks after all of it", async () => {
-      // The whole point, re-checked at the end: the repair chain must not have left the
-      // flow unwalkable on the machine that did not make it.
       const f = await flow(ben.repo, "n_intake") as any;
       assert.equal(f.error, undefined, `ben lost the flow: ${f.error}`);
       assert.ok(f.steps.length >= 1, "with its steps");
     });
-    await step("a BLOCKED scope neither files nor closes — it is not evidence", async () => {
-      // Found by getting a rewrite wrong: rewriting history that has already travelled
-      // makes two versions of one event id, and the scope blocks. Correct, and workflow
-      // 4's subject — what matters HERE is what the queue does about it. A blocked scope
-      // is explicitly not something to act on, so filing from one invents work and
-      // CLOSING from one retires a real divergence because a scope nobody may read
-      // simply stopped reporting it. The second is the dangerous direction.
-      // A fresh divergence FIRST, so there is an open item for a wrong guard to close.
-      // Without one this step passes whether the guard exists or not — the mutation
-      // check is what showed that, and it is the shape the oracle notes warn about.
-      await connect(izzie.repo, { edges: [{ from: "n_take", to: "n_intake", type: "depends_on" }] });
-      begin(ben.sidecar);
-      await connect(ben.repo, { edges: [{ from: "n_take", to: "n_intake", type: "calls_api" }] });
-      for (const op of staged(ben.sidecar).filter((o) => o.scope.startsWith("graph/") && o.event.actor.principal === MATE)) {
-        dropOp(ben.sidecar, op.event.id);
-        stage(ben.sidecar, currentSession().session, op.scope, { ...op.event, at: "2020-01-01T00:00:00.000Z" });
-      }
-      const slow = await syncSession(ben.sidecar, ben.actor);
-      assert.ok(!("error" in slow), JSON.stringify(slow));
-      await settle(t);
-      const before = await openWiringItems(ben.repo);
-      assert.deepEqual(before, ["n_take"], "an item is open, which is what a wrong guard would retire");
-
-      // Blocked by an event from a newer build: the block the linear log keeps. (Two versions
-      // of one id needed a merge, and nothing merges now.) Planted in ben's clone only.
-      const graphShard = readdirSync(join(ben.sidecar, "graph"), { recursive: true, withFileTypes: true })
-        .find((d) => d.isFile() && d.name.endsWith(".ndjson"))!;
-      appendRaw(ben, relative(ben.sidecar, join(graphShard.parentPath, graphShard.name)).split(sep).join("/"), {
-        id: "zzzzzzzzzz-newer", kind: "graph.published", subject: "n_take", actor: ben.actor, at: new Date().toISOString(),
-        writer: "w_newer", writerPrev: "GENESIS", after: [], sidecarProtocol: 99, eventSchema: 1, data: {},
-      });
-
-      const g = await sharedGraph(ben.repo) as any;
-      assert.notEqual(g.scope, undefined, "the scope reports itself non-authoritative");
-      const r = await queueDivergedWiring(ben.repo) as any;
-      assert.deepEqual(
-        { filed: r.filed, closed: r.closed }, { filed: 0, closed: 0 },
-        "a scope nobody may read must not create work, and must not retire any either",
-      );
-      assert.deepEqual(
-        await openWiringItems(ben.repo), before,
-        "the open item SURVIVES — a scope nobody may read did not stop reporting it, it stopped being readable",
-      );
-    });
-
   } finally {
     t.dispose();
   }

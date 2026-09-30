@@ -19,7 +19,7 @@ import { testChain } from "./test-events.js";
 import {
   anchorBug, bugAckQueue, bugIdFor, bugScope, citedAnchors, commentOnBug, corroborateBug,
   fileBug, foldBugs, isTracked, needsHumanAck, promoteBug, readBugsShared, requestOnBug,
-  resolveBugContest, reviseBug, setBugState, trackBug, unanchorBug, witnessesOf,
+  reviseBug, setBugState, trackBug, unanchorBug, witnessesOf,
 } from "./shared-bugs.js";
 import { createFinding } from "./shared-findings.js";
 import { appendUnfolded } from "./test-door.js";
@@ -217,33 +217,25 @@ test("a published bug carries when it was originally filed, apart from when it r
   } finally { discard(root); }
 });
 
-// --- contest, and the queue -----------------------------------------------------
+// --- a stale revision, and the queue -------------------------------------------
 
-test("two people re-titling one bug without seeing each other CONTESTS it", async () => {
+test("a revision made against a value that has since changed is refused — at the door and on read", async () => {
   const root = tmp();
   try {
     const id = await fileBug(root, U, izzie, NEW);
-    const events = sortEvents(await readScope(root, bugScope(root ? U : U)));
     await reviseBug(root, U, izzie, id, { severity: "high" });
-    // Dana's revision, written without having seen izzie's — a concurrent write, which
-    // is what an offline clone produces.
-    const all = sortEvents(await readScope(root, bugScope(U)));
-    const concurrent = {
-      ...all[0]!, id: "z_dana", kind: "bug.revised", actor: dana, writer: "w_dana",
-      data: { now: { severity: "low" } }, after: [events[0]!.id],
-    };
-    const b = foldBugs(sortEvents([...all, concurrent])).get(id)!;
-    assert.deepEqual(b.contested?.map((c) => c.field), ["severity"]);
-    assert.equal(bugAckQueue([b]).length, 1, "and a contested field is waiting on a person");
-  } finally { discard(root); }
-});
-
-test("an agent may not settle a disagreement between two people", async () => {
-  const root = tmp();
-  try {
-    const id = await fileBug(root, U, izzie, NEW);
-    const r = await resolveBugContest(root, U, opus, id, "severity", "high");
-    assert.ok("error" in r && /an agent may not decide it/.test(r.error));
+    // Dana read the bug before izzie's revision: `medium`.
+    await assert.rejects(reviseBug(root, U, dana, id, { severity: "low" }, { severity: "medium" }),
+      /severity changed since you read it/);
+    // Landing on the value it asks for is not a conflict (owner, Q5), and `was: {}` — what
+    // every bug revision before this carried — checks nothing.
+    await reviseBug(root, U, dana, id, { severity: "high" }, { severity: "medium" });
+    await reviseBug(root, U, dana, id, { title: "negatives slip through" }, {});
+    const b = await one(root);
+    assert.deepEqual([b.severity, b.title], ["high", "negatives slip through"]);
+    // Both ends: a build without the door writing the stale one is damage on read.
+    await appendUnfolded(root, bugScope(U), dana, "bug.revised", id, { now: { severity: "low" }, was: { severity: "medium" } });
+    await assert.rejects(readBugsShared(root, U), LogDamage);
   } finally { discard(root); }
 });
 

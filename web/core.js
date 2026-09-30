@@ -143,7 +143,6 @@ async function lockedOut(r) {
  *   '/api/decisions/comparison': Awaited<ReturnType<typeof import('../dist/ops/comparisons.js').comparisonDetail>>,
  *   '/api/decisions/comparison/resolution': Awaited<ReturnType<typeof import('../dist/ops/comparisons.js').comparisonResolutionBrief>>,
  *   '/api/shared/triage':       Awaited<ReturnType<Shared['sharedTriage']>>,
- *   '/api/shared/contested':    Awaited<ReturnType<Shared['contestedTriage']>>,
  *   '/api/shared/graph':        Awaited<ReturnType<Shared['sharedGraph']>>,
  *   '/api/shared/walkthroughs': Awaited<ReturnType<Shared['sharedWalkthroughs']>>,
  *   '/api/shared/notes':        Awaited<ReturnType<Shared['sharedNotes']>>,

@@ -243,7 +243,7 @@ async function cmdPrIngest(root: string, prInput: string, files: string[], dryRu
 }
 
 function usage(): never {
-  console.error("Usage:\n  codemap init     [repo]\n  codemap reindex  [repo]              full re-baseline at HEAD (alias of init)\n  codemap check    [repo]\n  codemap snapshot [repo] [--ref sha]  cache a commit for branch-diff, from git\n                                       objects; --ref rebuilds that commit's snapshot\n  codemap diff <base> [head] [--repo path]   base = branch/tag/sha; omit head = working tree\n  codemap pr <url|owner/repo#N|#N> [--repo path] [--no-fetch] [--json]\n  codemap prs <owner/repo>             open pull requests\n  codemap orphans  [repo]              findings/reviews pointing at code the tree no longer has\n  codemap pr-resolve <pr> [--repo path] [--confirm] [--pull] [--anyone]\n                                              sync which review conversations are settled\n  codemap pr-packet <pr> [--repo path] [--limit N] [--offset N]   agent work packet (JSON)\n  codemap pr-ingest <pr> [--repo path] [--dry-run] <findings.jsonl...>\n  codemap pr-push <pr> [--repo path] [--confirm] [--viewed] [--all] [--min-severity s]\n                     [--only id,id,…]  publish exactly these, whatever their disposition\n                     [--summary TEXT] [--approve | --request-changes]\n  codemap pr-triage <pr> [--repo path]        derive stakes+complexity for the PR's symbols\n  codemap pr-pull-viewed <pr|--all> [--repo path] [--dry-run] [--force] [--limit N] [--max-prs N]\n                                              import GitHub's viewed ticks as `viewed`\n  codemap analyze marten [repo] [--verbose] [--emit]\n\n  Shared review (a sidecar repo; set CODEMAP_SIDECAR or .codemap/sidecar):\n  codemap questionnaires list [--repo path] [--principal email]       projected questionnaires (JSON)\n  codemap questionnaires detail <id> [--repo path] [--principal email]\n                                             whole questionnaire, answers, progress and history (JSON)\n  codemap questionnaires status <id> [--repo path] [--cursor hash] [--principal email]\n                                             local projected content and change cursor (JSON)\n  codemap questionnaires wait <id> --cursor hash [--wait-ms 30000] [--repo path]\n                                             bounded local wait; sync explicitly for remote answers\n  codemap decisions list [--repo path]     projected question rounds (JSON)\n  codemap decisions read <id> [--repo path]    exact round and answers (JSON)\n  codemap sync     [repo]              send and receive shared review state\n  codemap sidecar heal [repo]          repair a forked sidecar (a person, not an agent)\n  codemap sidecar adopt [repo]         move this store to a DIFFERENT sidecar, on purpose.\n                     Repointing .codemap/sidecar at another team's repo is refused without\n                     it: nothing migrates, and the rows already folded stay as read-only history.\n  codemap shared   <pr> [repo] [--queue] [--tier t] [--json]   findings on the sidecar\n                     --tier unconfirmed   the untriaged pile; --queue never shows it\n  codemap peers    [repo]              who else is on this sidecar, and scheme drift\n  codemap replies  <pr> [repo]         what the PR submitter said back about published findings\n  codemap notes    <anchor|node id> [repo]   what the TEAM knows about a symbol\n  codemap publish-notes [repo] [--dry-run]   put this store's existing annotations on the sidecar\n  codemap shared-docs [repo] [--json]  the team's docs, resolved against THIS checkout\n  codemap publish-docs [repo] [--dry-run]    put this store's docs on the sidecar\n  codemap publish-walkthroughs [repo] [--dry-run]   backfill walkthroughs written\n                     before this store had a sidecar (pr_walkthrough publishes as it writes)\n  codemap shared-triage [anchor|node id] [repo] [--json]   the team's stakes, with receipts\n  codemap contested [repo] [--json] [--queue]   stakes two people disagree about ACROSS business-critical\n  codemap publish-triage [repo] [--dry-run]  put this store's own triage marks on the sidecar\n  codemap unify-findings [repo] [--dry-run]   ONE-TIME: publish this store's local\n                     findings to the sidecar, ids and history preserved. Required once a\n                     sidecar exists — two kinds of finding is what every split-store bug was.\n  codemap migrate-findings [--repo path] [--apply] [--assign id=PR ...]\n                                              move local findings into the canonical findings table");
+  console.error("Usage:\n  codemap init     [repo]\n  codemap reindex  [repo]              full re-baseline at HEAD (alias of init)\n  codemap check    [repo]\n  codemap snapshot [repo] [--ref sha]  cache a commit for branch-diff, from git\n                                       objects; --ref rebuilds that commit's snapshot\n  codemap diff <base> [head] [--repo path]   base = branch/tag/sha; omit head = working tree\n  codemap pr <url|owner/repo#N|#N> [--repo path] [--no-fetch] [--json]\n  codemap prs <owner/repo>             open pull requests\n  codemap orphans  [repo]              findings/reviews pointing at code the tree no longer has\n  codemap pr-resolve <pr> [--repo path] [--confirm] [--pull] [--anyone]\n                                              sync which review conversations are settled\n  codemap pr-packet <pr> [--repo path] [--limit N] [--offset N]   agent work packet (JSON)\n  codemap pr-ingest <pr> [--repo path] [--dry-run] <findings.jsonl...>\n  codemap pr-push <pr> [--repo path] [--confirm] [--viewed] [--all] [--min-severity s]\n                     [--only id,id,…]  publish exactly these, whatever their disposition\n                     [--summary TEXT] [--approve | --request-changes]\n  codemap pr-triage <pr> [--repo path]        derive stakes+complexity for the PR's symbols\n  codemap pr-pull-viewed <pr|--all> [--repo path] [--dry-run] [--force] [--limit N] [--max-prs N]\n                                              import GitHub's viewed ticks as `viewed`\n  codemap analyze marten [repo] [--verbose] [--emit]\n\n  Shared review (a sidecar repo; set CODEMAP_SIDECAR or .codemap/sidecar):\n  codemap questionnaires list [--repo path] [--principal email]       projected questionnaires (JSON)\n  codemap questionnaires detail <id> [--repo path] [--principal email]\n                                             whole questionnaire, answers, progress and history (JSON)\n  codemap questionnaires status <id> [--repo path] [--cursor hash] [--principal email]\n                                             local projected content and change cursor (JSON)\n  codemap questionnaires wait <id> --cursor hash [--wait-ms 30000] [--repo path]\n                                             bounded local wait; sync explicitly for remote answers\n  codemap decisions list [--repo path]     projected question rounds (JSON)\n  codemap decisions read <id> [--repo path]    exact round and answers (JSON)\n  codemap sync     [repo]              send and receive shared review state\n  codemap sidecar heal [repo]          repair a forked sidecar (a person, not an agent)\n  codemap sidecar adopt [repo]         move this store to a DIFFERENT sidecar, on purpose.\n                     Repointing .codemap/sidecar at another team's repo is refused without\n                     it: nothing migrates, and the rows already folded stay as read-only history.\n  codemap shared   <pr> [repo] [--queue] [--tier t] [--json]   findings on the sidecar\n                     --tier unconfirmed   the untriaged pile; --queue never shows it\n  codemap peers    [repo]              who else is on this sidecar, and scheme drift\n  codemap replies  <pr> [repo]         what the PR submitter said back about published findings\n  codemap notes    <anchor|node id> [repo]   what the TEAM knows about a symbol\n  codemap publish-notes [repo] [--dry-run]   put this store's existing annotations on the sidecar\n  codemap shared-docs [repo] [--json]  the team's docs, resolved against THIS checkout\n  codemap publish-docs [repo] [--dry-run]    put this store's docs on the sidecar\n  codemap publish-walkthroughs [repo] [--dry-run]   backfill walkthroughs written\n                     before this store had a sidecar (pr_walkthrough publishes as it writes)\n  codemap shared-triage [anchor|node id] [repo] [--json]   the team's stakes, with receipts\n  codemap publish-triage [repo] [--dry-run]  put this store's own triage marks on the sidecar\n  codemap unify-findings [repo] [--dry-run]   ONE-TIME: publish this store's local\n                     findings to the sidecar, ids and history preserved. Required once a\n                     sidecar exists — two kinds of finding is what every split-store bug was.\n  codemap migrate-findings [--repo path] [--apply] [--assign id=PR ...]\n                                              move local findings into the canonical findings table");
   process.exit(2);
 }
 
@@ -285,21 +285,6 @@ async function cmdSync(root: string): Promise<void> {
     for (const b of m.blocked) console.log(`  BLOCKED ${b.scope}: ${b.reason}`);
   }
   if (r.warning) console.log(`  WARNING: ${r.warning}`);
-
-  // `sharedSync` now does the queueing itself, so every surface gets it. Read its
-  // result rather than running the pass AGAIN: a second call finds the items already
-  // filed and reports `alreadyQueued`, so the sync printed nothing and the one moment a
-  // person is watching said nothing about a contest that had just arrived.
-  const q = r.contests as { filed: number; revised: number; closed: number } | undefined;
-  if (q && (q.filed || q.revised)) {
-    console.log(`  ${q.filed + q.revised} stakes disagreement(s) crossing business-critical — queued for you (\`codemap contested\`)`);
-  }
-  if (q && q.closed) console.log(`  ${q.closed} settled disagreement(s) closed`);
-  const wq = r.wiring as { filed: number; revised: number; closed: number } | undefined;
-  if (wq && (wq.filed || wq.revised)) {
-    console.log(`  ${wq.filed + wq.revised} node(s) whose wiring the clock and causality disagree about — queued for you`);
-  }
-  if (wq && wq.closed) console.log(`  ${wq.closed} wiring divergence(s) resolved`);
 }
 
 /**
@@ -357,7 +342,7 @@ async function cmdShared(pr: string, root: string, opts: { queue?: boolean; tier
   const r = await shared.sharedFindings(root, pr, { queue: opts.queue, tier: opts.tier as never }) as Record<string, any>;
   if (r.error) { console.error(r.error); process.exit(1); }
   if (opts.json) { console.log(JSON.stringify(r, null, 2)); return; }
-  console.log(`PR ${r.pr} (${r.universe}): ${r.total} finding(s), ${r.waitingOnYou} waiting on a person${r.contested ? `, ${r.contested} contested` : ""}`);
+  console.log(`PR ${r.pr} (${r.universe}): ${r.total} finding(s), ${r.waitingOnYou} waiting on a person`);
   // The untriaged count is the one the queue cannot show — an unconfirmed finding is
   // waiting on nobody, so it is absent from `--queue` by construction.
   const t = r.tiers ?? {};
@@ -371,7 +356,6 @@ async function cmdShared(pr: string, root: string, opts: { queue?: boolean; tier
       f.pending ? `asked: ${f.pending.ask}` : null,
       f.upstream ? `upstream ${f.upstream}` : null,
       f.bug ? `→ bug ${f.bug}` : null,
-      f.contested?.length ? `CONTESTED: ${f.contested.map((x: any) => x.field).join(", ")}` : null,
     ].filter(Boolean).join(", ");
     console.log(`  [${f.state}] ${f.id}  ${f.severity ?? "-"}  by ${f.author}${f.authorModel ? ` (${f.authorModel})` : ""}`);
     console.log(`      ${(f.comment ?? f.text).slice(0, 140)}`);
@@ -525,31 +509,10 @@ async function cmdSharedTriage(root: string, target: string, json: boolean): Pro
     const i = m.importance;
     const extra = [
       i.escalatedByAgent ? `agent raised from ${i.humanBaseline ?? "nothing"}` : "",
-      i.alsoSaid?.length ? `also: ${i.alsoSaid.map((a: any) => `${a.value} (${a.by})`).join(", ")}` : "",
-      i.contested ? "CONTESTED — a person settles this" : "",
     ].filter(Boolean).join(" · ");
     console.log(`  ${m.target.id}  ${i.value}${m.complexity ? "/" + m.complexity.value : ""}  by ${i.by}${extra ? "  [" + extra + "]" : ""}`);
   }
   if (!r.count) console.log("  (nothing shared yet — try `codemap publish-triage`)");
-}
-
-/** Only the disagreements worth a person: one side business-critical, another lower. */
-async function cmdContestedTriage(root: string, json: boolean, queue: boolean): Promise<void> {
-  const r = await shared.contestedTriage(root) as Record<string, any>;
-  if (r.error) { console.error(r.error); process.exit(1); }
-  // Filing is opt-in from here because it WRITES — a question on the map, mirrored to
-  // the sidecar. `codemap sync` does it on its own, which is the moment a teammate's
-  // disagreement actually arrives.
-  if (queue) {
-    const q = await ops.queueContestedTriage(root) as Record<string, any>;
-    if (!q.error) console.log(`queued: ${q.filed} new, ${q.revised} revised, ${q.alreadyQueued} already open`);
-  }
-  if (json) { console.log(JSON.stringify(r, null, 2)); return; }
-  console.log(`${r.universe}: ${r.count} contested mark(s) — ${r.note}`);
-  for (const m of r.marks) {
-    console.log(`  ${m.target.id}  ${m.importance.value} (${m.importance.by})`);
-    for (const a of m.importance.alsoSaid ?? []) console.log(`      vs ${a.value} (${a.by})`);
-  }
 }
 
 async function cmdPublishTriage(root: string, dryRun: boolean): Promise<void> {
@@ -894,8 +857,6 @@ if (positionals[0] === "analyze") {
     await cmdSharedDocs(resolve((values.repo as string | undefined) ?? positionals[1] ?? "."), Boolean(values.json));
   } else if (positionals[0] === "shared-triage") {
     await cmdSharedTriage(resolve((values.repo as string | undefined) ?? positionals[2] ?? "."), positionals[1] ?? "", Boolean(values.json));
-  } else if (positionals[0] === "contested") {
-    await cmdContestedTriage(resolve((values.repo as string | undefined) ?? positionals[1] ?? "."), Boolean(values.json), Boolean(values.queue));
   } else if (positionals[0] === "publish-triage") {
     await cmdPublishTriage(resolve((values.repo as string | undefined) ?? positionals[1] ?? "."), Boolean(values["dry-run"]));
   } else if (positionals[0] === "migrate-findings") {

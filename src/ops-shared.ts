@@ -44,7 +44,7 @@ import { recheckLockout, scanForDamage } from "./damage-scan.js";
 import {
   createFinding, corroborate, comment, promote, request, setState, recordOutcome,
   markPosted, markUpstreamed, promoteToBug, needsHumanAck, ackQueue, mayRevise,
-  revise, resolveContest, relocate, remediate, agentClosureNeedsAck, declineAsk, isStandingBehind, reratedFrom, type Remediation,
+  revise, relocate, remediate, agentClosureNeedsAck, declineAsk, isStandingBehind, reratedFrom, type Remediation,
   foldFindings, findingScope, prOfScope, findingTier, byReadingOrder,
   type SharedFinding, type Verdict, type Ask, type FindingState, type NewFinding, type FindingTier,
 } from "./shared-findings.js";
@@ -59,7 +59,6 @@ import { cachedTriage, materializeTriage } from "./triage-publish.js";
 export { mirrorNote } from "./notes-publish.js";
 export { sharedKnowsNode, docsVerdict, type DocsVerdict } from "./docs-lookup.js";
 import { docsVerdict } from "./docs-lookup.js";
-import { queueContestedTriage } from "./ops/triage.js";
 import { liveAnchors, liveIndex, anchorFiles } from "./ops/shared.js";
 import { decisionsView } from "./ops/decision-holds.js";
 import { findingWork, findingMark } from "./ops/finding-work.js";
@@ -72,6 +71,7 @@ import {
   type NewDocVersion,
 } from "./shared-docs.js";
 import type { PrWalkthrough } from "./walkthrough.js";
+import { wasOf } from "./validation.js";
 
 const NO_SIDECAR =
   "no sidecar configured for this universe. Point one at a shared repo with "
@@ -314,35 +314,15 @@ async function materializeUniverse(root: string, cfg: SidecarConfig): Promise<Ma
   return out;
 }
 
-/** Send and receive. The whole point of the button. */
 /**
- * The half of a transport that is not the transport: fold what arrived, then turn the
- * disagreements it carried into things a person can act on.
- *
- * Shared by `sharedSync` and `sharedPull` rather than written twice, because a
- * receive-only path that skipped it would land a teammate's contested stakes in the
- * store and queue nothing — the exact bug this code already had once when the queueing
- * lived in `cli.ts` and the other front-ends called the op directly.
- *
- * Both queueing passes are best-effort: the transport has already succeeded by here,
- * and the queues are derived state that the next transport re-derives.
+ * The half of a transport that is not the transport: fold what arrived. Shared by
+ * `sharedSync` and `sharedPull` rather than written twice.
  */
 async function settleArrivals(root: string, cfg: SidecarConfig) {
   // AFTER the transport, and only here: `sidecar.ts` is transport and knows nothing
   // about folds or entity kinds. This is also the one moment a person is watching,
   // which is why blocked scopes are reported rather than discovered later.
-  const materialized = await materializeUniverse(root, cfg);
-  const contests = await queueContestedTriage(root).catch(() => null);
-  const wiring = await import("./ops/graph.js")
-    .then((m) => m.queueDivergedWiring(root))
-    .catch(() => null);
-  return {
-    ...(contests && !("error" in contests) && (contests.filed || contests.revised || contests.closed)
-      ? { contests } : {}),
-    ...(wiring && !("error" in wiring) && (wiring.filed || wiring.revised || wiring.closed)
-      ? { wiring } : {}),
-    materialized,
-  };
+  return { materialized: await materializeUniverse(root, cfg) };
 }
 
 /**
@@ -438,6 +418,7 @@ export async function sharedPull(root: string) {
   return { ...arrived, ok: true, universe: b.cfg.universe, sidecar: b.cfg.path, ...r };
 }
 
+/** Send and receive. The whole point of the button. */
 export async function sharedSync(root: string) {
   const b = bind(root);
   if ("error" in b) return b;
@@ -1709,7 +1690,6 @@ function view(f: SharedFinding) {
     ...(reratedFrom(f) ? { reratedFrom: reratedFrom(f) } : {}),
     remediatedAt: f.remediation ? { by: f.remediation.by.principal, at: f.remediation.at, detail: f.remediation.detail, ref: f.remediation.ref } : undefined,
     closed: f.closed ? { by: f.closed.by.principal, reason: f.closed.reason } : undefined,
-    contested: f.contested?.map((c) => ({ field: c.field, held: c.held, incoming: c.incoming })),
     relocation: f.relocation
       ? { kind: f.relocation.kind, to: f.relocation.to, by: f.relocation.by.principal, model: actorVia(f.relocation.by), rationale: f.relocation.rationale, applied: !!f.relocation.applied }
       : undefined,
@@ -1808,22 +1788,10 @@ export const reviseFinding = homed(async function reviseFinding(
         + "or pass allowPostEdit to change the map anyway (which does NOT edit the posted comment).",
     };
   }
-  const was = Object.fromEntries(
-    Object.keys(now).map((k) => [k, (f as unknown as Record<string, unknown>)[k]]),
-  );
-  await revise(b.cfg.path, prKey(b.cfg, pr), b.actor, id, now, was);
+  // `was` from the read the checks above judged, not a fresh one.
+  await revise(b.cfg.path, prKey(b.cfg, pr), b.actor, id, now, wasOf(f, now));
   const mz = await materializeFindings(root, b.cfg, pr);
   return { ...mz, ok: true, id, changed: Object.keys(now) };
-});
-
-/** Settle a field two people set differently without seeing each other. */
-export const settleContest = homed(async function settleContest(root: string, pr: number | string, id: string, field: string, value: unknown) {
-  const b = bind(root);
-  if ("error" in b) return b;
-  const r = await resolveContest(b.cfg.path, prKey(b.cfg, pr), b.actor, id, field, value);
-  if ("error" in r) return r;
-  const mz = await materializeFindings(root, b.cfg, pr);
-  return { ...mz, ok: true, id, field };
 });
 
 /**
@@ -2081,7 +2049,6 @@ export async function sharedFindings(
       : {}),
     total: all.length,
     waitingOnYou: ackQueue(all).length,
-    contested: all.filter((f) => f.contested?.length).length,
     tiers,
     // PAGED, and the page is described. A caller that got 20 of 50 and is not told so
     // reports "20 open findings", which is the shape of wrongness this whole surface
@@ -2255,9 +2222,6 @@ export async function sharedNotes(root: string, targetId: string) {
       by: n.author.principal, model: actorVia(n.author), at: n.createdAt,
       resolved: n.resolved ? { by: n.resolved.by.principal, reason: n.resolved.reason } : undefined,
       answers: n.answers.map((a) => ({ by: a.actor.principal, model: actorVia(a.actor), at: a.at, body: a.body })),
-      // A disagreement nobody is shown is a disagreement nobody settles. Same
-      // shape as a finding's, so a reader that renders one renders both.
-      contested: n.contested?.map((c) => ({ field: c.field, held: c.held, incoming: c.incoming })),
     })),
   };
 }
@@ -2898,9 +2862,6 @@ export async function sharedWalkthroughs(root: string, pr: number | string, head
 /**
  * What the team says about a target's stakes — everyone's receipts, not just the
  * effective value the ordinary triage surfaces show.
- *
- * The read that makes a contested mark actionable: `importance.contested` says two
- * people crossed the business-critical line, and `concurrent` names the other side.
  */
 export async function sharedTriage(root: string, targetKind?: "node" | "anchor", targetId?: string) {
   const cfg = resolveSidecar(root);
@@ -2919,26 +2880,9 @@ export async function sharedTriage(root: string, targetKind?: "node" | "anchor",
   };
 }
 
-/** Every target where two people crossed the business-critical line. */
-export async function contestedTriage(root: string) {
-  const cfg = resolveSidecar(root);
-  if (!cfg) return { error: NO_SIDECAR };
-  const { value, ...status } = await cachedTriage(root, cfg);
-  const contested = [...value.values()].filter((t): t is SharedTriage => !isTombstone(t) && !!t.importance.contested);
-  return {
-    scope: nonAuthoritative(status),
-    universe: cfg.universe,
-    count: contested.length,
-    marks: contested.map(describeTriage),
-    note: contested.length
-      ? "a person settles these: mark the target again having seen both sides"
-      : "nothing outstanding",
-  };
-}
-
 /** One folded mark, flattened for a front end. Receipts kept — they are the point. */
 function describeTriage(t: SharedTriage) {
-  const axis = (a: { effective: any; baseline?: any; escalation?: any; concurrent?: any[]; contested?: boolean } | undefined) => a && ({
+  const axis = (a: { effective: any; baseline?: any; escalation?: any } | undefined) => a && ({
     value: a.effective.value,
     by: a.effective.actor.principal,
     model: actorVia(a.effective.actor),
@@ -2946,8 +2890,6 @@ function describeTriage(t: SharedTriage) {
     reason: a.effective.reason,
     likely: a.effective.likely,
     ...(a.escalation ? { escalatedByAgent: true, humanBaseline: a.baseline?.value } : {}),
-    ...(a.concurrent?.length ? { alsoSaid: a.concurrent.map((c) => ({ value: c.value, by: c.actor.principal })) } : {}),
-    ...(a.contested ? { contested: true } : {}),
   });
   return {
     ...triageOf(t),
@@ -3196,12 +3138,11 @@ export async function publishLocalGraph(root: string, opts: { dryRun?: boolean }
   };
 }
 
-/** The team's wiring, with who published each node's and whether the order mattered. */
+/** The team's wiring, with who published each node's. */
 export async function sharedGraph(root: string) {
   const cfg = resolveSidecar(root);
   if (!cfg) return { error: NO_SIDECAR };
   const { cachedGraph } = await import("./graph-publish.js");
-  const { divergedNodes } = await import("./shared-graph.js");
   const { value, ...status } = await cachedGraph(root, cfg);
   const all = [...value.values()];
   return {
@@ -3209,12 +3150,5 @@ export async function sharedGraph(root: string) {
     universe: cfg.universe,
     nodes: all.length,
     edges: all.reduce((n, w) => n + w.winner.edges.length, 0),
-    // The ones a person or an agent should look at: wall-clock and canonical order
-    // disagreed about the winner, so the ordering was load-bearing.
-    reordered: divergedNodes(value).map((w) => ({
-      nodeId: w.nodeId,
-      served: { by: w.winner.actor.principal, at: w.winner.at, edges: w.winner.edges.length },
-      lost: { by: w.reordered!.causal.actor.principal, at: w.reordered!.causal.at, edges: w.reordered!.causal.edges.length },
-    })),
   };
 }

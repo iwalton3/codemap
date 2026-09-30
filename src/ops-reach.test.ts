@@ -60,14 +60,14 @@ const WEB_REQUIRED = [
   // local rows beside the team's, so the shared-only op reaches half the backlog.
   "backlogOn", "releaseBacklogOn",
   "publishLocalDocs", "publishLocalNotes", "publishLocalTriage", "publishLocalGraph",
-  "sharedTriage", "contestedTriage", "sharedGraph",
+  "sharedTriage", "sharedGraph",
   // Answering a decision directly: the person's own door (owner, R18). Without it a person
   // could only answer through an agent relaying for them.
   "answerDirect",
 ];
 /** Reads only. An agent must SEE the team's stakes; it may not republish or heal. */
 const MCP_REQUIRED = [
-  "sharedTriage", "contestedTriage",
+  "sharedTriage",
   // The witness-less bucket is the one nothing else can touch, and repairing it is
   // evidence rather than a disposition. Left to people it is simply never done, which
   // is why an agent must be able to reach both the queue and the repair.

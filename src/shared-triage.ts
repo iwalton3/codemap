@@ -17,11 +17,10 @@
  *    collapsing them to one receipt is the compound-value bug the design exists to
  *    avoid. An assertion reaches only the fields it carries.
  *
- * 3. **Concurrent divergence takes the higher value, silently — except across the
- *    business-critical line.** Ranking something too high costs somebody a few
- *    minutes; ranking it too low costs the thing this project exists to prevent. Only
- *    a disagreement that crosses `business-critical` is worth interrupting a person
- *    for, and that one becomes a review-queue item rather than a sticky label.
+ * 3. **Between people, the later mark supersedes.** The log is linear, so there is no
+ *    concurrent divergence to rank: a person's mark replaces the one before it in push
+ *    order, field by field. Agents are the exception — the ratchet, judged against the
+ *    log before the claim, so a stale agent claim is refused at replay.
  *
  * The fold is the authority. Every rule here is enforced when FOLDING, not only when
  * writing: events arrive from other people's clients, which may be older, buggy or
@@ -30,10 +29,10 @@
 
 import type { Actor, BugWitness, Complexity, Importance, TriageSource, Triage } from "./schema.js";
 import { isAgentActor } from "./identity.js";
-import { type DoorFold, type LogEvent, type Causality, causality, registerDoor } from "./eventlog.js";
+import { type DoorFold, type LogEvent, registerDoor } from "./eventlog.js";
 import { collector, foldJudged, registerReport, type RefusalClass, type Refusal } from "./validation.js";
 import { emitEvent, emitEvents } from "./write.js";
-import { IMPORTANCE_RANK, COMPLEXITY_RANK, ratchet, type RatchetState } from "./triage-rules.js";
+import { ratchet, type RatchetState } from "./triage-rules.js";
 
 /** One universe's stakes. Not per-PR: a symbol's blast radius outlives any branch. */
 export const triageScope = (universe: string): string => `triage/${universe}`;
@@ -79,23 +78,6 @@ export interface Axis<V> {
   effective: AxisReceipt<V>;
   baseline?: AxisReceipt<V>;
   escalation?: AxisReceipt<V>;
-  /**
-   * Concurrent divergent assertions this one won over. Retained regardless of the
-   * outcome — per-field provenance is required anyway, and the queue item for a
-   * contested field has to be able to name both sides.
-   */
-  concurrent?: AxisReceipt<V>[];
-  /** Only ever set on `importance`, and only across the business-critical line. */
-  contested?: boolean;
-  /**
-   * The ACTIVE receipts that constitute the contest — every side, whoever wrote it.
-   *
-   * Retained because the queue item has to name both sides, and neither `effective` nor
-   * `concurrent` can supply them: `concurrent` holds only the human receipts the
-   * baseline won over, and an agent's losing claim was computed for the contest check
-   * and then dropped. The queue question then said two parties disagreed and listed one.
-   */
-  contestedWith?: AxisReceipt<V>[];
 }
 
 /**
@@ -131,12 +113,6 @@ export interface SharedTriage {
 /** The fields an assertion can carry. `tripwire` is a field, not a flag on the record. */
 const FIELDS = ["importance", "complexity", "tripwire"] as const;
 export type TriageField = (typeof FIELDS)[number];
-
-const TRUE_RANK = { false: 0, true: 1 } as const;
-const rankOf = (field: TriageField, v: unknown): number =>
-  field === "importance" ? IMPORTANCE_RANK[v as Importance] ?? -1
-    : field === "complexity" ? COMPLEXITY_RANK[v as Complexity] ?? -1
-      : TRUE_RANK[String(v) as "true" | "false"] ?? -1;
 
 const VALID: Record<TriageField, (v: unknown) => boolean> = {
   importance: (v) => v === "business-critical" || v === "important" || v === "low",
@@ -212,7 +188,7 @@ export async function assertTriageBatch(
  * Publish "this target has NO stakes".
  *
  * `present: false` is EXPLICIT and must never be encoded as `importance: undefined`:
- * `applyRevision` reads an absent field as "this event did not touch it", so a clear
+ * the fold reads an absent field as "this event did not touch it", so a clear
  * written that way is indistinguishable from silence. The log is append-only and NO
  * LOSS forbids removing an event once observed, so a clear is an append like any other
  * — the superseded mark stays in history and simply stops appearing in the projection.
@@ -287,7 +263,6 @@ function entryOf(e: LogEvent, refuse: Refuse): Entry | null {
  */
 export function foldTriageReport(events: LogEvent[]): { value: Map<string, TriageEntry>; refused: Refusal[] } {
   const { refused, refuse } = collector();
-  const causal = causality(events);
   const byTarget = new Map<string, Entry[]>();
   for (const e of events) {
     if (e.kind !== "triage.asserted" && e.kind !== "triage.cleared") continue;
@@ -298,15 +273,14 @@ export function foldTriageReport(events: LogEvent[]): { value: Map<string, Triag
   }
   const out = new Map<string, TriageEntry>();
   for (const [key, entries] of byTarget) {
-    const t = foldTarget(entries, causal);
+    const t = foldTarget(entries);
     if (t) out.set(key, t);
     // An agent claim the ratchet refuses, judged against what came BEFORE it. The fold
-    // above ratchets against the final human baseline (concurrency is phase 5's), so its
-    // refusals are retroactive: a later human mark would turn an earlier, valid agent claim
-    // into "damage" on every reader.
+    // above ratchets against the final human baseline, so its refusals are retroactive: a
+    // later human mark would turn an earlier, valid agent claim into "damage" on every reader.
     entries.forEach((en, i) => {
       if (!en.agent || en.clear) return;
-      foldTarget(entries.slice(0, i + 1), causal, (x, why) => { if (x === en) refuse(en.e, "state", why); });
+      foldTarget(entries.slice(0, i + 1), (x, why) => { if (x === en) refuse(en.e, "state", why); });
     });
   }
   return { value: out, refused };
@@ -328,7 +302,7 @@ export const triageDoor: DoorFold = (events, minted) => {
   const entries = events.filter((e) => e.subject === minted.subject && e !== minted
     && (e.kind === "triage.asserted" || e.kind === "triage.cleared"))
     .map((e) => entryOf(e, () => {})).filter((x): x is Entry => !!x);
-  foldTarget([...entries, en], causality(events), (x, why) => { if (x === en) refuse(minted, "state", why); });
+  foldTarget([...entries, en], (x, why) => { if (x === en) refuse(minted, "state", why); });
   return { refused };
 };
 registerDoor((scope) => scope.startsWith("triage/"), () => triageDoor);
@@ -353,68 +327,37 @@ const receiptOf = <V>(en: Entry, value: V): AxisReceipt<V> => ({
 });
 
 /**
- * The human answer for one field: what survives supersession, and what won.
+ * The human answer for one field: the latest human entry that speaks to it, in log order.
  *
- * `null` means the humans on record say this field is absent — every assertion of it
- * has been superseded by a clear. That is different from "no human has ever spoken",
- * which is `undefined`, because an agent claim may escalate from nothing but must not
- * escalate from a decision to clear.
+ * `cleared` means the humans on record say this field is absent — the latest such entry is
+ * a clear. That is different from "no human has ever spoken" (`undefined`), because an
+ * agent claim may escalate from nothing but must not escalate from a decision to clear.
  */
-function humanBaseline<V>(
-  entries: Entry[], field: TriageField, causal: Causality,
-): { chosen?: AxisReceipt<V>; concurrent: AxisReceipt<V>[]; cleared: boolean } | undefined {
+function humanBaseline<V>(entries: Entry[], field: TriageField): { chosen?: AxisReceipt<V>; cleared: boolean } | undefined {
   // A clear reaches every field; an assertion reaches only the fields it carries.
-  const relevant = entries.filter((en) => !en.agent
-    && (en.clear || (en.data[field] !== undefined && VALID[field](en.data[field]))));
-  if (!relevant.length) return undefined;
-
-  // Supersession: Y supersedes X when Y's writer had already folded X. That is the
-  // normal way anything gets lowered — a decision, not a merge — and it is why most
-  // of what looks like conflict needs no machinery at all.
-  const survivors = relevant.filter((x) => !relevant.some((y) => y !== x && causal.saw(y.e.id, x.e.id)));
-
-  const asserts = survivors.filter((s) => !s.clear);
-  // PRESENCE WINS over a concurrent clear: a mark nobody wanted costs a glance, a mark
-  // silently removed costs the review it was asking for. The clear stays in history and
-  // a human who has seen both can clear again.
-  if (!asserts.length) return { concurrent: [], cleared: true };
-
-  const receipts = asserts.map((a) => receiptOf<V>(a, a.data[field] as V));
-  // Concurrent divergence: the higher value wins, silently. Ties break on event id so
-  // two clones with the same events always choose the same receipt.
-  const chosen = receipts.reduce((best, r) => {
-    const d = rankOf(field, r.value) - rankOf(field, best.value);
-    return d > 0 || (d === 0 && r.eventId < best.eventId) ? r : best;
-  });
-  return { chosen, concurrent: receipts.filter((r) => r !== chosen), cleared: false };
+  const last = entries.filter((en) => !en.agent && speaksTo(en, field)).at(-1);
+  if (!last) return undefined;
+  return last.clear ? { cleared: true } : { chosen: receiptOf<V>(last, last.data[field] as V), cleared: false };
 }
 
-/**
- * Has a human ANSWERED this agent event's claim to `field`?
- *
- * Per FIELD, and that is the whole correction. Judged per event, a human who saw an
- * agent's `{business-critical, deep}` and answered only the complexity suppressed the
- * entire event — and the business-critical importance nobody had disputed vanished with
- * it, folding the target to absent. An assertion supersedes causally-seen claims only
- * for the fields it carries; a clear carries all of them.
- */
-const answered = (humans: Entry[], en: Entry, field: TriageField, causal: Causality): boolean =>
-  humans.some((h) => causal.saw(h.e.id, en.e.id)
-    && (h.clear || (h.data[field] !== undefined && VALID[field](h.data[field]))));
+const speaksTo = (en: Entry, field: TriageField): boolean =>
+  en.clear || (en.data[field] !== undefined && VALID[field](en.data[field]));
 
-function foldTarget(entries: Entry[], causal: Causality, onRefused?: (en: Entry, why: string) => void): TriageEntry | null {
+function foldTarget(entries: Entry[], onRefused?: (en: Entry, why: string) => void): TriageEntry | null {
   const first = entries[0]!;
   const target = {
     kind: str(first.data, "targetKind") as "node" | "anchor",
     id: str(first.data, "targetId")!,
   };
 
-  const impBase = humanBaseline<Importance>(entries, "importance", causal);
-  const cxBase = humanBaseline<Complexity>(entries, "complexity", causal);
-  const twBase = humanBaseline<boolean>(entries, "tripwire", causal);
+  const impBase = humanBaseline<Importance>(entries, "importance");
+  const cxBase = humanBaseline<Complexity>(entries, "complexity");
+  const twBase = humanBaseline<boolean>(entries, "tripwire");
 
-  const humans = entries.filter((en) => !en.agent);
-  const agents = entries.filter((en) => en.agent && !en.clear);
+  // Has a person ANSWERED this agent claim's `field` — spoken to it later in the log? Per
+  // field: a person who answered only the complexity leaves the agent's importance standing.
+  const answered = (i: number, field: TriageField): boolean =>
+    entries.some((h, j) => j > i && !h.agent && speaksTo(h, field));
 
   // The state the replay ratchets against. Carries a human complexity even when no
   // human importance exists — see `RatchetState`.
@@ -428,25 +371,20 @@ function foldTarget(entries: Entry[], causal: Causality, onRefused?: (en: Entry,
 
   let impFrom: AxisReceipt<Importance> | undefined;
   let cxFrom: AxisReceipt<Complexity> | undefined;
-  /** Every live agent claim per field — needed for contests, not just the raising one. */
-  const agentSaid: { importance: AxisReceipt<Importance>[]; complexity: AxisReceipt<Complexity>[] } =
-    { importance: [], complexity: [] };
 
-  for (const en of agents) {
+  for (const [i, en] of entries.entries()) {
+    if (!en.agent || en.clear) continue;
     // A field a human has answered is masked OUT of this event before the ratchet sees
     // it. The rest of the event still stands.
-    const imp = !answered(humans, en, "importance", causal) && VALID.importance(en.data.importance)
+    const imp = !answered(i, "importance") && VALID.importance(en.data.importance)
       ? (en.data.importance as Importance) : undefined;
-    const cx = !answered(humans, en, "complexity", causal) && VALID.complexity(en.data.complexity)
+    const cx = !answered(i, "complexity") && VALID.complexity(en.data.complexity)
       ? (en.data.complexity as Complexity) : undefined;
     if (imp === undefined && cx === undefined) continue;
-    if (imp !== undefined) agentSaid.importance.push(receiptOf(en, imp));
-    if (cx !== undefined) agentSaid.complexity.push(receiptOf(en, cx));
 
     const decided = ratchet(running, { importance: imp, complexity: cx, source: "agent" });
     if ("refused" in decided) { onRefused?.(en, decided.refused); continue; }
-    // Visible only if it actually RAISES: concurrency alone does not make a lower or
-    // no-op claim an escalation.
+    // Visible only if it actually RAISES.
     if (imp !== undefined && decided.importance !== running?.importance) impFrom = receiptOf(en, decided.importance);
     if (cx !== undefined && decided.complexity !== running?.complexity && decided.complexity !== undefined) {
       cxFrom = receiptOf(en, decided.complexity);
@@ -463,13 +401,11 @@ function foldTarget(entries: Entry[], causal: Causality, onRefused?: (en: Entry,
     // Absence ASSERTED by a person is a fact the team stated and it gets a tombstone.
     // Absence for any other reason — no importance ever, or every claim refused — is
     // the log having nothing admissible to say, and must NOT read as coverage.
-    const won = impBase?.cleared ? clearWinner(entries, causal) : undefined;
+    const won = impBase?.cleared ? clearWinner(entries) : undefined;
     return won
       ? { target, cleared: { actor: won.e.actor, at: won.e.at, eventId: won.e.id } }
       : null;
   }
-  const sides = contestingSides(importance, agentSaid.importance, causal);
-  if (sides) { importance.contested = true; importance.contestedWith = sides; }
 
   const complexity = axisOf<Complexity>(cxBase, cxFrom);
   // Humans only. An agent's tripwire value is ignored outright rather than ratcheted:
@@ -483,70 +419,14 @@ function foldTarget(entries: Entry[], causal: Causality, onRefused?: (en: Entry,
   };
 }
 
-/**
- * Does this field hold a disagreement across the business-critical line?
- *
- * Two distinct ACTIVE receipts whose values straddle the line, where neither saw the
- * other. Three clauses, each of which was wrong at some point:
- *
- * **No writer or principal test.** `docs/sidecar-architecture.md` deletes `sameWriter`
- * from contest detection outright — under the segment vector `saw()` subsumes every
- * legitimate case it covered, and its only residual effect was suppressing intra-fork
- * disagreements, which is exactly the disagreement worth seeing. An earlier draft of
- * this function tested writer inequality and would have hidden a fork's own conflict.
- *
- * **ACTIVE, not "ever said".** A receipt that saw both sides and spoke is a settlement,
- * so it prunes what it saw. Without this a settled contest contests forever, because
- * the historical pair is still on the record.
- *
- * **Only a person settles.** The design said an agent may settle an agent/agent
- * disagreement, and the build found that half UNREACHABLE: settling is asserting a
- * value having seen both sides, `ratchet` refuses an agent's no-op restatement, and a
- * contest exists only across the business-critical line — so there is never a higher
- * value left for an agent to assert. Rather than carve a special case into `ratchet`
- * (consolidated from three copies precisely to stop them drifting), the agent's role
- * is a PROPOSAL on the queue item — it investigates and reports an outcome, and the
- * person settles by re-triaging. See `docs/shared-triage.md`.
- */
-function contestingSides(
-  axis: Axis<Importance>, agentClaims: AxisReceipt<Importance>[], causal: Causality,
-): AxisReceipt<Importance>[] | null {
-  const humanSide = [...(axis.baseline ? [axis.baseline] : []), ...(axis.concurrent ?? [])];
-  const all = [...humanSide, ...agentClaims];
-  const isAgent = (r: AxisReceipt<Importance>) => r.source === "agent";
-  const active = all.filter((x) => !all.some((y) => y !== x
-    && causal.saw(y.eventId, x.eventId)
-    && !isAgent(y)));
-  // Straddling is not enough on its own: the two sides must be genuinely concurrent, or
-  // a person lowering something they had just read reads as a conflict with themselves.
-  const straddles = active.some((a) => active.some((b) => a !== b
-    && a.value === "business-critical" && b.value !== "business-critical"
-    && !causal.saw(a.eventId, b.eventId) && !causal.saw(b.eventId, a.eventId)));
-  if (!straddles) return null;
-  // Every active receipt, deduped and ordered by id so two clones render one contest
-  // the same way.
-  const seen = new Set<string>();
-  return active.filter((r) => !seen.has(r.eventId) && seen.add(r.eventId))
-    .sort((a, b) => (a.eventId < b.eventId ? -1 : 1));
-}
-
 /** Baseline plus escalation as the three-part axis consumers read. */
 function axisOf<V>(
-  base: { chosen?: AxisReceipt<V>; concurrent: AxisReceipt<V>[]; cleared: boolean } | undefined,
+  base: { chosen?: AxisReceipt<V>; cleared: boolean } | undefined,
   escalation: AxisReceipt<V> | undefined,
 ): Axis<V> | undefined {
-  if (escalation) {
-    return {
-      effective: escalation, escalation,
-      ...(base?.chosen ? { baseline: base.chosen } : {}),
-      ...(base?.concurrent.length ? { concurrent: base.concurrent } : {}),
-    };
-  }
+  if (escalation) return { effective: escalation, escalation, ...(base?.chosen ? { baseline: base.chosen } : {}) };
   if (!base?.chosen) return undefined;
-  return {
-    effective: base.chosen, baseline: base.chosen,
-    ...(base.concurrent.length ? { concurrent: base.concurrent } : {}),
-  };
+  return { effective: base.chosen, baseline: base.chosen };
 }
 
 // ---------------------------------------------------------------------------
@@ -580,28 +460,11 @@ export function triageOf(t: SharedTriage): Triage {
 }
 
 /**
- * The clear that actually won — the receipt a tombstone is written from.
- *
- * Only something that could REINSTATE the mark supersedes a clear: another clear, or a
- * human assertion carrying an importance. Judged against every later human entry, a
- * complexity-only assertion killed the clear here while `humanBaseline` — which filters
- * on the field — still read the target as cleared, so the fold returned NEITHER a mark
- * nor a tombstone and a legacy local row filled the hole a deliberate clear had made.
- *
- * `setTriage` does not currently produce a complexity-only human assertion, but this
- * fold's whole contract is that it is the authority over events from clients it did not
- * write, and `TriageAssertion` permits the shape.
+ * The clear that won — the receipt a tombstone is written from: the last human entry that
+ * could reinstate or clear the mark, when it is a clear. A complexity-only assertion does not
+ * reinstate a cleared mark, the same way `humanBaseline` filters on the field.
  */
-function clearWinner(entries: Entry[], causal: Causality): Entry | undefined {
-  const reinstates = (en: Entry) => !en.agent
-    && (en.clear || (en.data.importance !== undefined && VALID.importance(en.data.importance)));
-  const clears = entries.filter((en) => en.clear && !en.agent);
-  const live = clears.filter((x) => !entries.some((y) => y !== x && reinstates(y) && causal.saw(y.e.id, x.e.id)));
-  // Lowest id among the survivors, so every clone writes the same tombstone.
-  return [...live].sort((a, b) => (a.e.id < b.e.id ? -1 : 1))[0];
-}
-
-/** Every field of every target where two people crossed the business-critical line. */
-export function contestedTargets(folded: Map<string, TriageEntry>): SharedTriage[] {
-  return [...folded.values()].filter((t): t is SharedTriage => !isTombstone(t) && !!t.importance.contested);
+function clearWinner(entries: Entry[]): Entry | undefined {
+  const last = entries.filter((en) => !en.agent && speaksTo(en, "importance")).at(-1);
+  return last?.clear ? last : undefined;
 }

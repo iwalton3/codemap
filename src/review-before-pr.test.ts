@@ -277,8 +277,6 @@ test("acting on a linked branch finding through its pull request acts in the fin
 
     const dec = await shared.declineFindingAsk(u.root, 12, id, "no") as Record<string, unknown>;
     assert.doesNotMatch(String(dec.error), /no finding/, "found it — it simply has no ask");
-    const set = await shared.settleContest(u.root, 12, id, "severity", "high") as Record<string, unknown>;
-    assert.doesNotMatch(String(set.error), /no finding/);
 
     // A promotion names a bug that exists (docs/sidecar-references.md, row 23).
     const { reportBug } = await import("./ops/bugs.js");
@@ -346,7 +344,7 @@ test("every verb taking a finding id resolves the finding's own review first", a
     .filter(([, v]) => !(v as Record<symbol, unknown>)[Symbol.for("codemap.findingHomed")])
     .map(([k]) => k);
   assert.deepEqual(unhomed, []);
-  assert.ok(Object.values(shared).filter((v) => (v as Record<symbol, unknown>)?.[Symbol.for("codemap.findingHomed")]).length >= 19,
+  assert.ok(Object.values(shared).filter((v) => (v as Record<symbol, unknown>)?.[Symbol.for("codemap.findingHomed")]).length >= 18,
     "and the sweep found the verbs at all");
 });
 

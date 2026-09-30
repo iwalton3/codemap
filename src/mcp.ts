@@ -802,7 +802,7 @@ const tools: Tool[] = [
   },
   {
     name: "list_bugs",
-    description: "List bugs in a universe — this machine's and the team's, in one list. Open bugs whose anchored code changed since filing are flagged `possiblyFixed`; re-validate those rather than closing them, because a symbol that vanished may have been renamed or deleted without the defect being addressed. `queue: true` is the short list: what needs a PERSON here (promoted, corroborated, contested, asked about, or drifted). `asked: true` is narrower and is the one to reach for after a fixing pass — bugs somebody is asking a person to close, or has reported fixed. Each row carries the outstanding ask as `pending` (with its rationale), plus the latest outcome as `reported`.\n\nA bug somebody has DEFERRED is out of the WORKING lists — the open/queue/asked views — and out of nothing else. An unfiltered call, an explicit `state`, and `backlog: true` all answer with it, it is still in `search`, and every row carries its deadline, because a defect you cannot find is worse than one nobody has prioritised. It returns to the working lists on its own once the deadline passes or the code it was about moves. Deferring one is a person's call and there is no tool for it; ask, and say what the release condition should be.",
+    description: "List bugs in a universe — this machine's and the team's, in one list. Open bugs whose anchored code changed since filing are flagged `possiblyFixed`; re-validate those rather than closing them, because a symbol that vanished may have been renamed or deleted without the defect being addressed. `queue: true` is the short list: what needs a PERSON here (promoted, corroborated, asked about, or drifted). `asked: true` is narrower and is the one to reach for after a fixing pass — bugs somebody is asking a person to close, or has reported fixed. Each row carries the outstanding ask as `pending` (with its rationale), plus the latest outcome as `reported`.\n\nA bug somebody has DEFERRED is out of the WORKING lists — the open/queue/asked views — and out of nothing else. An unfiltered call, an explicit `state`, and `backlog: true` all answer with it, it is still in `search`, and every row carries its deadline, because a defect you cannot find is worse than one nobody has prioritised. It returns to the working lists on its own once the deadline passes or the code it was about moves. Deferring one is a person's call and there is no tool for it; ask, and say what the release condition should be.",
     inputSchema: obj({
       state: { type: "string", enum: ["issued", "created", "invalid", "refuted", "resolved", "withdrawn"] },
       open: { type: "boolean", description: "Only bugs that are not closed." },
@@ -821,7 +821,7 @@ const tools: Tool[] = [
   },
   {
     name: "update_bug",
-    description: "Update a bug: change state, add a comment, add anchors, refresh witness hashes, or revise its prose/severity. With a sidecar each of those is a separate act in the shared log, because they merge differently — citations are grow-only, prose can be contested, and the state is ratcheted. An agent may not move a bug somebody has stood behind; use `request_human` for that.",
+    description: "Update a bug: change state, add a comment, add anchors, refresh witness hashes, or revise its prose/severity. With a sidecar each of those is a separate act in the shared log, because they merge differently — citations are grow-only, prose is refused if it changed since you read it, and the state is ratcheted. An agent may not move a bug somebody has stood behind; use `request_human` for that.",
     inputSchema: obj({
       id: { type: "string" },
       state: { type: "string", enum: ["issued", "created", "invalid", "refuted", "resolved", "withdrawn"] },
@@ -1558,7 +1558,7 @@ const tools: Tool[] = [
   },
   {
     name: "shared_findings",
-    description: "Findings on the sidecar for a pull request — everyone's, not just yours. Read this before filing: a finding somebody has already raised and refuted does not need raising again.\n\nTwo different questions, and they are NOT the same list:\n  • `tier` — how settled each finding is. `unconfirmed` is the untriaged pile: filed, and nobody has weighed in. That is what \"what still needs triage\" means, and it is what you want when somebody asks for the ones not confirmed yet. Also `confirmed` (somebody stood behind it), `doubted` (refuted, withdrawn, or carrying a refuting verdict) and `settled` (closed).\n  • `queue:true` — what is waiting on a PERSON: promoted, confirmed by somebody, contested, or with an outstanding request. An UNTRIAGED finding is waiting on nobody by that definition, so the queue deliberately does not contain it — triaging one is what PUTS it there.\n\n`tiers` on the answer counts all four whatever you filtered by, so the shape of the pull request is visible from any call. A finding a person's decision holds is marked `held` (which decision, and why), or `held: \"unknown\"` when the decisions log cannot be read.",
+    description: "Findings on the sidecar for a pull request — everyone's, not just yours. Read this before filing: a finding somebody has already raised and refuted does not need raising again.\n\nTwo different questions, and they are NOT the same list:\n  • `tier` — how settled each finding is. `unconfirmed` is the untriaged pile: filed, and nobody has weighed in. That is what \"what still needs triage\" means, and it is what you want when somebody asks for the ones not confirmed yet. Also `confirmed` (somebody stood behind it), `doubted` (refuted, withdrawn, or carrying a refuting verdict) and `settled` (closed).\n  • `queue:true` — what is waiting on a PERSON: promoted, confirmed by somebody, or with an outstanding request. An UNTRIAGED finding is waiting on nobody by that definition, so the queue deliberately does not contain it — triaging one is what PUTS it there.\n\n`tiers` on the answer counts all four whatever you filtered by, so the shape of the pull request is visible from any call. A finding a person's decision holds is marked `held` (which decision, and why), or `held: \"unknown\"` when the decisions log cannot be read.",
     inputSchema: obj({
       pr: { type: "string", description: "Pull request number. Includes findings filed on its branch before it was opened." },
       branch: { type: "string", description: "Instead of `pr`: a branch whose pull request is not open yet." },
@@ -1702,18 +1702,12 @@ const tools: Tool[] = [
   },
   {
     name: "shared_triage",
-    description: "What the TEAM says a symbol is worth — everyone's stakes, with the receipt for each. Read it before you triage: somebody may already have decided this is business-critical, and the ordinary triage surfaces show you only the effective value, not who set it or why.\n\nEach field carries its own receipt, because a mark whose importance is a person's and whose complexity is an agent's has no single author. `escalatedByAgent` means an agent raised it above the human baseline, which is shown beside it — that is a proposal awaiting confirmation, not a decision. `contested` means two people disagree ACROSS the business-critical line and a person has to settle it; you may investigate and PROPOSE, and you may not settle it yourself.\n\nOmit both arguments for the whole universe.",
+    description: "What the TEAM says a symbol is worth — everyone's stakes, with the receipt for each. Read it before you triage: somebody may already have decided this is business-critical, and the ordinary triage surfaces show you only the effective value, not who set it or why.\n\nEach field carries its own receipt, because a mark whose importance is a person's and whose complexity is an agent's has no single author. `escalatedByAgent` means an agent raised it above the human baseline, which is shown beside it — that is a proposal awaiting confirmation, not a decision.\n\nOmit both arguments for the whole universe.",
     inputSchema: obj({
       targetKind: { type: "string", enum: ["node", "anchor"], description: "Optional filter." },
       targetId: { type: "string", description: "Optional: one anchor or node id." },
     }, []),
     handler: (a, c) => shared.sharedTriage(c.universe.path, a.targetKind, a.targetId),
-  },
-  {
-    name: "contested_triage",
-    description: "Stakes two people disagree about across the business-critical line — the only triage disagreement worth interrupting somebody for, and the one a person must settle.\n\nEverything else the fold settles silently: two people who never saw each other disagreeing about `low` versus `important` is not worth anyone's attention, and the higher value holds meanwhile so nothing is under-reviewed. These are the exceptions.\n\nYour job here is to INVESTIGATE and propose — read the code, weigh both stated reasons, and report what you found through `close_finding` on the queued question (it arrives in `review_queue` as an `investigate` assignment). The person settles by triaging the symbol again having seen both sides; that mark supersedes both and the item closes itself.",
-    inputSchema: obj({}, []),
-    handler: (_a, c) => shared.contestedTriage(c.universe.path),
   },
   {
     name: "shared_notes",

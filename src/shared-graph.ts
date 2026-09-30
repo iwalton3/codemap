@@ -18,9 +18,10 @@
  * 3. **The unit is one node's OUTGOING wiring at a commit**, not one edge. A flow's
  *    cardinality is a property of the whole `step_of` set, and per-edge events would let
  *    two clones hold a half-reordered flow neither person authored. It is also the
- *    granularity a repair queue can act on.
+ *    granularity a repair acts on.
  *
- * 4. **Fast-forward, or queue it.** See `divergedNodes`.
+ * 4. **Push order decides.** The last publication of a node's wiring in log order is
+ *    served (owner, Q6: "Correct push order is what matters").
  */
 
 import type { Actor, Edge, EdgeType } from "./schema.js";
@@ -45,16 +46,8 @@ export interface WiringReceipt {
 
 export interface SharedWiring {
   nodeId: string;
-  /** The receipt that WON. Wall-clock order, per the owner's rule. */
+  /** The receipt that WON: the last in log order. */
   winner: WiringReceipt;
-  /**
-   * Set when wall-clock order and canonical order disagree about the winner.
-   *
-   * Not "these two wrote concurrently" — that is a judgement about causality and would
-   * fire on ordinary parallel work. This is narrower and decidable: the ORDERING
-   * MATTERED. See `divergedNodes`.
-   */
-  reordered?: { causal: WiringReceipt };
 }
 
 const str = (d: Record<string, unknown>, k: string): string | undefined =>
@@ -89,52 +82,15 @@ function receiptOf(e: LogEvent, refuse: Refuse): WiringReceipt | null {
   };
 }
 
-/**
- * Newest wall-clock wins, tie-broken by event id.
- *
- * The tie-break is not decoration: `at` alone is not a total order, and two clones
- * holding events that share a timestamp would otherwise pick differently — which breaks
- * CONVERGENCE, the property every other rule here is in service of.
- */
-const laterByClock = (a: WiringReceipt, b: WiringReceipt): WiringReceipt =>
-  b.at > a.at || (b.at === a.at && b.eventId > a.eventId) ? b : a;
-
-/**
- * Every node's wiring, and whether the ordering mattered.
- *
- * **Fast-forward, or queue it** — git's distinction, and it makes the detector decidable
- * rather than a judgement about causality. Per node, fold the publications twice: once
- * in wall-clock order (W, which is served) and once in canonical `sortEvents` order (C,
- * which is causal). If W and C agree, the interleave changed nothing and there is
- * nothing for anyone to look at. If they disagree — a causally later publication
- * carrying an earlier clock, or concurrent writes whose tie broke the other way — the
- * ordering was load-bearing and the reorder is queued.
- *
- * That comparison is also what keeps the repair model fed. A silent last-write-wins
- * leaves nothing to queue: the loser vanishes and nobody learns the ordering mattered.
- */
+/** Every node's wiring: the last publication of each, in log order. */
 export function foldGraphReport(events: LogEvent[]): { value: Map<string, SharedWiring>; refused: Refusal[] } {
   const { refused, refuse } = collector();
-  const byNode = new Map<string, WiringReceipt[]>();
-  // Canonical order first, so `C` is a fold over the causal sequence rather than over
-  // whatever order the shards happened to be read in.
+  const out = new Map<string, SharedWiring>();
+  // Sorted, so the answer never depends on the order the files happened to be read in.
   for (const e of sortEvents(events)) {
     if (e.kind !== "graph.published") continue;
     const r = receiptOf(e, refuse);
-    if (!r) continue;
-    const acc = byNode.get(r.nodeId);
-    if (acc) acc.push(r); else byNode.set(r.nodeId, [r]);
-  }
-
-  const out = new Map<string, SharedWiring>();
-  for (const [nodeId, receipts] of byNode) {
-    // C: the last one in canonical order. W: the latest by clock.
-    const causal = receipts[receipts.length - 1]!;
-    const winner = receipts.reduce(laterByClock);
-    out.set(nodeId, {
-      nodeId, winner,
-      ...(winner.eventId !== causal.eventId ? { reordered: { causal } } : {}),
-    });
+    if (r) out.set(r.nodeId, { nodeId: r.nodeId, winner: r });
   }
   return { value: out, refused };
 }
@@ -148,11 +104,6 @@ registerDoor((scope) => scope.startsWith("graph/"), () => (events) => foldGraphR
 /** The fold for a READ: a refused linear event is damage or newer; see `validation.ts`. */
 export function foldGraph(events: LogEvent[]): Map<string, SharedWiring> {
   return foldJudged(events, foldGraphReport).value;
-}
-
-/** The nodes whose wiring a person or an agent should look at. See `foldGraph`. */
-export function divergedNodes(folded: Map<string, SharedWiring>): SharedWiring[] {
-  return [...folded.values()].filter((w) => w.reordered);
 }
 
 /**

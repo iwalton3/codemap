@@ -12,7 +12,7 @@ import { testEvent } from "./test-events.js";
 import { sortEvents, type LogEvent } from "./eventlog.js";
 import type { Actor, Importance, Complexity } from "./schema.js";
 import { ratchet } from "./triage.js";
-import { foldTriage, triageSubject, triageOf, isTombstone, type SharedTriage } from "./shared-triage.js";
+import { foldTriage, foldTriageReport, triageSubject, triageOf, isTombstone, type SharedTriage } from "./shared-triage.js";
 import { discard } from "./test-tmp.js";
 
 const izzie: Actor = { principal: "izzie@x.com" };
@@ -33,12 +33,15 @@ interface Say {
   source?: "agent" | "human" | "graph";
   reason?: string;
   target?: string;
+  /** Push order. Given where it must differ from id order. */
+  seq?: number;
 }
 
 /** One `triage.asserted`, with the boring half of the envelope filled in. */
 const say = (s: Say): LogEvent => testEvent({
   id: s.id, kind: "triage.asserted", subject: triageSubject("anchor", s.target ?? "a_1"),
   actor: s.by, writer: s.writer ?? `w_${s.by.principal}`, after: s.after ?? [],
+  ...(s.seq !== undefined ? { seq: s.seq } : {}),
   data: {
     targetKind: "anchor", targetId: s.target ?? "a_1",
     ...(s.importance !== undefined ? { importance: s.importance } : {}),
@@ -54,6 +57,7 @@ const say = (s: Say): LogEvent => testEvent({
 const clear = (id: string, by: Actor, over: Partial<Say> = {}): LogEvent => testEvent({
   id, kind: "triage.cleared", subject: triageSubject("anchor", over.target ?? "a_1"),
   actor: by, writer: over.writer ?? `w_${by.principal}`, after: over.after ?? [],
+  ...(over.seq !== undefined ? { seq: over.seq } : {}),
   data: { targetKind: "anchor", targetId: over.target ?? "a_1", present: false },
 });
 
@@ -108,8 +112,6 @@ test("causally-seen supersedes: looking at business-critical and setting low IS 
     say({ id: "0000000002-bb", by: ben, writer: "w_b", after: ["0000000001-aa"], importance: "low" }),
   ])!;
   assert.equal(t.importance.effective.value, "low");
-  assert.equal(t.importance.contested, undefined, "a decision is not a conflict, whatever line it crosses");
-  assert.equal(t.importance.concurrent, undefined, "a superseded claim is not a retained divergence");
 });
 
 test("supersession is per FIELD: settling complexity does not settle importance", () => {
@@ -125,108 +127,56 @@ test("supersession is per FIELD: settling complexity does not settle importance"
     "one record, two receipts — which is the whole reason the table is per field");
 });
 
-// --- concurrent divergence ----------------------------------------------------
+// --- push order (owner, Q6: "Correct push order is what matters") -----------
 
-test("concurrent divergence takes the HIGHER value, silently, and keeps both receipts", () => {
+test("between people the later mark in PUSH order supersedes, whatever its value or id", () => {
+  // Pushed second but minted first: the id sorts earlier, the log puts it later. Neither
+  // writer read the other; nobody is asked to arbitrate, and nothing is ranked.
   const t = one([
-    say({ id: "0000000001-aa", by: izzie, writer: "w_i", importance: "low" }),
-    say({ id: "0000000002-bb", by: ben, writer: "w_b", importance: "important" }),
+    say({ id: "0000000009-zz", by: izzie, writer: "w_i", importance: "important", seq: 1 }),
+    say({ id: "0000000001-aa", by: ben, writer: "w_b", importance: "low", seq: 2 }),
   ])!;
-  assert.equal(t.importance.effective.value, "important");
-  assert.equal(t.importance.contested, undefined,
-    "low vs important is not worth a person's attention — a rule people route around is worse");
-  assert.deepEqual(t.importance.concurrent?.map((r) => r.value), ["low"],
-    "the losing receipt is RETAINED — per-field provenance is required either way");
+  assert.equal(t.importance.effective.value, "low", "the later push stands, not the higher value");
+  assert.equal(t.importance.effective.actor.principal, "ben@x.com");
 });
 
-test("last-in-wins is specifically NOT the rule: the larger id does not decide", () => {
-  // The rejected design, pinned. `low` sorts later here; under last-in-wins it would
-  // silently lower a mark written by somebody who never saw it.
+test("across the business-critical line too: the later mark stands and nothing is queued", () => {
   const t = one([
-    say({ id: "0000000001-aa", by: izzie, writer: "w_i", importance: "important" }),
-    say({ id: "0000000009-zz", by: ben, writer: "w_b", importance: "low" }),
+    say({ id: "0000000001-aa", by: izzie, writer: "w_i", importance: "business-critical", seq: 1 }),
+    say({ id: "0000000002-bb", by: ben, writer: "w_b", importance: "low", seq: 2 }),
   ])!;
-  assert.equal(t.importance.effective.value, "important", "review priority decided by event id");
+  assert.equal(t.importance.effective.value, "low");
+  assert.deepEqual(Object.keys(t.importance).sort(), ["baseline", "effective"], "no contest residue on the axis");
 });
 
-test("across the business-critical line it goes to a person instead", () => {
-  const t = one([
-    say({ id: "0000000001-aa", by: izzie, writer: "w_i", importance: "business-critical" }),
-    say({ id: "0000000002-bb", by: ben, writer: "w_b", importance: "low" }),
-  ])!;
-  assert.equal(t.importance.effective.value, "business-critical", "and the higher value still holds meanwhile");
-  assert.equal(t.importance.contested, true);
-});
-
-test("an agent raising over a human baseline is an ESCALATION, not a contest", () => {
-  // Not even a concurrency case: a person marks a symbol `low`, then `pr-triage` runs
-  // and its agent proposes `business-critical` on the same machine, having seen it.
-  // Counting that as a contest files a review-queue item per symbol on every sync —
-  // "contest everything", which this design rejected, reached through a side door on a
-  // pull request that marks hundreds of symbols.
+test("an agent raising over a human baseline is an ESCALATION", () => {
   const t = one([
     say({ id: "0000000001-aa", by: izzie, writer: "w_i", importance: "low" }),
     say({ id: "0000000002-bb", by: opus, writer: "w_i", after: ["0000000001-aa"], importance: "business-critical" }),
   ])!;
-  assert.equal(t.importance.effective.value, "business-critical", "the escalation still holds the value");
+  assert.equal(t.importance.effective.value, "business-critical", "the escalation holds the value");
   assert.equal(t.importance.escalation?.actor.via?.model, "claude-opus-5");
   assert.equal(t.importance.baseline?.value, "low", "and the human baseline stays visible, so `confirm` means something");
-  assert.equal(t.importance.contested, undefined, "it saw the mark it raised — that is an escalation, not a disagreement");
 });
 
-test("two AGENTS across the line, concurrent, IS a contest", () => {
-  // The design: "An agent may settle an agent/agent disagreement; it may not settle one
-  // between two people." A disagreement it can settle is still a disagreement.
-  const t = one([
-    say({ id: "0000000001-aa", by: opus, writer: "w_o", importance: "low" }),
-    say({ id: "0000000002-bb", by: bensAgent, writer: "w_b", importance: "business-critical" }),
-  ])!;
-  assert.equal(t.importance.contested, true);
-});
-
-test("but an agent may NOT settle it either — it proposes, a person settles", () => {
-  const t = one([
-    say({ id: "0000000001-aa", by: opus, writer: "w_o", importance: "low" }),
-    say({ id: "0000000002-bb", by: bensAgent, writer: "w_b", importance: "business-critical" }),
-    say({ id: "0000000003-cc", by: opus, writer: "w_o2", after: ["0000000001-aa", "0000000002-bb"], importance: "business-critical" }),
-  ])!;
-  assert.equal(
-    t.importance.contested, true,
-    "the design's agent-settles-agent half is unreachable (`ratchet` refuses an agent no-op, and "
-    + "there is nothing above business-critical to assert) — so an agent investigates and proposes, "
-    + "and the person settles by re-triaging",
-  );
-});
-
-test("but an agent may NOT settle a disagreement between two people", () => {
-  const t = one([
-    say({ id: "0000000001-aa", by: izzie, writer: "w_i", importance: "business-critical" }),
-    say({ id: "0000000002-bb", by: ben, writer: "w_b", importance: "low" }),
-    say({ id: "0000000003-cc", by: opus, writer: "w_o", after: ["0000000001-aa", "0000000002-bb"], importance: "business-critical" }),
-  ])!;
-  assert.equal(t.importance.contested, true, "an agent pruning human receipts would settle a human disagreement by machine");
-});
-
-test("a person settles it, and then it is settled", () => {
-  const t = one([
-    say({ id: "0000000001-aa", by: izzie, writer: "w_i", importance: "business-critical" }),
-    say({ id: "0000000002-bb", by: ben, writer: "w_b", importance: "low" }),
-    say({ id: "0000000003-cc", by: ben, writer: "w_b2", after: ["0000000001-aa", "0000000002-bb"], importance: "important" }),
-  ])!;
-  assert.equal(t.importance.contested, undefined);
-  assert.equal(t.importance.effective.value, "important");
-});
-
-test("a FORK's own disagreement is contested — `sameWriter` is deleted, not made fork-aware", () => {
-  // `docs/sidecar-architecture.md`: sameWriter is deleted from contest detection
-  // because "its only residual effect was suppressing intra-fork disagreements". Two
-  // clones holding one writer id is exactly the case worth seeing, and an earlier
-  // draft of this rule tested writer inequality and would have hidden it.
-  const t = one([
-    say({ id: "0000000001-aa", by: izzie, writer: "w_SHARED", importance: "business-critical" }),
-    say({ id: "0000000002-bb", by: izzie, writer: "w_SHARED", importance: "low" }),
-  ])!;
-  assert.equal(t.importance.contested, true);
+test("a stale agent claim below the value it lands on is refused — the ratchet at replay", () => {
+  // Two agents staged apart: the lower one lands second, against the higher. An agent may
+  // only raise, judged against the log before it.
+  const events = sortEvents([
+    say({ id: "0000000002-bb", by: bensAgent, writer: "w_b", importance: "business-critical", seq: 1 }),
+    say({ id: "0000000001-aa", by: opus, writer: "w_o", importance: "low", seq: 2 }),
+  ]);
+  const { value, refused } = foldTriageReport(events);
+  assert.deepEqual(refused.map((r) => [r.id, r.cls]), [["0000000001-aa", "state"]]);
+  const t = value.get(SUBJ) as SharedTriage;
+  assert.equal(t.importance.effective.value, "business-critical");
+  // The other order is an ordinary raise, and lands.
+  const raised = foldTriageReport(sortEvents([
+    say({ id: "0000000001-aa", by: opus, writer: "w_o", importance: "low", seq: 1 }),
+    say({ id: "0000000002-bb", by: bensAgent, writer: "w_b", importance: "business-critical", seq: 2 }),
+  ]));
+  assert.deepEqual(raised.refused, []);
+  assert.equal((raised.value.get(SUBJ) as SharedTriage).importance.effective.value, "business-critical");
 });
 
 test("a human answering ONE field leaves the agent's other field standing", () => {
@@ -255,13 +205,12 @@ test("an agent may not lower an active human complexity, even with no human impo
   assert.equal(t.complexity!.effective.value, "deep", "and the human's complexity is not lowered by a machine");
 });
 
-test("equal values are not a disagreement, however many people say it", () => {
+test("the same value said twice: the later receipt is the effective one", () => {
   const t = one([
-    say({ id: "0000000001-aa", by: izzie, writer: "w_i", importance: "business-critical" }),
-    say({ id: "0000000002-bb", by: ben, writer: "w_b", importance: "business-critical" }),
+    say({ id: "0000000001-aa", by: izzie, writer: "w_i", importance: "business-critical", seq: 1 }),
+    say({ id: "0000000002-bb", by: ben, writer: "w_b", importance: "business-critical", seq: 2 }),
   ])!;
-  assert.equal(t.importance.contested, undefined);
-  assert.equal(t.importance.effective.eventId, "0000000001-aa", "ties break on id, so every clone picks the same one");
+  assert.equal(t.importance.effective.eventId, "0000000002-bb");
 });
 
 // --- clearing -----------------------------------------------------------------
@@ -290,13 +239,17 @@ test("a target with nothing ADMISSIBLE is not a tombstone — it is uncovered", 
   assert.equal(got.get(SUBJ), undefined, "no entry at all, so the reader knows the log has no answer here");
 });
 
-test("a clear CONCURRENT with an assertion loses — presence wins", () => {
-  const t = one([
-    say({ id: "0000000001-aa", by: izzie, writer: "w_i", importance: "important" }),
-    clear("0000000002-bb", ben, { writer: "w_b" }),
+test("a clear and a mark written apart: whichever is pushed later stands", () => {
+  const cleared = fold([
+    say({ id: "0000000001-aa", by: izzie, writer: "w_i", importance: "important", seq: 1 }),
+    clear("0000000002-bb", ben, { writer: "w_b", seq: 2 }),
+  ]).get(SUBJ)!;
+  assert.ok(isTombstone(cleared), "the clear was pushed second");
+  const marked = one([
+    clear("0000000002-bb", ben, { writer: "w_b", seq: 1 }),
+    say({ id: "0000000001-aa", by: izzie, writer: "w_i", importance: "important", seq: 2 }),
   ])!;
-  assert.equal(t.importance.effective.value, "important",
-    "a mark nobody wanted costs a glance; a mark silently removed costs the review it was asking for");
+  assert.equal(marked.importance.effective.value, "important", "the mark was pushed second");
 });
 
 test("an agent may not clear, and the fold is what enforces it", () => {
@@ -331,34 +284,22 @@ test("but a complexity-only agent claim after a clear is still refused", () => {
 
 // --- which agent claims stay active -------------------------------------------
 
-test("a human assertion suppresses only the agent claims it actually SAW", () => {
+test("a person's mark later in the log answers the agent claim before it, read or not", () => {
   const t = one([
-    // The agent's claim sorts FIRST. A sequential fold that treated the human as
-    // "reset the state" would erase an escalation she never saw.
-    say({ id: "0000000001-aa", by: opus, writer: "w_o", importance: "business-critical", reason: "money path" }),
-    say({ id: "0000000002-bb", by: izzie, writer: "w_i", importance: "low" }),
-  ])!;
-  assert.equal(t.importance.effective.value, "business-critical");
-  assert.equal(t.importance.baseline?.value, "low", "the human baseline stays visible, or `confirm` means nothing");
-  assert.equal(t.importance.escalation?.actor.via?.model, "claude-opus-5");
-});
-
-test("and it does suppress one it saw — that is a person answering the agent", () => {
-  const t = one([
-    say({ id: "0000000001-aa", by: opus, writer: "w_o", importance: "business-critical" }),
-    say({ id: "0000000002-bb", by: izzie, writer: "w_i", after: ["0000000001-aa"], importance: "low" }),
+    say({ id: "0000000001-aa", by: opus, writer: "w_o", importance: "business-critical", reason: "money path", seq: 1 }),
+    say({ id: "0000000002-bb", by: izzie, writer: "w_i", importance: "low", seq: 2 }),
   ])!;
   assert.equal(t.importance.effective.value, "low");
   assert.equal(t.importance.escalation, undefined);
 });
 
-test("concurrency alone is not an escalation: a lower agent claim stays invisible", () => {
+test("but an agent claim AFTER the person's mark still escalates over it", () => {
   const t = one([
-    say({ id: "0000000001-aa", by: opus, writer: "w_o", importance: "low" }),
-    say({ id: "0000000002-bb", by: izzie, writer: "w_i", importance: "important" }),
+    say({ id: "0000000002-bb", by: izzie, writer: "w_i", importance: "low", seq: 1 }),
+    say({ id: "0000000001-aa", by: opus, writer: "w_o", importance: "business-critical", seq: 2 }),
   ])!;
-  assert.equal(t.importance.effective.value, "important");
-  assert.equal(t.importance.escalation, undefined, "an agent may only ever RAISE");
+  assert.equal(t.importance.effective.value, "business-critical");
+  assert.equal(t.importance.baseline?.value, "low", "the human baseline stays visible, or `confirm` means nothing");
 });
 
 // --- graph never travels ------------------------------------------------------
@@ -381,13 +322,13 @@ test("an agent's tripwire value is ignored outright", () => {
   assert.equal(t.tripwire, undefined, "humans only — `false` suppresses a notification");
 });
 
-test("concurrent true/false resolves to ARMED", () => {
-  const t = one([
-    say({ id: "0000000001-aa", by: izzie, writer: "w_i", importance: "important", tripwire: true }),
-    say({ id: "0000000002-bb", by: ben, writer: "w_b", importance: "important", tripwire: false }),
-  ])!;
-  assert.equal(t.tripwire?.effective.value, true,
-    "an unwanted alarm is reversible and visible; a silently disarmed one is the failure");
+test("the later tripwire value in push order stands", () => {
+  const trip = (first: boolean, second: boolean) => one([
+    say({ id: "0000000002-bb", by: izzie, writer: "w_i", importance: "important", tripwire: first, seq: 1 }),
+    say({ id: "0000000001-aa", by: ben, writer: "w_b", importance: "important", tripwire: second, seq: 2 }),
+  ])!.tripwire?.effective.value;
+  assert.equal(trip(true, false), false);
+  assert.equal(trip(false, true), true);
 });
 
 test("the way to disarm an alarm is to look at it and disarm it", () => {
@@ -553,31 +494,4 @@ test("but an importance DOES reinstate it — a clear is not a permanent ban", (
     say({ id: "0000000003-cc", by: ben, writer: "w_b", after: ["0000000002-bb"], importance: "important" }),
   ])!;
   assert.equal(t.importance.effective.value, "important");
-});
-
-test("a contest names EVERY side, not just the one that happens to be effective", () => {
-  // The queue item is what a person acts on, so a question that says two parties
-  // disagree and lists one is worse than not asking. `effective + concurrent` could not
-  // supply both: `concurrent` holds only the human receipts the baseline won over, and
-  // an agent's losing claim was computed for the contest check and then dropped.
-  const agentAgent = one([
-    say({ id: "0000000001-aa", by: opus, writer: "w_o", importance: "low", reason: "guarded" }),
-    say({ id: "0000000002-bb", by: bensAgent, writer: "w_b", importance: "business-critical", reason: "money" }),
-  ])!;
-  assert.equal(agentAgent.importance.contested, true);
-  assert.deepEqual(
-    (agentAgent.importance.contestedWith ?? []).map((r) => r.value).sort(),
-    ["business-critical", "low"],
-    "two agents disagreeing: both claims are on the record",
-  );
-
-  const humanAgent = one([
-    say({ id: "0000000001-aa", by: izzie, writer: "w_i", importance: "low" }),
-    say({ id: "0000000002-bb", by: bensAgent, writer: "w_b", importance: "business-critical" }),
-  ])!;
-  assert.deepEqual(
-    (humanAgent.importance.contestedWith ?? []).map((r) => r.actor.principal).sort(),
-    ["ben@x.com", "izzie@x.com"],
-    "and a human/agent contest names the person as well as the machine",
-  );
 });

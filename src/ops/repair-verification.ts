@@ -133,7 +133,7 @@ async function capsule(root: string, review: number | string, events: LogEvent[]
   const targets: RepairVerificationCapsule["targets"] = [];
   for (const ref of sort.input.coverage) {
     const f = findings.get(ref.findingId);
-    if (!f || f.contested?.length || !f.openEpoch || (isClosed(f.state) && !applied.some((a) => a.findingId === f.id && a.openEpoch === f.openEpoch && a.claimHash === issueClaimHash("finding", f)))) return { error: "verification targets must be current uncontested open canonical findings" };
+    if (!f || !f.openEpoch || (isClosed(f.state) && !applied.some((a) => a.findingId === f.id && a.openEpoch === f.openEpoch && a.claimHash === issueClaimHash("finding", f)))) return { error: "verification targets must be current open canonical findings" };
     targets.push({ findingId: f.id, openEpoch: f.openEpoch, claimHash: issueClaimHash("finding", f) });
   }
   const context = await rulingContext(root, review, targets.map((t) => findings.get(t.findingId)!), evidence.input.rulingIds);

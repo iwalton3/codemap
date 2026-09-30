@@ -209,16 +209,7 @@ export const annotateLegacyFinding = (
 
 export async function annotate(
   root: string,
-  input: { targetKind: "anchor" | "node"; targetId: string; text: string; author?: string; kind?: Annotation["kind"]; severity?: BugSeverity; category?: string; line?: number; ref?: string; comment?: string; disposition?: Disposition; publishPath?: string; publishLine?: number; agent?: boolean; model?: string; harness?: string;
-    /**
-     * Keep it off the sidecar. For an annotation DERIVED from shared state rather than
-     * authored — a contested-stakes item, say. Mirroring one is the signature of a
-     * derived fact being logged: the fold is deterministic, so every clone derives it,
-     * so every clone files its own copy with its own random id, and the shared-note
-     * fold refuses agent resolutions so none of them can ever be closed. The receipts
-     * it is derived FROM already travel; the rendering is this clone's business.
-     */
-    localOnly?: boolean },
+  input: { targetKind: "anchor" | "node"; targetId: string; text: string; author?: string; kind?: Annotation["kind"]; severity?: BugSeverity; category?: string; line?: number; ref?: string; comment?: string; disposition?: Disposition; publishPath?: string; publishLine?: number; agent?: boolean; model?: string; harness?: string },
   /** `legacy` is `annotateLegacyFinding`'s only caller — see the note there. */
   opts: { legacy?: boolean } = {},
 ) {
@@ -340,7 +331,6 @@ export async function annotate(
   // sidecar for its whole life, and a note must not be lost because a shared repo
   // was misconfigured. `mirrorNote` is a no-op when there is nothing to mirror to,
   // and a throw here must not fail a write that has already succeeded locally.
-  if (input.localOnly) return { ok: true, id: ann.id, target: ann.target };
   const { mirrorNote } = await import("../notes-publish.js");
   const mirrored = await mirrorNote(root, {
     id: ann.id, targetKind: input.targetKind, targetId,

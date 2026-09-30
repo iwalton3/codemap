@@ -51,7 +51,6 @@ export { staleAt } from "./ops/at.js";
 
 export {
   setTriage, anchorMark, clearTriage, deriveTriage, tripwires, triageDriftList, changedSince,
-  queueContestedTriage,
 } from "./ops/triage.js";
 
 export {
@@ -76,7 +75,7 @@ export {
 
 export {
   reportBug, listBugs, bugDetail, updateBug, commentBug, trackBugExternally,
-  corroborateBugOp, promoteBugOp, requestOnBugOp, resolveBugContestOp, unanchorBugOp,
+  corroborateBugOp, promoteBugOp, requestOnBugOp, unanchorBugOp,
   publishBugs, acceptFinding, backlogBugOp, releaseBugBacklogOp,
 } from "./ops/bugs.js";
 

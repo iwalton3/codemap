@@ -5,7 +5,7 @@ import { Ledger, checkAlways, checkSettled, verified } from "./oracle-properties
 import { pr, prWalkthroughSet, prWalkthroughGet, prStoryFor, setTriage, anchorMark, document } from "./ops.js";
 import {
   shareFinding, sharedFindings, corroborateFinding, reportOnFinding,
-  shareWalkthrough, sharedWalkthroughs, sharedTriage, contestedTriage, publishLocalTriage,
+  shareWalkthrough, sharedWalkthroughs, sharedTriage, publishLocalTriage,
 } from "./ops-shared.js";
 import { markReviewedBatch } from "./reviews.js";
 import { triageStatus, deriveTriage, clearTriage } from "./triage.js";
@@ -344,12 +344,10 @@ test("the hand-off arc: a teammate reviews their own branch, the owner signs off
       assert.equal(shared.count, 1);
       assert.equal(shared.marks[0].importance.by, MATE, "attributed to ben, not to whoever pulled");
       assert.equal(shared.marks[0].importance.reason, "money moves through here");
-      assert.equal(shared.marks[0].importance.contested, undefined, "nobody has disagreed");
     });
 
     await step("and izzie can lower it, because she has now SEEN it", async () => {
-      // The rule that makes the whole merge tractable: causally-seen supersedes. It is
-      // a decision, not a conflict, and it does not go anywhere near the review queue.
+      // A later mark supersedes: a decision, not a conflict.
       const r = await setTriage(izzie.repo, {
         targetKind: "anchor", targetId: worklist[0]!,
         importance: "important", source: "human", reason: "guarded now",
@@ -360,8 +358,6 @@ test("the hand-off arc: a teammate reviews their own branch, the owner signs off
       const hers = await triageStatus(izzie.repo, { kind: "anchor", id: worklist[0]! });
       assert.equal(hers.importance, "important");
       assert.equal(hers.likely, false, "a human set it, so it is no longer a proposal");
-      const contested = await contestedTriage(izzie.repo) as any;
-      assert.equal(contested.count, 0, "a decision made having seen the other side is not a contest");
     });
 
     await step("graph-derived stakes stay local, beside the shared ones", async () => {

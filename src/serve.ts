@@ -283,8 +283,6 @@ async function api(path: string, q: URLSearchParams): Promise<unknown> {
       return comparisonResolutionBrief(root, q.get("id") ?? "");
     case "/api/shared/triage":
       return shared.sharedTriage(root, (q.get("kind") as "node" | "anchor") || undefined, q.get("target") || undefined);
-    case "/api/shared/contested":
-      return shared.contestedTriage(root);
     case "/api/shared/graph":
       return shared.sharedGraph(root);
     case "/api/shared/walkthroughs":
@@ -605,9 +603,8 @@ async function serveRequest(req: IncomingMessage, res: ServerResponse): Promise<
      *
      * **Most take this universe's lock, and the exceptions are listed rather than
      * assumed.** This comment used to say none of them touched `.codemap/` — true when
-     * it was written and false the moment `sharedSync` began reconciling the contest
-     * queue (which writes annotations) and `publish_*` began rewriting the local
-     * partition. Both are whole-blob read-modify-writes, so a concurrent locked
+     * it was written and false the moment `publish_*` began rewriting the local
+     * partition — a whole-blob read-modify-write, so a concurrent locked
      * `/api/annotate` and an unlocked sync would each write back a blob missing the
      * other's change.
      *
@@ -665,7 +662,6 @@ async function serveRequest(req: IncomingMessage, res: ServerResponse): Promise<
         // entry stood until somebody did the thing that had been asked for.
         case "decline": out = await shared.declineFindingAsk(root, pr, body.id, String(body.reason ?? "")); break;
         case "revise": out = await ops.reviseOn(root, { id: body.id, ...(body.now ?? {}) }); break;
-        case "settle": out = await shared.settleContest(root, pr, body.id, body.field, body.value); break;
         case "upstream": out = await shared.upstreamFinding(root, pr, body.id, { system: body.system, key: body.key, url: body.url }); break;
         case "to_bug": out = await shared.findingToBug(root, pr, body.id, body.bug); break;
         // Where a finding landed on the pull request. `inboundReplies` reads
@@ -988,7 +984,6 @@ async function serveRequest(req: IncomingMessage, res: ServerResponse): Promise<
         case "corroborate": out = await ops.corroborateBugOp(root, body.id, body.verdict, body.rationale ?? ""); break;
         case "promote": out = await ops.promoteBugOp(root, body.id); break;
         case "request": out = await ops.requestOnBugOp(root, body.id, body.ask, body.rationale ?? ""); break;
-        case "settle": out = await ops.resolveBugContestOp(root, body.id, body.field, body.value); break;
         case "unanchor": out = await run(() => ops.unanchorBugOp(root, body.id, body.anchorId, body.reason ?? "")); break;
         case "publish": out = await run(() => ops.publishBugs(root, { dryRun: body.dryRun === true, ids: body.ids })); break;
         case "accept": out = await run(() => ops.acceptFinding(root, String(body.pr ?? ""), body.finding, { title: body.title, severity: body.severity })); break;

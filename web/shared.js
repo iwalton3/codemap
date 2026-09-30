@@ -238,7 +238,6 @@ class SharedPage extends Component {
         title="on this map only — the team cannot see it. Publish with codemap publish-findings."
         >not published</span>`)}
       ${when(f.needsAck, () => html`<span class="prbadge needsack">needs ack</span>`)}
-      ${when(!!f.contested?.length, () => html`<span class="prbadge contested">contested: ${f.contested.map(c => c.field).join(', ')}</span>`)}
       ${when(f.promoted, () => html`<span class="prbadge">escalated</span>`)}
       ${when(f.independentConfirms > 0, () => html`<span class="prbadge ok">${f.independentConfirms} independent</span>`)}
       ${when(f.confirms > f.independentConfirms, () => html`<span class="prbadge ok" title="confirmed, but by the same principal as the author — not a second opinion">+${f.confirms - f.independentConfirms} confirmed</span>`)}
@@ -250,29 +249,6 @@ class SharedPage extends Component {
       ${when(f.target?.where === 'offTree', () => html`<span class="prbadge" title="the symbol is on another branch — nothing to do here">elsewhere</span>`)}
       ${when(f.target?.where === 'retained' || f.target?.where === 'lost', () => html`<span class="prbadge warnb">target ${f.target.where}</span>`)}
       ${when(!!f.relocation && !f.relocation.applied, () => html`<span class="prbadge ask">relocation proposed</span>`)}`;
-  }
-
-  /**
-   * Both values, side by side, and the two people who wrote them. Never a winner:
-   * the fold refuses to pick, and so does this — a person re-states the value.
-   */
-  contestEl(f) {
-    // One person's two machines can disagree, and then both sides carry the same
-    // name. Say which clone, or the reader is shown a disagreement they cannot
-    // tell apart. See PROPOSAL-provenance.md §4.
-    const side = (x, other) => x.by === other.by && x.writer ? `${x.by} · ${x.writer}` : x.by;
-    return html`${each(f.contested ?? [], c => html`
-      <div class="contest">
-        <div class="dim">${c.field} — ${c.held.by === c.incoming.by
-          ? 'set on two machines without either seeing the other'
-          : 'two people set this without seeing each other'}</div>
-        <div><b>${side(c.held, c.incoming)}</b>: ${String(c.held.value)}</div>
-        <div><b>${side(c.incoming, c.held)}</b>: ${String(c.incoming.value)}</div>
-        <div class="row">
-          <button on-click="${() => this.act('settle', { id: f.id, field: c.field, value: c.held.value })}">keep ${c.held.by}'s</button>
-          <button on-click="${() => this.act('settle', { id: f.id, field: c.field, value: c.incoming.value })}">keep ${c.incoming.by}'s</button>
-        </div>
-      </div>`, c => c.field)}`;
   }
 
   /**
@@ -365,7 +341,6 @@ class SharedPage extends Component {
           <button on-click="${() => this.act('backlog_release', { id: f.id, reason: 'brought back from the shared view' })}">bring it back</button>
         </div>`)}
         <div class="ftext">${f.text}</div>
-        ${this.contestEl(f)}
         ${when(!!f.pending, () => this.askEl(f))}
         ${when(!!f.relocation && !f.relocation.applied, () => html`
           <div class="askbox">
@@ -464,7 +439,7 @@ class SharedPage extends Component {
         ${String(pr).startsWith('branch:')
           ? html`<b>${reviewLabel(pr)}</b>`
           : html`<a href="#/u/${u}/pr/${pr}/">PR ${pr}</a>`} <span class="sep">·</span> shared
-        <span class="dim">· ${d.total} finding(s) · ${d.waitingOnYou} waiting on a person${d.contested ? ` · ${d.contested} contested` : ''}</span>
+        <span class="dim">· ${d.total} finding(s) · ${d.waitingOnYou} waiting on a person</span>
       </div>
       <div class="sharedbar">
         <button on-click="${() => this.sync()}" disabled="${st.busy === 'sync'}">${st.busy === 'sync' ? 'syncing…' : 'sync'}</button>

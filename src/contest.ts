@@ -1,33 +1,13 @@
 /**
- * Two people setting the same scalar without having seen each other.
- *
- * Everything else in the shared design is append-only or a latch, and cannot
- * conflict. A revision is the exception: it rewrites a value, so two concurrent
- * ones genuinely disagree and the fold must not silently pick.
- *
- * "Concurrent" means the later writer's causal history does not include the
- * earlier write — NOT that the timestamps are close. Two people editing the same
- * thing an hour apart, where the second pulled first, is ordinary collaboration
- * and is flagged by no wall-clock rule that would also catch the real case.
- * Getting this wrong in the eager direction is the failure that trains people to
- * clear the state without reading it, so the test is deliberately narrow: same
- * field, different value, neither saw the other, different WRITERS — one person's
- * two machines included, because those are two sequential writers and the fold has
- * no more right to pick between them than between two people.
- *
- * Lives here rather than in `shared-findings.ts` because notes need the same rule
- * and a second copy is how two copies drift. The entity only has to have an `id`
- * and somewhere to put the residue.
+ * The standard's pointer contest (C12d in the online-only-sync hold inventory): two writers
+ * re-baselining one pointer's witnesses without having seen each other. Its only caller is
+ * `shared-standard.ts`, whose phase-5 change deletes it; findings, bugs and notes refuse a
+ * stale revision instead (`staleRevision` in `validation.ts`).
  */
 
 import type { Actor, Contested } from "./schema.js";
 import { isAgentActor } from "./identity.js";
 import type { Causality, LogEvent } from "./eventlog.js";
-
-// `Contested` and `ContestSide` live in `schema.ts` — they are part of the PERSISTED
-// shape of a note, finding, bug and pointer, and this module imports the data model
-// rather than the other way round. Re-exported so no consumer had to move.
-export type { Contested, ContestSide } from "./schema.js";
 
 /** Anything that can carry the residue. */
 export interface Contestable {

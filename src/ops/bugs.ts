@@ -25,10 +25,11 @@ import {
 import {
   anchorBug, backlogBugEvent, bugIdFor, citedAnchors, commentOnBug, corroborateBug, fileBug, isClosed,
   releaseBugBacklogEvent,
-  isTracked, needsHumanAck, promoteBug, requestOnBug, resolveBugContest, reviseBug,
+  isTracked, needsHumanAck, promoteBug, requestOnBug, reviseBug,
   setBugState, trackBug, unanchorBug, witnessesOf,
   type Ask, type BugState, type SharedBug, type Verdict,
 } from "../shared-bugs.js";
+import { wasOf } from "../validation.js";
 import { genId, liveIndex, liveAnchors, anchorFiles, resolveRefs, rejected } from "./shared.js";
 import { decisionsView, type DecisionsView } from "./decision-holds.js";
 import type { CanonicalIssueReference } from "../decision-issues.js";
@@ -154,20 +155,19 @@ const publicView = (b: SharedBug, changed: string[]) => ({
   tracked: isTracked(b),
   tracking: b.tracking.map((t) => ({ system: t.system, key: t.key, url: t.url })),
   from: b.from,
-  waitingOnYou: !isClosed(b.state) && (needsHumanAck(b) || !!b.pending || !!b.contested?.length),
+  waitingOnYou: !isClosed(b.state) && (needsHumanAck(b) || !!b.pending),
   /**
    * The outstanding ASK, in the list and not only in the detail.
    *
    * An agent may not bury a finding somebody stood behind, so `setState` turns the
    * attempt into a pending ask rather than refusing it. The list folded that into
-   * `waitingOnYou` alongside four other reasons — so "an agent believes this is fixed
-   * and is asking you to close it" was indistinguishable from "somebody contested the
-   * severity", and the one queue a person most wants was unreadable.
+   * `waitingOnYou` alongside other reasons — so "an agent believes this is fixed and is
+   * asking you to close it" was indistinguishable from the rest, and the one queue a
+   * person most wants was unreadable.
    */
   pending: b.pending ? { ask: b.pending.ask, by: b.pending.by.principal, at: b.pending.at, rationale: b.pending.rationale } : undefined,
   /** The latest report — `fixed` is the one a reader is scanning for. `outcomes` is the record. */
   reported: b.outcome ? { result: b.outcome.result, by: b.outcome.by.principal, at: b.outcome.at } : undefined,
-  contested: b.contested?.map((c) => c.field) ?? [],
   // Judged against LIVE hashes, never the stored ones — an open bug whose code moved
   // may have been fixed by that change, and is the one to re-validate.
   possiblyFixed: !isClosed(b.state) && changed.length > 0,
@@ -289,7 +289,7 @@ export async function listBugs(
   // The queue is the whole point of sharing them: what needs a PERSON here. Drift is in
   // it and is not in the log's own `bugAckQueue`, which cannot see this machine's index.
   // Narrower than the queue, and the difference is the point: "somebody is asking you to
-  // close this" is a different job from "somebody contested the severity".
+  // close this" is a different job from the rest of the queue.
   //
   // NOT CLOSED, and that is not a detail. `bug.stateChanged` clears `pending` but keeps the
   // outcome as history, so a bug reported fixed and then resolved by a person carried
@@ -396,7 +396,6 @@ export async function bugDetail(root: string, id: string) {
     staleAnchors: changed.length,
     thread: bug.thread.map((c) => ({ id: c.id, by: c.actor.principal, via: c.actor.via, at: c.at, body: c.body, inReplyTo: c.inReplyTo })),
     corroboration: bug.corroboration.map((c) => ({ by: c.actor.principal, via: c.actor.via, verdict: c.verdict, rationale: c.rationale, at: c.at, independent: c.independent })),
-    contestedFields: bug.contested ?? [],
     promotion: bug.promotion ? { by: bug.promotion.by.principal, at: bug.promotion.at } : undefined,
     assignment: bug.assignment ? { ...bug.assignment, by: bug.assignment.by.principal } : undefined,
     outcome: bug.outcome ? { ...bug.outcome, by: bug.outcome.by.principal } : undefined,
@@ -453,7 +452,7 @@ async function routeWrite(root: string, id: string): Promise<
  *
  * With a sidecar, each of those is a separate event, because they are separate acts with
  * separate merge rules — a state change is ratcheted, a citation is grow-only, and prose
- * can be contested. Bundling them into one event would force one rule onto all three.
+ * is refused once it has moved since its author read it. Bundling them into one event would force one rule onto all three.
  */
 export async function updateBug(
   root: string,
@@ -523,7 +522,7 @@ export async function updateBug(
     if (input.severity && input.severity !== bug.severity) revised.severity = input.severity;
     if (input.category && input.category !== bug.category) revised.category = input.category;
     if (Object.keys(revised).length) {
-      await reviseBug(logRoot, universe, actor, bug.id, revised);
+      await reviseBug(logRoot, universe, actor, bug.id, revised, wasOf(bug, revised));
       done.push("revised");
     }
     if (added.length) { await anchorBug(logRoot, universe, actor, bug.id, added); done.push("anchored"); }
@@ -735,16 +734,6 @@ export async function requestOnBugOp(root: string, id: string, ask: Ask, rationa
   if ("local" in r) return { error: `no sidecar is configured, so there is nobody to ask about ${id}` };
   await onBugLog(r.log, root, (logRoot, universe, actor) => requestOnBug(logRoot, universe, actor, id, ask, rationale));
   return { ok: true, id, ask, note: "queued for a person to acknowledge" };
-}
-
-/** Settle a field two people set differently. A person only. */
-export async function resolveBugContestOp(root: string, id: string, field: string, value: unknown) {
-  const r = await routeWrite(root, id);
-  if ("error" in r) return r;
-  if ("local" in r) return { error: `${id} is local — nothing can contest it` };
-  const e = await onBugLog(r.log, root, (logRoot, universe, actor) =>
-    resolveBugContest(logRoot, universe, actor, id, field, value));
-  return "error" in e ? e : { ok: true, id, field };
 }
 
 // ---------------------------------------------------------------------------

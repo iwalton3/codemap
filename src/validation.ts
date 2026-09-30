@@ -73,3 +73,27 @@ export const reportFor = (scope: string): Report<unknown> | undefined => reports
 let gate: ((logRoot: string) => Promise<string | null>) | null = null;
 export function registerPushGate(g: (logRoot: string) => Promise<string | null>): void { gate = g; }
 export const pushGate = (logRoot: string): Promise<string | null> => gate ? gate(logRoot) : Promise.resolve(null);
+
+/**
+ * A revision's compare-and-swap. `was` is each field it changes as its author read it (`null`:
+ * unset). Answers why it is refused when a field has since moved to something other than what
+ * it asks for; landing on the value it already asks for is not a conflict (owner, Q5).
+ *
+ * Only LINEAR events are checked: a merge-era revision (no `seq`) folds as it always did, and
+ * a field `was` does not name is unchecked — bugs wrote `was: {}` and notes none.
+ */
+/** `was` for a revision of `entity`: each field `now` changes, as it reads now (`null`: unset). */
+export function wasOf(entity: object | undefined, now: Record<string, unknown>): Record<string, unknown> {
+  const cur = (entity ?? {}) as Record<string, unknown>;
+  return Object.fromEntries(Object.keys(now).map((k) => [k, cur[k] ?? null]));
+}
+
+export function staleRevision(e: LogEvent, current: Record<string, unknown>): string | null {
+  if (typeof e.seq !== "number") return null;
+  const d = e.data as { was?: unknown; now?: unknown } | undefined;
+  const was = d?.was && typeof d.was === "object" ? d.was as Record<string, unknown> : {};
+  const now = d?.now && typeof d.now === "object" ? d.now as Record<string, unknown> : {};
+  const moved = Object.keys(now).filter((k) => k in was
+    && (current[k] ?? null) !== (was[k] ?? null) && (current[k] ?? null) !== (now[k] ?? null));
+  return moved.length ? `${moved.join(", ")} changed since you read it` : null;
+}

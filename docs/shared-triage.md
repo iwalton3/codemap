@@ -70,6 +70,13 @@ fold** — today's "human-only in practice" is a comment, not a gate.
 
 ### Merging: let the stakes decide how much machinery the conflict gets
 
+> **Superseded 2026-09-30 by the linear log** (`docs/PROPOSAL-online-only-sync.md`, plan
+> phase 5; owner, Q6: "Correct push order is what matters"). There are no concurrent marks
+> to merge: between people, the later mark in push order supersedes, field by field;
+> higher-wins, presence-beats-a-clear, the armed tripwire and the contest queue below are
+> gone. The agent ratchet stays, judged against the log before the claim. This section is
+> kept as history until phase 8 rewrites it.
+
 Triage exists to say how much ceremony a thing deserves. Its own conflicts get the same
 treatment, and that is what keeps the rule from being either lossy or exhausting.
 
