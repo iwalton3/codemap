@@ -14,7 +14,8 @@
 
 import type { Actor } from "./schema.js";
 import type { PrWalkthrough } from "./walkthrough.js";
-import { mintId, readScope, type LogEvent } from "./eventlog.js";
+import { mintId, readScope, registerDoor, type LogEvent } from "./eventlog.js";
+import { collector, foldJudged, registerReport, type Refusal } from "./validation.js";
 import { emitEvent } from "./write.js";
 
 /** One person's walkthrough of one pull request, with who wrote it. */
@@ -73,15 +74,15 @@ export function walkthroughShaped(w: PrWalkthrough): boolean {
     && f.chapters.every((c) => c && typeof c.id === "string" && Array.isArray(c.witnesses)));
 }
 
-export function foldWalkthroughs(events: LogEvent[]): SharedWalkthrough[] {
+export function foldWalkthroughsReport(events: LogEvent[]): { value: SharedWalkthrough[]; refused: Refusal[] } {
+  const { refused, refuse } = collector();
   const byAuthor = new Map<string, SharedWalkthrough>();
   for (const e of events) {
     if (e.kind !== "walkthrough.published") continue;
     const w = e.data?.walkthrough as PrWalkthrough | undefined;
-    // A malformed event is skipped, not fatal: it reached us through somebody
-    // else's client and a shared store that will not load is worse than one
-    // missing a record.
-    if (!w || typeof w.pr !== "number" || typeof w.head !== "string") continue;
+    // A malformed event is refused at the door and skipped on read, never fatal: a shape
+    // is `newer`, not damage, so a store that will not load is not the price of it.
+    if (!w || typeof w.pr !== "number" || typeof w.head !== "string") { refuse(e, "shape", "a walkthrough needs its pull request and head"); continue; }
     // And the CHAPTERS, which this checked only at the envelope. One event on
     // `Acme.API` PR 269 carried the agent's `WalkInput` — `{title, blocks}` with no id
     // and no witnesses — instead of the built walkthrough, and every reader crashed on
@@ -91,10 +92,20 @@ export function foldWalkthroughs(events: LogEvent[]): SharedWalkthrough[] {
     // Witnesses are not decoration. A chapter without them cannot go stale, so a
     // walkthrough of them would sit under a green check that can never turn — which is
     // the one thing this project's marks are for.
-    if (!walkthroughShaped(w)) continue;
+    if (!walkthroughShaped(w)) { refuse(e, "shape", "a walkthrough's chapters need an id and witnesses — this is not a built walkthrough"); continue; }
     byAuthor.set(e.actor.principal, { walkthrough: w, actor: e.actor, eventId: e.id, at: e.at });
   }
-  return [...byAuthor.values()];
+  return { value: [...byAuthor.values()], refused };
+}
+
+// A walkthrough names nothing shared and replaces only its author's own, so there is no
+// reference or precondition to check: the door refuses shapes.
+registerReport((scope) => scope.startsWith("walkthrough/"), foldWalkthroughsReport);
+registerDoor((scope) => scope.startsWith("walkthrough/"), () => (events) => foldWalkthroughsReport(events));
+
+/** The fold for a READ: a refused linear event is damage or newer; see `validation.ts`. */
+export function foldWalkthroughs(events: LogEvent[]): SharedWalkthrough[] {
+  return foldJudged(events, foldWalkthroughsReport).value;
 }
 
 /** Read and fold in one step — what a front-end wants. */

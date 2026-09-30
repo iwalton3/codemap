@@ -12,6 +12,7 @@ import {
 } from "../store.js";
 import { indexRepo } from "../repo.js";
 import { buildMartenModel, deriveStateMachines } from "./marten.js";
+import { MARTEN_ID } from "./node-ids.js";
 
 const GEN = "marten";
 
@@ -43,10 +44,10 @@ export async function emitMartenGraph(root: string): Promise<{ events: number; a
   const graph = await readGraph(root);
   graph.edges = graph.edges.filter((e) => e.generatedBy !== GEN);
 
-  const evId = (n: string) => "mev-" + slug(n);
-  const aggId = (n: string) => "magg-" + slug(n);
-  const projId = (n: string) => "mproj-" + slug(n);
-  const cmdId = (n: string) => "mcmd-" + slug(n);
+  const evId = (n: string) => MARTEN_ID.event + slug(n);
+  const aggId = (n: string) => MARTEN_ID.aggregate + slug(n);
+  const projId = (n: string) => MARTEN_ID.projection + slug(n);
+  const cmdId = (n: string) => MARTEN_ID.command + slug(n);
   const uniq = (xs: string[]) => [...new Set(xs)];
 
   const nodes: LogicalNode[] = [];
@@ -125,8 +126,8 @@ export async function emitMartenGraph(root: string): Promise<{ events: number; a
     if (!handles.length && !emits.length) continue;
     const anchor = anchorAt(anchors, h.file, h.line);
     if (!anchor) { skipped++; continue; }
-    let id = "mh-" + slug(h.name);
-    for (let i = 2; usedHandlerIds.has(id); i++) id = "mh-" + slug(h.name) + "-" + i;
+    let id = MARTEN_ID.handler + slug(h.name);
+    for (let i = 2; usedHandlerIds.has(id); i++) id = MARTEN_ID.handler + slug(h.name) + "-" + i;
     usedHandlerIds.add(id);
     handlerCount++;
     nodes.push({ id, type: "handler", title: h.name, summary: `Handler \`${h.name}\` — handles ${handles.join(", ") || "—"}; emits ${emits.join(", ") || "—"}.`, anchors: [anchor.id], body: "", generatedBy: GEN });
@@ -145,8 +146,8 @@ export async function emitMartenGraph(root: string): Promise<{ events: number; a
     // anchorAt over the recorded decl line, not anchorByLeaf: two aggregates often
     // nest identically-named `Status` enums.
     const enumAnchor = anchorAt(anchors, mach.enumWhere.file, mach.enumWhere.line) ?? anchorByLeaf(anchors, mach.enumName, ["enum"]);
-    const stId = (member: string) => "mst-" + slug(`${mach.aggregate}-${member}`);
-    const trId = (event: string) => "mtr-" + slug(`${mach.aggregate}-${event}`);
+    const stId = (member: string) => MARTEN_ID.state + slug(`${mach.aggregate}-${member}`);
+    const trId = (event: string) => MARTEN_ID.transition + slug(`${mach.aggregate}-${event}`);
     const stWritten = new Set<string>();
     if (enumAnchor) {
       for (const member of mach.members) {

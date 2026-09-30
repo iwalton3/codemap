@@ -105,8 +105,14 @@ const BOTH_ENDS: { what: string; fold: [string, RegExp]; publish: [string, RegEx
   },
   {
     what: "analyzer-generated edges",
-    fold: ["src/shared-graph.ts", /if \(raw\.generatedBy\) continue;/],
+    fold: ["src/shared-graph.ts", /if \(raw\.generatedBy\) \{ refuse\(e, "state", .*?\); continue; \}/],
     publish: ["src/shared-graph.ts", /filter\(\(e\) => !e\.generatedBy\)/],
+  },
+  {
+    // Owner, Q2: analyzer nodes are not published, so neither is wiring drawn FROM one.
+    what: "an analyzer node's wiring",
+    fold: ["src/shared-graph.ts", /if \(isAnalyzerNodeId\(nodeId\)\) \{ refuse\(e, "state", .*?\); return null; \}/],
+    publish: ["src/graph-publish.ts", /filter\(\(id\) => generated\.has\(id\) \|\| isAnalyzerNodeId\(id\)\)/],
   },
   // The three below shipped with the publish half only, which binds nobody but the
   // machine that ran it. Found by re-reading the fold against the tools it mirrors, not

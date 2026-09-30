@@ -15,7 +15,8 @@
  * (`docs/review-target-identity.md`, the "unrelated branch" row). Callers enforce that,
  * since only they hold `isCrossRepository`.
  */
-import { readScope, type LogEvent } from "./eventlog.js";
+import { readScope, registerDoor, type LogEvent } from "./eventlog.js";
+import { collector, foldJudged, registerReport, type Refusal } from "./validation.js";
 import { emitEvent } from "./write.js";
 import type { Actor } from "./schema.js";
 
@@ -23,21 +24,33 @@ export const reviewScope = (universe: string): string => `reviews/${universe}`;
 
 export interface ReviewLink { pr: string; branch: string }
 
-/** Every distinct (pr, branch) pair on record, first-seen order. */
-export function foldReviewLinks(events: LogEvent[]): ReviewLink[] {
+/**
+ * Every distinct (pr, branch) pair on record, first-seen order, and what was refused. A link
+ * names nothing shared and stands on no prior state, so the only refusal is a shape.
+ */
+export function foldReviewLinksReport(events: LogEvent[]): { value: ReviewLink[]; refused: Refusal[] } {
+  const { refused, refuse } = collector();
   const out: ReviewLink[] = [];
   const seen = new Set<string>();
   for (const e of events) {
     if (e.kind !== "review.linked") continue;
     const pr = typeof e.data?.pr === "string" ? e.data.pr : null;
     const branch = typeof e.data?.branch === "string" ? e.data.branch : null;
-    if (!pr || !/^\d+$/.test(pr) || !branch) continue;
+    if (!pr || !/^\d+$/.test(pr) || !branch) { refuse(e, "shape", "a review link needs a pull request number and a branch"); continue; }
     const k = `${pr}\0${branch}`;
-    if (seen.has(k)) continue;
+    if (seen.has(k)) continue;   // the same link observed again: a no-op (owner, Q5)
     seen.add(k);
     out.push({ pr, branch });
   }
-  return out;
+  return { value: out, refused };
+}
+
+registerReport((scope) => scope.startsWith("reviews/"), foldReviewLinksReport);
+registerDoor((scope) => scope.startsWith("reviews/"), () => (events) => foldReviewLinksReport(events));
+
+/** The fold for a READ: a refused linear event is damage or newer; see `validation.ts`. */
+export function foldReviewLinks(events: LogEvent[]): ReviewLink[] {
+  return foldJudged(events, foldReviewLinksReport).value;
 }
 
 export const linkReview = (logRoot: string, universe: string, actor: Actor, pr: string, branch: string) =>

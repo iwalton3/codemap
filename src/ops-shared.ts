@@ -3040,16 +3040,20 @@ export async function publishLocalGraph(root: string, opts: { dryRun?: boolean }
   if ("error" in b) return b;
   const { readLocalGraph } = await import("./store.js");
   const edges = (await readLocalGraph(root)).edges;
-  const mine = edges.filter((e) => !e.generatedBy);
-  const skippedGenerated = edges.length - mine.length;
+  const generated = new Set((await loadNodes(root)).filter((n) => n.generatedBy).map((n) => n.id));
+  const { isAnalyzerNodeId } = await import("./analyzers/node-ids.js");
+  const fromAnalyzer = (e: { from: string }) => generated.has(e.from) || isAnalyzerNodeId(e.from);
+  // Analyzer nodes are not published (owner, Q2), so neither is wiring a person drew FROM one.
+  const skippedAnalyzerSource = edges.filter((e) => !e.generatedBy && fromAnalyzer(e)).length;
+  const mine = edges.filter((e) => !e.generatedBy && !fromAnalyzer(e));
+  const skippedGenerated = edges.length - mine.length - skippedAnalyzerSource;
   const nodes = [...new Set(mine.map((e) => e.from))];
 
   // How much of this depends on the OTHER side having run an analyzer. A human edge can
   // cite an analyzer-generated node, and those never travel — measured at 30% of the
   // shareable edges on the primary target, so it is a precondition rather than a corner
   // case and the publisher should see it before their teammate does.
-  const generated = new Set((await loadNodes(root)).filter((n) => n.generatedBy).map((n) => n.id));
-  const needsAnalyzer = mine.filter((e) => generated.has(e.to) || generated.has(e.from)).length;
+  const needsAnalyzer = mine.filter((e) => generated.has(e.to)).length;
 
   // What is NOT already said. This counted every node with a human edge, published all
   // of them, and counted the same number again afterwards — so the hub read "96
@@ -3076,14 +3080,14 @@ export async function publishLocalGraph(root: string, opts: { dryRun?: boolean }
     return {
       universe: b.cfg.universe, wouldPublish: todo.length, edges: mine.length,
       alreadyShared: nodes.length - todo.length,
-      skippedGenerated, needsAnalyzer,
+      skippedGenerated, skippedAnalyzerSource, needsAnalyzer,
     };
   }
   const { mirrorWiring } = await import("./graph-publish.js");
   if (!todo.length) {
     return {
       universe: b.cfg.universe, published: 0, edges: mine.length,
-      alreadyShared: nodes.length, skippedGenerated, needsAnalyzer,
+      alreadyShared: nodes.length, skippedGenerated, skippedAnalyzerSource, needsAnalyzer,
       note: "the team already has this wiring — nothing to send",
     };
   }
@@ -3092,7 +3096,7 @@ export async function publishLocalGraph(root: string, opts: { dryRun?: boolean }
   return {
     universe: b.cfg.universe, published: todo.length, edges: mine.length,
     alreadyShared: nodes.length - todo.length,
-    skippedGenerated, needsAnalyzer,
+    skippedGenerated, skippedAnalyzerSource, needsAnalyzer,
     note: needsAnalyzer
       ? `run \`codemap sync\` to send them — ${needsAnalyzer} edge(s) cite analyzer-generated nodes, so a teammate needs the same analyzer to resolve them`
       : "run `codemap sync` to send them",

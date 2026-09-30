@@ -178,9 +178,11 @@ async function writeAndPublish(
   const shared = await import("../graph-publish.js")
     .then((m) => m.mirrorWiring(root, touched))
     .catch(() => ({ shared: false, configured: false, error: undefined as string | undefined }));
-  // Only once it is really in the log. A clear on a failed publish would delete the
-  // only copy of a decision that never travelled.
-  if (shared.shared) await clearLocalNodeEdges(root, touched);
+  // Only once it is really in the log, and only what went. A clear on a failed publish, or
+  // of an analyzer node's wiring (never published), would delete the only copy.
+  const published = "published" in shared ? shared.published ?? [] : [];
+  if (shared.shared && published.length) await clearLocalNodeEdges(root, published);
+  const analyzer = "analyzer" in shared ? shared.analyzer ?? [] : [];
   const errs = extra.errors ?? [];
   return {
     ok: true,
@@ -189,8 +191,9 @@ async function writeAndPublish(
     edges: (await readGraph(root)).edges.length,
     ...(errs.length ? { errors: errs } : {}),
     ...(shared.shared ? { shared: true } : {}),
-    ...(touched.length && shared.configured && !shared.shared
+    ...(touched.some((id) => !analyzer.includes(id)) && shared.configured && !shared.shared
       ? { shareError: shared.error ?? "the wiring could not be published" } : {}),
+    ...(analyzer.length ? { localOnly: analyzer, localOnlyWhy: "analyzer nodes are not published, so wiring from them stays on this machine" } : {}),
   };
 }
 

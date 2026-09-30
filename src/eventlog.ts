@@ -519,6 +519,8 @@ export async function appendBatch(
   items: { kind: string; subject: string; data?: Record<string, unknown> }[],
 ): Promise<LogEvent[]> {
   if (!items.length) return [];
+  // All or none through the scope's door, as a remote batch replays at sync.
+  const fold = doorFor(logRoot, scope);
   return withSidecarLock(logRoot, async () => {
     const writer = await writerFor(logRoot);
     const events = await readScope(logRoot, scope);
@@ -531,6 +533,10 @@ export async function appendBatch(
         id: mintId(), kind: it.kind, subject: it.subject, actor, at: new Date().toISOString(), after: seen,
         ...(it.data ? { data: it.data } : {}),
       });
+      if (fold) {
+        const why = (await fold(sortEvents([...events, event]), event)).refused.find((r) => r.id === event.id)?.why;
+        if (why) throw new Error(why);
+      }
       events.push(event);
       out.push(event);
     }

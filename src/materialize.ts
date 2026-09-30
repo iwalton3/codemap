@@ -271,7 +271,9 @@ function locking<A extends unknown[], T>(logRoot: string, scopes: string[], fold
 // the findings arm; a bug from a finding inherits its filer; an operation sign-off is kept by
 // the text it signed; the ruling capsule is version 3. The shards do not move when a fold's
 // mind changes, so 18 → 19's reason applies to all of it.
-export const MATERIALIZER_VERSION = 51;
+// 51 → 52: the graph fold no longer applies an analyzer node's wiring (owner, Q2: "Drop them"),
+// merge-era events included.
+export const MATERIALIZER_VERSION = 52;
 
 /**
  * What the events in a scope are, cheaply.

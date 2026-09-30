@@ -286,7 +286,7 @@ test("a configured sidecar that may not be written to is REPORTED, not read as n
     assert.match(ann.shareError ?? "", /nowhere to write/, "and the author is told the team did not get it");
 
     const tri = await ops.setTriage(r.root, {
-      targetKind: "anchor", targetId: anchorId, importance: 3, complexity: 2, likely: true, source: "human",
+      targetKind: "anchor", targetId: anchorId, importance: "important", complexity: "standard", source: "human",
     } as any) as any;
     assert.equal(tri.ok, false, "triage fails loudly, which is what its own comment claims it does");
     assert.match(tri.reason ?? "", /nowhere to write/);
@@ -307,7 +307,7 @@ test("a configured sidecar that may not be written to is REPORTED, not read as n
     assert.equal(ok.shared, true);
     assert.equal(ok.shareError, undefined);
     assert.equal((await ops.setTriage(r.root, {
-      targetKind: "anchor", targetId: anchorId, importance: 3, complexity: 2, likely: true, source: "human",
+      targetKind: "anchor", targetId: anchorId, importance: "important", complexity: "standard", source: "human",
     } as any) as any).ok, true);
     assert.equal(await standardScopeWarning(r.root), undefined);
   } finally { r.cleanup(); }

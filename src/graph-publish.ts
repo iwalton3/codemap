@@ -13,7 +13,8 @@ import { ensureSidecar } from "./sidecar.js";
 import { readCached } from "./materialize.js";
 import { graphProjection } from "./shared-projections.js";
 import { foldGraph, graphScope, publishWiring } from "./shared-graph.js";
-import { readLocalGraph } from "./store.js";
+import { loadNodes, readLocalGraph } from "./store.js";
+import { isAnalyzerNodeId } from "./analyzers/node-ids.js";
 import { headCommit } from "./git.js";
 
 /** One universe's shared wiring, through the cache. */
@@ -43,16 +44,25 @@ async function materializeGraph(root: string, cfg: SidecarConfig): Promise<boole
  * append — the caller reports it rather than papering over it, the same rule
  * `setTriage` follows and for the same reason: a row published later would be given a
  * causal position it never had.
+ *
+ * An analyzer node's wiring is never offered (owner, Q2: analyzer nodes are not published):
+ * it comes back in `analyzer` and stays in the local partition. `published` is what went.
  */
 export async function mirrorWiring(
   root: string, nodeIds: string[],
-): Promise<{ shared: boolean; configured: boolean; error?: string }> {
+): Promise<{ shared: boolean; configured: boolean; error?: string; published?: string[]; analyzer?: string[] }> {
   if (!nodeIds.length) return { shared: false, configured: !!resolveSidecar(root) };
   const door = sidecarWriteDoor(root);
   if (!door.cfg) return { shared: false, configured: door.configured, ...(door.error ? { error: door.error } : {}) };
   const cfg = door.cfg;
+  // The store's `generatedBy` is the authority; the id namespace is what the fold can see.
+  const generated = new Set((await loadNodes(root)).filter((n) => n.generatedBy).map((n) => n.id));
+  const analyzer = [...new Set(nodeIds)].filter((id) => generated.has(id) || isAnalyzerNodeId(id));
+  nodeIds = [...new Set(nodeIds)].filter((id) => !analyzer.includes(id));
+  const skipped = analyzer.length ? { analyzer } : {};
+  if (!nodeIds.length) return { shared: false, configured: true, ...skipped };
   const actor = requireActor(root);
-  if ("error" in actor) return { shared: false, configured: true, error: actor.error };
+  if ("error" in actor) return { shared: false, configured: true, error: actor.error, ...skipped };
   try {
     await ensureSidecar(cfg.path, actor);
     // This clone's OWN edges — never the merged view. Publishing the merged set would
@@ -66,8 +76,8 @@ export async function mirrorWiring(
       });
     }
     await materializeGraph(root, cfg);
-    return { shared: true, configured: true };
+    return { shared: true, configured: true, published: nodeIds, ...skipped };
   } catch (e: any) {
-    return { shared: false, configured: true, error: e?.message ?? String(e) };
+    return { shared: false, configured: true, error: e?.message ?? String(e), ...skipped };
   }
 }

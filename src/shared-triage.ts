@@ -30,7 +30,8 @@
 
 import type { Actor, BugWitness, Complexity, Importance, TriageSource, Triage } from "./schema.js";
 import { isAgentActor } from "./identity.js";
-import { type LogEvent, type Causality, causality } from "./eventlog.js";
+import { type DoorFold, type LogEvent, type Causality, causality, registerDoor } from "./eventlog.js";
+import { collector, foldJudged, registerReport, type RefusalClass, type Refusal } from "./validation.js";
 import { emitEvent, emitEvents } from "./write.js";
 import { IMPORTANCE_RANK, COMPLEXITY_RANK, ratchet, type RatchetState } from "./triage-rules.js";
 
@@ -251,20 +252,28 @@ interface Entry {
 const str = (d: Record<string, unknown>, k: string): string | undefined =>
   typeof d[k] === "string" ? (d[k] as string) : undefined;
 
-function entryOf(e: LogEvent): Entry | null {
+type Refuse = (e: LogEvent, cls: RefusalClass, why: string) => void;
+
+function entryOf(e: LogEvent, refuse: Refuse): Entry | null {
   const d = (e.data ?? {}) as Record<string, unknown>;
   const kind = str(d, "targetKind");
-  if (kind !== "node" && kind !== "anchor") return null;
-  if (!str(d, "targetId")) return null;
-  if (e.subject !== triageSubject(kind, str(d, "targetId")!)) return null; // envelope and payload must agree
+  if ((kind !== "node" && kind !== "anchor") || !str(d, "targetId")) { refuse(e, "shape", "a triage event needs a node or anchor target"); return null; }
+  if (e.subject !== triageSubject(kind, str(d, "targetId")!)) { refuse(e, "shape", "a triage event names its target in the envelope and the payload alike"); return null; }
   const clear = e.kind === "triage.cleared";
-  if (clear && d.present !== false) return null; // a clear that does not say so is not one
+  if (clear && d.present !== false) { refuse(e, "shape", "a clear says `present: false`"); return null; }
   const declared = str(d, "source");
   // `graph` never travels. Refused at the fold as well as at the publish surface,
   // because remote events come from builds this one did not write.
-  if (!clear && declared === "graph") return null;
-  if (!clear && declared !== "agent" && declared !== "human") return null;
+  if (!clear && declared === "graph") { refuse(e, "state", "graph-derived triage does not travel — it is regenerated locally"); return null; }
+  if (!clear && declared !== "agent" && declared !== "human") { refuse(e, "shape", `unknown triage source ${String(declared)}`); return null; }
   const agent = isAgentActor(e.actor) || declared === "agent";
+  // Both ends: `mirrorTriageClear` refuses it too. An agent may only raise.
+  if (clear && agent) { refuse(e, "state", "clearing stakes is a person's call — an agent may only raise"); return null; }
+  if (!clear) {
+    const bad = FIELDS.filter((f) => d[f] !== undefined && !VALID[f](d[f]));
+    if (bad.length) refuse(e, "shape", `unknown ${bad.map((f) => `${f} ${JSON.stringify(d[f])}`).join(", ")}`);
+    else if (!FIELDS.some((f) => d[f] !== undefined)) refuse(e, "shape", "an assertion carries at least one of importance, complexity or tripwire");
+  }
   return { e, clear, agent, source: agent ? "agent" : "human", data: d };
 }
 
@@ -276,12 +285,13 @@ function entryOf(e: LogEvent): Entry | null {
  * exactly what `ratchet` refuses to invent — and `triageFromRows` already drops such a
  * group, so emitting one would make the projection's round trip disagree with itself.
  */
-export function foldTriage(events: LogEvent[]): Map<string, TriageEntry> {
+export function foldTriageReport(events: LogEvent[]): { value: Map<string, TriageEntry>; refused: Refusal[] } {
+  const { refused, refuse } = collector();
   const causal = causality(events);
   const byTarget = new Map<string, Entry[]>();
   for (const e of events) {
     if (e.kind !== "triage.asserted" && e.kind !== "triage.cleared") continue;
-    const entry = entryOf(e);
+    const entry = entryOf(e, refuse);
     if (!entry) continue;
     const acc = byTarget.get(e.subject);
     if (acc) acc.push(entry); else byTarget.set(e.subject, [entry]);
@@ -290,8 +300,42 @@ export function foldTriage(events: LogEvent[]): Map<string, TriageEntry> {
   for (const [key, entries] of byTarget) {
     const t = foldTarget(entries, causal);
     if (t) out.set(key, t);
+    // An agent claim the ratchet refuses, judged against what came BEFORE it. The fold
+    // above ratchets against the final human baseline (concurrency is phase 5's), so its
+    // refusals are retroactive: a later human mark would turn an earlier, valid agent claim
+    // into "damage" on every reader.
+    entries.forEach((en, i) => {
+      if (!en.agent || en.clear) return;
+      foldTarget(entries.slice(0, i + 1), causal, (x, why) => { if (x === en) refuse(en.e, "state", why); });
+    });
   }
-  return out;
+  return { value: out, refused };
+}
+
+// Triage names no shared item: a node target is not a foreign key (owner, Q2 — an unpublished
+// node is not missing, and triage ABOUT an analyzer node is not publishing one).
+registerReport((scope) => scope.startsWith("triage/"), foldTriageReport);
+
+/**
+ * The report's verdict on `minted` alone, folding only its target: `derivePrTriage` batches
+ * hundreds of marks, and each is folded at the door.
+ */
+export const triageDoor: DoorFold = (events, minted) => {
+  const { refused, refuse } = collector();
+  if (minted.kind !== "triage.asserted" && minted.kind !== "triage.cleared") return { refused };
+  const en = entryOf(minted, refuse);
+  if (!en || !en.agent || en.clear) return { refused };
+  const entries = events.filter((e) => e.subject === minted.subject && e !== minted
+    && (e.kind === "triage.asserted" || e.kind === "triage.cleared"))
+    .map((e) => entryOf(e, () => {})).filter((x): x is Entry => !!x);
+  foldTarget([...entries, en], causality(events), (x, why) => { if (x === en) refuse(minted, "state", why); });
+  return { refused };
+};
+registerDoor((scope) => scope.startsWith("triage/"), () => triageDoor);
+
+/** The fold for a READ: a refused linear event is damage or newer; see `validation.ts`. */
+export function foldTriage(events: LogEvent[]): Map<string, TriageEntry> {
+  return foldJudged(events, foldTriageReport).value;
 }
 
 const receiptOf = <V>(en: Entry, value: V): AxisReceipt<V> => ({
@@ -358,7 +402,7 @@ const answered = (humans: Entry[], en: Entry, field: TriageField, causal: Causal
   humans.some((h) => causal.saw(h.e.id, en.e.id)
     && (h.clear || (h.data[field] !== undefined && VALID[field](h.data[field]))));
 
-function foldTarget(entries: Entry[], causal: Causality): TriageEntry | null {
+function foldTarget(entries: Entry[], causal: Causality, onRefused?: (en: Entry, why: string) => void): TriageEntry | null {
   const first = entries[0]!;
   const target = {
     kind: str(first.data, "targetKind") as "node" | "anchor",
@@ -400,7 +444,7 @@ function foldTarget(entries: Entry[], causal: Causality): TriageEntry | null {
     if (cx !== undefined) agentSaid.complexity.push(receiptOf(en, cx));
 
     const decided = ratchet(running, { importance: imp, complexity: cx, source: "agent" });
-    if ("refused" in decided) continue;
+    if ("refused" in decided) { onRefused?.(en, decided.refused); continue; }
     // Visible only if it actually RAISES: concurrency alone does not make a lower or
     // no-op claim an escalation.
     if (imp !== undefined && decided.importance !== running?.importance) impFrom = receiptOf(en, decided.importance);
