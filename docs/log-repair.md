@@ -7,16 +7,22 @@
 
 ## What locked, and why
 
-The decisions and standard logs are a durable event store and are intended to be immutable.
-An entry no conforming build could have written — bytes that are not JSON, a wrong shape, a
-dev-era shape of a live kind, or a well-formed act the writer's own build would have refused
-(an agent's questionnaire submission, a sign-off by an agent) — is **damage**. It came from a
-bug or a broken build, not from two people racing; races are conflict handling and never lock.
+The shared log is a durable event store and is intended to be immutable. Every event on the
+remote was checked against the log before it by the build that pushed it
+(docs/sidecar-architecture.md), so an entry this build cannot read that way is **damage**. It
+came from a bug or a broken build, not from two people racing, because a race is refused at
+replay and never reaches the log. Damage is either:
+
+- bytes that are not JSON, in any scope, or
+- an event carrying a `seq` that its scope's fold refuses: its precondition, or a reference into
+  the shared log.
+
+A shape this build does not write is **not** damage. It reads as *newer*: reads carry on without
+it and pushes block until an upgrade (plan 3.2).
 
 Damage anywhere this machine can see locks the whole application: every read and every op, in
 every universe on every sidecar this process serves, answers one diagnostic, and `sync` refuses
-to commit or merge. Unreadable bytes lock in any scope; shapes and impossible acts are checked
-in `decisions/`, `standard/` and `law/`. The lock is not acknowledgeable. The diagnostic names:
+to commit or push. The lock is not acknowledgeable. The diagnostic names:
 
 - the sidecar path,
 - the entry: its id and kind, and the shard and line (`sed -n <line>p <shard>` shows it),
@@ -33,104 +39,67 @@ agent's own authority, and nothing is "cleaned up" beyond the one entry.
 
 ## Which repair
 
-Read the diagnostic's `why`. It is one of three:
+Read the diagnostic's `why`. Every repair is **one ordinary commit, pushed with git**. Nothing
+rewrites history. The remote is the serializer and every pull is a fast-forward to its tip, so a
+commit that changes a line stays changed on every clone. A pull never merges anything back.
 
 - **Bytes that are not JSON** (`kind` is `(unreadable bytes)`). Nothing can have been read from
-  the line and nothing names it. Delete the line in the working tree of the clone whose shard it
-  is, then `codemap sync`: a locked sync re-checks and clears, and the deletion travels like any
-  commit — a pull never restores a line no build can read.
-- **A wrong shape** (`its data is not the shape a … is written in`). The same: no pull restores a
-  wrong-shaped line either. But later events may name it (its writer's next line names it as
-  `writerPrev`), so **tombstone it in place** (step 2) rather than delete it, in the working tree,
-  then `codemap sync`.
-- **An act no conforming build writes** (well-formed, refused by the fold over what its own
-  writer saw: an agent's sign-off, a withdrawal nobody was asked for). This is the one that needs
-  the history rewritten: a pull restores a well-formed event a merge removed — that is what keeps
-  the log append-only — so an edit in a new commit comes straight back on every teammate's next
-  pull. Steps 1–6.
+  the line and nothing names it: **delete the line.**
+- **Anything else**: a wrong shape, or an act the fold refuses against the log before it (an
+  agent's sign-off, a withdrawal nobody was asked for). Later events may name it, so **tombstone
+  it in place** (step 2) rather than deleting it.
 
-## The history rewrite
+`codemap sync` will not carry the edit, and that is deliberate. A sync moves the clone to the
+remote tip, so it refuses a hand-edited shard ("edited by hand, not appended to") and refuses a
+local commit whose lines differ from the remote's. Otherwise it would throw the repair away
+without a word.
 
-### 1. Tell the team, and stop
+## The repair
 
-Everyone who shares the sidecar stops syncing until step 5. A teammate who has not pulled the
-damage is not locked yet; their next pull would either refuse it (a wrong shape is checked on
-the way in) or merge it and lock right after (an impossible act needs the fold to see).
+### 1. Tell the team
+
+A teammate who has pulled the damage is locked already. One who has not will be locked by their
+next sync. Nobody needs to do anything until step 4.
 
 ### 2. Decide what the entry becomes
 
-Read the line (`sed -n <line>p <shard>`). Almost always the answer is that the act should not
-exist: it is **tombstoned in place** — the line is replaced by an event with the SAME `id`, `writer`, `writerPrev`, `after`,
-`actor` and `at`, whose `kind` is `log.repaired` and whose data records what it was:
+Read the line (`sed -n <line>p <shard>`). Almost always the act should not exist. It is
+**tombstoned in place**: the line is replaced by an event with the SAME `id`, `seq`, `writer`,
+`writerPrev`, `after`, `actor` and `at`. Its `kind` is `log.repaired`, and its data records what
+the event was:
 
 ```json
 {"kind":"log.repaired","data":{"kind":"<the old kind>","reason":"<why, in the person's words>","approvedBy":"<the person>"}}
 ```
 
-In place, not deleted, because later events name this one: its writer's next line names it as
-`writerPrev`, and any event may name it in `after`. Deleting it would break the chain those
-depend on; `log.repaired` is a kind no fold knows, so every fold skips it and every link holds.
+It is replaced in place rather than deleted because later events may name it in `after`, and
+`seq` orders the log. No fold knows the kind `log.repaired`, so every fold skips it: it is neither
+damage nor "newer" data, so it neither locks nor blocks a push.
 
-If the entry was a real act written wrongly (a field missing that the writer meant), the person
-may instead approve a corrected event under the same envelope. Say which in the reason.
+If the entry was a real act written wrongly (the writer meant a field that is missing), the person
+may approve a corrected event under the same envelope instead. The reason says which.
 
-### 3. Rewrite the history, on one clone
+### 3. Commit and push, from one clone
 
-In the sidecar clone of the person doing the repair. `<shard>` and `<id>` are from the
-diagnostic; `<line.json>` is the replacement line from step 2, written to a file outside the
-sidecar.
+In the sidecar clone of the person doing the repair:
 
 ```sh
 cd <sidecar>
-git branch codemap-pre-repair            # the old history, kept until step 6
-git filter-branch --tree-filter '
-  if [ -f "<shard>" ]; then
-    node -e "
-      const fs = require(\"fs\"), [shard, id, file] = process.argv.slice(1);
-      const rep = fs.readFileSync(file, \"utf8\").trim();
-      const out = fs.readFileSync(shard, \"utf8\").split(\"\n\")
-        .map((l) => { try { return JSON.parse(l).id === id ? rep : l; } catch { return l; } });
-      fs.writeFileSync(shard, out.join(\"\n\"));
-    " "<shard>" "<id>" "<line.json>"
-  fi' -- --all
-git diff codemap-pre-repair HEAD         # exactly one line changed, in <shard>
+git fetch origin && git reset --hard origin/<branch>   # start from the tip; a locked clone has nothing unpushed
+# edit <shard>: delete the line, or replace it with step 2's line
+git diff                                                # exactly one line changed, in <shard>
+node <codemap>/dist/cli.js sidecar check <sidecar>      # must report nothing damaged
+git commit -am "codemap: repair <id> (<reason>)"
+git push origin HEAD:<branch>
 ```
 
-Every commit is rewritten, not just the tip: a later commit that merely edited the line would be
-a deletion in every teammate's history, and the pull restores deleted events — which would put
-the damaged line straight back.
+If the push is rejected, someone pushed in between. Run the same steps again from the fetch.
 
-Before going on, run codemap's own check, which folds every scope the way a read does:
-`node <codemap>/dist/cli.js sidecar check <sidecar>` must report nothing damaged.
+### 4. Every clone releases on its next sync
 
-### 4. Publish it
+`codemap sync`, on every clone, the repairer's included. A locked sync still fetches. It checks
+the fetched tip, moves to it if the tip is clean, and folds again, and **the lock clears once
+nothing is damaged**. No re-clone, and nothing to copy between clones: staged writes live in the
+queue, not the tree.
 
-```sh
-git push --force-with-lease origin HEAD
-```
-
-### 5. Every other clone takes the rewritten history
-
-A merge is the wrong tool: the rewritten history is unrelated to the old one, and merging it
-would bring the damaged line back. In each teammate's sidecar clone:
-
-```sh
-cd <sidecar>
-git fetch origin
-git branch codemap-pre-repair
-git reset --hard origin/<branch>
-```
-
-A teammate with unpushed events has them only in their own shards (a shard has one writer).
-Before the reset, list them — `git diff --name-only origin/<branch>...codemap-pre-repair` — and
-after it, copy each of their OWN shards back from `codemap-pre-repair`
-(`git checkout codemap-pre-repair -- <their shard>`). If the damaged entry was in one of their
-own shards, apply step 2's replacement to it again. Commit.
-
-Then run `codemap sync`. A locked sync still fetches and re-checks: it looks for damage here and
-on the fetched tip, without merging, and **the lock clears once neither has any**. No re-clone.
-
-### 6. Afterwards
-
-Once every clone has synced clean, delete `codemap-pre-repair` everywhere. Keep the reason in
-the `log.repaired` entry; it is the record that the log was rewritten, and by whom.
+The `log.repaired` entry and the commit are the record that the log was repaired, and by whom.

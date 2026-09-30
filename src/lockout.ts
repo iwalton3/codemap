@@ -4,8 +4,8 @@
  * The owner's words: a halt "should basically lockout the entire application until it is
  * fixed", sync included — "don't pile more entries onto a possibly broken datastore" (batch 4)
  * — and it triggers on damage anywhere this machine can see, an incoming pull it refused
- * included (batch 8). Not acknowledgeable: the repair is a person-approved history rewrite,
- * docs/log-repair.md.
+ * included (batch 8). Not acknowledgeable: the repair is a person-approved commit pushed with
+ * git, docs/log-repair.md.
  *
  * The flag lives in the damaged sidecar clone's GIT DIR, never its work tree (`sync` is
  * `git add -A`, and a committed flag would lock the whole team out of a repair), so every
@@ -87,7 +87,7 @@ export function lockoutMessage(l: Lockout): string {
   const where = e.shard ? `${e.shard}${e.line ? `:${e.line}` : ""}` : e.scope ?? "an unknown scope";
   return `codemap is locked: the shared log at ${l.sidecar} holds a damaged entry, so nothing reads or `
     + `writes until it is repaired. Entry ${e.id} (${e.kind}) at ${where}: ${e.why}. The log is immutable, `
-    + `so the repair is a history rewrite that a person approves — see docs/log-repair.md. Sync is refused `
+    + `so the repair is one commit, approved by a person and pushed with git — see docs/log-repair.md. Sync is refused `
     + `too, except to fetch and re-check; the lock clears once no damage is visible here or on the fetched tip.`;
 }
 
