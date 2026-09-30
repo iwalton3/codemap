@@ -6,7 +6,7 @@ import { canonical } from "../canonical.js";
 import { requireActor, isAgentActor } from "../identity.js";
 import { sidecarWriteDoor, resolveSidecar, sidecarIdentity } from "../sidecar-config.js";
 import { findingKeyScope } from "../review-target.js";
-import { findingScope, foldFindings, type SharedFinding } from "../shared-findings.js";
+import { findingScope, foldFindings, prOfScope, type SharedFinding } from "../shared-findings.js";
 import { findingsProjection } from "../shared-projections.js";
 import { readCached } from "../materialize.js";
 import { readScopeChecked } from "../eventlog.js";
@@ -63,7 +63,8 @@ export async function repairRecords(root: string, review: number | string) {
     const request = verification.requests.find(r => r.id === result.requestId)!;
     const finding = cached.value.get(result.findingId);
     const code = finding && result.complete && (result.verdict === "fixed" || result.verdict === "factually-refuted" || result.verdict === "invalid")
-      ? await repairCodeLifecycle(root, finding, { ...request.capsule.evidence,
+      // The projection carries no `pr` (a row fact); K8 needs it to find the PR's head branch.
+      ? await repairCodeLifecycle(root, { ...finding, pr: finding.pr ?? prOfScope(scope) }, { ...request.capsule.evidence,
         inspected: [...request.capsule.evidence.inspected,
           ...verification.runs.filter(r => r.requestId === result.requestId).flatMap(r => r.results
             .filter(v => v.findingId === result.findingId).flatMap(v => v.inspected))],

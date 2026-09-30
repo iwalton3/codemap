@@ -1,13 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { team, settle } from "./oracle.js";
-import { shareFinding, reviseFinding, reassignFinding } from "./ops-shared.js";
+import { shareFinding, reviseFinding, reassignFinding, corroborateFinding } from "./ops-shared.js";
 import { postRepairSort, recordRepairClaims, recordRepairEvidence } from "./ops/repairs.js";
 import { requestRepairVerification, pendingRepairJobs, repairVerificationBrief, submitRepairVerification, arbitrateRepairVerification, applyRepairVerification, repairVerificationRecords, recordRepairVerification } from "./ops/repair-verification.js";
 import { repairRecords } from "./ops/repairs.js";
 import { RepairConnection } from "./verifier-boundary.js";
 import { headCommit } from "./git.js";
-import { readFinding, readAnchorStore } from "./store.js";
+import { readFinding, readAnchorStore, writeLocalLink } from "./store.js";
 import * as ops from "./ops.js";
 import type { RepairClaimVerdict } from "./repair-verification.js";
 import type { RepairSortInput, RepairEvidenceInput } from "./repair-records.js";
@@ -318,6 +318,47 @@ test("plan 3.4: a pattern closes only with every sorted site fixed or filed as a
     const withBug = await submitRepairVerification(f.root, 7, { requestId: f.requestId, slot: 1,
       results: f.results().map((r) => ({ ...r, sites: [{ site: "src/pay.ts", bug: filed.id }] })) }, h);
     ok(withBug);
+  } finally { f.t.dispose(); }
+});
+
+test("K7: a finding confirmed after its site bug was filed closes through that bug once the site is re-filed", async () => {
+  const f = await fixture(1, false, undefined, undefined, { kind: "pattern", predicate: "missing guard", sites: ["src/pay.ts"] });
+  try {
+    const anchor = (await readAnchorStore(f.root)).anchors.find((a) => a.file === "src/pay.ts")!;
+    const file = async () => await ops.fileSiteBug(f.root, f.ids[0]!, { site: "src/pay.ts", anchors: [anchor.id] }) as { id: string };
+    const filed = await file(); ok(filed);
+    ok(await corroborateFinding(f.t.all[1]!.repo, 7, f.ids[0]!, "confirm", "reproduced the missing guard", { anyway: true }));
+    await settle(f.t);
+    const h = new RepairConnection("owner@acme.test"); assert.equal(h.claim().ok, true);
+    ok(await repairVerificationBrief(f.root, 7, { requestId: f.requestId, role: "verifier", slot: 1 }, h));
+    const submit = () => submitRepairVerification(f.root, 7, { requestId: f.requestId, slot: 1,
+      results: f.results().map((r) => ({ ...r, sites: [{ site: "src/pay.ts", bug: filed.id }] })) }, h);
+    assert.match(String(((await submit()) as { error?: string }).error), /does not carry .*confirmation/);
+    assert.equal((await file()).id, filed.id, "the same site is the same bug");
+    ok(await submit());
+  } finally { f.t.dispose(); }
+});
+
+test("K8 through the op: a verified repair on an open pull request is judged against the PR's linked head branch", async () => {
+  const f = await fixture(1, false, (evidence, root) => {
+    const git = (...a: string[]) => { const r = spawnSync("git", a, { cwd: root, encoding: "utf8" }); assert.equal(r.status, 0, r.stderr); return r.stdout.trim(); };
+    const trunk = git("rev-parse", "--abbrev-ref", "HEAD");
+    git("checkout", "-qb", "pr-7-head");
+    writeFileSync(join(root, "src", "pay.ts"), "export function transfer(amount) { if (amount < 0) throw new Error('negative'); }\n");
+    git("add", "src/pay.ts"); git("-c", "user.email=f@x", "-c", "user.name=f", "commit", "-qm", "fix");
+    evidence.fixCommit = git("rev-parse", "HEAD");
+    git("checkout", "-q", trunk);
+  });
+  try {
+    await f.run(1); await f.run(2);
+    const source = async () => {
+      const r = await repairRecords(f.root, 7) as { lifecycles?: { findingId: string; code?: { landing: string; source: string } }[] };
+      return r.lifecycles!.find((l) => l.findingId === f.ids[0])!.code!;
+    };
+    const unlinked = await source();
+    assert.equal(unlinked.landing, "open"); assert.equal(unlinked.source, "unknown");
+    writeLocalLink(f.root, "7", "pr-7-head");
+    assert.equal((await source()).source, "unchanged");
   } finally { f.t.dispose(); }
 });
 

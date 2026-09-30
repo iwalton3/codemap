@@ -70,6 +70,21 @@ test("F29: the working tree never moves a repair's source, whatever is checked o
   } finally { discard(f.root); }
 });
 
+test("K8: an open pull request's finding judges its repair's source against the PR's linked head branch", async () => {
+  const f = fixture(); try {
+    const onPr = { ...f.finding, pr: "12" } as SharedFinding;
+    assert.equal((await repairCodeLifecycle(f.root, onPr, f.evidence, "fixed")).source, "unknown", "no link, nothing to judge");
+    writeLocalLink(f.root, "12", "repair");
+    const open = await repairCodeLifecycle(f.root, onPr, f.evidence, "fixed");
+    assert.equal(open.landing, "open"); assert.equal(open.source, "unchanged", open.reasons.join("; "));
+    writeFileSync(join(f.root, "guard.js"), "export const guard = x => x;\n");
+    f.git("commit", "-qam", "the PR undoes the guard");
+    assert.equal((await repairCodeLifecycle(f.root, onPr, f.evidence, "fixed")).source, "moved");
+    f.git("branch", "renamed", "main"); writeLocalLink(f.root, "12", "renamed");
+    assert.equal((await repairCodeLifecycle(f.root, onPr, f.evidence, "fixed")).source, "unknown", "two linked tips judge nothing");
+  } finally { discard(f.root); }
+});
+
 test("default source drift is visible even with unchanged verified branch workspace", async () => {
   const f = fixture(); try {
     f.git("checkout", "main"); f.git("merge", "repair");

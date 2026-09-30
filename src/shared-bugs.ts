@@ -293,6 +293,16 @@ function foldBugsInternal(events: LogEvent[], replay: ApplicationReplay): Map<st
         // grow-only rule, applied to the create event too) and the first filing is
         // the record for everything a single person owns.
         for (const a of anchorsIn(d)) addAnchor(existing, a, e.actor, e.at);
+        // Re-filing from the same finding refreshes the verdicts it inherited (K7, plan 5.4): closure
+        // checks the finding's CURRENT confirmation, so one frozen at filing could never close.
+        // A reviewer's newer verdict on the bug itself is not overwritten.
+        const refresh = str(d, "fromFinding") === existing.from?.finding ? inheritanceOf((d as any)?.inherits) : undefined;
+        for (const c of refresh?.corroboration ?? []) {
+          const i = existing.corroboration.findIndex((x) => reviewerKey(x.actor) === reviewerKey(c.actor));
+          if (i >= 0 && existing.corroboration[i]!.at >= c.at) continue;
+          const entry = { ...c, independent: isIndependent(c.actor, existing.author), errorIndependent: isErrorIndependent(c.actor, existing.author) };
+          if (i >= 0) existing.corroboration[i] = entry; else existing.corroboration.push(entry);
+        }
         continue;
       }
       // A bug made from a finding keeps that finding's filer and the verdicts behind it (plan 3.5),

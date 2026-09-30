@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { gitBin, isAncestor, originSlug, revParse, trunkRef } from "./git.js";
-import { prsLinkedTo, readCachedSnapshot } from "./store.js";
+import { linkedBranches, prsLinkedTo, readCachedSnapshot } from "./store.js";
 import type { SharedFinding } from "./shared-findings.js";
 import type { RepairEvidenceInput } from "./repair-records.js";
 
@@ -60,6 +60,18 @@ function linkedRepairLanded(root: string, finding: SharedFinding, checked: strin
 /** Finished lifecycles, keyed on every SHA they read (F26): this runs on every findings read. */
 const lifecycles = new Map<string, RepairCodeLifecycle>();
 
+const tip = (root: string, branch: string) => revParse(root, `origin/${branch}`) ?? revParse(root, branch);
+/**
+ * The branch a finding's repair lives on: its own, else — for a pull request's finding — the PR's
+ * head branch as linked (K8, plan 5.4). Several linked branches at different tips judge nothing.
+ */
+function sourceBranch(root: string, finding: SharedFinding): string | null {
+  if (finding.branch) return tip(root, finding.branch);
+  if (!finding.pr || !/^[1-9]\d*$/.test(finding.pr)) return null;
+  const tips = new Set(linkedBranches(root, finding.pr).map((b) => tip(root, b)).filter((s): s is string => !!s));
+  return tips.size === 1 ? [...tips][0]! : null;
+}
+
 /** File movement is conservative: unrelated edits in a touched file also need attention. */
 export async function repairCodeLifecycle(root: string, finding: SharedFinding, evidence: RepairEvidenceInput,
   outcome: "fixed" | "factually-refuted" | "invalid"): Promise<RepairCodeLifecycle> {
@@ -68,7 +80,7 @@ export async function repairCodeLifecycle(root: string, finding: SharedFinding, 
   // What the repair is compared against: the finding's own branch while it has one, else the
   // default branch — a COMMIT either way, never the working tree (F29), so the answer does not
   // depend on what happens to be checked out.
-  const branchSha = finding.branch ? revParse(root, `origin/${finding.branch}`) ?? revParse(root, finding.branch) : null;
+  const branchSha = sourceBranch(root, finding);
   const key = JSON.stringify([root, finding.id, finding.target, checkedCommit, evidence.baseCommit, trunk?.sha ?? null, branchSha,
     evidence.attribution.map((a) => a.file), evidence.inspected.map((i) => i.source)]);
   const memo = lifecycles.get(key);

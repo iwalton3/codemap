@@ -335,6 +335,28 @@ test("plan 3.5: a bug an agent files from a person's confirmed finding is that p
   } finally { discard(root); }
 });
 
+test("K7: re-filing a bug from its finding refreshes the inherited verdicts, never a newer one given on the bug", async () => {
+  const root = tmp();
+  const bob: Actor = { principal: "bob@x.com" };
+  const from = (corroboration: { actor: Actor; verdict: "confirm" | "refute"; at: string; rationale: string }[]) =>
+    ({ pr: 7, finding: "f_1", inherits: { author: izzie, corroboration } });
+  try {
+    for (const id of ["f_1", "f_other"]) await createFinding(root, "acme/api/pr-7", izzie, { id, targetKind: "anchor", targetId: "a_1", text: "t" });
+    await fileBug(root, U, opus, { ...NEW, id: "bug_site", from: from([]) });
+    await corroborateBug(root, U, bob, "bug_site", "refute", "on the bug, later than anything the finding says below");
+    await fileBug(root, U, opus, { ...NEW, id: "bug_site", from: from([
+      { actor: dana, verdict: "confirm", at: "2026-09-28T00:00:00Z", rationale: "reproduced" },
+      { actor: bob, verdict: "confirm", at: "2000-01-01T00:00:00Z", rationale: "old" }]) });
+    await fileBug(root, U, opus, { ...NEW, id: "bug_site", from: { ...from([{ actor: izzie, verdict: "confirm", at: "2026-09-29T00:00:00Z", rationale: "x" }]), finding: "f_other" } });
+    const b = await one(root);
+    const by = (a: Actor) => b.corroboration.filter((c) => c.actor.principal === a.principal).map((c) => c.verdict);
+    assert.deepEqual(by(dana), ["confirm"], "the finding's confirmation since filing is carried");
+    assert.equal(b.corroboration.find((c) => c.actor.principal === dana.principal)!.independent, true);
+    assert.deepEqual(by(bob), ["refute"], "a newer verdict on the bug stands");
+    assert.deepEqual(by(izzie), [], "a filing naming another finding refreshes nothing");
+  } finally { discard(root); }
+});
+
 test("plan 3.5: an unconfirmed agent finding stays an agent proposal as a bug; a malformed inheritance inherits nothing", async () => {
   const root = tmp();
   try {
