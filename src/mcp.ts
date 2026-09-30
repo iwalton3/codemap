@@ -32,7 +32,7 @@ import { asLockout, lockoutGate } from "./lockout-gate.js";
 import { setProcessSessionKind } from "./sync-session.js";
 
 /** The tools a locked store still runs: they fetch, re-check, and are how a lock clears. */
-const RUNS_WHILE_LOCKED = new Set(["sync", "pull"]);
+const RUNS_WHILE_LOCKED = new Set(["sync", "pull", "staged", "discard", "drop_staged"]);
 
 /**
  * Tools that write to a universe's `.codemap/` are held under the write lock, so a
@@ -1507,10 +1507,37 @@ const tools: Tool[] = [
   // --- shared review (the sidecar). Absent a sidecar these say so and change nothing.
   {
     name: "sync",
-    description: "Send and receive shared review state with the team's sidecar repo. Pull happens FIRST, always — the guard against publishing a finding somebody already published only works if it has seen what they published. Safe to run at any time; it never rewrites anyone's events.",
+    description: "Push this session's staged writes — all of them, or none — and bring shared state to the team's latest. A single write outside a transaction already syncs inline; `sync` is how a TRANSACTION (`begin`) lands. Each staged write is checked against the log as it stands now: if any is refused, nothing is pushed and every conflict comes back with why — drop the refused ones (`drop_staged`), add what you need, and `sync` again. Online only: without the network it fails and your staged writes stay staged.",
     inputSchema: obj({}),
     mutates: true,
     handler: (_a, c) => shared.sharedSync(c.universe.path),
+  },
+  {
+    name: "begin",
+    description: "Open a transaction for this session: every shared write after this STAGES instead of syncing, reads back as if it had landed, and goes to the team in ONE push when you `sync` — all or none. Use it for anything more than a single act: it is faster (one push, not one per act; GitHub recommends at most 6 pushes a minute per repository) and it lands together. `discard` drops the lot.",
+    inputSchema: obj({}),
+    mutates: true,
+    handler: (_a, c) => shared.beginTransaction(c.universe.path),
+  },
+  {
+    name: "discard",
+    description: "Drop every write this session has staged and close its transaction. Nothing of it reaches the team.",
+    inputSchema: obj({}),
+    mutates: true,
+    handler: (_a, c) => shared.discardTransaction(c.universe.path),
+  },
+  {
+    name: "drop_staged",
+    description: "Drop ONE staged write by its event id (from `staged`, or a refused `sync`'s conflicts), or dismiss a local conflict left by a session that ended. The queue is append and drop only: to change a staged write, drop it and write it again — writes after it that depended on it must be dropped and redone too.",
+    inputSchema: obj({ id: { type: "string", description: "The staged write's event id." } }, ["id"]),
+    mutates: true,
+    handler: (a, c) => shared.dropStagedWrite(c.universe.path, String(a.id ?? "")),
+  },
+  {
+    name: "staged",
+    description: "What this session has staged and not yet synced, whether a transaction is open, and the local conflicts: writes refused when they were attempted after their session ended (a closed tab, an ended MCP session) — kept on this machine until dismissed.",
+    inputSchema: obj({}),
+    handler: (_a, c) => shared.stagedWrites(c.universe.path),
   },
   {
     name: "pull",
@@ -2331,6 +2358,7 @@ async function handle(msg: any): Promise<void> {
       send({ jsonrpc: "2.0", id, result: { tools: tools.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })) } });
       return;
     case "tools/call": {
+      lastCall = Date.now();
       // The verifier claim, in memory: see `RepairConnection`.
       const gate = connection.enter(params?.name);
       if (!gate.ok) {
@@ -2362,7 +2390,11 @@ async function handle(msg: any): Promise<void> {
         const run = () => tool.handler(args, { ws, universe });
         const locked = typeof tool.mutates === "function" ? tool.mutates(args) : tool.mutates;
         const out = locked ? await withLock(universe.path, run) : await run();
-        send({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(out, null, 2) }] } });
+        // Every call from a session holding staged writes says so (plan 4.1): "sync and push often".
+        const held = shared.stagedCount(ws.universes.map((u) => u.path));
+        const reminder = held ? { staged: `${held} shared write(s) staged by this session and not yet synced — \`sync\` to push them (all or none), \`staged\` to see them, \`discard\` to drop them.` } : {};
+        const shown = held && out && typeof out === "object" && !Array.isArray(out) ? { ...out, ...reminder } : held ? { result: out, ...reminder } : out;
+        send({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(shown, null, 2) }] } });
       } catch (e: any) {
         const lockout = await asLockout(e, ws.universes.map((u) => u.path)).catch(() => null);
         const text = lockout ? lockout.message : "Error: " + (e?.message ?? String(e));
@@ -2382,6 +2414,8 @@ markAgentSession();
 // One MCP process is one session: what it stages is its own, and is attempted when it closes.
 setProcessSessionKind("mcp");
 void shared.attemptGoneSessions(ws.universes.map((u) => u.path));
+let lastCall = Date.now();
+shared.startPullLoop(ws.universes.map((u) => u.path), () => lastCall);
 
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => {

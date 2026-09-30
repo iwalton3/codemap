@@ -63,7 +63,27 @@ export function resolvePlaywright(): any | null {
 export async function launchPlaywright(pw: any) {
   const opts: Record<string, unknown> = { args: ["--no-sandbox", "--disable-dev-shm-usage"] };
   if (existsSync(CHROMIUM)) opts.executablePath = CHROMIUM;
-  return pw.chromium.launch(opts);
+  const browser = await pw.chromium.launch(opts);
+  // A page closes the way a person's tab does once they have stopped: after the writes it staged
+  // have synced (web/core.js). Without this a test reading from Node races the tab's sync.
+  const settling = (page: any) => {
+    const close = page.close.bind(page);
+    page.close = async (o?: unknown) => {
+      await page.evaluate(() => (window as any).__codemapSettle?.()).catch(() => {});
+      return close(o);
+    };
+    return page;
+  };
+  const newPage = browser.newPage.bind(browser);
+  browser.newPage = async (...a: unknown[]) => settling(await newPage(...a));
+  const newContext = browser.newContext.bind(browser);
+  browser.newContext = async (...a: unknown[]) => {
+    const ctx = await newContext(...a);
+    const ctxPage = ctx.newPage.bind(ctx);
+    ctx.newPage = async (...b: unknown[]) => settling(await ctxPage(...b));
+    return ctx;
+  };
+  return browser;
 }
 
 export function resolvePuppeteer(): any | null {
@@ -214,3 +234,6 @@ export async function makeRevertFixture(): Promise<Fixture & { anchorId: string;
 
   return { root, universe: root.split("/").pop()!, anchorId, nodeId: "n_pay", cleanup: () => discard(root) };
 }
+
+/** Wait until the page's tab has synced what it staged — before a test reads from Node what the page just wrote. */
+export const settled = (page: any): Promise<void> => page.evaluate(() => (window as any).__codemapSettle?.());

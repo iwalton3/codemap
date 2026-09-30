@@ -28,7 +28,7 @@ import { asLockout, lockoutGate } from "./lockout-gate.js";
 import type { LockedOut } from "./lockout.js";
 
 /** The routes a locked store still answers: sync and pull fetch, re-check, and clear a lock. */
-const RUNS_WHILE_LOCKED = new Set(["/api/shared/sync", "/api/shared/pull"]);
+const RUNS_WHILE_LOCKED = new Set(["/api/shared/sync", "/api/shared/pull", "/api/shared/staged", "/api/shared/discard", "/api/shared/drop"]);
 
 /** 423 Locked, carrying the one diagnostic every page shows in place of itself (plan 1.2). */
 function sendLockout(res: import("node:http").ServerResponse, lockout: LockedOut): void {
@@ -254,6 +254,8 @@ async function api(path: string, q: URLSearchParams): Promise<unknown> {
       });
     case "/api/shared/peers":
       return shared.sharedStatus(root);
+    case "/api/shared/staged":
+      return shared.stagedWrites(root);
     case "/api/shared/hub":
       return shared.sharedHub(root);
     case "/api/findings/backlog":
@@ -370,17 +372,27 @@ async function serveStatic(urlPath: string): Promise<{ body: Buffer; type: strin
  * runs as that tab's session — what it stages is the tab's — and counts as the tab being
  * alive; one without runs as this server's own session.
  */
+let lastRequest = Date.now();
 const server = createServer((req, res) => {
-  const tab = req.headers["x-codemap-tab"];
+  lastRequest = Date.now();
+  // A closing page's beacon cannot set headers, so its sync names the tab in the query instead.
+  const beacon = req.method === "POST" && req.url?.startsWith("/api/shared/sync?")
+    ? new URL(req.url, "http://x").searchParams.get("tab") : null;
+  const tab = req.headers["x-codemap-tab"] ?? beacon ?? undefined;
   if (!isTabId(tab)) return serveRequest(req, res);
   const session = webSession(tab);
-  shared.touchWebSession(ws.universes.map((u) => u.path), session);
+  const roots = ws.universes.map((u) => u.path);
+  shared.touchWebSession(roots, session);
+  // A write from a tab stages under the tab's transaction; the page syncs it in the background.
+  if (req.method === "POST" && !/^\/api\/shared\/(sync|pull|begin|discard|drop)$/.test(new URL(req.url ?? "/", "http://x").pathname))
+    shared.openTabTransaction(roots, session);
   return withSession(session, "web", () => serveRequest(req, res));
 });
 
 // A tab whose polls stopped, or a session of a process that died: attempt its writes (plan 2.5).
 void shared.attemptGoneSessions(ws.universes.map((u) => u.path));
 setInterval(() => { void shared.attemptGoneSessions(ws.universes.map((u) => u.path)); }, 30_000).unref();
+shared.startPullLoop(ws.universes.map((u) => u.path), () => lastRequest);
 
 async function serveRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
   try {
@@ -628,6 +640,11 @@ async function serveRequest(req: IncomingMessage, res: ServerResponse): Promise<
       let out: unknown;
       switch (action) {
         case "sync": out = await run(() => shared.sharedSync(root)); break;
+        // The tab's transaction (plan 4.2): the page stages its writes under its tab id and
+        // syncs them in the background; a refusal comes back from `sync` with its conflicts.
+        case "begin": out = await shared.beginTransaction(root); break;
+        case "discard": out = await shared.discardTransaction(root); break;
+        case "drop": out = await shared.dropStagedWrite(root, String(body.id ?? "")); break;
         // Receive without sending. The top bar offers this on every page, so it must
         // never publish: a button that reached other people from wherever you happened
         // to be standing is not one anybody can leave in the chrome.

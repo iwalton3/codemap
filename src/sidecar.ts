@@ -1090,7 +1090,8 @@ export async function sync(root: string, actor?: Actor, message = "codemap: revi
   const { currentSession } = await import("./sync-session.js");
   const s = currentSession();
   const r = await syncLinear(root, s.session, { actor, message });
-  if ("error" in r) return r;
+  // A refusal keeps what it refused and what is still staged: the caller repairs from those.
+  if ("error" in r) return r as { error: string };
   setTx(root, s.session, s.kind, false);
   return { gained: r.gained, pushed: r.pushed, committed: r.committed, retries: r.retries, ...(r.warning ? { warning: r.warning } : {}) };
 }

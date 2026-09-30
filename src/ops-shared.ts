@@ -25,8 +25,9 @@ import { findingKeyScope, branchKey, branchOf, isBranchKey, normalizeBranch } fr
 import { reviewScope, foldReviewLinks, linkReview } from "./shared-reviews.js";
 import { resolveSidecar, scopeFor, sidecarIdentity, inUniverse, checkSidecarBinding, universeKey, type SidecarConfig } from "./sidecar-config.js";
 import { onArrivals } from "./arrivals.js";
-import { attemptGone, closeSession } from "./sync-engine.js";
-import { touchSession } from "./sync-queue.js";
+import { attemptGone, begin, closeSession, discard, dropOp, localConflicts, staged } from "./sync-engine.js";
+import { sessionRow, setTx, touchSession, type QueuedOp } from "./sync-queue.js";
+import { transportsRemotely } from "./sidecar.js";
 import { currentSession } from "./sync-session.js";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -146,6 +147,90 @@ export async function attemptGoneSessions(roots: string[]) {
     for (const o of await attemptGone(s).catch(() => [])) out.push({ sidecar: s, ...o });
   }
   return out;
+}
+
+// --- transactions (plan 2.4, 4.1): the caller's session, on the universe's sidecar ------------
+
+/**
+ * Open a transaction: this session's writes stage instead of syncing, and read back as if they
+ * had landed, until `sharedSync` pushes them all or none. For anything more than one act — it is
+ * one push instead of one per act (GitHub recommends at most 6 a minute per repository).
+ */
+export async function beginTransaction(root: string) {
+  const b = bind(root);
+  if ("error" in b) return b;
+  return { ...begin(b.cfg.path), note: "writes now stage; `sync` pushes them all or none, `discard` drops them" };
+}
+
+/** Drop every write this session has staged and close its transaction. */
+export async function discardTransaction(root: string) {
+  const b = bind(root, {}, { reading: true });
+  if ("error" in b) return b;
+  return discard(b.cfg.path);
+}
+
+/**
+ * Drop one staged write (or dismiss a local conflict) by its event id. The queue is append and
+ * drop only: to change a staged write, drop it and write it again.
+ */
+export async function dropStagedWrite(root: string, eventId: string) {
+  const b = bind(root, {}, { reading: true });
+  if ("error" in b) return b;
+  const r = dropOp(b.cfg.path, eventId);
+  return r.ok ? { ok: true, dropped: eventId } : { error: `no staged write or local conflict ${eventId} of this session` };
+}
+
+/** The pull loop's last word per sidecar: when, and whether the remote answered. */
+const lastPulls = new Map<string, { at: string; ok: boolean; error?: string }>();
+
+/**
+ * Pull on a timer (plan 4.3): every 30s while in use — any call or request in the last five
+ * minutes — doubling while idle up to ten minutes, and back to 30s on the next use. Reads are
+ * at most one interval stale, and the page can say when the last one was and whether it reached.
+ */
+export function startPullLoop(roots: string[], lastUse: () => number): () => void {
+  const FAST = 30_000, CEILING = 600_000, IN_USE = 300_000;
+  let delay = FAST, timer: ReturnType<typeof setTimeout> | undefined, stopped = false;
+  const tick = async () => {
+    if (stopped) return;
+    for (const root of roots) {
+      const cfg = resolveSidecar(root);
+      if (!cfg || !transportsRemotely(cfg.path)) continue;
+      const r = await withLock(root, () => sharedPull(root)).catch((e: unknown) => ({ error: String((e as Error)?.message ?? e) }));
+      lastPulls.set(cfg.path, { at: new Date().toISOString(), ok: !("error" in r), ...("error" in r ? { error: String(r.error).slice(0, 300) } : {}) });
+    }
+    delay = Date.now() - lastUse() < IN_USE ? FAST : Math.min(delay * 2, CEILING);
+    if (!stopped) timer = setTimeout(() => void tick(), delay);
+    timer?.unref?.();
+  };
+  timer = setTimeout(() => void tick(), FAST);
+  timer.unref?.();
+  return () => { stopped = true; if (timer) clearTimeout(timer); };
+}
+
+/** A tab that writes has a transaction: its writes stage and its page syncs them (plan 4.2). */
+export function openTabTransaction(roots: string[], session: string): void {
+  for (const s of sidecarsOf(roots)) { try { setTx(s, session, "web", true); } catch { /* no queue yet */ } }
+}
+
+/** What this session has staged, and the writes refused after their session was gone. */
+export async function stagedWrites(root: string) {
+  const b = bind(root, {}, { reading: true });
+  if ("error" in b) return b;
+  const row = (o: QueuedOp) => ({ id: o.event.id, kind: o.event.kind, subject: o.event.subject, scope: o.scope, at: o.event.at, ...(o.why ? { why: o.why } : {}) });
+  return {
+    staged: staged(b.cfg.path).map(row),
+    transaction: !!sessionRow(b.cfg.path, currentSession().session)?.tx,
+    conflicts: localConflicts(b.cfg.path).map(row),
+    lastPull: lastPulls.get(b.cfg.path) ?? null,
+  };
+}
+
+/** How many writes the calling session has staged across these universes' sidecars. */
+export function stagedCount(roots: string[]): number {
+  let n = 0;
+  for (const s of sidecarsOf(roots)) { try { n += staged(s).length; } catch { /* no queue yet */ } }
+  return n;
 }
 
 /** A web tab's request or poll: it is alive, and it is who owns what it stages (F20d). */

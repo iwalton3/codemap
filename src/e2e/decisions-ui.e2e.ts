@@ -12,7 +12,7 @@ import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { resolvePlaywright, launchPlaywright, startServer, type Server } from "./harness.js";
+import { resolvePlaywright, launchPlaywright, startServer, type Server, settled } from "./harness.js";
 import * as ops from "../ops.js";
 import { shareFinding } from "../ops-shared.js";
 import { readFinding } from "../store.js";
@@ -138,6 +138,7 @@ describe("the decisions UI", { skip: pw ? false : "playwright not resolvable (se
     await reply.press("Tab");
     await question.locator("button").filter({ hasText: /^send$/ }).click();
     await page.waitForSelector("text=the premise is wrong", { timeout: 10_000 });
+    await settled(page);
     const first = await ops.decisionRound(root, "R1") as any;
     const answer = first.decisions.find((d: any) => (d.label ?? d.id) === "d1").answers.find((a: any) => a.words === "the premise is wrong");
     const confirmation = await asAgent(() => ops.confirmReading(root, { answer: answer.id, maps: [{ decision: "d1", option: "Not a defect" }] })) as any;
@@ -204,6 +205,7 @@ describe("the decisions UI", { skip: pw ? false : "playwright not resolvable (se
     await short.locator('textarea').fill('Keep behavior A');
     await short.getByRole('button', { name: 'Submit this answer' }).click();
     await page.waitForFunction(() => document.body.textContent?.includes('1 submitted'));
+    await settled(page);
     const partial = await ops.questionnaireDetail(root, 'RQ-browser', 'izzie@x.com') as any;
     assert.equal(partial.progress.find((x: any) => x.principal === 'izzie@x.com').counts.submitted, 1);
     assert.equal(partial.progress.find((x: any) => x.principal === 'izzie@x.com').counts.unanswered, 1);
@@ -213,6 +215,7 @@ describe("the decisions UI", { skip: pw ? false : "playwright not resolvable (se
     await list.getByLabel('I have reviewed every item in this list').check();
     await list.getByRole('button', { name: /Submit this list/ }).click();
     await page.waitForFunction(() => document.body.textContent?.includes('2 submitted'));
+    await settled(page);
     const done = await ops.questionnaireDetail(root, 'RQ-browser', 'izzie@x.com') as any;
     assert.equal(done.progress.find((x: any) => x.principal === 'izzie@x.com').counts.unanswered, 0);
     assert.equal(done.questions.find((x: any) => x.questionId === 'q-list').answers.length, 1);
@@ -232,6 +235,7 @@ describe("the decisions UI", { skip: pw ? false : "playwright not resolvable (se
     await shortRuling.getByPlaceholder('revised answer').press('Tab');
     await shortRuling.getByRole('button', { name: 'revise answer' }).click();
     await page.waitForFunction(() => document.body.textContent?.includes('Keep behavior B'));
+    await settled(page);
     const revised = await ops.decisionRound(root, 'RQ-browser') as any;
     assert.ok(revised.decisions.find((d: any) => (d.label ?? d.id) === 'q-short').answers.some((a: any) => a.revision));
     const beforeListRevision = await ops.decisionRound(root, 'RQ-browser') as any;
@@ -252,6 +256,7 @@ describe("the decisions UI", { skip: pw ? false : "playwright not resolvable (se
     await listRuling.getByPlaceholder('Correction for Keep A').fill('Keep A must change');
     await reviseList.click();
     await listRuling.getByText('answer history (2)').waitFor();
+    await settled(page);
     const listRevised = await ops.decisionRound(root, 'RQ-browser') as any;
     const revision = listRevised.decisions.find((d: any) => (d.label ?? d.id) === 'q-list').answers.find((a: any) => a.revision);
     assert.deepEqual(revision.questionnaire.corrections, [{ itemId: 'item-a', text: 'Keep A must change', verdict: 'pending' }]);
@@ -260,6 +265,7 @@ describe("the decisions UI", { skip: pw ? false : "playwright not resolvable (se
     await listRuling.getByPlaceholder('reason for withdrawal').press('Tab');
     await listRuling.getByRole('button', { name: 'withdraw this ruling' }).click();
     await page.waitForFunction(() => document.body.textContent?.includes('The list needs a fresh question'));
+    await settled(page);
     const withdrawn = await ops.decisionRound(root, 'RQ-browser') as any;
     assert.ok(withdrawn.decisions.find((d: any) => (d.label ?? d.id) === 'q-list').answers.some((a: any) => a.withdrawn));
     assert.deepEqual(errors, []);
@@ -296,6 +302,7 @@ describe("the decisions UI", { skip: pw ? false : "playwright not resolvable (se
     await choice.getByText("Real, fix it", { exact: true }).click();
     await choice.getByRole('button', { name: 'Submit this answer' }).click();
     await page.waitForFunction(() => document.body.textContent?.includes('1 submitted'));
+    await settled(page);
     const detail = await ops.questionnaireDetail(root, 'RQ-phone', 'izzie@x.com') as any;
     assert.equal(detail.progress.find((x: any) => x.principal === 'izzie@x.com').counts.submitted, 1);
     assert.equal(await fits(), true, "and still fits once answered");
@@ -402,6 +409,7 @@ describe("the decisions UI", { skip: pw ? false : "playwright not resolvable (se
     await page.locator(".op-card label").filter({ hasText: "Reason for this choice" }).locator("textarea").fill("The first ruling matches the product intent.");
     await page.getByRole("button", { name: "record explicit resolution" }).click();
     await page.waitForSelector("text=resolved by human choice", { timeout: 10_000 });
+    await settled(page);
     const resolved = await ops.comparisonDetail(root, id) as any;
     assert.equal(resolved.comparison.projection.preservedAnswer, request.left.answerId);
     const prior = resolved.comparison.projection.acceptedResolutions[0];
@@ -411,6 +419,7 @@ describe("the decisions UI", { skip: pw ? false : "playwright not resolvable (se
       .fill("On review, the second ruling matches the product intent.");
     await page.getByRole("button", { name: "record corrected resolution" }).click();
     await page.waitForFunction((wanted: string) => document.body.textContent?.includes(`Preserved answer: ${wanted}`), request.right.answerId);
+    await settled(page);
     const corrected = await ops.comparisonDetail(root, id) as any;
     assert.equal(corrected.comparison.projection.preservedAnswer, request.right.answerId);
     assert.equal(corrected.comparison.projection.acceptedResolutions[1].revises, prior.id);
@@ -444,6 +453,7 @@ describe("the decisions UI", { skip: pw ? false : "playwright not resolvable (se
     assert.match((await card.textContent())!, new RegExp(first.answer));
     await card.getByRole("button", { name: "revise selected to Repair it" }).click();
     await page.waitForFunction(() => document.body.textContent?.includes("you said: Repair it"));
+    await settled(page);
     const revised = await ops.decisionRound(root, "R-bug-web") as any;
     const current = revised.decisions.find((d: any) => (d.label ?? d.id) === "bug-web");
     const second = current.answers.find((a: any) => a.revision?.of.includes(first.answer));

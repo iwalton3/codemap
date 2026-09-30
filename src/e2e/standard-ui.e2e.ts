@@ -20,7 +20,7 @@ import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { resolvePlaywright, launchPlaywright, startServer, type Server } from "./harness.js";
+import { resolvePlaywright, launchPlaywright, startServer, type Server, settled } from "./harness.js";
 import * as ops from "../ops.js";
 import { lawScope, publishOperation } from "../shared-standard.js";
 import { readScope } from "../eventlog.js";
@@ -694,6 +694,7 @@ describe("the standard UI", { skip: pw ? false : "playwright not resolvable (set
   test("a principal adjudicates from the browser — the act an agent cannot perform", async () => {
     const { page, errors } = await open(`/u/${universe}/standard/`);
     await page.waitForSelector(".op-actions button", { timeout: 10_000 });
+    await settled(page);
     const before = (await ops.awaitingAdjudication(root) as any).problems.length;
     assert.equal(before, 1, "the fixture must have something to decide or this is vacuous");
 
@@ -705,6 +706,7 @@ describe("the standard UI", { skip: pw ? false : "playwright not resolvable (set
       () => !document.querySelector('main')?.textContent?.includes('un-adjudicated'),
       { timeout: 10_000 },
     );
+    await settled(page);
     const after = await ops.awaitingAdjudication(root) as any;
     assert.equal(after.problems.length, 0, "the queue emptied because the decision landed");
     assert.equal((await ops.listProblems(root) as any).problems[0].disposition, "code-wrong");
@@ -857,6 +859,7 @@ describe("the standard UI", { skip: pw ? false : "playwright not resolvable (set
       () => document.querySelector('main')?.textContent?.includes('fix scheduled for Q1'),
       { timeout: 10_000 },
     );
+    await settled(page);
     const acks = (await ops.listAcknowledgements(root, { requirementId: ruleId }) as any).acknowledgements;
     const granted = acks.find((a: any) => a.rationale === "fix scheduled for Q1");
     assert.ok(granted, "the debt reached the store, not just the page");
@@ -870,6 +873,7 @@ describe("the standard UI", { skip: pw ? false : "playwright not resolvable (set
   test("a branch finding is promoted from the hub, and stops being offered", async () => {
     const { page, errors } = await open(`/u/${universe}/standard/`);
     await page.waitForSelector(".op-card", { timeout: 10_000 });
+    await settled(page);
     const before = (await ops.promotableAudits(root) as any).audits;
     assert.equal(before.length, 1, "the branch finding must be promotable here or this is vacuous");
 
@@ -878,6 +882,7 @@ describe("the standard UI", { skip: pw ? false : "playwright not resolvable (set
       () => document.querySelector('main')?.textContent?.includes('nothing to promote'),
       { timeout: 10_000 },
     );
+    await settled(page);
     assert.equal((await ops.promotableAudits(root) as any).audits.length, 0);
     const promoted = (await ops.auditsFor(root, { requirementId: ruleId }) as any).audits
       .find((a: any) => a.promotedFrom === before[0].id);

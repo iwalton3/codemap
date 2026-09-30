@@ -256,6 +256,15 @@
     #lockout > div { max-width: min(760px, 94vw); background: var(--panel); color: var(--text);
       border: 1px solid var(--bad); border-left: 4px solid var(--bad); border-radius: 10px;
       padding: 18px 22px; font-size: 13.5px; line-height: 1.55; white-space: pre-wrap; }
+    /* A tab's refused staged writes (plan 4.2), and its sync status. Outside the render tree too. */
+    #conflicts { position: fixed; inset: 0; z-index: 90; display: flex; align-items: center; justify-content: center;
+      background: rgba(0,0,0,0.6); padding: 16px; }
+    #conflicts .modal { max-width: min(680px, 94vw); background: var(--panel); color: var(--text);
+      border: 1px solid var(--warn); border-left: 4px solid var(--warn); border-radius: 10px; padding: 16px 20px; }
+    #conflicts .modal h2 { font-size: 15px; margin: 0 0 8px; }
+    #conflicts .modal button { margin: 6px 8px 0 0; }
+    #sync-status { position: fixed; right: 12px; bottom: 10px; z-index: 50; display: flex; gap: 8px; align-items: center;
+      background: var(--panel); border: 1px solid var(--border, #333); border-radius: 8px; padding: 4px 8px; font-size: 12px; }
     /* A proposed detector: visible to the ratifier, and marked as NOT part of the signature. */
     .op-detector { margin-top: 6px; padding: 6px 9px; border-radius: 6px; background: var(--panel2);
       border-left: 2px solid var(--warn); }
