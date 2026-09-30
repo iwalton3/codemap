@@ -18,9 +18,10 @@ test("a damaged log locks every API route with 423, leaves sync reachable, and c
     const ana = t.all[0]!;
     server = await startServer(ana.repo);
     const u = universeKey(ana.repo);
-    // A revision without its revision: wrong-shaped, so damage.
-    const bad = await appendUnfolded(ana.sidecar, decisionScope(u), ana.actor, "decision.answer.revised", "d1",
-      { decision: "d1", hash: "h", via: { kind: "direct", option: "x" } });
+    // An answer to a decision nobody posted: a linear event its fold refuses on a reference —
+    // damage. (A wrong shape would be newer, which blocks pushes and does not lock.)
+    const bad = await appendUnfolded(ana.sidecar, decisionScope(u), ana.actor, "decision.answer.recorded", "d_nobody_posted",
+      { decision: "d_nobody_posted", hash: "h", via: { kind: "direct", option: "x" } });
 
     const first = await fetch(`${server.url}/api/decisions?u=${encodeURIComponent(u)}`);
     assert.equal(first.status, 423, "the read that folds the damage answers the lockout");
