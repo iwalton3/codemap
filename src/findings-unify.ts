@@ -42,6 +42,7 @@ import { ensureMaterialized } from "./materialize.js";
 import { findingsProjection } from "./shared-projections.js";
 import { readFindings, findingsUnifiedAt, markFindingsUnified } from "./store.js";
 import { ensureSidecar } from "./sidecar.js";
+import { deliveryNote } from "./delivery.js";
 import {
   createFinding, corroborate, comment, promote, recordOutcome, markPosted, markUpstreamed,
   promoteToBug, remediate, setState, isClosed, foldFindings, findingScope, type SharedFinding,
@@ -225,7 +226,7 @@ export async function unifyFindings(root: string, opts: { dryRun?: boolean } = {
     universe: cfg.universe, local: local.length, published, refused,
     note: refused.length
       ? `${refused.length} finding(s) left local — see \`refused\`; a person has to decide what to do with those`
-      : "run `codemap sync` to send them",
+      : deliveryNote(root, true),
   };
 }
 

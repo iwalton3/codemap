@@ -33,6 +33,7 @@ import { genId, liveIndex, liveAnchors, anchorFiles, resolveRefs, rejected } fro
 import { decisionsView, type DecisionsView } from "./decision-holds.js";
 import type { CanonicalIssueReference } from "../decision-issues.js";
 import { universeKey } from "../sidecar-config.js";
+import { deliveryNote } from "../delivery.js";
 
 // ---------------------------------------------------------------------------
 // Filing
@@ -87,7 +88,7 @@ export async function reportBug(
       title: input.title, text: input.description, severity: input.severity,
       category: input.category, anchors: witnesses, createdCommit: headCommit(root) ?? undefined,
     }));
-    return { ok: true, id, shared: true, note: "filed for the team — run `codemap sync` to send it", ...rejected(errors) };
+    return { ok: true, id, shared: true, note: deliveryNote(root), ...rejected(errors) };
   }
 
   const actor = requireActor(root);
@@ -808,7 +809,7 @@ export async function publishBugs(root: string, opts: { dryRun?: boolean; ids?: 
         ? `${deferred.length} bug(s) carry a person's deferral and were NOT published: publishing them `
           + `from an agent session would drop it, because the fold refuses an agent's. Ask a person to run this.`
         : "",
-      published.length ? "run `codemap sync` to send them" : "",
+      published.length ? deliveryNote(root, true) : "",
     ].filter(Boolean).join(" ") || "nothing local left to publish",
   };
 }

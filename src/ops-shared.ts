@@ -25,6 +25,7 @@ import { findingKeyScope, branchKey, branchOf, isBranchKey, normalizeBranch } fr
 import { reviewScope, foldReviewLinks, linkReview } from "./shared-reviews.js";
 import { resolveSidecar, scopeFor, sidecarIdentity, inUniverse, checkSidecarBinding, universeKey, type SidecarConfig } from "./sidecar-config.js";
 import { onArrivals } from "./arrivals.js";
+import { deliveryNote } from "./delivery.js";
 import { attemptGone, begin, closeSession, discard, dropOp, localConflicts, staged } from "./sync-engine.js";
 import { sessionRow, setTx, touchSession, type QueuedOp } from "./sync-queue.js";
 import { transportsRemotely } from "./sidecar.js";
@@ -632,7 +633,7 @@ export async function shareFinding(root: string, pr: number | string, f: NewFind
   await ensureSidecar(b.cfg.path, b.actor);
   const id = await createFinding(b.cfg.path, prKey(b.cfg, pr), b.actor, f);
   const mz = await materializeFindings(root, b.cfg, pr);
-  return { ...mz, ok: true, id, note: "recorded locally — run `codemap sync` to send it" };
+  return { ...mz, ok: true, id, note: deliveryNote(root) };
 }
 
 /**
@@ -2217,7 +2218,7 @@ export async function commentOnProposal(
   });
   return {
     ok: true as const, id, target: { kind: input.targetKind, id: input.targetId },
-    note: "appended locally — run `sync` to send it to the team",
+    note: deliveryNote(root),
   };
 }
 
@@ -2322,7 +2323,7 @@ export async function publishLocalNotes(root: string, opts: { dryRun?: boolean }
   }
   return {
     universe: b.cfg.universe, published: todo.length, alreadyShared: local.length - todo.length,
-    note: todo.length ? "run `codemap sync` to send them" : "nothing new to publish",
+    note: todo.length ? deliveryNote(root, true) : "nothing new to publish",
   };
 }
 
@@ -2601,7 +2602,7 @@ export async function shareDoc(root: string, v: NewDocVersion) {
     ok: true, nodeId: v.nodeId, versionId,
     ...(materialized ? {} : { materialized: false as const, scope: after.status }),
     note: materialized
-      ? "recorded locally — run `codemap sync` to send it"
+      ? deliveryNote(root)
       : "recorded in the log, but this store could not fold it — the next read or sync will retry",
   };
 }
@@ -2773,7 +2774,7 @@ export async function publishLocalDocs(root: string, opts: { dryRun?: boolean } 
     universe: b.cfg.universe, publishedNodes: todo.length, publishedVersions: versions,
     alreadyShared: nodes.length - todo.length,
     ...(skipped.generated || skipped.flows ? { skipped } : {}),
-    note: todo.length ? "run `codemap sync` to send them" : "nothing new to publish",
+    note: todo.length ? deliveryNote(root, true) : "nothing new to publish",
   };
 }
 
@@ -2811,7 +2812,7 @@ export async function shareWalkthrough(root: string, w: PrWalkthrough) {
     ok: true, pr: w.pr,
     ...(materialized ? {} : { materialized: false as const }),
     note: materialized
-      ? "recorded locally — run `codemap sync` to send it"
+      ? deliveryNote(root)
       : "recorded in the log, but this store could not fold it — the next read or sync will retry",
   };
 }
@@ -2849,7 +2850,7 @@ export async function publishLocalWalkthroughs(root: string, opts: { dryRun?: bo
   return {
     universe: cfg.universe, local: total, published,
     ...(failed.length ? { failed } : {}),
-    note: published.length ? "run `codemap sync` to send them" : "nothing new to publish",
+    note: published.length ? deliveryNote(root, true) : "nothing new to publish",
   };
 }
 
@@ -3034,7 +3035,7 @@ export async function publishLocalTriage(root: string, opts: { dryRun?: boolean 
   return {
     universe: b.cfg.universe, published: publishable.length, skippedGraph,
     ...(held.length ? { heldBack: heldList } : {}),
-    note: folded ? "run `codemap sync` to send them" : "recorded in the log; the next sync will fold them",
+    note: folded ? deliveryNote(root, true) : "recorded in the log; the next sync will fold them",
   };
 }
 
@@ -3184,7 +3185,7 @@ export async function publishLocalGraph(root: string, opts: { dryRun?: boolean }
     skippedGenerated, skippedAnalyzerSource, needsAnalyzer,
     note: needsAnalyzer
       ? `run \`codemap sync\` to send them — ${needsAnalyzer} edge(s) cite analyzer-generated nodes, so a teammate needs the same analyzer to resolve them`
-      : "run `codemap sync` to send them",
+      : deliveryNote(root, true),
   };
 }
 

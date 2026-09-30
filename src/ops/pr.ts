@@ -21,6 +21,7 @@ import { annotate, resolveAnnotation, reviewQueue } from "./annotations.js";
 import { document } from "./docs.js";
 import { reportDefect } from "./defect.js";
 import { anchorMark } from "./triage.js";
+import { deliveryNote } from "../delivery.js";
 
 /**
  * Triage a pull request: resolve its merge-base, snapshot both sides without a
@@ -181,7 +182,7 @@ export async function prWalkthroughSet(
     ...(shared ? { shared: !shared.error } : {}),
     ...(shared?.error
       ? { sharedNote: `written locally, but NOT shared: ${shared.error}` }
-      : shared ? { note: "recorded and staged for the team — run `codemap sync` to send it" } : {}),
+      : shared ? { note: deliveryNote(root) } : {}),
   };
 }
 
