@@ -34,13 +34,15 @@ test("a decisions event its own writer's door would have refused halts, named wi
   assert.deepEqual([d?.id, d?.why], [id, "a questionnaire submission is the person's own act"]);
 });
 
-test("two withdrawals of one question written without seeing each other: the second is a race, reported", () => {
+test("two identical withdrawals written without seeing each other: the second is a no-op, not a refusal (owner, Q5)", () => {
   const events = fixture.confirm!;
   const first = events.find((e) => e.kind === "decision.withdrawn")!;
   const second = { ...first, id: first.id.replace(/.$/, (c) => (c === "0" ? "1" : "0")), writer: "w_other", writerPrev: "GENESIS" } as LogEvent;
-  const { refused } = foldDecisionsReport(sortEvents([...events, second]));
+  const { refused, value } = foldDecisionsReport(sortEvents([...events, second]));
+  assert.deepEqual(refused, []);
   const later = [first.id, second.id].sort()[1]!;
-  assert.deepEqual(refused.map((r) => r.id), [later]);
+  const records = value.decisions.flatMap((d) => d.withdrawals ?? []);
+  assert.equal(records.find((w) => w.id === later)?.state, "settled");
 });
 
 test("a standard event its own writer's door would have refused halts, named with its reason", () => {

@@ -20,7 +20,7 @@ import {
   CONFIRM_NO, CONFIRM_YES, NONE, canonicalMaps, briefManifest, briefListing, briefRefusal, readingRefusal, readerBrief as briefFor, bindRefusal, checkDecision, checkQuestionnaireDecisions, confirmPayload, confirmState, confirmedWords, decisionHash, logQuestionEvent,
   mapsKey, named, namedIssues, possiblySuperseded, postConfirmEvent, postRoundEvent, validMaps, loggedQuestionOnce,
   revisionRelayQuestion, withdrawalQuestion, withdrawalBriefContent, withdrawalBriefHash, withdrawalReviewRefusal, WITHDRAW_IT, type WithdrawalReview, type WithdrawalReviewReceipt, standingForIssue, checkListRevision, listRevisionItemIds, parseListRelayAnswer, type ListRevision,
-  readingsInDispute, intentCandidates, nominateComparisonEvent, recordAnswerEvent, submitQuestionnaireEvent, recordReadingEvent, ruledNotCarriedOut, standing, standingForFinding, waitingOnMe, awaitingReading, parked, withdrawDecisionEvent, reviseAnswerEvent, resolveConflictEvent, rulerOf,
+  readingsInDispute, intentCandidates, nominateComparisonEvent, recordAnswerEvent, submitQuestionnaireEvent, recordReadingEvent, ruledNotCarriedOut, standing, standingForFinding, waitingOnMe, awaitingReading, parked, withdrawDecisionEvent, reviseAnswerEvent, rulerOf,
   type AnswerVia, type BriefEntry, type FoldedDecision, type Mapping, type SharedDecisions,
 } from "../shared-decisions.js";
 import { decisionsView } from "./decision-holds.js";
@@ -1017,31 +1017,6 @@ export async function withdrawDecision(root: string, input: { decision: string; 
       ...(relay ? { relay } : {}), ...(review ? { review } : {}) });
   if ("error" in e) return e;
   return { ok: true as const, withdrawal: e.id, decision: d.id, ...(input.answer ? { answer: input.answer } : {}) };
-}
-
-/**
- * A person picks a side of a held withdrawal (plan 1.3; owner, batch 8 #7): "withdrawal" applies
- * it, an answer id keeps that answer. Never an agent — "one person who sees both sides" resolves
- * a conflict between people, and the fold refuses an agent's pick.
- */
-export async function resolveDecisionConflict(root: string, input: { decision: string; withdrawal: string; keep: string; reason: string }, via: Via = {}) {
-  const b = bindDecisions(root, via);
-  if ("error" in b) return b;
-  if (isAgentActor(b.actor)) return { error: "picking a side of a held conflict is a person's act: show them both sides" };
-  if (typeof input?.reason !== "string" || !input.reason.trim()) return { error: "say why this side" };
-  const w = await writable(root);
-  if ("error" in w) return w;
-  const found = decisionMatches(w.s, input.decision);
-  if (found.length !== 1) return { error: found.length ? ambiguous("decision", input.decision, found) : `no decision ${input.decision}` };
-  const d = found[0]!;
-  const held = d.withdrawals?.find((x) => x.id === input.withdrawal && x.state === "conflict");
-  if (!held) return { error: `withdrawal ${input.withdrawal} is not held in conflict on ${d.ref}` };
-  if (input.keep !== "withdrawal" && !(held.conflictingAnswers ?? []).includes(input.keep))
-    return { error: `keep "withdrawal" or one of ${(held.conflictingAnswers ?? []).join(", ")}` };
-  const e = await resolveConflictEvent(b.cfg.path, b.cfg.universe, b.actor,
-    { decision: d.id, withdrawal: held.id, keep: input.keep, reason: input.reason.trim() });
-  if ("error" in e) return e;
-  return { ok: true as const, resolution: e.id, decision: d.id, withdrawal: held.id, keep: input.keep };
 }
 
 /**

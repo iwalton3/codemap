@@ -77,7 +77,7 @@ async function context(root: string, input: {
     return { error: 'no recorded human answer' };
   const { d, a } = pair;
   const scope = { kind: 'decision' as const, id: d.id, universe: cfg.universe, scope: decisionScope(cfg.universe) };
-  if (!a.verified || a.sourceAnswer || a.cancelled || a.withdrawn || a.resolvedOutBy || a.elsewhere || a.revisionInvalid || d.withdrawn || d.withdrawals?.some(w => w.state === 'conflict') || !answerHasCurrentAuthority(d, a, scope))
+  if (!a.verified || a.sourceAnswer || a.cancelled || a.withdrawn || a.resolvedOutBy || a.elsewhere || a.revisionInvalid || d.withdrawn || !answerHasCurrentAuthority(d, a, scope))
     return { error: 'answer has no current verified human authority' };
   if (intentCandidates(decisions).some(c => c.answers.includes(a.id) && comparisonRestricts(decisions, c, scope)))
     return { error: 'answer awaits comparison or human resolution' };

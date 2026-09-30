@@ -1398,7 +1398,7 @@ const tools: Tool[] = [
     name: "withdraw_decision",
     description: "Withdraw an unanswered question with two readers' verdicts (review: readers, and an arbitrator if they disagreed), or retire a ruling as its principal's \"Withdraw it\" answer to report_ruling's question (answer and relay). An agent never retires a ruling on its own.",
     inputSchema: obj({
-      decision: { type: "string" }, answer: { type: "string", description: "The ruling being retired; omit for an unanswered question." },
+      decision: { type: "string" }, answer: { type: "string", description: "The ruling being retired; omit for an unanswered question. Only its principal's answers are withdrawn: a colleague's earlier answer stands." },
       reason: { type: "string" }, relay: { type: "string", description: "The report_ruling question the person answered." },
       review: { type: "object", description: "{ readers: [ref, ref], arbitrator?: ref }" },
     }, ["decision", "reason"]),

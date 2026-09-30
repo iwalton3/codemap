@@ -84,8 +84,7 @@ async function rulingContext(root: string, review: number | string, findings: Sh
   if (blocked) return { error: `repair verification is held: ${blocked.work.reason ?? blocked.findingId}` };
   for (const id of rulingIds) {
     const pair = state.decisions.flatMap((d) => d.answers.map((a) => ({ d, a }))).find((x) => x.a.id === id);
-    if (!pair || !pair.a.verified || pair.a.cancelled || pair.a.withdrawn || pair.a.sourceAnswer || pair.a.resolvedOutBy || pair.a.elsewhere || pair.a.revisionInvalid || pair.d.withdrawn
-      || pair.d.withdrawals?.some((w) => w.state === "conflict")) return { error: `ruling ${id} has no current verified authority` };
+    if (!pair || !pair.a.verified || pair.a.cancelled || pair.a.withdrawn || pair.a.sourceAnswer || pair.a.resolvedOutBy || pair.a.elsewhere || pair.a.revisionInvalid || pair.d.withdrawn) return { error: `ruling ${id} has no current verified authority` };
     for (const ref of refs) {
       if (!answerHasCurrentAuthority(pair.d, pair.a, ref)
         || candidates.some((c) => c.answers.includes(id) && comparisonRestricts(state, c, ref))) return { error: `ruling ${id} is held or does not govern ${ref.id}` };

@@ -14,7 +14,7 @@ import { discard } from "./test-tmp.js";
 import { readFinding } from "./store.js";
 import { universeKey } from "./sidecar-config.js";
 import { applicationReaderBrief, submitApplicationVerdict, recordApplicationVerdict, applyRuling } from "./ops/ruling-application.js";
-import { begin } from "./sync-engine.js";
+import { begin, discard as discardTx, syncSession } from "./sync-engine.js";
 
 const alice = "alice@acme.test", bob = "bob@acme.test";
 const actor = async (principal: string, agent: boolean, work: () => Promise<void>) => {
@@ -66,7 +66,7 @@ async function fixture(principals: [string, string] = [alice, bob]) {
   return { t, ledger, first, second, q1, q2, cleanup: () => t.dispose() };
 }
 
-test("unanswered withdrawal releases only its hold locally; independent delayed answer and conflict survive sync", async () => {
+test("unanswered withdrawal releases only its hold locally; replayed after an answer it never saw, it is refused and the holds return", async () => {
   const u = await fixture();
   try {
     const [a, b] = u.t.all;
@@ -85,18 +85,24 @@ test("unanswered withdrawal releases only its hold locally; independent delayed 
       const result = await answerDirect(b!.repo, { decision: "q1", option: "Reject" }) as any;
       assert.equal(result.recorded, true, JSON.stringify(result)); answer = result.answer;
     });
+    // The ledger reads the staged overlay as held history, so it looks only once the act is refused and dropped.
+    await actor(alice, false, async () => {
+      const r = await syncSession(a!.sidecar, a!.actor);
+      assert.ok("error" in r, "the withdrawal replays after bob's answer and is refused");
+      assert.match(String(r.conflicts?.[0]?.why), /an answer arrived after you read the question/);
+      discardTx(a!.sidecar);
+    });
     await checkAlways(u.t, u.ledger);
     await settle(u.t); await checkSettled(u.t, u.ledger);
     for (const member of u.t.all) {
       const view = await decisionRound(member.repo, "R1") as any;
       const q1 = view.decisions.find((d: any) => d.id === u.q1);
       assert.ok(q1.answers.some((entry: any) => entry.id === answer && entry.by.principal === bob));
-      assert.ok(q1.withdrawals.some((entry: any) => entry.id === withdrawal && entry.state === "conflict"
-        && entry.conflictingAnswers.includes(answer)), "both independent human acts remain in history");
-      assert.ok((await heldBy(member.repo, u.first)).some((hold) => hold.why === "withdrawal"),
-        "the newly discovered conflict restricts Q1 work");
+      assert.ok(!(q1.withdrawals ?? []).some((entry: any) => entry.id === withdrawal), "the refused withdrawal never reached the log");
+      assert.ok((await heldBy(member.repo, u.first)).some((hold) => hold.decision === u.q1),
+        "bob's ruling holds Q1's finding, as it would have without the attempt");
       assert.ok((await heldBy(member.repo, u.second)).some((hold) => hold.decision === u.q2),
-        "conflict handling cannot release Q2's unrelated hold");
+        "Q2's unrelated hold is untouched");
     }
   } finally { u.cleanup(); }
 });

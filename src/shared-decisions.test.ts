@@ -14,7 +14,7 @@ import { isLogDamage } from "./log-damage.js";
 import {
   foldDecisions as foldPublished, decisionHash, checkDecision, heldFindings, standing, standingForFinding, waitingOnMe, readingsInDispute, ruledNotCarriedOut, awaitingReading, parked,
   possiblySuperseded, confirmPayload, confirmState, supersededFindings, readerBrief, briefManifest, briefListing, readingRefusal, intentCandidates, CONFIRM_YES, CONFIRM_NO, withdrawalQuestion, WITHDRAW_IT, KEEP_IT, rulerOf,
-  type FoldedDecision, type SharedDecisions, type Mapping,
+  decisionsDoor, type FoldedDecision, type SharedDecisions, type Mapping,
 } from "./shared-decisions.js";
 
 /**
@@ -1253,7 +1253,7 @@ test("round five: nominated cross-question scope holds work without choosing an 
 });
 
 
-test("round five: concurrent answer keeps a withdrawal attempt visible and restricts work", () => {
+test("a withdrawal is judged against the answers before it in the log: one its author had not read refuses it", () => {
   const base: any = { ...round, id: "withdraw-base", writer: "w-base", writerPrev: "GENESIS", after: [] };
   const bob: any = { id: "answer-bob", kind: "decision.answer.recorded", subject: "d1", actor: { principal: "bob" },
     at: at(21), writer: "w-bob", writerPrev: "GENESIS", after: [base.id],
@@ -1261,47 +1261,41 @@ test("round five: concurrent answer keeps a withdrawal attempt visible and restr
   const questionWithdrawal: any = { id: "withdraw-question", kind: "decision.withdrawn", subject: "d1", actor: { principal: "alice" },
     at: at(22), writer: "w-alice", writerPrev: "GENESIS", after: [base.id],
     data: { decision: "d1", reason: "obsolete question", knownAnswers: [] } };
-  for (const events of [[base, bob, questionWithdrawal], [base, questionWithdrawal, bob]]) {
-    const out = foldDecisions(events);
-    const d = out.decisions.find((x) => x.label === "d1")!;
-    assert.equal(d.withdrawn, undefined);
-    assert.equal(d.withdrawals?.[0]?.state, "conflict");
-    assert.deepEqual(d.withdrawals?.[0]?.conflictingAnswers, [bob.id]);
-    assert.equal(standing(d)?.id, bob.id, "the independent answer remains source evidence");
-    assert.ok(heldFindings(out, () => true).get("F3")?.some((h) => h.why === "withdrawal"));
-    assert.ok(!ruledNotCarriedOut(out, () => true).some((x) => lbl(out, x.decision) === "d1"));
-    assert.ok(waitingOnMe(out, "2026-09-23").some((x) => /withdrawal withdraw-question conflicts/.test(x.why)));
+  // Bob's answer is earlier and alice never read it: refused, and visible with why.
+  let out = foldDecisions([base, bob, questionWithdrawal]);
+  let d = out.decisions.find((x) => x.label === "d1")!;
+  assert.equal(d.withdrawn, undefined);
+  assert.equal(d.withdrawals?.[0]?.state, "refused");
+  assert.match(String(d.withdrawals?.[0]?.refused), /an answer arrived after you read the question: answer-bob/);
+  assert.equal(standing(d)?.id, bob.id, "the answer stands");
+  assert.ok(!waitingOnMe(out, "2026-09-23").some((x) => /withdrawal/.test(x.why)), "nothing is held for a person");
+  // Having read it, a question with an answer is withdrawn ruling by ruling, not whole: the door
+  // refuses it, so on the log it is one no build writes.
+  const informed: any = { ...questionWithdrawal, id: "withdraw-informed", after: [base.id, bob.id], data: { ...questionWithdrawal.data, knownAnswers: [bob.id] } };
+  assert.throws(() => foldDecisions([base, bob, informed]),
+    (e: unknown) => isLogDamage(e) && e.entry.id === informed.id && /has a submitted answer/.test(e.entry.why));
+
+  // The other way round the withdrawal came first: it applies, and the answer after it is history.
+  for (const later of [bob,
+    { ...bob, id: "answer-after-withdrawal", after: [questionWithdrawal.id] },
+    { ...bob, id: "relayed-after-pull", after: [questionWithdrawal.id],
+      data: { ...bob.data, via: { kind: "message", session: "s", entryId: "message-1", text: "No", at: at(20), round: "R1" } } }]) {
+    d = foldDecisions([base, questionWithdrawal, later]).decisions.find((x) => x.label === "d1")!;
+    assert.equal(d.withdrawals?.[0]?.state, "applied", later.id);
+    assert.equal(d.withdrawn?.id, questionWithdrawal.id);
+    assert.equal(standing(d), undefined);
+    assert.ok(d.answers.find((a) => a.id === later.id)?.cancelled, `${later.id}: a later answer does not reactivate the question`);
   }
 
-  const knowinglyLate: any = { ...bob, id: "answer-after-withdrawal", at: at(23), after: [questionWithdrawal.id] };
-  const late = foldDecisions([base, questionWithdrawal, knowinglyLate]);
-  const lateDecision = late.decisions.find((x) => x.label === "d1")!;
-  assert.equal(lateDecision.withdrawals?.[0]?.state, "applied");
-  assert.equal(lateDecision.withdrawn?.id, questionWithdrawal.id);
-  assert.equal(standing(lateDecision), undefined);
-  assert.ok(lateDecision.answers.find((a) => a.id === knowinglyLate.id)?.cancelled,
-    "a knowingly late answer remains history without reactivating the question");
-
-  const relayedLate: any = { ...bob, id: "relayed-after-pull", at: at(23), after: [questionWithdrawal.id],
-    data: { ...bob.data, via: { kind: "message", session: "s", entryId: "message-1", text: "No", at: at(20), round: "R1" } } };
-  const relayed = foldDecisions([base, questionWithdrawal, relayedLate]);
-  const relayedDecision = relayed.decisions.find((x) => x.label === "d1")!;
-  assert.equal(relayedDecision.withdrawn, undefined);
-  assert.equal(relayedDecision.withdrawals?.[0]?.state, "conflict");
-  assert.deepEqual(relayedDecision.withdrawals?.[0]?.conflictingAnswers, [relayedLate.id]);
-  assert.equal(relayedDecision.answers.find((a) => a.id === relayedLate.id)?.cancelled, undefined,
-    "a recorder's later pull is not proof the person saw the withdrawal");
-  assert.ok(heldFindings(relayed, () => true).get("F3")?.some((h) => h.why === "withdrawal"));
-
+  // Withdrawing her own ruling without having read bob's: refused the same way.
   const alice: any = { ...bob, id: "answer-alice", actor: { principal: "alice" }, at: at(20), writer: "w-alice", data: { ...bob.data, via: { kind: "direct", option: "No" } } };
   const sourceWithdrawal: any = { ...questionWithdrawal, id: "withdraw-answer", writerPrev: alice.id, after: [alice.id],
     data: { decision: "d1", answer: alice.id, reason: "I retract my ruling", knownAnswers: [alice.id] } };
-  const out = foldDecisions([base, alice, bob, sourceWithdrawal]);
-  const d = out.decisions.find((x) => x.label === "d1")!;
-  assert.equal(d.withdrawals?.[0]?.state, "conflict");
-  assert.deepEqual(d.withdrawals?.[0]?.conflictingAnswers, [bob.id]);
+  out = foldDecisions([base, alice, bob, sourceWithdrawal]);
+  d = out.decisions.find((x) => x.label === "d1")!;
+  assert.equal(d.withdrawals?.[0]?.state, "refused");
+  assert.match(String(d.withdrawals?.[0]?.refused), /answer-bob/);
   assert.equal(d.answers.find((a) => a.id === alice.id)?.withdrawn, undefined);
-  assert.ok(heldFindings(out, () => true).get("F3")?.some((h) => h.why === "withdrawal"));
 });
 
 test("scoped revision keeps the older answer on untouched findings and its source history", () => {
@@ -1370,9 +1364,9 @@ test("a reader brief binds the frozen questionnaire presentation", () => {
   assert.match(String(briefListing(byId, d, a, brief, manifest)), /cannot be read onto|other labels/);
 });
 
-// --- plan 1.3: conflict handling (2026-09-28 pre-merge review) ----------------------------------
+// --- withdrawals under the linear log (online-only sync, owner Q4/Q5) ----------------------------
 
-/** A question withdrawal by alice held by bob's answer she never saw, on one base round. */
+/** A question withdrawal by alice, and bob's answer she never saw, on one base round. */
 const heldPair = () => {
   const base: any = { ...round, id: "c-base", writer: "w-base", writerPrev: "GENESIS", after: [] };
   const bob: any = { id: "c-bob", kind: "decision.answer.recorded", subject: "d1", actor: { principal: "bob" },
@@ -1388,65 +1382,52 @@ const heldPair = () => {
 };
 const d1Of = (out: SharedDecisions) => out.decisions.find((x) => x.label === "d1")!;
 
-test("plan 1.3: two people withdrawing one question at once settles quietly, in either order", () => {
+test("Q5: the same question withdrawal again is a no-op, whether or not its author saw the first", () => {
   const { base, wq } = heldPair();
-  const other: any = { ...wq, id: "c-withdraw-2", actor: { principal: "bob" }, writer: "w-bob2", at: at(23) };
-  for (const events of [[base, wq, other], [base, other, wq]]) {
-    const d = d1Of(foldDecisions(events));
+  const blind: any = { ...wq, id: "c-withdraw-2", actor: { principal: "bob" }, writer: "w-bob2", at: at(23) };
+  const seen: any = { ...blind, id: "c-withdraw-3", after: [base.id, wq.id] };
+  for (const events of [[base, wq, blind], [base, blind, wq], [base, wq, seen]]) {
+    const out = foldDecisions(events);
+    const d = d1Of(out);
     assert.ok(d.withdrawn, "the question is withdrawn");
-    assert.deepEqual(d.withdrawals!.map((w) => w.state).sort(), ["applied", "settled"],
-      "the second withdrawal is the same outcome, not a conflict");
-    assert.ok(!waitingOnMe(foldDecisions(events), "2026-09-23").some((x) => /conflicts/.test(x.why)));
+    assert.equal(d.withdrawn!.id, events[1]!.id, "by the first");
+    assert.deepEqual(d.withdrawals!.map((w) => w.state), ["applied", "settled"], "the second changes nothing and is not refused");
   }
 });
 
-test("plan 1.3: a held withdrawal releases when the conflicting answer is withdrawn by its author", () => {
-  const { base, bob, wq } = heldPair();
-  const bobTakesBack: any = { id: "c-bob-back", kind: "decision.withdrawn", subject: "d1", actor: { principal: "bob" },
-    at: at(24), writer: "w-bob", writerPrev: bob.id, after: [bob.id],
-    data: { decision: "d1", answer: bob.id, reason: "I answered the wrong question", knownAnswers: [bob.id] } };
-  const d = d1Of(foldDecisions([base, bob, wq, bobTakesBack]));
-  assert.equal(d.withdrawals!.find((w) => w.id === wq.id)!.state, "applied", "no new ruling needed once one side gives way");
-  assert.equal(d.withdrawn?.id, wq.id);
-});
-
-test("plan 1.3: a person who saw both sides picks one; an agent's pick is damage; two people disagreeing stay held", () => {
+test("C11: a side pick from before the linear log is skipped, never damage; the door refuses a new one", async () => {
   const { base, bob, wq, pick } = heldPair();
-  const keepW = pick("c-pick-w", "withdrawal");
-  let d = d1Of(foldDecisions([base, bob, wq, keepW]));
-  assert.equal(d.withdrawals![0]!.state, "applied");
-  assert.equal(d.withdrawals![0]!.resolvedBy, keepW.id);
-  assert.equal(d.withdrawn?.id, wq.id);
-
-  const keepBob = pick("c-pick-bob", bob.id);
-  const out = foldDecisions([base, bob, wq, keepBob]);
-  d = d1Of(out);
-  assert.equal(d.withdrawals![0]!.state, "overruled");
-  assert.equal(d.withdrawn, undefined);
-  assert.equal(standing(d)?.id, bob.id, "the kept answer stands");
-  assert.ok(!heldFindings(out, () => true).get("F3")?.some((x) => x.why === "withdrawal"), "the hold is gone");
-
-  const byAgent = pick("c-pick-agent", "withdrawal", { principal: "carol", via: { kind: "agent", model: "m" } });
-  assert.throws(() => foldDecisions([base, bob, wq, byAgent]), (e: unknown) => isLogDamage(e) && e.entry.id === byAgent.id);
-  const blind = pick("c-pick-blind", "withdrawal", { principal: "carol" }, [wq.id]);
-  assert.throws(() => foldDecisions([base, bob, wq, blind]), (e: unknown) => isLogDamage(e) && e.entry.id === blind.id,
-    "a pick by someone who never saw the other side");
-
-  const dave = pick("c-pick-dave", bob.id, { principal: "dave" });
-  assert.equal(d1Of(foldDecisions([base, bob, wq, keepW, dave])).withdrawals![0]!.state, "conflict",
-    "two people picking different sides stay held");
+  const plain = d1Of(foldDecisions([base, bob, wq]));
+  for (const p of [pick("c-pick-w", "withdrawal"), pick("c-pick-bob", bob.id),
+    pick("c-pick-agent", "withdrawal", { principal: "carol", via: { kind: "agent", model: "m" } }),
+    pick("c-pick-blind", "withdrawal", { principal: "carol" }, [wq.id])]) {
+    const d = d1Of(foldDecisions([base, bob, wq, p]));
+    assert.deepEqual(d.withdrawals, plain.withdrawals, `${p.id} changes nothing`);
+    assert.equal(standing(d)?.id, bob.id);
+  }
+  const minted = pick("c-pick-new", "withdrawal");
+  assert.match(String((await decisionsDoor([], minted)).refused?.[0]?.why), /nothing is held/);
 });
 
-test("plan 1.3: withdrawing your own ruling while a colleague's answer stands is held, not refused at the door", () => {
+test("Q4: withdrawing your own ruling while a colleague's answer stands withdraws only yours", () => {
   const { base, bob } = heldPair();
   const alice: any = { ...bob, id: "c-alice", actor: { principal: "alice" }, at: at(20), writer: "w-alice",
     data: { ...bob.data, via: { kind: "direct", option: "Settle" } } };
   const own: any = { id: "c-own", kind: "decision.withdrawn", subject: "d1", actor: { principal: "alice" },
     at: at(25), writer: "w-alice", writerPrev: alice.id, after: [alice.id, bob.id],
     data: { decision: "d1", answer: alice.id, reason: "I retract", knownAnswers: [alice.id, bob.id] } };
-  const d = d1Of(foldDecisions([base, alice, bob, own]));
-  assert.equal(d.withdrawals![0]!.state, "conflict");
-  assert.deepEqual(d.withdrawals![0]!.conflictingAnswers, [bob.id]);
+  const out = foldDecisions([base, alice, bob, own]);
+  const d = d1Of(out);
+  assert.equal(d.withdrawals![0]!.state, "applied");
+  assert.ok(d.answers.find((a) => a.id === alice.id)!.withdrawn, "hers is withdrawn");
+  assert.equal(d.answers.find((a) => a.id === bob.id)!.cancelled, undefined, "his stands");
+  assert.equal(standing(d)?.id, bob.id);
+  assert.ok(!heldFindings(out, () => true).get("F3")?.some((x) => x.why === "comparison"), "nothing left to compare");
+  const later: any = { ...bob, id: "c-bob-later", at: at(26), after: [own.id], data: { ...bob.data, via: { kind: "direct", option: "Settle" } } };
+  const after = d1Of(foldDecisions([base, alice, bob, own, later]));
+  assert.match(String(after.answers.find((a) => a.id === later.id)!.cancelled?.reason), /ask a fresh question/,
+    "an answer given after the withdrawal still needs a fresh question");
+  assert.equal(standing(after)?.id, bob.id);
 });
 
 test("F28: a relayed withdrawal counts only on the exact withdrawal question, options included", () => {
@@ -1543,6 +1524,36 @@ test("plan 2.1: two people answering the same reading differently hold the words
   const after = fold([...evs, C, ...yes, ...no, ...bobAgain]).b.d1!.answers.find((x) => x.id === a)!;
   assert.equal(after.confirmDispute, undefined);
   assert.ok(after.confirmed, "agreement binds");
+});
+
+test("K5: withdrawing one side of a confirm dispute releases it; the other side binds", () => {
+  const { evs, a, C } = wordsAndConfirm();
+  const yes = callBy(agent, C.data.decision, CONFIRM_YES, { answeredAt: "2026-09-23T00:01:00Z" });
+  const no = callBy(bobVia, C.data.decision, CONFIRM_NO, { answeredAt: "2026-09-23T00:02:00Z", toolUseId: "tu-bob" });
+  const disputed = [...evs, C, ...yes, ...no];
+  const c1 = fold(linked(disputed.map((e) => ({ ...e })))).b.c1!;
+  const bobPick = c1.answers.find((x) => x.by.principal === "bob" && x.verified)!.id;
+  const W = ev("decision.withdrawn", { decision: "c1", answer: bobPick, reason: "I misread",
+    knownAnswers: c1.answers.filter((x) => x.verified).map((x) => x.id) }, { principal: "bob" });
+  W.subject = "c1";
+  const { b } = fold(linked([...disputed, W].map((e) => ({ ...e }))));
+  assert.equal(b.c1!.withdrawals!.at(-1)!.state, "applied");
+  const w = b.d1!.answers.find((x) => x.id === a)!;
+  assert.equal(w.confirmDispute, undefined, "released");
+  assert.equal(w.confirmed?.by.principal, "izzie", "izzie's Yes, which stood throughout, now binds");
+});
+
+test("K6: a confirm dispute never binds, whatever the reader said; S1 still holds two people's sequential answers", () => {
+  const { evs, a, C } = wordsAndConfirm();
+  const yes = callBy(agent, C.data.decision, CONFIRM_YES, { answeredAt: "2026-09-23T00:01:00Z" });
+  const no = callBy(bobVia, C.data.decision, CONFIRM_NO, { answeredAt: "2026-09-23T00:02:00Z", toolUseId: "tu-bob" });
+  const agreeing = reading({ id: a }, leave[0]!);
+  const { b } = fold(linked([...evs, agreeing, C, ...yes, ...no].map((e) => ({ ...e }))));
+  const w = b.d1!.answers.find((x) => x.id === a)!;
+  assert.ok(w.reading?.agree, "the fixture: the reader agreed");
+  assert.ok(w.confirmDispute, "each saw the other's answer, and they differ: held");
+  assert.equal(standing(b.d1!), undefined, "the reading does not break the tie");
+  assert.deepEqual(standing(b.d1!)?.ruled ?? [], []);
 });
 
 test("plan 2.2: withdrawing the Yes returns the words to unconfirmed", () => {

@@ -93,7 +93,6 @@ async function context(root: string, input: { issue: IssueReference; answerId: s
       scope: decisionScope(door.cfg.universe), id: d.id };
   if (!answerHasCurrentAuthority(d, a, authorityScope))
     return { error: `answer ${a.id} is not a current ruling for this issue` };
-  if (d.withdrawals?.some((w) => w.state === "conflict")) return { error: "ruling withdrawal is in conflict" };
   if (intentCandidates(decisions).some((c) => {
     if (!c.answers.includes(a.id)) return false;
     const issueOverlaps = resolved.ref.kind === "bug"

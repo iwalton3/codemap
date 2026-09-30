@@ -39,7 +39,7 @@ export function workEligibility(mark: HoldMark, assigned?: { at: string; by: { p
   if (held === "unknown") return { allowed: false, restrictions: "unknown", reason: `the decisions log cannot establish whether this ${kind} is eligible for work` };
   if (!held?.length) return { allowed: true, restrictions: [] };
   const hard = held.filter((h) => h.why !== "undecided" && h.why !== "ruled");
-  if (hard.length) return { allowed: false, restrictions: held, reason: `${kind} work awaits comparison or withdrawal conflict resolution: ${hard.map((h) => h.answers?.join(" / ") ?? h.decision).join(", ")}` };
+  if (hard.length) return { allowed: false, restrictions: held, reason: `${kind} work awaits comparison: ${hard.map((h) => h.answers?.join(" / ") ?? h.decision).join(", ")}` };
   const began = Math.max(...held.map((h) => Date.parse(h.since)));
   const humanAssignment = !!assigned && !assigned.by.via && Number.isFinite(Date.parse(assigned.at)) && Date.parse(assigned.at) > began;
   if (humanAssignment) return { allowed: true, restrictions: held };

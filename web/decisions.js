@@ -253,18 +253,6 @@ class DecisionsPage extends Component {
     } catch (e) { this.state.err = errText(e); } finally { this.state.busy = null; }
   }
 
-  async resolveConflict(decision, withdrawal, keep) {
-    if (this.state.busy) return;
-    this.state.busy = decision; this.state.err = null;
-    try {
-      const r = await attestedPost('/api/decisions/conflict/resolve', {
-        u: this.props.params.universe, decision, withdrawal, keep, reason: this.state.reasons[withdrawal] || '',
-      });
-      if (r && r.error) { this.state.err = r.error; return; }
-      this.load.run();
-    } catch (e) { this.state.err = errText(e); } finally { this.state.busy = null; }
-  }
-
   revisionScope(d) {
     const findings = d.kind === 'words' ? [d.id] : this.state.revisionFindings[d.id] || [];
     const issues = (d.currentByIssue || []).filter((entry) => (this.state.revisionIssues[d.id] || [])
@@ -362,16 +350,6 @@ class DecisionsPage extends Component {
       ${when(!!d.cancellation, () => html`<div class="fs dim">Cancelled: ${d.cancellation.reason}</div>`)}
       ${when(!!d.withdrawn, () => html`<div class="fs dim">Withdrawn: ${d.withdrawn.reason} (${d.withdrawn.id})</div>`)}
       ${when(retired, () => html`<div class="fs dim">Ruling withdrawn. Ask a fresh question for any new instruction.</div>`)}
-      ${each((d.withdrawals || []).filter((w) => w.state === 'conflict'), (w) => html`<div class="fs dim">Withdrawal held (${w.id}): ${w.reason}. It conflicts with answer(s) ${(w.conflictingAnswers || []).join(', ')}.
-        It releases when those answers are withdrawn or changed; otherwise pick a side, having read both:</div>
-        ${when(!blocked, () => html`<div class="op-actions">
-          <input placeholder="why this side" value="${this.state.reasons[w.id] || ''}"
-            on-change="${(e, v) => { this.state.reasons = { ...this.state.reasons, [w.id]: v }; }}">
-          <button class="pullbtn" disabled="${busy || !(this.state.reasons[w.id] || '').trim()}"
-            on-click="${() => this.resolveConflict(d.id, w.id, 'withdrawal')}">keep the withdrawal</button>
-          ${each(w.conflictingAnswers || [], (a) => html`<button class="pullbtn" disabled="${busy || !(this.state.reasons[w.id] || '').trim()}"
-            on-click="${() => this.resolveConflict(d.id, w.id, a)}">keep answer ${a}</button>`, (a) => a)}
-        </div>`)}`, (w) => w.id)}
       ${each(d.answers.filter((a) => a.cancelled), (a) => html`<div class="fs dim">Previous answer: “${a.words}” — ${a.cancelled.reason}${a.reading ? '; reading ' + a.reading.id + ' retained as history' : ''}</div>`, (a) => a.id)}
       ${when(!!d.resolutionInvalid, () => html`<div class="fs dim">This resolution is invalid: ${d.resolutionInvalid}. Ask a valid question showing both exact answers.</div>`)}
       ${when(!!d.confirms?.invalid, () => html`<div class="fs dim">Invalid confirmation: ${d.confirms.invalid}. Its options cannot act on findings; ask a valid question.</div>`)}

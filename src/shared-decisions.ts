@@ -74,8 +74,6 @@ export interface FoldedAnswer {
   seq: number;
   /** Original answer event for a reading copied onto another question. */
   sourceAnswer?: string;
-  /** Original answer events this writer had not yet received. Human knowledge may differ. */
-  concurrentWith?: string[];
   /** A verified choice keeps this source visible but removes it from actionable ranking. */
   resolvedOutBy?: string;
   /** Human comparison choice excludes this answer only on the named issue scope. */
@@ -144,14 +142,8 @@ export interface FoldedAnswer {
 
 export interface WithdrawalRecord {
   id: string; by: Actor; at: string; reason: string; answer?: string;
-  /** `conflict` holds the question for a person (plan 1.3): it releases when every conflicting
-   *  answer is gone, or a person who saw both sides picks one (`resolvedBy`). `settled`: a
-   *  concurrent withdrawal with the same outcome as one already applied. `overruled`: a person
-   *  kept the conflicting answer instead. */
-  knownAnswers: string[]; state: "applied" | "conflict" | "refused" | "settled" | "overruled";
-  conflictingAnswers?: string[];
-  /** The person's act that picked a side, when one did. */
-  resolvedBy?: string;
+  /** `settled`: the same withdrawal was already in place — a no-op, not a refusal (owner, Q5). */
+  knownAnswers: string[]; state: "applied" | "refused" | "settled";
   /** Why the fold refused it: kept visible, never silently dropped. */
   refused?: string;
   /** The relayed question the person answered "Withdraw it" on. */
@@ -801,16 +793,15 @@ export function foldDecisionsReport(events: LogEvent[]): { value: SharedDecision
  * refuses, so the write door can ask whether it would refuse a new event (plan 1.1).
  */
 function foldDecisionsWithRefusals(events: LogEvent[]): { value: SharedDecisions; refused: RefusedEvent[] } {
-  // Withdrawals apply after binds, so a confirm's Yes that its confirmer withdraws had already
-  // bound the words in place. Fold again without it until nothing more is excluded (plan 2.2):
-  // the words return to unconfirmed. The set only grows and is bounded by the picks.
+  // Withdrawals apply after binds, so a withdrawn pick on a confirm had already counted. Fold
+  // again without every withdrawn pick until nothing more is excluded: a withdrawn Yes returns
+  // the words to unconfirmed (plan 2.2), a withdrawn side of a dispute releases it (K5). The set
+  // only grows and is bounded by the picks.
   const excluded = new Set<string>();
   for (;;) {
     const out = foldOnce(events, excluded);
-    const more = out.value.decisions.flatMap((d) => d.answers).map((a) => a.confirmed?.answer)
-      .filter((id): id is string => !!id && !excluded.has(id))
-      .filter((id) => out.value.decisions.some((c) => c.confirms && (c.withdrawn || c.answers.some((p) => p.id === id && p.withdrawn))
-        && c.answers.some((p) => p.id === id)));
+    const more = out.value.decisions.filter((c) => c.confirms)
+      .flatMap((c) => c.answers.filter((p) => (c.withdrawn || p.withdrawn) && !excluded.has(p.id)).map((p) => p.id));
     if (!more.length) return out;
     for (const id of more) excluded.add(id);
   }
@@ -847,8 +838,7 @@ function foldOnce(events: LogEvent[], excludedPicks: ReadonlySet<string>): { val
   /** Verified picks on confirms — the only answers that carry a confirm's meaning (P3.2). */
   const picks: { a: FoldedAnswer; c: FoldedDecision }[] = [];
   const nominationEvents: LogEvent[] = [];
-  const withdrawalEvents: LogEvent[] = [];
-  const conflictResolutions: LogEvent[] = [];
+  const withdrawalEvents: { e: LogEvent; pos: number }[] = [];
   const seenQuestionnaireAttempts = new Set<string>();
   const comparisonEvents: LogEvent[] = [];
 
@@ -1085,14 +1075,13 @@ function foldOnce(events: LogEvent[], excludedPicks: ReadonlySet<string>): { val
 
 
       case "decision.withdrawn": {
-        withdrawalEvents.push(e);
+        withdrawalEvents.push({ e, pos });
         break;
       }
 
-      case "decision.conflict.resolved": {
-        conflictResolutions.push(e);
-        break;
-      }
+      // A person's pick on a held withdrawal, from before the linear log. Nothing holds now, so
+      // it is skipped as older — never refused, which on read would be damage. The door refuses it.
+      case "decision.conflict.resolved": break;
 
       case "decision.reading.recorded": {
         const answer = str(data?.answer), agent = str(data?.reader?.agent);
@@ -1196,7 +1185,7 @@ function foldOnce(events: LogEvent[], excludedPicks: ReadonlySet<string>): { val
       a.confirmed = { answer: decided.pick.id, at: decided.pick.givenAt, maps: decided.maps, by: decided.pick.by };
       a.ruledBy = decided.pick.by;
       bind(decisions, answersById, d, a, decided.maps, decided.pick.id, decided.pick.seq);
-    } else if (!decided && a.reading?.agree) {
+    } else if (!decided && !a.confirmDispute && a.reading?.agree) {
       bind(decisions, answersById, d, a, a.reading.reader.maps, a.reading.id, readings.get(a.id)!.pos);
     }
   }
@@ -1283,13 +1272,12 @@ function foldOnce(events: LogEvent[], excludedPicks: ReadonlySet<string>): { val
     }
   }
 
-  // The act stays visible even when another writer's answer makes it unsafe to apply, or the
-  // fold refuses it. Only the authority projection is withheld; nothing is silently dropped.
-  //
-  // What two people racing can produce is conflict handling, never damage (plan 1.3; owner,
-  // batches 1, 3, 5): the same outcome settles quietly; different outcomes hold the question
-  // until one side changes or withdraws, or a person who sees both sides picks one.
-  const applyWithdrawal = (e: LogEvent, d: FoldedDecision, named: FoldedAnswer | undefined, reason: string) => {
+  // A refused withdrawal stays visible with its reason; nothing is silently dropped. Each is judged
+  // against the answers EARLIER in the log: one there that its author had not read refuses it
+  // ("this changed since you read it"), never holds it.
+  /** Where each question's first ruling withdrawal sits: answers after it are cancelled. */
+  const retiredAt = new Map<string, number>();
+  const applyWithdrawal = (e: LogEvent, pos: number, d: FoldedDecision, named: FoldedAnswer | undefined, reason: string) => {
     if (!named) {
       d.withdrawn = { id: e.id, by: e.actor, at: e.at, reason };
       for (const a of d.answers) a.cancelled = { by: e.id, reason: `question withdrawn: ${reason}` };
@@ -1299,9 +1287,9 @@ function foldOnce(events: LogEvent[], excludedPicks: ReadonlySet<string>): { val
       x.withdrawn = { by: e.id, reason };
       x.cancelled = { by: e.id, reason: `ruling withdrawn: ${reason}` };
     }
+    if (!retiredAt.has(d.id)) retiredAt.set(d.id, pos);
   };
-  const held: { e: LogEvent; d: FoldedDecision; named?: FoldedAnswer; record: WithdrawalRecord; reason: string }[] = [];
-  for (const e of withdrawalEvents) {
+  for (const { e, pos } of withdrawalEvents) {
     const data = e.data as any;
     const d = decisions.get(str(data?.decision) ?? "");
     if (!d || !str(data?.reason) || e.subject !== d.id) { refuse(e, "a withdrawal needs its question and a reason"); continue; }
@@ -1333,77 +1321,27 @@ function foldOnce(events: LogEvent[], excludedPicks: ReadonlySet<string>): { val
         if (why) { refuseWithdrawal(why); continue; }
       }
     } else if (named && rulerOf(named).principal !== e.actor.principal) { refuseWithdrawal("only the person who gave a ruling withdraws it"); continue; }
-    // A direct page answer is given at append time. For a relayed question/message,
-    // the recorder may have pulled after the person answered; its causal edge proves
-    // the recorder's knowledge, not the person's act-time knowledge.
-    const beforeOrConcurrent = sources.filter((a) => (a.via !== "direct" && a.via !== "questionnaire") || !causal.saw(sourceEventId(a.id), e.id));
-    const visible = beforeOrConcurrent.filter((a) => causal.saw(e.id, sourceEventId(a.id)));
-    const unseen = beforeOrConcurrent.filter((a) => !known.includes(a.id) || !visible.includes(a));
-    const peers = target ? beforeOrConcurrent.filter((a) => rulerOf(a).principal !== rulerOf(named!).principal) : beforeOrConcurrent;
-    const conflicts = [...new Set([...unseen, ...peers].map((a) => a.id))];
-    // Already done, by the same act from someone else: the same outcome settles quietly.
+    // The same withdrawal again changes nothing: a no-op, recorded (owner, Q5).
     const same = (!target && !!d.withdrawn) || !!named?.withdrawn;
-    const record: WithdrawalRecord = { id: e.id, by: e.actor, at: e.at, reason: data.reason,
+    const earlier = sources.filter((a) => a.seq < pos);
+    const unseen = earlier.filter((a) => !known.includes(a.id) || !causal.saw(e.id, sourceEventId(a.id)));
+    if (!same && unseen.length) { refuseWithdrawal(`an answer arrived after you read the question: ${unseen.map((a) => a.id).join(", ")}`); continue; }
+    // A question with an answer is withdrawn ruling by ruling; the op says so before this does.
+    if (!same && !target && earlier.length) { refuseWithdrawal(`${d.ref} has a submitted answer; name the exact answer to withdraw its ruling`); continue; }
+    (d.withdrawals ??= []).push({ id: e.id, by: e.actor, at: e.at, reason: data.reason,
       ...(target ? { answer: target } : {}), knownAnswers: [...known],
-      ...(str(data?.relay) ? { relay: data.relay } : {}),
-      state: same ? "settled" : conflicts.length ? "conflict" : "applied",
-      ...(conflicts.length ? { conflictingAnswers: conflicts } : {}),
-    };
-    (d.withdrawals ??= []).push(record);
-    if (record.state === "settled") { refuse(e, `${d.ref} is already withdrawn`); continue; }
-    if (record.state === "conflict") { held.push({ e, d, named, record, reason: data.reason }); continue; }
-    applyWithdrawal(e, d, named, data.reason);
+      ...(str(data?.relay) ? { relay: data.relay } : {}), state: same ? "settled" : "applied" });
+    // Withdrawing your ruling withdraws only your answers; a colleague's earlier answer stands
+    // (owner, Q4).
+    if (!same) applyWithdrawal(e, pos, d, named, data.reason);
   }
 
-  // A held withdrawal releases when every answer it conflicts with is gone (withdrawn, changed or
-  // resolved out) — "if one person changes or withdraws their conflicting verdict, it's considered
-  // resolved without a new ruling" — or when a person who saw both sides picks one (owner, batch 5).
-  const sidePicks = new Map<string, { e: LogEvent; keep: string }[]>();
-  for (const e of conflictResolutions) {
-    const data = e.data as any;
-    const h = held.find((x) => x.e.id === str(data?.withdrawal) && x.d.id === str(data?.decision) && e.subject === x.d.id);
-    const keep = str(data?.keep);
-    if (!h || !keep || !str(data?.reason)) { refuse(e, "a resolution names a held withdrawal, the side it keeps and why"); continue; }
-    if (isAgentActor(e.actor)) { refuse(e, "picking a side is a person's act"); continue; }
-    const sides = h.record.conflictingAnswers ?? [];
-    if (keep !== "withdrawal" && !sides.includes(keep)) { refuse(e, "a resolution keeps the withdrawal or one of the answers it conflicts with"); continue; }
-    if (!causal.saw(e.id, h.e.id) || !sides.every((id) => causal.saw(e.id, sourceEventId(id)))) { refuse(e, "a resolution is by someone who saw both sides"); continue; }
-    sidePicks.set(h.e.id, [...(sidePicks.get(h.e.id) ?? []), { e, keep }]);
-  }
-  const standingAnswer = (id: string) => { const x = answersById.get(id)?.a; return !!x && !x.cancelled && !x.withdrawn && !x.resolvedOutBy; };
-  for (let changed = true; changed;) {
-    changed = false;
-    for (const h of held) {
-      if (h.record.state !== "conflict") continue;
-      // Each person's latest pick stands for them; two people picking differently stay held.
-      const latest = new Map<string, { e: LogEvent; keep: string }>();
-      for (const p of sidePicks.get(h.e.id) ?? []) {
-        const prev = latest.get(p.e.actor.principal);
-        if (!prev || p.e.id > prev.e.id) latest.set(p.e.actor.principal, p);
-      }
-      // A pick keeping an answer that has since gone is moot: that side already gave way.
-      for (const [who, p] of latest) if (p.keep !== "withdrawal" && !standingAnswer(p.keep)) latest.delete(who);
-      const kept = new Set([...latest.values()].map((p) => p.keep));
-      const pick = kept.size === 1 ? [...latest.values()][0] : undefined;
-      if (pick?.keep === "withdrawal" || (!pick && kept.size === 0 && !(h.record.conflictingAnswers ?? []).some(standingAnswer))) {
-        h.record.state = "applied";
-        if (pick) h.record.resolvedBy = pick.e.id;
-        applyWithdrawal(h.e, h.d, h.named, h.reason);
-        changed = true;
-      } else if (pick) {
-        h.record.state = "overruled";
-        h.record.resolvedBy = pick.e.id;
-        changed = true;
-      }
-    }
-  }
-  // Held and overruled are admitted with a state, never refused: a person may withdraw their own
-  // ruling while a colleague's answer stands, so the write door must take it and damage must not.
-
+  // Anything given on a question after its ruling was withdrawn needs a fresh question.
   for (const d of decisions.values()) {
+    const at = retiredAt.get(d.id);
     const retired = d.answers.find((a) => a.withdrawn)?.withdrawn;
-    if (!retired) continue;
-    for (const a of d.answers) if (!a.withdrawn && !a.cancelled)
+    if (at === undefined || !retired) continue;
+    for (const a of d.answers) if (!a.withdrawn && !a.cancelled && a.seq > at)
       a.cancelled = { by: retired.by, reason: `this question has a withdrawn ruling; ask a fresh question` };
   }
 
@@ -1425,19 +1363,6 @@ function foldOnce(events: LogEvent[], excludedPicks: ReadonlySet<string>): { val
     }
   }
 
-  // Candidate concurrency is derived from original answer events, including bound human
-  // words copied to another question. A relayer's causal knowledge is not proof of what
-  // the human knew when speaking; callers see that uncertainty in the candidate view.
-  const human = [...decisions.values()].flatMap((d) => d.answers).filter((a) => a.verified);
-  for (const a of human) {
-    const source = a.sourceAnswer ?? a.id;
-    const ea = answerEvents.get(source);
-    if (!ea) continue;
-    a.concurrentWith = human.filter((b) => {
-      const other = b.sourceAnswer ?? b.id, eb = answerEvents.get(other);
-      return eb && source !== other && !causal.saw(ea.id, eb.id) && !causal.saw(eb.id, ea.id);
-    }).map((b) => b.sourceAnswer ?? b.id);
-  }
   for (const d of decisions.values()) if (d.resolves) {
     const targets = d.resolves.answers.map((id) => answersById.get(id)?.a);
     if (targets.some((a) => !a?.verified) || rulerOf(targets[0]!).principal === rulerOf(targets[1]!).principal
@@ -2034,7 +1959,7 @@ export interface IntentCandidate {
   decisionScope?: string[];
   sources: [{ principal: string; via: string; words: string; options: string[]; question: AskedQuestion; effects: DecisionOption[] },
     { principal: string; via: string; words: string; options: string[]; question: AskedQuestion; effects: DecisionOption[] }];
-  evidence: "concurrent-writers" | "independent-principals" | "nominated";
+  evidence: "independent-principals" | "nominated";
   nomination?: { id: string; reason: string };
   humanKnowledge: "not established";
 }
@@ -2072,7 +1997,7 @@ export function intentCandidates(s: SharedDecisions): IntentCandidate[] {
     if (prior) { if (!prior.findings.includes(x.finding)) prior.findings.push(x.finding); continue; }
     pairs.set(key, { answers: [sx, sy], decisions: [x.d.id, y.d.id], findings: [x.finding],
       sources: [source(x), source(y)],
-      evidence: x.a.concurrentWith?.includes(sy) ? "concurrent-writers" : "independent-principals",
+      evidence: "independent-principals",
       humanKnowledge: "not established" });
   }
   const bugCurrent = new Map<string, { d: FoldedDecision; a: FoldedAnswer; issue: CanonicalIssueReference }>();
@@ -2104,7 +2029,7 @@ export function intentCandidates(s: SharedDecisions): IntentCandidate[] {
     }
     pairs.set(pair, { answers: [sx, sy], decisions: [x.d.id, y.d.id], findings: [], issues: [x.issue],
       sources: [source(x), source(y)],
-      evidence: x.a.concurrentWith?.includes(sy) ? "concurrent-writers" : "independent-principals",
+      evidence: "independent-principals",
       humanKnowledge: "not established" });
   }
   // Two people can answer the same explicit question even when it names no finding or bug.
@@ -2133,7 +2058,7 @@ export function intentCandidates(s: SharedDecisions): IntentCandidate[] {
       }
       pairs.set(key, { answers: [x.id, y.id], decisions: [d.id, d.id], findings: [],
         decisionScope: [d.id], sources: [source({ d, a: x }), source({ d, a: y })],
-        evidence: x.concurrentWith?.includes(y.id) ? "concurrent-writers" : "independent-principals",
+        evidence: "independent-principals",
         humanKnowledge: "not established" });
     }
   }
@@ -2219,9 +2144,6 @@ export function waitingOnMe(s: SharedDecisions, today: string): WaitingItem[] {
       if (!(d.followUps ?? []).some((f) => byId.get(f)?.origin?.answer === a.id)) item(`you asked to rule on "${label}" separately, and it has not been asked yet`);
     }
   }
-  for (const d of s.decisions) for (const w of d.withdrawals ?? []) if (w.state === "conflict")
-    out.push({ decision: d.id, round: d.round, ref: d.ref,
-      why: `withdrawal ${w.id} conflicts with answer(s) ${(w.conflictingAnswers ?? []).join(", ") || "another withdrawal"}; resolve intent before acting` });
   for (const c of intentCandidates(s)) {
     const d = byId.get(c.decisions[0])!;
     out.push({ decision: d.id, round: d.round, ref: d.ref, why: `human rulings ${c.answers.join(" and ")} may conflict on intent; show both to the person and ask which to preserve before acting` });
@@ -2312,10 +2234,7 @@ export interface Uncarried extends Ruled {
 export function ruledNotCarriedOut(s: SharedDecisions, isOpen: (finding: string) => boolean): Uncarried[] {
   const out: Uncarried[] = [];
   const byId = new Map(s.decisions.map((x) => [x.id, x]));
-  const contested = new Set([
-    ...intentCandidates(s).flatMap((c) => c.findings),
-    ...s.decisions.filter((d) => d.withdrawals?.some((w) => w.state === "conflict")).flatMap(named),
-  ]);
+  const contested = new Set(intentCandidates(s).flatMap((c) => c.findings));
   for (const d of s.decisions) for (const finding of named(d)) {
     const a = standingForFinding(d, finding);
     for (const r of a?.ruled.filter((r) => r.finding === finding) ?? [])
@@ -2326,7 +2245,7 @@ export function ruledNotCarriedOut(s: SharedDecisions, isOpen: (finding: string)
 }
 
 export interface Hold {
-  decision: string; why: "undecided" | "ruled" | "comparison" | "withdrawal";
+  decision: string; why: "undecided" | "ruled" | "comparison";
   answers?: [string, string];
   /** When this hold on the finding last began (owner, S0.4): a person's assignment keeps a
    *  held finding on the work queue only if made after it. */
@@ -2387,14 +2306,6 @@ export function heldFindings(s: SharedDecisions, isOpen: (finding: string) => bo
     list.push({ decision: d.id, why: "comparison", answers: c.answers,
       since: times.every((t) => ms(t) !== undefined) ? times.sort((a, b) => ms(a)! - ms(b)!)[1]! : "" });
     out.set(f, list);
-  }
-  for (const d of s.decisions) for (const w of d.withdrawals ?? []) {
-    if (w.state !== "conflict") continue;
-    for (const f of named(d)) if (isOpen(f)) {
-      const list = out.get(f) ?? [];
-      list.push({ decision: d.id, why: "withdrawal", since: w.at });
-      out.set(f, list);
-    }
   }
   for (const d of s.decisions) {
     // An open confirm holds every finding of every decision its readings map — `(none)` too, as
@@ -2467,10 +2378,6 @@ export function heldIssues(s: SharedDecisions, isOpen: (key: string) => boolean)
     add(key, { decision: c.decisions[0], why: "comparison", answers: c.answers,
       since: times.length >= 2 ? times[1]! : "" });
   }
-  for (const d of s.decisions) for (const w of d.withdrawals ?? []) {
-    if (w.state !== "conflict") continue;
-    for (const key of namedKeys(d)) add(key, { decision: d.id, why: "withdrawal", since: w.at });
-  }
   for (const d of s.decisions) {
     if (d.confirms) {
       if (confirmState(byId, d) !== "open") continue;
@@ -2512,7 +2419,8 @@ export function supersededFindings(s: SharedDecisions): Map<string, { decision: 
 
 /** The decisions fold, as the write door asks it (plan 1.1). */
 export const decisionsDoor: DoorFold = (events, minted) => {
-  const wrong = decisionEventShape(minted);
+  const wrong = minted.kind === "decision.conflict.resolved"
+    ? "nothing is held for a person to pick a side of: a withdrawal that conflicts is refused" : decisionEventShape(minted);
   return wrong ? { refused: [{ id: minted.id, why: wrong }] } : foldDecisionsReport(events);
 };
 
@@ -2633,11 +2541,6 @@ export interface ReadingEvent {
 
 export const recordReadingEvent = (logRoot: string, universe: string, actor: Actor, a: ReadingEvent) =>
   put(logRoot, universe, actor, "decision.reading.recorded", a.answer, a as unknown as Record<string, unknown>);
-
-/** A person picks a side of a held withdrawal (plan 1.3): `keep` is "withdrawal" or a conflicting answer. */
-export const resolveConflictEvent = (logRoot: string, universe: string, actor: Actor,
-  input: { decision: string; withdrawal: string; keep: string; reason: string }) =>
-  put(logRoot, universe, actor, "decision.conflict.resolved", input.decision, input);
 
 export const nominateComparisonEvent = (logRoot: string, universe: string, actor: Actor,
   input: { answers: [string, string]; findings: string[]; issues?: CanonicalIssueReference[]; reason: string }) =>

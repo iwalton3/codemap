@@ -5,7 +5,7 @@ import { Ledger, checkAlways, checkSettled } from "./oracle-properties.js";
 import { shareFinding, reassignFinding, reportOnFinding } from "./ops-shared.js";
 import { reviewQueue } from "./ops/annotations.js";
 import { postRound, answerDirect, confirmReading, decisionRound, nominateComparison, withdrawDecision, CONFIRM_YES } from "./ops/decisions.js";
-import { begin } from "./sync-engine.js";
+import { begin, discard, syncSession } from "./sync-engine.js";
 
 test("a changed response and a stale clone's confirmation converge without reviving its old reading", async () => {
   const previous = process.env.CODEMAP_AGENT_MODEL;
@@ -118,7 +118,7 @@ test("two clones retain a nominated comparison and its local retrieval cursor", 
 });
 
 
-test("a concurrent withdrawal and answer remain visible and hold work after sync", async () => {
+test("a staged withdrawal that replays after an answer its author never read is refused and its author told", async () => {
   const previous = process.env.CODEMAP_AGENT_MODEL;
   delete process.env.CODEMAP_AGENT_MODEL;
   let t: Awaited<ReturnType<typeof team>> | undefined;
@@ -144,6 +144,12 @@ test("a concurrent withdrawal and answer remain visible and hold work after sync
     assert.equal(withdrawn.ok, true, JSON.stringify(withdrawn));
     const answered = await answerDirect(bob!.repo, { decision: "d1", option: "No" }) as any;
     assert.equal(answered.recorded, true, JSON.stringify(answered));
+    // The ledger reads the staged overlay as held history, so it looks only once the act is refused and dropped.
+    const refused = await syncSession(alice!.sidecar, alice!.actor);
+    assert.ok("error" in refused, "alice's withdrawal replays after bob's answer and is refused");
+    assert.deepEqual(refused.conflicts?.map((c) => c.kind), ["decision.withdrawn"]);
+    assert.match(String(refused.conflicts?.[0]?.why), new RegExp(`an answer arrived after you read the question: ${answered.answer}`));
+    discard(alice!.sidecar);
     await checkAlways(t, ledger);
     await settle(t);
     await checkSettled(t, ledger);
@@ -151,10 +157,9 @@ test("a concurrent withdrawal and answer remain visible and hold work after sync
     const views = await Promise.all(t.all.map((m) => decisionRound(m.repo, "R1"))) as any[];
     for (const view of views) {
       const d = view.decisions.find((x: any) => x.id === (posted as any).ask[0].decision);
-      assert.ok(d.answers.some((a: any) => a.id === answered.answer));
-      assert.ok(d.withdrawals.some((w: any) => w.id === withdrawn.withdrawal && w.state === "conflict"
-        && w.conflictingAnswers.includes(answered.answer)));
-      assert.ok(view.held.some((x: any) => x.finding === f.id && x.held.some((h: any) => h.why === "withdrawal")));
+      assert.ok(d.answers.some((a: any) => a.id === answered.answer), "bob's answer stands");
+      assert.ok(!(d.withdrawals ?? []).some((w: any) => w.id === withdrawn.withdrawal), "the refused withdrawal never reached the log");
+      assert.equal(d.withdrawn, undefined);
     }
     assert.deepEqual(views[0].decisions, views[1].decisions);
   } finally {
