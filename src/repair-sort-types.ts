@@ -12,6 +12,6 @@ export interface RepairSortInput {
   restsOn: string[]; source: string; provenance: "owner-reviewed" | "dual-sorted";
   assessments: RepairAssessment[]; disagreements: { id: string; text: string }[];
   arbitration?: { addresses: string[]; reason: string; identity: ReportedSorter; receipt?: ReportedSortReceipt };
-  /** A logged decisions answer this correction rests on: it settles competing corrections (R5). */
+  /** A logged decisions answer on why the sites or claims this correction removes are not instances (R5, plan 5.2). */
   ruling?: string;
 }

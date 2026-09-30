@@ -7,6 +7,8 @@ import { RepairConnection } from "./verifier-boundary.js";
 import { repairFindingCompleteness, type RepairSortInput, type RepairEvidenceInput } from "./repair-records.js";
 import { readFinding } from "./store.js";
 import { rpc } from "./test-mcp.js";
+import { postRound, answerDirect } from "./ops/decisions.js";
+import { decisionsView } from "./ops/decision-holds.js";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -89,6 +91,32 @@ test("over MCP a connection that has worked cannot claim the verifier role; a cl
   } finally { t.dispose(); }
 });
 
+test("K3 through the op: a correction removing a site is refused without a ruling, lands citing a logged answer, and adding a site is free", async () => {
+  const t = await team(["alice@acme.test"]);
+  try {
+    const root = t.all[0]!.repo;
+    const f = await shareFinding(root, 7, { targetKind: "anchor", targetId: "src/pay.ts#transfer", text: "same guard missing in three files" }) as { id: string };
+    ok(f);
+    const pattern = (sites: string[]) => ({ ...sort(f.id, []), kind: "pattern" as const, predicate: "missing guard", sites });
+    const s0 = await postRepairSort(root, 7, pattern(["a.ts"])) as { id: string };
+    ok(s0);
+    const s1 = await postRepairSort(root, 7, { ...pattern(["a.ts", "b.ts", "c.ts"]), prior: s0.id, reason: "missed b.ts and c.ts" }) as { id: string };
+    ok(s1);
+    const narrow = { ...pattern(["a.ts"]), prior: s1.id, reason: "b.ts and c.ts only look alike" };
+    const refused = await postRepairSort(root, 7, narrow);
+    assert.match(String((refused as { error?: string }).error), /removes b\.ts, c\.ts from .* needs a logged ruling/);
+    ok(await postRound(root, { round: { id: "R-sites", source: "the owner, on the pattern's sites" }, decisions: [{ id: "D-sites", round: "R-sites", ref: "D1", kind: "words",
+      payload: { question: "D1: are b.ts and c.ts instances of the missing guard?", options: [{ label: "No" }, { label: "Yes" }] }, options: [{ label: "No", effects: [] }, { label: "Yes", effects: [] }] }] }));
+    ok(await answerDirect(root, { decision: "D-sites", option: "No" }));
+    const answer = (await decisionsView(root)).s.decisions.flatMap((d) => d.answers).find((a) => a.verified && !a.withdrawn)!;
+    assert.ok(answer, "a verified, standing answer to cite");
+    const ruled = await postRepairSort(root, 7, { ...narrow, ruling: answer.id }) as { id: string; records: { sorts: { input: { id: string }; current: boolean }[] } };
+    ok(ruled);
+    assert.deepEqual(ruled.records.sorts.filter(s => s.current).map(s => s.input.id), [ruled.id]);
+    ok(await postRepairSort(root, 7, { ...pattern(["a.ts", "d.ts"]), prior: ruled.id, reason: "d.ts has it too" }));
+  } finally { t.dispose(); }
+});
+
 test("B16: the same sort posted by an agent and then by its person are two records, so the person's authorship enters the log", async () => {
   const t = await team(["alice@acme.test"]);
   const before = process.env.CODEMAP_AGENT_MODEL;
@@ -102,10 +130,15 @@ test("B16: the same sort posted by an agent and then by its person are two recor
     ok(byAgent);
     assert.ok(byAgent.records.sorts.find(s => s.input.id === byAgent.id)!.holds.some(h => /principal authorship/.test(h)), "an agent's owner-reviewed sort is held");
     delete process.env.CODEMAP_AGENT_MODEL;
-    const byPerson = await postRepairSort(root, 7, same) as { id: string; alreadyRecorded?: boolean };
+    // Not collapsed into the agent's record: it reaches the fold, which refuses a second sort of
+    // sorted claims (plan 5.2). The person's authorship enters the log as a correction of it.
+    const repost = await postRepairSort(root, 7, same) as { error?: string; alreadyRecorded?: boolean };
+    assert.equal(repost.alreadyRecorded, undefined);
+    assert.match(String(repost.error), /already sorted by/);
+    const byPerson = await postRepairSort(root, 7, { ...same, prior: byAgent.id, reason: "owner reviewed" }) as { id: string; records: { sorts: { input: { id: string }; eligible: boolean; current: boolean }[] } };
     ok(byPerson);
-    assert.notEqual(byPerson.id, byAgent.id, "not collapsed into the agent's record");
-    assert.equal(byPerson.alreadyRecorded, undefined);
+    const mine = byPerson.records.sorts.find(s => s.input.id === byPerson.id)!;
+    assert.ok(mine.current && mine.eligible);
   } finally {
     if (before === undefined) delete process.env.CODEMAP_AGENT_MODEL; else process.env.CODEMAP_AGENT_MODEL = before;
     t.dispose();

@@ -259,7 +259,7 @@ const repairSortSchema = obj({ prior: repairString, reason: repairString, classi
   assessments: { type: "array", items: obj({ identity: repairIdentity, classification: repairString, reason: repairString, receipt: reportedSortReceipt }, ["identity", "classification", "reason"], false) },
   disagreements: { type: "array", items: obj({ id: repairString, text: repairString }, ["id", "text"], false) },
   arbitration: obj({ addresses: repairStrings, reason: repairString, identity: repairIdentity, receipt: reportedSortReceipt }, ["addresses", "reason", "identity"], false),
-  ruling: { ...repairString, description: "A logged decisions answer this correction rests on. Competing corrections are settled by the one citing a ruling." } },
+  ruling: { ...repairString, description: "A logged decisions answer on why the sites or claims this correction removes are not instances. Required only when a correction removes coverage its prior had." } },
   ["classification", "kind", "coverage", "restsOn", "source", "provenance", "assessments", "disagreements"], false);
 const repairEvidenceSchema = obj({ sortId: repairString, witnessCommit: repairString, baseCommit: repairString, fixCommit: repairString,
   coverage: { type: "array", items: obj({ ...repairCoverage, result: repairResult, reason: repairString,
@@ -358,7 +358,7 @@ const tools: Tool[] = [
   },
   {
     name: "post_repair_sort",
-    description: "Post the skill's sort of a repair: classification, claim coverage, and who sorted (owner-reviewed, or dual-sorted with both sorters and any arbitration). A correction names its prior sort. Returns the sort's id; holds come back in repair_records.",
+    description: "Post the skill's sort of a repair: classification, claim coverage, and who sorted (owner-reviewed, or dual-sorted with both sorters and any arbitration). A correction names the current sort as prior and supersedes it; one that removes sites or claims needs a ruling (a logged answer id). Returns the sort's id; holds come back in repair_records.",
     inputSchema: obj({ review: repairString, sort: repairSortSchema }, ["review", "sort"]),
     mutates: true,
     handler: (a, c) => ops.postRepairSort(c.universe.path, a.review, a.sort),

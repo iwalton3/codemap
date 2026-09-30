@@ -18,12 +18,14 @@ readers use the projection; writes capture causality under the sidecar lock.
 from that review's findings. `post_repair_sort` records a classification,
 isolated/pattern kind, exact owner source or reported sorter assessments,
 coverage, dependencies, disagreements and arbitration. A correction names its
-prior version and reason. Superseded versions survive. The latest correction on a
-lineage wins. Two corrections competing from one sort (or two sorts of the same
-claims) all hold, each naming the others, until a correction cites a logged ruling:
-a decisions answer, named in `ruling` (R5). The newest citing correction supersedes
-the rest. The op checks that the ruling is a verified, standing answer; the fold
-checks only that the field is there. An agent cannot turn its own report into an
+prior version and reason, and supersedes it; superseded versions survive. The log is
+linear, so corrections are sequential: one naming a sort that was already corrected,
+or a fresh sort of claims another current sort covers, is refused as stale (plan 5.2).
+Adding sites or claims is free. A correction that REMOVES a site or claim its prior
+had is refused unless it cites a logged ruling on why those are not instances: a
+decisions answer, named in `ruling` (R5, narrowed by the owner's batch 5: "Narrowing
+needs a ruling"). The op checks that the ruling is a verified, standing answer; the
+fold checks only that the field is there. An agent cannot turn its own report into an
 owner-reviewed worklist.
 
 A `dual-sorted` sort is the skill's own two-sorter sort, posted with the round: two

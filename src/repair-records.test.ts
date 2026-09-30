@@ -29,8 +29,9 @@ test("repeated correction cannot launder a narrowed original pattern", () => {
   const original = sort({ kind: "pattern", predicate: "guard", sites: ["api", "batch"] });
   const records = foldRepairRecords(chain([sorted(original), sorted(sort({ id: "shrink", prior: "s1", reason: "narrowed" })),
     sorted(sort({ id: "shrink2", prior: "shrink", reason: "repeated" }))]));
-  assert.equal(records.sorts[2]!.eligible, false);
-  assert.match(records.sorts[2]!.holds.join(), /original coverage/);
+  assert.deepEqual(records.sorts.map((s) => [s.input.id, s.current]), [["s1", true]]);
+  assert.match(records.rejected[0]!.reason, /removes api, batch from s1 needs a logged ruling/);
+  assert.match(records.rejected[1]!.reason, /predecessor/, "a refused correction is nothing to build on");
 });
 
 test("malformed arbitration is rejected without crashing the canonical fold", () => {
@@ -99,7 +100,8 @@ test("correction retains history and cannot shrink original pattern", () => {
   const first = sort({ kind: "pattern", predicate: "missing guard", sites: ["api", "batch"] });
   const records = foldRepairRecords(chain([sorted(first), sorted(sort({ id: "s2", prior: "s1", reason: "only api changed" }))]));
   assert.equal(records.sorts[0]!.input.kind, "pattern");
-  assert.match(records.sorts[1]!.holds.join(), /original coverage/);
+  assert.equal(records.sorts.length, 1);
+  assert.match(records.rejected[0]!.reason, /needs a logged ruling/);
 });
 
 test("unknown actual execution is distinct from regression success and commands stay data", () => {
@@ -144,21 +146,32 @@ test("unchanged shards replay old materializer cache and atomically persist repa
 });
 
 
-test("R5: competing corrections all hold, naming each other, until a correction cites a logged ruling", () => {
-  const left = sorted(sort({ id: "left", prior: "s1", reason: "first reading" }), agent);
-  const right = sorted(sort({ id: "right", prior: "s1", reason: "different reading" }), agent);
-  const records = foldRepairRecords(chain([sorted(), left, right]));
-  assert.equal(records.sorts[0]!.current, false);
-  assert.ok(records.sorts.slice(1).every(s => s.current && !s.eligible && s.holds.some(h => h.includes("settled by a correction citing a logged ruling"))));
-  assert.match(records.sorts.find(s => s.input.id === "left")!.holds.join(), /competes with right/, "the hold names the other correction");
-  const uncited = foldRepairRecords(chain([sorted(), left, right, sorted(sort({ id: "owner", prior: "left", reason: "the owner's reading" }))]));
-  assert.equal(uncited.sorts.find(s => s.input.id === "owner")!.eligible, false, "a newer correction without a ruling settles nothing");
-  const decided = foldRepairRecords(chain([sorted(), left, right, sorted(sort({ id: "ruled", prior: "left", reason: "as ruled", ruling: "ans_1" }))]));
-  const by = (id: string) => decided.sorts.find(s => s.input.id === id)!;
-  assert.equal(by("ruled").eligible, true, by("ruled").holds.join());
-  assert.match(by("right").holds.join(), /superseded by ruled, which cites ruling ans_1/);
-  const linear = foldRepairRecords(chain([sorted(), sorted(sort({ id: "s2", prior: "s1", reason: "r" }), agent), sorted(sort({ id: "s3", prior: "s2", reason: "r" }), agent)]));
-  assert.ok(!linear.sorts.find(s => s.input.id === "s3")!.holds.some(h => h.includes("competes")), "a linear chain has one latest correction");
+test("5.2: a later correction supersedes the one it names, even a person's; one naming an older sort is refused as stale", () => {
+  const records = foldRepairRecords(chain([sorted(), sorted(sort({ id: "left", prior: "s1", reason: "first reading" })),
+    sorted(sort({ id: "later", prior: "left", reason: "a better reading" }), agent), sorted(sort({ id: "right", prior: "s1", reason: "different reading" }), agent)]));
+  const by = (id: string) => records.sorts.find((s) => s.input.id === id);
+  assert.equal(by("later")!.current, true); assert.ok(!by("later")!.holds.some((h) => /supersed|compet/.test(h)), by("later")!.holds.join());
+  assert.equal(by("left")!.current, false, "an agent's correction supersedes a person's without asking (owner, batch 1)");
+  assert.equal(by("right"), undefined);
+  assert.match(records.rejected[0]!.reason, /stale correction: s1 was already corrected by left/);
+});
+
+// Kill-table K3 (plan 5.3; .git/triage/2026-09-29-pre-merge-final-review/repro/r1.mjs, F3).
+test("K3: a correction that removes its predecessor's sites is refused without a cited ruling and lands with one; adding sites is free", () => {
+  const pattern = (over: Partial<RepairSortInput>) => sort({ kind: "pattern", predicate: "p", classification: "implementation-defect", ...over });
+  const O = sorted(pattern({ id: "s0", sites: ["a.ts"] }));
+  const S1 = sorted(pattern({ id: "s1", prior: "s0", reason: "missed b.ts and c.ts", sites: ["a.ts", "b.ts", "c.ts"] }));
+  const S2 = (over: Partial<RepairSortInput> = {}) => sorted(pattern({ id: "s2", prior: "s1", reason: "narrow", sites: ["a.ts"], ...over }));
+  const refused = foldRepairRecords(chain([O, S1, S2()]));
+  assert.deepEqual(refused.rejected.map((r) => r.reason), ["a correction that removes b.ts, c.ts from s1 needs a logged ruling citing why they are not instances"]);
+  assert.deepEqual(refused.sorts.filter((s) => s.current).map((s) => s.input.id), ["s1"], "s1's three sites stay the closure bar's list");
+  const ruled = foldRepairRecords(chain([O, S1, S2({ ruling: "ans_1" })]));
+  assert.deepEqual(ruled.rejected, []);
+  const s2 = ruled.sorts.find((s) => s.input.id === "s2")!;
+  assert.ok(s2.current && s2.eligible, s2.holds.join());
+  const grown = foldRepairRecords(chain([O, S1, S2({ reason: "found d.ts", sites: ["a.ts", "b.ts", "c.ts", "d.ts"] })]));
+  assert.deepEqual(grown.rejected, []);
+  assert.ok(grown.sorts.find((s) => s.input.id === "s2")!.eligible);
 });
 
 test("absent check data stays absent, explicit no-check reasons cannot be blank", () => {
@@ -179,15 +192,10 @@ test("pattern completeness retains original sites despite narrowed enumeration",
 });
 
 
-test("deep correction descendants cannot launder another unresolved lineage head", () => {
-  const records = foldRepairRecords(chain([sorted(), sorted(sort({ id: "left", prior: "s1", reason: "first reading" }), agent), sorted(sort({ id: "right", prior: "s1", reason: "different reading" }), agent), sorted(sort({ id: "left2", prior: "left", reason: "adjust first reading" }), agent)]));
-  assert.ok(records.sorts.filter(s => s.current).every(s => !s.eligible && s.holds.some(h => h.includes("citing a logged ruling"))));
-});
-
-
-test("a fresh sort ID cannot bypass an existing contested claim lineage", () => {
-  const records = foldRepairRecords(chain([sorted(), sorted(sort({ id: "left", prior: "s1", reason: "first reading" }), agent), sorted(sort({ id: "right", prior: "s1", reason: "different reading" }), agent), sorted(sort({ id: "unrelated" }), agent)]));
-  assert.ok(records.sorts.filter(s => s.current).every(s => !s.eligible));
+test("a fresh sort ID cannot bypass the current sort of its claims", () => {
+  const records = foldRepairRecords(chain([sorted(sort({ kind: "pattern", predicate: "p", sites: ["api", "batch"] })), sorted(sort({ id: "unrelated" }), agent)]));
+  assert.deepEqual(records.sorts.map((s) => s.input.id), ["s1"]);
+  assert.match(records.rejected[0]!.reason, /already sorted by s1: correct it by naming it as prior/);
 });
 
 
@@ -205,10 +213,10 @@ test("design and scope judgments remain decision-needed even with a principal wo
   assert.match(records.sorts[0]!.holds.join(), /explicit decision/);
 });
 
-test("B15: a correction may ADD a site the original missed, never drop one", () => {
+test("B15: a correction may ADD a site the original missed; dropping one needs a ruling", () => {
   const first = sort({ kind: "pattern", predicate: "missing guard", sites: ["api", "batch"] });
   const grown = foldRepairRecords(chain([sorted(first), sorted(sort({ id: "s2", prior: "s1", reason: "found a third", kind: "pattern", predicate: "missing guard", sites: ["api", "batch", "cli"] }))]));
-  assert.ok(!grown.sorts[1]!.holds.some((h) => /original coverage/.test(h)), grown.sorts[1]!.holds.join("; "));
+  assert.ok(grown.sorts[1]!.eligible, grown.sorts[1]!.holds.join("; "));
   const shrunk = foldRepairRecords(chain([sorted(first), sorted(sort({ id: "s2", prior: "s1", reason: "only api", kind: "pattern", predicate: "missing guard", sites: ["api", "cli"] }))]));
-  assert.ok(shrunk.sorts[1]!.holds.some((h) => /original coverage/.test(h)));
+  assert.match(shrunk.rejected[0]!.reason, /removes batch from s1/);
 });

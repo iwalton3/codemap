@@ -78,7 +78,8 @@ each site a disposition: fixed, or filed as a bug with `file_site_bug`. That bug
 finding's filer and confirmation, must still be open when the verdict is applied, and must cite a
 symbol in the site's own file. The op checks each bug at submission and again at application. The
 fold checks only that every site has a disposition, because the bug lives in another scope. A
-correction of a sort may add sites or claims, never drop one.
+correction of a sort supersedes it and may add sites or claims freely; one that drops a site or
+claim is refused unless it cites a logged ruling on why it is not an instance (R5, plan 5.2).
 
 Any bug made from a finding (`defer_finding`, `file_site_bug`) keeps the finding's filer and
 the verdicts that stood behind it (plan 3.5). An agent deferring a person's confirmed finding

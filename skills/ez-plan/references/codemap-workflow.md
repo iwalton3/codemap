@@ -60,9 +60,10 @@ purpose and artifact, never the first reading. Post the skill's own sort with th
 `post_repair_sort`: `dual-sorted`, with both sorters' classifications and reasons (each sorter named
 by its session) and the arbitrator's reasons where they disagreed, or `owner-reviewed` for a genuine
 owner-approved worklist — never fabricate owner approval. Read `repair_records` for eligibility and
-holds. Two corrections that compete from
-one sort both hold until a correction cites a logged ruling (its ruling field, a decisions answer id) —
-ask the person, log their answer, then post the correction citing it.
+holds. A correction names the current sort as prior and supersedes it; a correction naming an older
+sort is refused as stale. Adding sites or claims, or rewording, is free. A correction that REMOVES a
+site or claim is refused unless it cites a logged ruling on why those are not instances (its ruling
+field, a decisions answer id) — ask the person, log their answer, then post the correction citing it.
 
 A requirement/scope choice is the owner's. Design defects, assumptions, suggestions and patterns
 remain held for their relevant ruling. Adoption of a suggestion authorizes work; it does not mean

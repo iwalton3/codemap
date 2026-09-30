@@ -53,6 +53,26 @@ export function foldRepairRecords(input: LogEvent[]): RepairRecords {
     }
     if (!unique(refs.map(r => r.findingId))) return "duplicate finding coverage";
   };
+  const heads = () => out.sorts.filter(s => !out.sorts.some(next => next.input.prior === s.input.id));
+  const overlaps = (a: RepairSortInput, b: RepairSortInput) =>
+    a.coverage.some(ref => b.coverage.some(own => own.findingId === ref.findingId && own.claimIds.some(id => ref.claimIds.includes(id))));
+  // The log is linear, so corrections are sequential (plan 5.2): a correction names the CURRENT
+  // sort of its claims as prior or is stale, and it supersedes that sort — except that removing
+  // coverage the prior had needs a logged ruling on why those are not instances (owner, batch 5:
+  // "Narrowing needs a ruling"). The fold checks the field is there; the op checks the answer.
+  const sequenceError = (d: RepairSortInput): string | undefined => {
+    const current = heads();
+    if (d.prior && !current.some(s => s.input.id === d.prior))
+      return `stale correction: ${d.prior} was already corrected by ${out.sorts.find(s => s.input.prior === d.prior)!.input.id}; name the current sort as prior`;
+    const rival = current.find(s => s.input.id !== d.prior && overlaps(s.input, d));
+    if (rival) return `these claims are already sorted by ${rival.input.id}: correct it by naming it as prior`;
+    const prior = d.prior ? out.sorts.find(s => s.input.id === d.prior)!.input : undefined;
+    if (!prior || nonempty(d.ruling)) return undefined;
+    const claims = prior.coverage.flatMap(ref => ref.claimIds.filter(id => !d.coverage.some(own => own.findingId === ref.findingId && own.claimIds.includes(id))));
+    const sites = (prior.sites ?? []).filter(site => !(d.sites ?? []).includes(site));
+    if (claims.length || sites.length)
+      return `a correction that removes ${[...claims, ...sites].join(", ")} from ${prior.id} needs a logged ruling citing why they are not instances`;
+  };
   for (const e of events) {
     const d = e.data as any;
     if (e.kind === "finding.created" && nonempty(d?.text) && nonempty(d.targetId) && ["anchor", "node"].includes(d.targetKind) && !out.claims.some(c => c.findingId === e.subject)) {
@@ -79,8 +99,9 @@ export function foldRepairRecords(input: LogEvent[]): RepairRecords {
         if (!error && data.provenance !== "owner-reviewed" && data.provenance !== "dual-sorted") error = "unknown sort provenance";
         if (!error && data.provenance === "dual-sorted" && (data.assessments.length !== 2 || new Set(data.assessments.map(a => a.identity.session)).size < 2)) error = "dual sorting needs two sorters in distinct sessions";
         if (!error && data.prior && (!nonempty(data.reason) || !out.sorts.some(s => s.input.id === data.prior))) error = "correction needs predecessor and reason";
-        if (!error && data.ruling !== undefined && (!nonempty(data.ruling) || !data.prior)) error = "a cited ruling settles a correction: it names a logged answer and a prior sort";
+        if (!error && data.ruling !== undefined && (!nonempty(data.ruling) || !data.prior)) error = "a cited ruling belongs to a correction: it names a logged answer and a prior sort";
         if (!error && data.kind === "pattern" && (!nonempty(data.predicate) || !data.sites?.length || !unique(data.sites))) error = "pattern needs predicate and original sites";
+        if (!error) error = sequenceError(data);
         if (!error) out.sorts.push({ ...record(e, data), eligible: false, current: true, holds: [] });
       } else if (e.kind === "repair.evidence-recorded") {
         const data = d as RepairEvidenceInput;
@@ -108,31 +129,11 @@ export function foldRepairRecords(input: LogEvent[]): RepairRecords {
     } catch { error = "malformed repair event"; }
     if (error) out.rejected.push({ eventId: e.id, reason: error });
   }
-  const lineage = (id: string): string => {
-    let cursor = out.sorts.find(s => s.input.id === id)!;
-    while (cursor.input.prior) cursor = out.sorts.find(s => s.input.id === cursor.input.prior)!;
-    return cursor.input.id;
-  };
-  const overlaps = (a: RepairSortInput, b: RepairSortInput) =>
-    a.coverage.some(ref => b.coverage.some(own => own.findingId === ref.findingId && own.claimIds.some(id => ref.claimIds.includes(id))));
-  const heads = out.sorts.filter(s => !out.sorts.some(next => next.input.prior === s.input.id));
-  const position = (s: { eventId: string }) => events.findIndex(e => e.id === s.eventId);
+  const current = heads();
   for (const sort of out.sorts) {
     const d = sort.input;
-    sort.current = heads.includes(sort);
+    sort.current = current.includes(sort);
     if (!sort.current) sort.holds.push("superseded sort retained as history");
-    // Competing corrections: two heads from one lineage, or two sorts of the same claims. They
-    // are settled by a LOGGED RULING (R5): a correction that cites a decisions answer supersedes
-    // its competitors, the newest citing one if several do. The fold checks only that the field is
-    // there; the op checks the ruling exists (R4's accepted gap). Without one, every competitor
-    // holds, and the hold names them all.
-    const rivals = heads.filter(s => s !== sort && (lineage(s.input.id) === lineage(d.id) || overlaps(s.input, d)));
-    if (sort.current && rivals.length) {
-      const citing = [sort, ...rivals].filter(s => nonempty(s.input.ruling));
-      const settled = citing.length ? citing.reduce((a, b) => (position(b) > position(a) ? b : a)) : undefined;
-      if (!settled) sort.holds.push(`competes with ${rivals.map(r => r.input.id).join(", ")}: settled by a correction citing a logged ruling`);
-      else if (settled !== sort) sort.holds.push(`superseded by ${settled.input.id}, which cites ruling ${settled.input.ruling}`);
-    }
     if (d.provenance === "dual-sorted") {
       const disagreement = new Set(d.assessments.map(a => a.classification)).size > 1;
       if (disagreement && !d.disagreements.length) sort.holds.push("sorter classification disagreement is not recorded");
@@ -148,13 +149,6 @@ export function foldRepairRecords(input: LogEvent[]): RepairRecords {
     if (d.refutationSubtype === "scope") sort.holds.push("scope judgment cannot be settled as factual refutation");
     if (d.restsOn.length) sort.holds.push("requirement or ruling dependency remains explicit");
     if (d.disagreements.length && (!d.arbitration || !nonempty(d.arbitration.reason) || !reported(d.arbitration.identity) || d.disagreements.some(x => !d.arbitration!.addresses.includes(x.id)))) sort.holds.push("unaddressed sort disagreement");
-    if (d.prior) {
-      const original = out.sorts.find(s => s.input.id === lineage(d.id))!;
-      // A SUPERSET, not equality (B15: F22, F48): a correction may add a site or a claim the
-      // original missed, never drop one — the sort is the coverage authority.
-      const keeps = original.input.coverage.every((ref) => d.coverage.some((own) => own.findingId === ref.findingId && ref.claimIds.every((id) => own.claimIds.includes(id))));
-      if (!keeps || (original.input.kind === "pattern" && (d.kind !== "pattern" || !(original.input.sites ?? []).every((site) => d.sites?.includes(site))))) sort.holds.push("correction cannot remove original coverage");
-    }
     sort.eligible = !sort.holds.length;
   }
   for (const evidence of out.evidence) {

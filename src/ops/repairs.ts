@@ -137,7 +137,8 @@ export async function postRepairSort(root: string, review: number | string, sort
   if (!sort || !Array.isArray(sort.assessments) || sort.assessments.some(a => !a || typeof a !== "object")) return { error: "sort requires assessment records" };
   if ("id" in sort) return callerId("sort");
   if (sort.ruling !== undefined) {
-    // The cross-scope half of R5: the cited answer is a verified, standing ruling in the decisions log.
+    // The cross-scope half of R5 (a correction that removes coverage cites a ruling): the answer is
+    // a verified, standing ruling in the decisions log.
     const view = await decisionsView(root);
     const a = view.s.decisions.flatMap((d) => d.answers).find((x) => x.id === sort.ruling);
     if (!a || !a.verified || a.sourceAnswer || a.withdrawn || a.cancelled)
