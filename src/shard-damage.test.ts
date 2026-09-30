@@ -394,28 +394,29 @@ test("the outbound gate checks the alphabetically FIRST changed shard", async ()
   const root = tmp("first-shard");
   try {
     await ensureSidecar(root, izzie);
-    const dir = join(root, "findings/u/pr-1");
-    mkdirSync(dir, { recursive: true });
+    // Two scopes' files, so there are two shards to order: `aaa` sorts first.
+    const aaa = join(root, "scratch/aaa"), bbb = join(root, "scratch/bbb");
+    for (const d of [aaa, bbb]) mkdirSync(d, { recursive: true });
     const good = JSON.stringify({
       id: "m1-a", kind: "x", subject: "s", actor: { principal: "p" }, at: "", after: [],
       writer: "w", writerPrev: "GENESIS", sidecarProtocol: 1, eventSchema: 1,
     });
-    writeFileSync(join(dir, "aaa.ndjson"), `${good}\n`);
-    writeFileSync(join(dir, "bbb.ndjson"), `${good}\n`);
+    writeFileSync(join(aaa, "events.ndjson"), `${good}\n`);
+    writeFileSync(join(bbb, "events.ndjson"), `${good}\n`);
     assert.ok(!("error" in await push(root, "baseline")));
 
     // The FIRST one alphabetically, which is the entry that lost its status prefix.
-    appendFileSync(join(dir, "aaa.ndjson"), "garbage\n");
+    appendFileSync(join(aaa, "events.ndjson"), "garbage\n");
     const first = await push(root, "should refuse");
     assert.ok("error" in first, "the first changed shard must be checked like any other");
-    assert.match(first.error, /aaa\.ndjson:2/);
+    assert.match(first.error, /aaa\/events\.ndjson:2/);
 
     // Mutation check: the SECOND one was already caught before this fix, so a test that
     // only damaged that one would have passed against the bug.
-    writeFileSync(join(dir, "aaa.ndjson"), `${good}\n`);
-    appendFileSync(join(dir, "bbb.ndjson"), "garbage\n");
+    writeFileSync(join(aaa, "events.ndjson"), `${good}\n`);
+    appendFileSync(join(bbb, "events.ndjson"), "garbage\n");
     const second = await push(root, "should also refuse");
     assert.ok("error" in second);
-    assert.match(second.error, /bbb\.ndjson:2/);
+    assert.match(second.error, /bbb\/events\.ndjson:2/);
   } finally { discard(root); }
 });

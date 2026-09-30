@@ -121,7 +121,7 @@ test("hostile history: each shape is refused in its own scope, and nowhere else"
     // 2 — an event from a build that does not exist yet.
     await step("a teammate on a newer codemap writes into pr-21", async () => {
       const scope = await scopeFor(ana, "pr-21");
-      appendRaw(ana, join(scope, "w_future.ndjson"), envelope({
+      appendRaw(ana, join(scope, "events.ndjson"), envelope({
         id: "9999999999-future", writer: "w_future",
         sidecarProtocol: SIDECAR_PROTOCOL + 1, eventSchema: EVENT_SCHEMA + 1,
       }));
@@ -184,7 +184,7 @@ test("hostile history: each shape is refused in its own scope, and nowhere else"
     // 3 — a chain that loops. No append can produce it; a hand-edit can.
     await step("a hand-edited shard gives pr-22 a writerPrev cycle", async () => {
       const scope = await scopeFor(ana, "pr-22");
-      const shard = join(scope, "w_cycle.ndjson");
+      const shard = join(scope, "events.ndjson");
       appendRaw(ana, shard, envelope({ id: "8888888881-c1", writer: "w_cycle", writerPrev: "8888888882-c2" }));
       appendRaw(ana, shard, envelope({ id: "8888888882-c2", writer: "w_cycle", writerPrev: "8888888881-c1" }));
       pushRaw(ana, "a writerPrev cycle");
@@ -222,10 +222,10 @@ test("hostile history: each shape is refused in its own scope, and nowhere else"
     await step("a malformed event is dropped, and does not wedge the scope", async () => {
       const scope = await scopeFor(ana, "pr-23");
       const before = (await readScope(ana.sidecar, scope)).length;
-      appendRaw(ana, join(scope, "w_junk.ndjson"), envelope({
+      appendRaw(ana, join(scope, "events.ndjson"), envelope({
         id: "7777777777-junk", writer: "w_junk", sidecarProtocol: undefined, eventSchema: undefined,
       }) as any);
-      appendRaw(ana, join(scope, "w_junk.ndjson"), {} as any);
+      appendRaw(ana, join(scope, "events.ndjson"), {} as any);
       pushRaw(ana, "a malformed line and a meaningless one");
 
       const r = await syncOne(ana) as any;
@@ -247,7 +247,7 @@ test("hostile history: each shape is refused in its own scope, and nowhere else"
       const scope = await scopeFor(ana, "pr-23");
       const before = (await readScope(ana.sidecar, scope)).length;
       rewriteHistory(ana, "a truncated line", (_p, sidecar) => {
-        const path = join(sidecar, scope, "w_junk.ndjson");
+        const path = join(sidecar, scope, "events.ndjson");
         spawnSync("sh", ["-c", `printf '{"id":"nope"\\n' >> ${JSON.stringify(path)}`]);
       });
 
@@ -280,7 +280,7 @@ test("hostile history: each shape is refused in its own scope, and nowhere else"
 
       const blocked = await syncOne(ben) as { error?: string };
       assert.match(blocked.error ?? "", /refusing to take the remote tip/, "ben's pull refuses the damaged bytes");
-      assert.match(blocked.error ?? "", /w_junk\.ndjson:/, "and names the line, so it can be repaired where it was written");
+      assert.match(blocked.error ?? "", /events\.ndjson:/, "and names the line, so it can be repaired where it was written");
 
       // The promise the refusal makes, and the reason it is worth the collateral: ben's
       // clone never took the bytes, so the scope is healthy on his machine and his own
@@ -295,7 +295,7 @@ test("hostile history: each shape is refused in its own scope, and nowhere else"
       // A repair is a commit pushed with git (docs/log-repair.md): a sync moves the tree to the
       // remote tip, which still holds the damage, and refuses a hand edit rather than discard it.
       pushRaw(ana, "delete the damaged line", (_p, sidecar) => {
-        const path = join(sidecar, scope, "w_junk.ndjson");
+        const path = join(sidecar, scope, "events.ndjson");
         const kept = readFileSync(path, "utf8").split("\n").filter((l) => l.trim() && l !== '{"id":"nope"');
         writeFileSync(path, kept.join("\n") + "\n");
       });

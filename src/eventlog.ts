@@ -62,6 +62,22 @@ export const EVENT_SCHEMA = 1;
  */
 export const LINEAR_SHARD = "events" + SHARD_EXT;
 
+/**
+ * The cutover's tripwire (plan 7.2): a shard the migration commit writes whose first line is
+ * not JSON, so a build from before the linear log refuses the pull that brings it (its inbound
+ * damage gate) and can neither merge nor push. This build exempts exactly this path with exactly
+ * these bytes — anything else there is damage like anywhere else.
+ */
+export const TRIPWIRE_PATH = "linear-log/UPGRADE-CODEMAP" + SHARD_EXT;
+export const TRIPWIRE_BYTES = "codemap: this sidecar was migrated to the linear format; upgrade codemap\n";
+
+/**
+ * Whether a shard path is from before the linear log: a per-writer shard. A sidecar holding any
+ * is unmigrated, and this build neither syncs nor folds it (plan 7.2b).
+ */
+export const isLegacyShard = (path: string): boolean =>
+  path.endsWith(SHARD_EXT) && !path.endsWith("/" + LINEAR_SHARD) && path !== LINEAR_SHARD && path !== TRIPWIRE_PATH;
+
 /** The predecessor named by the first event of a `(scope, writer)` chain. */
 export const GENESIS = "GENESIS";
 
@@ -680,6 +696,7 @@ async function readShardLines(
  * damaged shard is, which is the whole class of defect this fixes.
  */
 export function splitShard(text: string, as: string): { events: { event: LogEvent; line: string }[]; damage: ShardDamage[] } {
+  if (text === TRIPWIRE_BYTES && (as === TRIPWIRE_PATH || as.endsWith("/" + TRIPWIRE_PATH))) return { events: [], damage: [] };
   const events: { event: LogEvent; line: string }[] = [];
   const damage: ShardDamage[] = [];
   const lines = text.split("\n");
@@ -827,7 +844,7 @@ export interface ScopeDiagnostic {
    * MATERIALIZER, not by `scopeStatus`: they are facts about the configured path rather
    * than about a scope's events, and there are no events to judge when they fire.
    */
-  reason: "sidecar-missing" | "sidecar-mismatch" | "corrupt-shard" | "protocol" | "duplicate-id" | "chain-cycle" | "fork";
+  reason: "sidecar-missing" | "sidecar-mismatch" | "unmigrated" | "corrupt-shard" | "protocol" | "duplicate-id" | "chain-cycle" | "fork";
   /** One line a person can act on. */
   detail: string;
   /** The ids or writers the detail is about, so a repair does not have to search. */

@@ -123,15 +123,15 @@ test("unchanged shards replay old materializer cache and atomically persist repa
   try {
     mkdirSync(join(log, scope), { recursive: true });
     const events = chain([sorted(), proof()]);
-    writeFileSync(join(log, scope, "writer.ndjson"), events.map(e => JSON.stringify(e)).join("\n") + "\n");
+    writeFileSync(join(log, scope, "events.ndjson"), events.map(e => JSON.stringify(e)).join("\n") + "\n");
     await readCached(root, log, scope, "identity", foldFindings, findingsProjection);
     const d = db(root);
     assert.equal(readRepairRecords(root, scope).evidence.length, 1);
     d.prepare("UPDATE repair_records SET body=? WHERE scope=?").run(JSON.stringify({ claims: [], sorts: [], evidence: [], rejected: [] }), scope);
     const oldHash = createHash("sha256");
     oldHash.update(`v44\0identity\0${scope}\0`);
-    const st = statSync(join(log, scope, "writer.ndjson"), { bigint: true });
-    oldHash.update(`writer.ndjson\0${st.size}\0${st.mtimeNs}\0`);
+    const st = statSync(join(log, scope, "events.ndjson"), { bigint: true });
+    oldHash.update(`events.ndjson\0${st.size}\0${st.mtimeNs}\0`);
     d.prepare("UPDATE shared_scope SET fingerprint=? WHERE scope=?").run(oldHash.digest("hex"), scope);
     const result = await readCached(root, log, scope, "identity", foldFindings, findingsProjection);
     assert.equal((result.value as import("./repair-records.js").RepairFindingMap<import("./shared-findings.js").SharedFinding>).repairRecords!.evidence.length, 1);

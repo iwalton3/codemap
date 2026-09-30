@@ -7,7 +7,7 @@
  * with what it conflicts with: a teammate who had not pulled. Without it the event saw the
  * whole scope, which is what a sequential write on one clone is.
  */
-import { appendChecked, appendEvents, causalHeads, EVENT_SCHEMA, GENESIS, mintId, readScope, readShard, shardFor, SIDECAR_PROTOCOL, sortEvents, writerFor, type LogEvent } from "./eventlog.js";
+import { appendChecked, appendLinear, causalHeads, EVENT_SCHEMA, GENESIS, mintId, readScope, SIDECAR_PROTOCOL, sortEvents, writerFor, type LogEvent } from "./eventlog.js";
 import { join } from "node:path";
 import { isLogDamage, type DamagedEntry } from "./log-damage.js";
 import { shapeCheckFor } from "./log-shape.js";
@@ -30,13 +30,16 @@ export async function appendUnfolded(
     return e;
   }
   const writer = opts.writer ?? await writerFor(logRoot);
-  const own = await readShard(join(logRoot, shardFor(scope, writer)));
+  const scoped = sortEvents(await readScope(logRoot, scope));
+  const own = scoped.filter((e) => e.writer === writer);
+  // Into the scope's one file, but with no `seq`: an event from before the linear log, placed
+  // where a migrated sidecar would hold it. (A per-writer shard would read as unmigrated.)
   const event: LogEvent = {
     sidecarProtocol: SIDECAR_PROTOCOL, eventSchema: EVENT_SCHEMA, id: mintId(), kind, subject, actor,
     at: new Date().toISOString(), writer, writerPrev: own.length ? own[own.length - 1]!.id : GENESIS,
-    after: opts.after ?? causalHeads(sortEvents(await readScope(logRoot, scope))), data,
+    after: opts.after ?? causalHeads(scoped), data,
   };
-  await appendEvents(logRoot, scope, writer, [event]);
+  await appendLinear(logRoot, scope, [event]);
   planted.add(event.id);
   return event;
 }

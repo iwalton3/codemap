@@ -15,13 +15,13 @@
 
 import { createHash } from "node:crypto";
 import { readdir, stat } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync, type Dirent } from "node:fs";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { db } from "./db.js";
 import { SIDECAR_LINEAGE, type SidecarMark } from "./store.js";
 import { isSameSidecar } from "./sidecar.js";
-import { overlayActive, readScopeChecked, sortEvents, SHARD_EXT, type LogEvent, type ScopeDiagnostic, type ScopeStatus } from "./eventlog.js";
+import { isLegacyShard, overlayActive, readScopeChecked, sortEvents, SHARD_EXT, type LogEvent, type ScopeDiagnostic, type ScopeStatus } from "./eventlog.js";
 import { isLogDamage } from "./log-damage.js";
 import { assertNotLockedOut, LockedOut, locate, recordLockout } from "./lockout.js";
 
@@ -323,7 +323,7 @@ export async function readCachedMerged<T>(
   fold = locking(logRoot, scopes, fold);
   const d = db(root);
   let checked: ScopeDiagnostic | null | undefined;
-  const unusable = () => (checked !== undefined ? checked : (checked = logRootMissing(logRoot) ?? wrongSidecar(root, logRoot)));
+  const unusable = () => (checked !== undefined ? checked : (checked = logRootMissing(logRoot) ?? unmigrated(logRoot) ?? wrongSidecar(root, logRoot)));
   const decline = (gone: ScopeDiagnostic) => {
     try { return { value: proj.read(d, key), fresh: false, folded: false, status: "blocked" as const, diagnostic: gone }; }
     catch { return { value: fold([], { readable: new Set() }), fresh: false, folded: false, status: "blocked" as const, diagnostic: gone }; }
@@ -544,6 +544,39 @@ function wrongSidecar(root: string, logRoot: string): ScopeDiagnostic | null {
  * and not yet initialised — a state the write path creates on purpose — so it would refuse
  * reads that are fine today.
  */
+/**
+ * A sidecar from before the linear log (plan 7.2b): this build cannot order its per-writer
+ * shards, so it folds nothing and serves what the store already holds, non-authoritatively,
+ * until the sidecar is migrated. A directory walk, so remembered briefly per process.
+ */
+const unmigratedSeen = new Map<string, { at: number; shard: string | null }>();
+function unmigrated(logRoot: string): ScopeDiagnostic | null {
+  const hit = unmigratedSeen.get(logRoot);
+  let shard = hit && Date.now() - hit.at < 10_000 ? hit.shard : undefined;
+  if (shard === undefined) {
+    shard = null;
+    const walk = (rel: string): void => {
+      let entries: Dirent[] = [];
+      try { entries = readdirSync(join(logRoot, rel), { withFileTypes: true }); } catch { return; }
+      for (const e of entries) {
+        if (shard) return;
+        const path = rel ? `${rel}/${e.name}` : e.name;
+        if (e.isDirectory()) { if (e.name !== ".git") walk(path); }
+        else if (isLegacyShard(path)) shard = path;
+      }
+    };
+    walk("");
+    unmigratedSeen.set(logRoot, { at: Date.now(), shard });
+  }
+  return shard ? {
+    reason: "unmigrated",
+    detail: `this sidecar holds per-writer shards from before the linear log (first: ${shard}), which this build cannot `
+      + `order. Nothing was folded; the rows this store already holds are served as non-authoritative until the sidecar `
+      + `is migrated (docs/sidecar-migration.md).`,
+    evidence: [shard],
+  } : null;
+}
+
 function logRootMissing(logRoot: string): ScopeDiagnostic | null {
   if (existsSync(logRoot)) return null;
   return {
@@ -586,7 +619,7 @@ export async function readCached<T>(
   // every scope — which is precisely the work the materializer exists to avoid. Memoised
   // per call because the retry loop below can come round again.
   let checked: ScopeDiagnostic | null | undefined;
-  const unusable = () => (checked !== undefined ? checked : (checked = logRootMissing(logRoot) ?? wrongSidecar(root, logRoot)));
+  const unusable = () => (checked !== undefined ? checked : (checked = logRootMissing(logRoot) ?? unmigrated(logRoot) ?? wrongSidecar(root, logRoot)));
   /** Serve what is stored, fold nothing, discard nothing. See `logRootMissing`. */
   const decline = (gone: ScopeDiagnostic): Cached<T> => {
     try { return { value: proj.read(d, scope), status: "blocked", diagnostic: gone }; }
@@ -716,7 +749,7 @@ export async function ensureMaterialized<T>(
   // Only now, on the path that would fold. `fresh: false` is the honest answer and callers
   // already handle it as "the rows are behind the log"; nothing is folded, so nothing is
   // discarded. Asking before the cache hit above put a `git merge-base` on every read.
-  const gone = logRootMissing(logRoot) ?? wrongSidecar(root, logRoot);
+  const gone = logRootMissing(logRoot) ?? unmigrated(logRoot) ?? wrongSidecar(root, logRoot);
   if (gone) return { fresh: false, folded: false, status: "blocked", diagnostic: gone };
   // The status comes back even when the rows do not: `readCached` folds the log
   // directly on its give-up path, and that fold saw the scope. Returning

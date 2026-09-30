@@ -29,7 +29,7 @@ import { gitBin } from "./git.js";
 import { withSidecarLock, touchHeldLocks } from "./lock.js";
 import {
   SHARD_EXT, LINEAR_SHARD, SIDECAR_PROTOCOL, EVENT_SCHEMA, principalKey, splitShard, damageRef, appendLinear, atTip, causalHeads,
-  doorFor, maxSeq, mintId, readScope, sortEvents, writeDoor, writerFor, type DoorFold, type LogEvent, type ShardDamage, type StagedEvent,
+  doorFor, isLegacyShard, maxSeq, mintId, readScope, sortEvents, writeDoor, writerFor, type DoorFold, type LogEvent, type ShardDamage, type StagedEvent,
 } from "./eventlog.js";
 import { withoutOverlay } from "./sync-session.js";
 import { pushGate } from "./validation.js";
@@ -1290,6 +1290,20 @@ async function unqueuedLocalEvents(root: string, remoteSha: string): Promise<{ p
   return lost;
 }
 
+/**
+ * Per-writer shards — a sidecar from before the linear log (plan 7.2b) — at a commit, or in this
+ * clone's tree (tracked or not). This build has no ordering for them: it neither syncs over them
+ * nor folds them, and says to migrate.
+ */
+function legacyShards(root: string, sha?: string): string[] {
+  const listing = sha ? g(root, ["ls-tree", "-r", "--name-only", sha]) : g(root, ["ls-files", "-co", "--exclude-standard"]);
+  return listing.ok ? listing.out.split("\n").map((p) => p.trim()).filter(isLegacyShard) : [];
+}
+
+const UNMIGRATED = (where: string, first: string) =>
+  `refusing to sync: ${where} holds per-writer shards from before the linear log (first: ${first}), which this build `
+  + `cannot order. The sidecar must be migrated first — see docs/sidecar-migration.md. Reads carry on from what this store already has.`;
+
 /** Put the working tree at `sha` — tracked files reset, stray shards removed. */
 function resetTo(root: string, sha: string): { error: string } | null {
   const r = g(root, ["reset", "-q", "--hard", sha]);
@@ -1363,6 +1377,10 @@ async function linearHeld(
       }
       remoteSha = rev(root, `origin/${branch}`);
     }
+    const oldHere = legacyShards(root);
+    if (oldHere.length) { forgetInline(); return { error: UNMIGRATED("this clone's sidecar", oldHere[0]!) }; }
+    const oldThere = remoteSha ? legacyShards(root, remoteSha) : [];
+    if (oldThere.length) { forgetInline(); return { error: UNMIGRATED("the team's sidecar", oldThere[0]!) }; }
     // Damage in this clone's own tree locks it before anything moves: the reset below would
     // repair it from the remote, and silently — which hides whatever put it there.
     const local = damagedWorkingShards(root);
@@ -1545,6 +1563,10 @@ export async function pullLinear(root: string, actor?: Actor): Promise<PullResul
     const remoteSha = rev(root, `origin/${branch}`);
     if (!remoteSha) return { gained: 0 };
     const head = rev(root, "HEAD");
+    const oldHere = legacyShards(root), oldThere = legacyShards(root, remoteSha);
+    if (oldHere.length || oldThere.length) {
+      return { error: UNMIGRATED(oldHere.length ? "this clone's sidecar" : "the team's sidecar", (oldHere[0] ?? oldThere[0])!) };
+    }
     const local = damagedWorkingShards(root);
     if (local.length) {
       lockOn(root, local);

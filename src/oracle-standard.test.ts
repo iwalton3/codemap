@@ -397,7 +397,7 @@ test("every fold refusal binds a writer whose tool never checked, on every clone
     await settle(t);
 
     const scope = standardScope(universeKey(ben.repo));
-    const shard = `${scope}/w_forged.ndjson`;
+    const shard = `${scope}/events.ndjson`;
     let prev = "GENESIS";
     const append = (id: string, body: Record<string, unknown>) => {
       appendRaw(ben, shard, forged({ id, writerPrev: prev, ...body }));
