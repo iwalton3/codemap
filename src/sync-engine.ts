@@ -10,7 +10,7 @@
  *   becomes a local conflict, shown on the next open on this machine.
  */
 import {
-  atTip, causalHeads, doorFor, EVENT_SCHEMA, maxSeq, mintId, readScope, registerOverlay, SIDECAR_PROTOCOL, sortEvents, writerFor,
+  atTip, causalHeads, doorFor, EVENT_SCHEMA, writeDoor, maxSeq, mintId, readScope, registerOverlay, SIDECAR_PROTOCOL, sortEvents, writerFor,
   type AdmissionCheck, type DoorFold, type LogEvent, type StagedEvent,
 } from "./eventlog.js";
 import { withSidecarLock } from "./lock.js";
@@ -87,7 +87,7 @@ export async function stageChecked(
     };
     const top = Math.max(await maxSeq(logRoot), ...events.map((e) => e.seq ?? 0));
     const e = atTip(events, await writerFor(logRoot), top, staged);
-    const why = await refused(fold ?? doorFor(logRoot, scope), events, e);
+    const why = await refused(writeDoor(logRoot, scope, fold), events, e);
     if (why) return { error: why };
     stage(logRoot, session, scope, staged);
     return e;

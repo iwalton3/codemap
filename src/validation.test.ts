@@ -7,11 +7,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { scenario, who, settle } from "./scenario.js";
-import { readScope } from "./eventlog.js";
+import { doorFor, readScope, type LogEvent } from "./eventlog.js";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { begin, syncSession, staged } from "./sync-engine.js";
 import { createFinding, findingScope, foldFindings, readFindings, setState } from "./shared-findings.js";
 import { isLogDamage } from "./log-damage.js";
 import { judge } from "./validation.js";
+import "./shared-decisions.js";   // registers the decisions door
 import { testEvent } from "./test-events.js";
 import { lockoutOf } from "./lockout.js";
 
@@ -55,4 +59,38 @@ test("on read: a shape this build does not write is newer — reads go on, it is
   const odd = testEvent({ id: "e2", kind: "finding.corroborated", subject: "f1", data: { verdict: "maybe" }, seq: 2 });
   assert.equal(foldFindings([created, odd]).get("f1")!.corroboration.length, 0, "the read carries on without it");
   assert.deepEqual(judge([created, odd], [{ id: "e2", kind: odd.kind, why: "x", cls: "shape" }]).map((r) => r.id), ["e2"]);
+});
+
+test("the findings door checks what a finding names in other scopes: a ruling's round, a site's bug", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codemap-refs-"));
+  try {
+    const scope = findingScope(PR);
+    const door = doorFor(root, scope)!;
+    const ruling = testEvent({ id: "e2", kind: "finding.rulingApplied", subject: "f1", seq: 2,
+      data: { capsule: { version: 3, ruling: { answerId: "a1", roundId: "r_missing", questionId: "r_missing:d1" } } } });
+    const r1 = await door([created], ruling);
+    assert.ok(r1.refused.some((r) => r.id === "e2" && /no round r_missing in decisions\/acme\/api/.test(r.why)), JSON.stringify(r1.refused));
+    const site = testEvent({ id: "e3", kind: "repair.verification-recorded", subject: "run", seq: 3,
+      data: { results: [{ sites: [{ bug: "bug_never_filed" }] }] } });
+    const r2 = await door([created], site);
+    assert.ok(r2.refused.some((r) => r.id === "e3" && /no bug bug_never_filed/.test(r.why)), JSON.stringify(r2.refused));
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("the decisions door checks what a round and a logged question name: findings that exist, rounds that were posted", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codemap-drefs-"));
+  try {
+    const fixture = JSON.parse(readFileSync("src/testdata/decisions-shapes.json", "utf8")) as Record<string, LogEvent[]>;
+    const round = fixture.questionnaire!.find((e) => e.kind === "decision.round.posted")!;
+    const scope = "decisions/acme/api";
+    const door = doorFor(root, scope)!;
+    const named = JSON.stringify(round.data).match(/"findings":\["([^"]+)"/)?.[1];
+    assert.ok(named, "precondition: the fixture's round names a finding in an effect");
+    const r1 = await door([], { ...round, id: "r1", seq: 1 });
+    assert.ok(r1.refused.some((r) => r.id === "r1" && new RegExp(`no finding ${named}`).test(r.why)), JSON.stringify(r1.refused));
+    const logged = testEvent({ id: "q1", kind: "decision.question.logged", subject: "s", seq: 2,
+      data: { session: "s", toolUseId: "t", questions: [], answers: {}, rounds: ["never-posted"], answeredAt: "2026-08-01T00:00:00Z" } });
+    const r2 = await door([], logged);
+    assert.ok(r2.refused.some((r) => r.id === "q1" && /no round never-posted/.test(r.why)), JSON.stringify(r2.refused));
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

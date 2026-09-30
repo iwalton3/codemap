@@ -24,7 +24,7 @@ export async function appendUnfolded(
   if (!opts.after && !opts.writer) {
     // The local door, never `write.ts`: a build without the door appends straight to its
     // clone, and nothing validates it until something reads or syncs.
-    const e = await appendChecked(logRoot, scope, actor, async () => ({ kind, subject, data }), () => ({ refused: [] }));
+    const e = await appendChecked(logRoot, scope, actor, async () => ({ kind, subject, data }), () => ({ refused: [] }), true);
     if ("error" in e) throw new Error(e.error);
     planted.add(e.id);
     return e;

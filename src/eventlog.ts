@@ -380,6 +380,20 @@ export function registerDoor(match: (scope: string) => boolean, make: (logRoot: 
  * registered in this process, THROWS rather than replaying unchecked: an unchecked replay is
  * how an invalid event reaches the remote.
  */
+/**
+ * The door a write goes through: the caller's fold, and the scope's registered door as well —
+ * a door checks more than one fold (references into other scopes), and a caller passing its
+ * scope's fold must not skip what replay would check.
+ */
+export function writeDoor(logRoot: string, scope: string, fold?: DoorFold): DoorFold | undefined {
+  const registered = doorFor(logRoot, scope);
+  if (!fold || !registered) return fold ?? registered;
+  return async (events, minted) => {
+    const a = await fold(events, minted), b = await registered(events, minted);
+    return { refused: [...a.refused, ...b.refused] };
+  };
+}
+
 export function doorFor(logRoot: string, scope: string): DoorFold | undefined {
   const d = doors.find((x) => x.match(scope));
   if (d) return d.make(logRoot, scope);
@@ -407,10 +421,12 @@ export type AdmissionCheck = (events: LogEvent[]) => Promise<Admission>;
  */
 export async function appendChecked(
   logRoot: string, scope: string, actor: Actor, check: AdmissionCheck, fold?: DoorFold,
+  /** Fold with `fold` alone, not the scope's registered door too: `test-door.ts` planting what no build writes. */
+  exact = false,
 ): Promise<LogEvent | { error: string }> {
   // The scope's registered door when the caller brings none: a local append is validated
   // exactly as a replay would be, or the read of it is what refuses — as damage.
-  fold ??= doorFor(logRoot, scope);
+  if (!exact) fold = writeDoor(logRoot, scope, fold);
   return withSidecarLock(logRoot, async () => {
     const events = await readScope(logRoot, scope);
     const admission = await check(events);

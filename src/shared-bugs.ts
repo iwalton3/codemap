@@ -34,7 +34,8 @@ import { isAgentActor, isIndependent, isErrorIndependent, reviewerKey } from "./
 import { mintId, readScope, causality, registerDoor, type LogEvent } from "./eventlog.js";
 import { emitEvent } from "./write.js";
 import { applyRevision, newContestState, type Contested } from "./contest.js";
-import { issueClaimHash, questionnaireAnswerId, validateApplicationCapsule, type ApplicationAttempt } from "./ruling-application.js";
+import { issueClaimHash, validateApplicationCapsule, type ApplicationAttempt } from "./ruling-application.js";
+import { rulingReferences } from "./ruling-references.js";
 import {
   isClosed, mayTransition, mayRevise, needsHumanAck, isStandingBehind,
   isAsk, type Ask, type Corroboration, type ExternalRef, type FindingComment,
@@ -610,8 +611,7 @@ export function findingScopeOfBugKey(universe: string, key: string): string | nu
 /**
  * The references a bug event makes OUTSIDE its scope (docs/sidecar-references.md): a filing from
  * a finding names that finding (rows 70-71), and a ruling application names the round, the
- * decision and the answer in `decisions/<u>` (rows 78-80). Raw events, not the decisions fold:
- * shared-decisions imports this module.
+ * decision and the answer in `decisions/<u>` (rows 78-80; `ruling-references.ts`).
  */
 async function outsideReferences(logRoot: string, scope: string, e: LogEvent): Promise<Refusal[]> {
   const universe = scope.slice("bugs/".length);
@@ -625,28 +625,7 @@ async function outsideReferences(logRoot: string, scope: string, e: LogEvent): P
     const findings = await readScope(logRoot, at);
     return findings.some((f) => f.kind === "finding.created" && f.subject === finding) ? [] : refused(`no finding ${finding} in ${at}`);
   }
-  if (e.kind === "bug.rulingApplied") {
-    const r = (d?.capsule as { version?: unknown; ruling?: Record<string, unknown> } | undefined);
-    const { answerId, roundId, questionId } = r?.ruling ?? {};
-    // The fold refuses a capsule without these, and skips a dev-era one.
-    if (r?.version !== 3 || typeof answerId !== "string" || typeof roundId !== "string" || typeof questionId !== "string") return [];
-    const at = `decisions/${universe}`;
-    const events = await readScope(logRoot, at);
-    const round = events.find((x) => x.kind === "decision.round.posted" && x.id === roundId);
-    if (!round) return refused(`no round ${roundId} in ${at}`);
-    // A decision's id is `<round event id>:<its label>`.
-    const labels = ((round.data as Data | undefined)?.decisions as { id?: unknown }[] | undefined) ?? [];
-    const label = labels.map((x) => String(x?.id)).find((l) => `${roundId}:${l}` === questionId);
-    if (label === undefined) return refused(`round ${roundId} posted no decision ${questionId}`);
-    // An answer names its decision by id, or by label when that label is unique.
-    const answered = events.some((x) =>
-      ((x.kind === "decision.answer.recorded" || x.kind === "decision.answer.revised") && x.id === answerId
-        && [questionId, label].includes((x.data as Data | undefined)?.decision as string))
-      || (x.kind === "decision.questionnaire.submitted" && ((x.data as any)?.staged?.answers ?? [])
-        .some((a: { questionId?: unknown }) => `${roundId}:${String(a?.questionId)}` === questionId
-          && questionnaireAnswerId(x.id, String(a.questionId)) === answerId)));
-    return answered ? [] : refused(`no answer ${answerId} to ${questionId} in ${at}`);
-  }
+  if (e.kind === "bug.rulingApplied") return rulingReferences(logRoot, universe, e);
   return [];
 }
 

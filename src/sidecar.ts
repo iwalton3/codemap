@@ -29,7 +29,7 @@ import { gitBin } from "./git.js";
 import { withSidecarLock, touchHeldLocks } from "./lock.js";
 import {
   SHARD_EXT, LINEAR_SHARD, SIDECAR_PROTOCOL, EVENT_SCHEMA, principalKey, splitShard, damageRef, appendLinear, atTip, causalHeads,
-  doorFor, maxSeq, mintId, readScope, sortEvents, writerFor, type DoorFold, type LogEvent, type ShardDamage, type StagedEvent,
+  doorFor, maxSeq, mintId, readScope, sortEvents, writeDoor, writerFor, type DoorFold, type LogEvent, type ShardDamage, type StagedEvent,
 } from "./eventlog.js";
 import { withoutOverlay } from "./sync-session.js";
 import { pushGate } from "./validation.js";
@@ -1462,7 +1462,7 @@ async function linearHeld(
         ...(admission.data ? { data: admission.data } : {}),
       };
       const e = atTip(evs, writer, top, staged);
-      const why = await refusalOf(a.fold ?? doorFor(root, a.scope), evs, e);
+      const why = await refusalOf(writeDoor(root, a.scope, a.fold), evs, e);
       if (why) { forgetInline(); return { error: why }; }
       // In the queue BEFORE it can reach the remote: a crash after the push is then resolved by
       // finding its id there, never by pushing it twice.

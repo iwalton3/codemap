@@ -24,7 +24,7 @@
  */
 import { createHash } from "node:crypto";
 import { comparisonContextHash, deriveComparison, validateComparisonRequest, type AnswerSource, type CanonicalIssue, type ComparisonProjection, type ComparisonRequest, type ReaderJudgment, type HumanResolution } from "./decision-comparison.js";
-import { causality, registerDoor, type DoorFold, type LogEvent } from "./eventlog.js";
+import { causality, readScope, registerDoor, scopesOnDisk, type DoorFold, type LogEvent } from "./eventlog.js";
 import { emitEventChecked } from "./write.js";
 import { foldHaltingOnDamage } from "./log-damage.js";
 import { decisionEventShape } from "./log-shape.js";
@@ -2515,7 +2515,61 @@ export const decisionsDoor: DoorFold = (events, minted) => {
   const wrong = decisionEventShape(minted);
   return wrong ? { refused: [{ id: minted.id, why: wrong }] } : foldDecisionsReport(events);
 };
-registerDoor((scope) => scope.startsWith("decisions/"), () => decisionsDoor);
+
+/**
+ * What a decisions event names that the fold does not check (docs/sidecar-references.md, rows
+ * 88-91, 96): a round's effects name findings and issues that exist, `follows` a posted decision,
+ * `origin.answer` an answer; a logged question names rounds that were posted. Raw events.
+ */
+async function decisionReferences(logRoot: string, scope: string, events: LogEvent[], e: LogEvent): Promise<string | null> {
+  const universe = scope.slice("decisions/".length);
+  const d = e.data as Record<string, any> | undefined;
+  const posted = events.filter((x) => x.kind === "decision.round.posted");
+  const roundKnown = (r: string) => posted.some((x) => x.id === r || (x.data as Record<string, any> | undefined)?.round?.id === r);
+  const decisionKnown = (id: string) => posted.some((x) => (((x.data as Record<string, any> | undefined)?.decisions as { id?: unknown }[] | undefined) ?? [])
+    .some((q) => q?.id === id || `${x.id}:${String(q?.id)}` === id));
+  if (e.kind === "decision.question.logged") {
+    const missing = ((d?.rounds as unknown[] | undefined) ?? []).find((r) => typeof r === "string" && !roundKnown(r));
+    return missing ? `no round ${String(missing)} was posted` : null;
+  }
+  if (e.kind !== "decision.round.posted") return null;
+  const findings = new Map<string, Set<string>>();
+  const createdIn = async (sc: string) => {
+    let s = findings.get(sc);
+    if (!s) { s = new Set((await readScope(logRoot, sc)).filter((x) => x.kind === "finding.created" || x.kind === "bug.filed").map((x) => x.subject)); findings.set(sc, s); }
+    return s;
+  };
+  let allFindings: Set<string> | null = null;
+  for (const q of (d?.decisions as Record<string, any>[] | undefined) ?? []) {
+    if (typeof q?.follows === "string" && !decisionKnown(q.follows)) return `no decision ${q.follows} to follow`;
+    const origin = q?.origin?.answer;
+    if (typeof origin === "string" && !events.some((x) => x.id === origin)) return `no answer ${origin} to follow up`;
+    for (const opt of (q?.options as Record<string, any>[] | undefined) ?? []) {
+      for (const eff of (opt?.effects as Record<string, any>[] | undefined) ?? []) {
+        for (const f of (eff?.findings as unknown[] | undefined) ?? []) {
+          if (typeof f !== "string") continue;
+          if (!allFindings) {
+            allFindings = new Set<string>();
+            for (const sc of (await scopesOnDisk(logRoot)).filter((s) => s.startsWith(`findings/${universe}/`)))
+              for (const id of await createdIn(sc)) allFindings.add(id);
+          }
+          if (!allFindings.has(f)) return `no finding ${f} in findings/${universe}`;
+        }
+        for (const i of (eff?.issues as { scope?: unknown; id?: unknown }[] | undefined) ?? []) {
+          if (typeof i?.scope === "string" && typeof i.id === "string" && !(await createdIn(i.scope)).has(i.id))
+            return `no issue ${i.id} in ${i.scope}`;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+registerDoor((scope) => scope.startsWith("decisions/"), (logRoot, scope) => async (events, minted) => {
+  const own = await decisionsDoor(events, minted);
+  const why = await decisionReferences(logRoot, scope, events.filter((x) => x.id !== minted.id), minted);
+  return why ? { refused: [...own.refused, { id: minted.id, why }] } : own;
+});
 
 /** One write, folded at the door: refused with the fold's reason, never appended to be refused later. */
 const put = (logRoot: string, universe: string, actor: Actor, kind: string, subject: string, data: Record<string, unknown>) =>

@@ -1,4 +1,5 @@
 import { collector, foldJudged, registerReport, type RefusalClass, type Refusal } from "./validation.js";
+import { rulingReferences } from "./ruling-references.js";
 import { foldRepairRecords, type RepairFindingMap } from "./repair-records.js";
 import { foldRepairVerification, type RepairVerificationApplication } from "./repair-verification.js";
 /**
@@ -1166,17 +1167,24 @@ function universeOfFindingScope(scope: string): string | null {
 }
 
 /**
- * The references a findings event makes OUTSIDE its scope (docs/sidecar-references.md, row 23):
- * a promotion names a bug that must already be filed in the universe's bug scope.
+ * The references a findings event makes OUTSIDE its scope (docs/sidecar-references.md): a
+ * promotion names a filed bug (row 23), a ruling application its round, decision and answer
+ * (rows 29-31), and a verification result's sites the bugs they were filed as (row 51).
  */
 async function outsideReferences(logRoot: string, scope: string, e: LogEvent): Promise<Refusal[]> {
-  if (e.kind !== "finding.promotedToBug") return [];
-  const bug = str(e.data as Data | undefined, "bug");
   const universe = universeOfFindingScope(scope);
-  if (!bug || !universe) return [];
-  const bugs = await readScope(logRoot, `bugs/${universe}`);
-  return bugs.some((b) => b.kind === "bug.filed" && b.subject === bug)
-    ? [] : [{ id: e.id, kind: e.kind, cls: "reference", why: `no bug ${bug} has been filed in bugs/${universe}` }];
+  if (!universe) return [];
+  if (e.kind === "finding.rulingApplied") return rulingReferences(logRoot, universe, e);
+  const named = e.kind === "finding.promotedToBug" ? [str(e.data as Data | undefined, "bug")]
+    : e.kind === "repair.verification-recorded"
+      ? (((e.data as Data | undefined)?.results as { sites?: { bug?: unknown }[] }[] | undefined) ?? [])
+        .flatMap((r) => r?.sites ?? []).map((s) => (typeof s?.bug === "string" ? s.bug : undefined))
+      : [];
+  const wanted = named.filter((b): b is string => !!b);
+  if (!wanted.length) return [];
+  const filed = new Set((await readScope(logRoot, `bugs/${universe}`)).filter((b) => b.kind === "bug.filed").map((b) => b.subject));
+  const missing = wanted.find((b) => !filed.has(b));
+  return missing ? [{ id: e.id, kind: e.kind, cls: "reference", why: `no bug ${missing} has been filed in bugs/${universe}` }] : [];
 }
 
 registerReport((scope) => scope.startsWith("findings/"), foldFindingsReport);
