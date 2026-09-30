@@ -1,5 +1,5 @@
 import type { Actor, BugWitness } from "./schema.js";
-import { sortEvents, type LogEvent } from "./eventlog.js";
+import { registerDoor, sortEvents, type LogEvent } from "./eventlog.js";
 import type { VerifierIdentity } from "./verifier-boundary.js";
 
 export type { RepairClaim, RepairCoverage, ReportedSortReceipt, RepairAssessment, RepairSortInput } from "./repair-sort-types.js";
@@ -41,6 +41,10 @@ export const RETIRED_REPAIR_KINDS: readonly string[] = ["repair.participant-reco
 const VERIFICATION_KINDS: readonly string[] = ["repair.verification-requested", "repair.verification-recorded", "repair.verification-arbitrated"];
 
 /** Original claims come from creation, never the finding's mutable current text. */
+/** Repair records share a pull request's findings scope; replay folds them there. */
+registerDoor((scope) => scope.startsWith("findings/"), () => (events) =>
+  ({ refused: foldRepairRecords(events).rejected.map((r) => ({ id: r.eventId, why: r.reason })) }));
+
 export function foldRepairRecords(input: LogEvent[]): RepairRecords {
   const out = emptyRepairRecords();
   const events = sortEvents(input);

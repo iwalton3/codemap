@@ -8,6 +8,8 @@ import { scenario, who, concurrently, settle, asAgent, type Scenario } from "./s
 import { createFinding, revise, resolveContest, readFindings, ackQueue } from "./shared-findings.js";
 import * as shared from "./ops-shared.js";
 import { discard } from "./test-tmp.js";
+import { begin } from "./sync-engine.js";
+import { resolveSidecar } from "./sidecar-config.js";
 import { matrix } from "./test-matrix.js";
 
 const git = (root: string, ...args: string[]) => spawnSync("git", args, { cwd: root, encoding: "utf8" });
@@ -154,7 +156,8 @@ test("settleContest, the op behind the route and the MCP tool, clears it", async
       assert.ok(!created.error, JSON.stringify(created));
       await sync();
 
-      // Concurrent: both revise, then both sync. Neither `after` names the other.
+      // Concurrent: izzie's revision is staged, dana's lands, then izzie's syncs. Neither `after` names the other.
+      begin(resolveSidecar(izzie)!.path);
       await shared.reviseFinding(izzie, 264, created.id, { severity: "critical" });
       await shared.reviseFinding(dana, 264, created.id, { severity: "low" });
       await sync();

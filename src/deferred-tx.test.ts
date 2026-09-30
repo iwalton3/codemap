@@ -34,8 +34,8 @@ import { join } from "node:path";
  * instead, and so is not in this list at all.
  */
 const RAW_BEGIN: Record<string, number> = {
-  // The fold's two write-throughs: `proj.write` is the first statement in both.
-  "src/materialize.ts": 2,
+  // The fold's two write-throughs and `writeStaged`: `proj.write` is the first statement in all three.
+  "src/materialize.ts": 3,
   // Anchor, node, edge, review and finding writers — each opens by deleting what it replaces.
   "src/store.ts": 12,
 };

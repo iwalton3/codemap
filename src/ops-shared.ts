@@ -17,12 +17,17 @@ import { classifyCitations } from "./citation-state.js";
 import { evalVersion } from "./doc-version.js";
 import { readCached, ensureMaterialized, scopeCurrency, type Projection } from "./materialize.js";
 import type { ScopeStatus, ScopeDiagnostic, LogEvent } from "./eventlog.js";
-import { scopesOnDisk, readScopeChecked, writerFor, rotateWriter, acknowledgeScope } from "./eventlog.js";
+import { scopesOnDisk, readScopeChecked, writerFor, rotateWriter } from "./eventlog.js";
+import { acknowledgeScope } from "./write.js";
 import { reviewLinksProjection, findingsProjection, docsProjection, notesProjection, walkthroughsProjection, triageProjection, docsByNode, projectionFor } from "./shared-projections.js";
 import { anchorIndex, derivationsOf, type AnchorIndex, resolveAnchor} from "./anchor-resolve.js";
 import { findingKeyScope, branchKey, branchOf, isBranchKey, normalizeBranch } from "./review-target.js";
 import { reviewScope, foldReviewLinks, linkReview } from "./shared-reviews.js";
 import { resolveSidecar, scopeFor, sidecarIdentity, inUniverse, checkSidecarBinding, universeKey, type SidecarConfig } from "./sidecar-config.js";
+import { onArrivals } from "./arrivals.js";
+import { attemptGone, closeSession } from "./sync-engine.js";
+import { touchSession } from "./sync-queue.js";
+import { currentSession } from "./sync-session.js";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { ISO_DATE, parseAsOf, type BugWitness } from "./schema.js";
@@ -105,7 +110,46 @@ function bind(root: string, via: { model?: string; harness?: string } = {}, opts
   }
   const actor = requireActor(root, via);
   if ("error" in actor) return actor;
+  universesOn(cfg.path).set(root, cfg);
   return { cfg, actor };
+}
+
+/** Every universe this process has bound to each sidecar: whose rows an arrival must fold. */
+const bound = new Map<string, Map<string, SidecarConfig>>();
+const universesOn = (logRoot: string): Map<string, SidecarConfig> => {
+  let m = bound.get(logRoot);
+  if (!m) { m = new Map(); bound.set(logRoot, m); }
+  return m;
+};
+onArrivals(async (logRoot) => {
+  for (const [root, cfg] of universesOn(logRoot)) await settleArrivals(root, cfg).catch(() => null);
+});
+
+/** The sidecars these universes write through, once each. */
+const sidecarsOf = (roots: string[]): string[] =>
+  [...new Set(roots.map((r) => resolveSidecar(r)?.path).filter((p): p is string => !!p))];
+
+/**
+ * The calling session is ending — an MCP connection closing: attempt what it staged, all or
+ * nothing, and keep a refusal as a local conflict for the next open (plan 2.5).
+ */
+export async function endSession(roots: string[]): Promise<void> {
+  const { session } = currentSession();
+  for (const s of sidecarsOf(roots)) await closeSession(s, session).catch(() => null);
+}
+
+/** Attempt the staged writes of every session that is gone — on start, and on a timer (plan 2.5). */
+export async function attemptGoneSessions(roots: string[]) {
+  const out: { sidecar: string; session: string; outcome: string }[] = [];
+  for (const s of sidecarsOf(roots)) {
+    for (const o of await attemptGone(s).catch(() => [])) out.push({ sidecar: s, ...o });
+  }
+  return out;
+}
+
+/** A web tab's request or poll: it is alive, and it is who owns what it stages (F20d). */
+export function touchWebSession(roots: string[], session: string): void {
+  for (const s of sidecarsOf(roots)) { try { touchSession(s, session, "web"); } catch { /* no queue yet */ } }
 }
 
 /** What a caller says about itself: its model id and the tool running it. Never guessed. */

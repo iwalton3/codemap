@@ -29,6 +29,7 @@ import { questionnaireStatus, waitQuestionnaireStatus } from "./ops/questionnair
 import { comparisonDetail, requestComparison, comparisonBrief, submitComparisonJudgment, recordComparisonJudgment, comparisonResolutionBrief, resolveComparison } from "./ops/comparisons.js";
 import { RepairConnection } from "./verifier-boundary.js";
 import { asLockout, lockoutGate } from "./lockout-gate.js";
+import { setProcessSessionKind } from "./sync-session.js";
 
 /** The tools a locked store still runs: they fetch, re-check, and are how a lock clears. */
 const RUNS_WHILE_LOCKED = new Set(["sync", "pull"]);
@@ -2378,6 +2379,9 @@ let buffer = "";
 // Everything below this line is being driven by an agent, not a person — so the
 // ratchet in the shared store applies. See `markAgentSession`.
 markAgentSession();
+// One MCP process is one session: what it stages is its own, and is attempted when it closes.
+setProcessSessionKind("mcp");
+void shared.attemptGoneSessions(ws.universes.map((u) => u.path));
 
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => {
@@ -2397,5 +2401,8 @@ process.stdin.on("data", (chunk) => {
     handle(m).catch((e) => process.stderr.write(`codemap-mcp: handler error: ${e}\n`));
   }
 });
-process.stdin.on("end", () => process.exit(0));
+// The connection is gone: attempt what this session staged before going (plan 2.5).
+process.stdin.on("end", () => {
+  shared.endSession(ws.universes.map((u) => u.path)).finally(() => process.exit(0));
+});
 process.stderr.write(`codemap-mcp: serving ${ws.universes.length} universe(s): ${ws.universes.map((u) => u.id + (u.primary ? "*" : "")).join(", ")}\n`);

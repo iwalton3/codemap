@@ -5,7 +5,7 @@ import { decisionsView } from "./decision-holds.js";
 import { canonicalIssueKey, resolveDecisionIssue, type CanonicalIssueReference } from "../decision-issues.js";
 import { decisionScope, foldDecisions, intentCandidates, comparisonRequestFor, comparisonBriefText, comparisonCurrentVersions, comparisonSourcesCurrent, resolutionShownHash,
   decisionsDoor, type FoldedComparison } from "../shared-decisions.js";
-import { emitEventChecked } from "../eventlog.js";
+import { emitEventChecked } from "../write.js";
 import { isAgentActor } from "../identity.js";
 import { saveReaderRequest, readerRequest, holdReaderReceipt, readerReceipts,
   settleReaderReceipt } from "../reader-local.js";

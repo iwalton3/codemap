@@ -5,9 +5,8 @@ import { mkdtempSync, writeFileSync, mkdirSync, appendFileSync, readFileSync } f
 import { tmpdir } from "node:os";
 import { join, win32 } from "node:path";
 import type { Actor } from "./schema.js";
-import { ACK_KIND, evidenceDigest, chainCycles, wellFormed, mintId, shardFor, appendEvents, readShard, readScope, readScopeChecked, sortEvents, causalHeads,
-  causality, writerFor, detectForks, scopeStatus, emitEvent, emitEventChecked, scopesOnDisk, SHARD_EXT, GENESIS, SIDECAR_PROTOCOL, EVENT_SCHEMA,
-  type LogEvent } from "./eventlog.js";
+import { ACK_KIND, evidenceDigest, chainCycles, wellFormed, mintId, shardFor, appendEvents, readShard, readScope, readScopeChecked, sortEvents, causalHeads, causality, writerFor, detectForks, scopeStatus, scopesOnDisk, SHARD_EXT, GENESIS, SIDECAR_PROTOCOL, EVENT_SCHEMA, type LogEvent } from "./eventlog.js";
+import { emitEvent, emitEventChecked } from "./write.js";
 import { projectionFor } from "./shared-projections.js";
 import { docScope } from "./shared-docs.js";
 import { noteScope } from "./shared-notes.js";

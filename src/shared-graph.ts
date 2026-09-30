@@ -24,7 +24,8 @@
  */
 
 import type { Actor, Edge, EdgeType } from "./schema.js";
-import { emitEvent, type LogEvent, sortEvents } from "./eventlog.js";
+import { type LogEvent, sortEvents } from "./eventlog.js";
+import { emitEvent } from "./write.js";
 
 /** One universe's wiring. Not per PR: a graph outlives every branch that touches it. */
 export const graphScope = (universe: string): string => `graph/${universe}`;

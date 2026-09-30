@@ -12,6 +12,7 @@ import { requestComparison, comparisonBrief, submitComparisonJudgment, recordCom
   comparisonDetail, comparisonResolutionBrief, resolveComparison } from "./ops/comparisons.js";
 import { decisionsView } from "./ops/decision-holds.js";
 import { discard } from "./test-tmp.js";
+import { begin } from "./sync-engine.js";
 
 type Team = Awaited<ReturnType<typeof team>>;
 const actor = async (principal: string, agent: boolean, work: () => Promise<void>) => {
@@ -179,6 +180,8 @@ test("concurrent contrary human resolutions remain disputed after sidecar sync",
   try {
     const [a, b] = u.t.all;
     const id = await incompatible(u);
+    // Alice's resolution is staged until the settle, so bob's lands without seeing it.
+    begin(a!.sidecar);
     const first = await resolve(a!.repo, id, alice, u.aliceAnswer);
     const second = await resolve(b!.repo, id, bob, u.bobAnswer);
     assert.notEqual(first.event, second.event);

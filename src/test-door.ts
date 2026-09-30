@@ -7,7 +7,7 @@
  * with what it conflicts with: a teammate who had not pulled. Without it the event saw the
  * whole scope, which is what a sequential write on one clone is.
  */
-import { appendEvents, causalHeads, emitEventChecked, EVENT_SCHEMA, GENESIS, mintId, readScope, readShard, shardFor, SIDECAR_PROTOCOL, sortEvents, writerFor, type LogEvent } from "./eventlog.js";
+import { appendChecked, appendEvents, causalHeads, EVENT_SCHEMA, GENESIS, mintId, readScope, readShard, shardFor, SIDECAR_PROTOCOL, sortEvents, writerFor, type LogEvent } from "./eventlog.js";
 import { join } from "node:path";
 import { isLogDamage, type DamagedEntry } from "./log-damage.js";
 import { foldStandardReport } from "./shared-standard.js";
@@ -21,7 +21,9 @@ export async function appendUnfolded(
   opts: { after?: string[]; writer?: string } = {},
 ): Promise<LogEvent> {
   if (!opts.after && !opts.writer) {
-    const e = await emitEventChecked(logRoot, scope, actor, async () => ({ kind, subject, data }), () => ({ refused: [] }));
+    // The local door, never `write.ts`: a build without the door appends straight to its
+    // clone, and nothing validates it until something reads or syncs.
+    const e = await appendChecked(logRoot, scope, actor, async () => ({ kind, subject, data }), () => ({ refused: [] }));
     if ("error" in e) throw new Error(e.error);
     planted.add(e.id);
     return e;

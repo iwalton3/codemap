@@ -22,6 +22,7 @@ import { spawnSync } from "node:child_process";
 import type { Actor } from "./schema.js";
 import { gitBin } from "./git.js";
 import { ensureSidecar, sync } from "./sidecar.js";
+import { begin, syncSession } from "./sync-engine.js";
 import { readFindings, type SharedFinding } from "./shared-findings.js";
 import { readScope, type LogEvent } from "./eventlog.js";
 import { findingScope } from "./shared-findings.js";
@@ -123,8 +124,13 @@ export async function concurrently(
   b: string, bWrite: (p: Person) => Promise<unknown>,
 ): Promise<void> {
   await settle(s);
-  await aWrite(who(s, a));
+  // See the oracle's `whileApart`: a transaction is the one way two honest writes miss each other.
+  const pa = who(s, a);
+  begin(pa.sidecar);
+  await aWrite(pa);
   await bWrite(who(s, b));
+  const r = await syncSession(pa.sidecar, pa.actor);
+  if ("error" in r) throw new Error(`the concurrent write by ${pa.actor.principal} did not land: ${r.error}`);
   await settle(s);
 }
 

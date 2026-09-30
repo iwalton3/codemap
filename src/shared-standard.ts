@@ -48,7 +48,8 @@ import type {
 } from "./schema.js";
 import { criterionIdFor, movedSection, normalizeSection, requirementIdFor, EVIDENCE_KINDS, AUDIT_TRIGGERS, COVERING_TRIGGERS, PROBLEM_DISPOSITIONS, ACK_PRIORITIES, ISO_DATE, auditClaimStands, contentDiff, framingContent, operationContent, witnessHash } from "./schema.js";
 import type { LogEvent } from "./eventlog.js";
-import { causality, emitEvent, readScope, scopesOnDisk, sortEvents, type DoorFold } from "./eventlog.js";
+import { causality, readScope, registerDoor, scopesOnDisk, sortEvents, type DoorFold } from "./eventlog.js";
+import { emitEvent } from "./write.js";
 import { foldHaltingOnDamage } from "./log-damage.js";
 import { standardEventShape } from "./log-shape.js";
 import { applyRevision, newContestState } from "./contest.js";
@@ -118,6 +119,7 @@ export const standardDoor = (logRoot: string, scope: string): DoorFold => async 
   const more = (await Promise.all(others.filter((s) => s !== scope).map((s) => readScope(logRoot, s)))).flat();
   return foldStandardReport(sortEvents([...events, ...more]));
 };
+registerDoor((scope) => scope.startsWith("standard/") || scope.startsWith("law/"), standardDoor);
 
 export const publishSpecDrafted = (logRoot: string, scope: string, actor: Actor, spec: Spec) =>
   put(logRoot, scope, actor, "spec.drafted", spec.id, { spec });

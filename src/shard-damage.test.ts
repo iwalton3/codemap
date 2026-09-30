@@ -22,7 +22,8 @@ import { spawnSync } from "node:child_process";
 import type { Actor } from "./schema.js";
 import { ensureSidecar, pull, push, sync } from "./sidecar.js";
 import { createFinding, findingScope, readFindings } from "./shared-findings.js";
-import { splitShard, scopeStatus, readScopeChecked, readShard, emitEvent, SHARD_EXT } from "./eventlog.js";
+import { splitShard, scopeStatus, readScopeChecked, readShard, SHARD_EXT } from "./eventlog.js";
+import { emitEvent } from "./write.js";
 import { discard } from "./test-tmp.js";
 
 const izzie: Actor = { principal: "izzie@x.com" };
@@ -136,7 +137,7 @@ test("corruption cannot be acknowledged away — the repair is the line, not a d
     // A person acknowledging the exact evidence clears a fork or a duplicated id. It
     // must not clear this: those are ambiguities somebody has to arbitrate, and this is
     // bytes nobody can read — muting it restores the silence the check exists to end.
-    const { acknowledgeScope } = await import("./eventlog.js");
+    const { acknowledgeScope } = await import("./write.js");
     await acknowledgeScope(root, scope, izzie, before.diagnostic!);
     const after = await readScopeChecked(root, scope);
     assert.equal(after.status, "blocked");
@@ -222,17 +223,18 @@ test("push refuses to commit a shard that does not parse, and nothing leaves", a
   try {
     await ensureSidecar(root, izzie);
     git(root, "remote", "add", "origin", origin);
+    // The finding syncs inline, so the remote already holds it; what must not leave is the damage.
     await createFinding(root, 3, izzie, NEW);
+    const tip = git(origin, "rev-parse", "main").stdout.trim();
     const shard = shardOf(root, findingScope(3));
     const text = readFileSync(join(root, shard), "utf8");
     writeFileSync(join(root, shard), `${text}garbage line\n`);
 
     const r = await push(root, "codemap: review state");
     assert.ok("error" in r, "the push must refuse");
-    assert.match(r.error, /unreadable line/);
+    assert.match(r.error, /damaged/);
     assert.match(r.error, new RegExp(`${shard}:2`));
-    assert.equal(git(origin, "rev-parse", "--verify", "--quiet", "main").status, 1,
-      "the remote must still be empty");
+    assert.equal(git(origin, "rev-parse", "main").stdout.trim(), tip, "the remote must not have moved");
 
     // Mutation check: the same push succeeds once the damage is gone, so the refusal
     // above is the gate and not some unrelated failure.
@@ -318,25 +320,21 @@ test("deleting a damaged line survives a teammate's pull — the restore does no
     writeFileSync(join(a, shard), `${good}\x00 not json\n`);
     git(a, "add", "-A"); git(a, "commit", "-q", "-m", "damage"); git(a, "push", "-q", "origin", "main");
 
-    // The repair, where the shard was written.
+    // The repair, where the shard was written: a commit pushed with git (docs/log-repair.md).
+    // A sync would refuse it — it moves the tree to the remote tip and would discard the edit.
     writeFileSync(join(a, shard), good);
-    assert.ok(!("error" in await push(a, "delete the damaged line")), "the repair is committable");
+    const viaSync = await push(a, "delete the damaged line");
+    assert.ok("error" in viaSync && /edited by hand/.test(viaSync.error), "a sync never discards a hand edit silently");
+    git(a, "add", "-A"); git(a, "commit", "-q", "-m", "repair"); git(a, "push", "-q", "origin", "main");
 
     const pulled = await sync(b, dana);
     assert.ok(!("error" in pulled), `dana's pull must succeed once it is repaired: ${(pulled as any).error}`);
     assert.deepEqual(splitShard(readFileSync(join(b, shard), "utf8"), "s").damage, [],
       "the restore must not resurrect a line no build can read");
     assert.equal((await readScopeChecked(b, findingScope(5))).status, "complete");
-
-    // Mutation check: the restore still does its job for a REAL event. Drop izzie's
-    // finding line with raw git and dana's pull must put it back.
-    const line = readFileSync(join(a, shard), "utf8");
-    writeFileSync(join(a, shard), "");
-    git(a, "add", "-A"); git(a, "commit", "-q", "-m", "a git rm that looked like tidying");
-    git(a, "push", "-q", "origin", "main");
-    const restored = await sync(b, dana) as any;
-    assert.equal(restored.error, undefined);
-    assert.equal(readFileSync(join(b, shard), "utf8").trim(), line.trim(), "a real event IS restored");
+    // No mutation half any more: it checked the merge-era erasure restore, which a linear
+    // pull does not have — a pull takes the tip as it is, and a deletion pushed with raw
+    // git is tampering, which the owner ruled out of scope (docs/PROPOSAL-online-only-sync.md).
   } finally { [origin, a, b].forEach(discard); }
 });
 

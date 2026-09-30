@@ -21,14 +21,17 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { team, who, whileApart, settle, rewriteHistory, type Team } from "./oracle.js";
+import { readdirSync } from "node:fs";
+import { join, relative, sep } from "node:path";
+import { team, who, whileApart, settle, appendRaw, type Team } from "./oracle.js";
 import { Ledger, checkAlways, checkSettled } from "./oracle-properties.js";
 import { document, connect, flow, eventMatrix } from "./ops.js";
 import { publishLocalDocs, publishLocalGraph, sharedGraph, sharedSync } from "./ops-shared.js";
 import { queueDivergedWiring, DIVERGED_WIRING_CATEGORY } from "./ops/graph.js";
 import { readAnnotations } from "./store.js";
+import { begin, dropOp, staged, syncSession } from "./sync-engine.js";
+import { stage } from "./sync-queue.js";
+import { currentSession } from "./sync-session.js";
 
 const OWNER = "izzie@acme.test";
 const MATE = "ben@acme.test";
@@ -154,32 +157,23 @@ test("a flow one person wrote is walkable by another, and a reorder reaches the 
         edges: [{ from: "n_post", to: "n_intake", type: "touches" }],
       }) as { shareError?: string };
       assert.equal(a.shareError, undefined, `izzie's wiring did not publish: ${a.shareError}`);
+      // Ben's laptop is years slow. His act is staged, not yet pushed, so the version with
+      // the slow clock is the only one that will ever exist: drop it and append it again
+      // with that clock — the two moves the queue allows.
+      begin(ben.sidecar);
       const b = await connect(ben.repo, {
         edges: [{ from: "n_post", to: "n_intake", type: "depends_on" }],
       }) as { shareError?: string };
-      assert.equal(b.shareError, undefined, `ben's wiring did not publish: ${b.shareError}`);
-
-      // Ben's laptop is years slow. His event is still unpushed, so this is the only
-      // version that will ever exist.
+      assert.equal(b.shareError, undefined, `ben's wiring did not stage: ${b.shareError}`);
       let moved = 0;
-      rewriteHistory(ben, "a slow clock", (paths, sidecar) => {
-        for (const p of paths.filter((x) => x.startsWith("graph/"))) {
-          const file = join(sidecar, p);
-          const lines = readFileSync(file, "utf8").split("\n").filter(Boolean);
-          // ONLY THE LAST LINE — the event just written and not yet pushed. Rewriting
-          // any earlier one changes bytes the other clone already holds, which is two
-          // versions of one id and blocks the scope. That is correct behaviour and
-          // workflow 4's subject; here it would just hide what this step is testing.
-          const last = lines.length - 1;
-          if (last < 0 || JSON.parse(lines[last]!).actor?.principal !== MATE) continue;
-          writeFileSync(file, lines.map((l, i) => {
-            if (i !== last) return l;
-            moved++;
-            return JSON.stringify({ ...JSON.parse(l), at: "2020-01-01T00:00:00.000Z" });
-          }).join("\n") + "\n");
-        }
-      });
+      for (const op of staged(ben.sidecar).filter((o) => o.scope.startsWith("graph/") && o.event.actor.principal === MATE)) {
+        dropOp(ben.sidecar, op.event.id);
+        stage(ben.sidecar, currentSession().session, op.scope, { ...op.event, at: "2020-01-01T00:00:00.000Z" });
+        moved++;
+      }
       assert.ok(moved > 0, "the rewrite moved a clock — otherwise the step below proves nothing");
+      const pushed = await syncSession(ben.sidecar, ben.actor);
+      assert.ok(!("error" in pushed), JSON.stringify(pushed));
 
       await settle(t);
       await checkSettled(t, ledger);
@@ -245,33 +239,26 @@ test("a flow one person wrote is walkable by another, and a reorder reaches the 
       // Without one this step passes whether the guard exists or not — the mutation
       // check is what showed that, and it is the shape the oracle notes warn about.
       await connect(izzie.repo, { edges: [{ from: "n_take", to: "n_intake", type: "depends_on" }] });
+      begin(ben.sidecar);
       await connect(ben.repo, { edges: [{ from: "n_take", to: "n_intake", type: "calls_api" }] });
-      rewriteHistory(ben, "another slow clock", (paths, sidecar) => {
-        for (const p2 of paths.filter((x) => x.startsWith("graph/"))) {
-          const file = join(sidecar, p2);
-          const lines = readFileSync(file, "utf8").split("\n").filter(Boolean);
-          const last = lines.length - 1;
-          if (last < 0 || JSON.parse(lines[last]!).actor?.principal !== MATE) continue;
-          writeFileSync(file, lines.map((l, i) => (
-            i === last ? JSON.stringify({ ...JSON.parse(l), at: "2020-01-01T00:00:00.000Z" }) : l
-          )).join("\n") + "\n");
-        }
-      });
+      for (const op of staged(ben.sidecar).filter((o) => o.scope.startsWith("graph/") && o.event.actor.principal === MATE)) {
+        dropOp(ben.sidecar, op.event.id);
+        stage(ben.sidecar, currentSession().session, op.scope, { ...op.event, at: "2020-01-01T00:00:00.000Z" });
+      }
+      const slow = await syncSession(ben.sidecar, ben.actor);
+      assert.ok(!("error" in slow), JSON.stringify(slow));
       await settle(t);
       const before = await openWiringItems(ben.repo);
       assert.deepEqual(before, ["n_take"], "an item is open, which is what a wrong guard would retire");
 
-      rewriteHistory(ben, "corrupt a shard that already travelled", (paths, sidecar) => {
-        const p2 = paths.find((x) => x.startsWith("graph/"));
-        assert.ok(p2, "ben has a graph shard to corrupt");
-        const file = join(sidecar, p2!);
-        const lines = readFileSync(file, "utf8").split("\n").filter(Boolean);
-        // The FIRST line — long since pushed, so izzie holds the original bytes.
-        writeFileSync(file, lines.map((l, i) => (
-          i === 0 ? JSON.stringify({ ...JSON.parse(l), at: "1999-01-01T00:00:00.000Z" }) : l
-        )).join("\n") + "\n");
+      // Blocked by an event from a newer build: the block the linear log keeps. (Two versions
+      // of one id needed a merge, and nothing merges now.) Planted in ben's clone only.
+      const graphShard = readdirSync(join(ben.sidecar, "graph"), { recursive: true, withFileTypes: true })
+        .find((d) => d.isFile() && d.name.endsWith(".ndjson"))!;
+      appendRaw(ben, relative(ben.sidecar, join(graphShard.parentPath, graphShard.name)).split(sep).join("/"), {
+        id: "zzzzzzzzzz-newer", kind: "graph.published", subject: "n_take", actor: ben.actor, at: new Date().toISOString(),
+        writer: "w_newer", writerPrev: "GENESIS", after: [], sidecarProtocol: 99, eventSchema: 1, data: {},
       });
-      await settle(t);
 
       const g = await sharedGraph(ben.repo) as any;
       assert.notEqual(g.scope, undefined, "the scope reports itself non-authoritative");

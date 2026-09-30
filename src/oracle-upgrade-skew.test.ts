@@ -6,6 +6,7 @@ import { shareFinding, sharedFindings, sharedStatus, publishLocalDocs, sharedDoc
 import { document } from "./ops.js";
 import { ANCHOR_SCHEME, HASH_SCHEME } from "./schema.js";
 import { GRAMMAR_VERSIONS } from "./grammar-versions.js";
+import { staged } from "./sync-engine.js";
 
 /**
  * WORKFLOW 6 — two people, two builds.
@@ -75,38 +76,39 @@ test("a peer on a newer ANCHOR_SCHEME stops the sync, in both directions", async
       assert.match(r.error!, /point at symbols that do not exist here/, "and what merging would actually do");
     });
 
-    await test("and the push is refused too — being behind is not safer than being ahead", async () => {
+    await test("and a write is refused too — being behind is not safer than being ahead", async () => {
       // The direction people get wrong. A clone that is BEHIND still writes events, and
-      // those events carry ids the upgraded reader cannot place. Gating only the pull
-      // would let the stale machine keep poisoning the log it refuses to read.
-      await shareFinding(ana.repo, 6, { targetKind: "anchor", targetId: "a_2", text: "written while gated" });
-      const r = await syncOne(ana) as { error?: string };
-      assert.ok(r.error, "the write is held rather than pushed");
+      // those events carry ids the upgraded reader cannot place. Writes sync inline, so the
+      // gate meets the write itself: refused, and its caller told.
+      const w = await shareFinding(ana.repo, 6, { targetKind: "anchor", targetId: "a_2", text: "written while gated" })
+        .catch((e: unknown) => ({ error: String((e as Error)?.message ?? e) })) as { error?: string };
+      assert.ok(w.error, "the write is refused rather than pushed");
+      assert.match(w.error!, new RegExp(String(ANCHOR_SCHEME + 1)));
     });
 
     await test("nothing is lost while a clone is gated out", async () => {
-      // The refusal has to be a HOLD, not a drop. The finding written during the skew
-      // is still readable locally, and `NO LOSS` is watching the log itself.
+      // Refused is not dropped: nothing was kept to be dropped, nothing half-landed, and
+      // what the team already had is intact. `NO LOSS` is watching the log itself.
       const mine = await sharedFindings(ana.repo, 6) as any;
-      assert.ok(
-        mine.findings.some((f: any) => f.text === "written while gated"),
-        "the write made during the skew is still here",
-      );
+      assert.deepEqual(mine.findings.map((f: any) => f.text), ["before the skew"]);
+      assert.deepEqual(staged(ana.sidecar), [], "and nothing is left staged to land behind anyone's back");
       await checkAlways(t, ledger);
     });
 
-    await test("and when the builds agree again, everything arrives", async () => {
+    await test("and when the builds agree again, the write goes through", async () => {
       // Carol's machine is downgraded — or, as it really happens, everyone else
       // upgrades. Either way the manifests agree and the gate opens.
       publishManifestAs(ben, CAROL, current);
+      await settle(t);
+      await shareFinding(ana.repo, 6, { targetKind: "anchor", targetId: "a_2", text: "written after the skew" });
       await settle(t);
       await checkSettled(t, ledger);
 
       for (const m of t.all) {
         const f = await sharedFindings(m.repo, 6) as any;
         assert.deepEqual(
-          f.findings.map((x: any) => x.text).sort(), ["before the skew", "written while gated"],
-          `${m.machine} is missing a write that was held during the skew`,
+          f.findings.map((x: any) => x.text).sort(), ["before the skew", "written after the skew"],
+          `${m.machine} is missing the write made once the builds agreed`,
         );
       }
       const after = await peerWarning(ana);

@@ -344,7 +344,7 @@ test("a late parent that reorders the scope is re-folded, not patched", async ()
 const forkShard = (logRoot: string, scope: string) => {
   const dir = join(logRoot, scope);
   const name = readdirSync(dir).find((n) => n.endsWith(".ndjson"))!;
-  const writer = name.replace(/\.ndjson$/, "");
+  const writer = (JSON.parse(readFileSync(join(dir, name), "utf8").trim().split("\n")[0]!) as { writer: string }).writer;
   // Through `testEvent`, so the line is a WELL-FORMED protocol-1 event that happens
   // to fork. A hand-written literal missing the mandatory envelope is dropped at the
   // door instead, and the test then proves nothing — it passed for a while by

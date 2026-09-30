@@ -10,6 +10,7 @@ import { createFinding, corroborate, comment, readFindings, needsHumanAck } from
 import { publishWalkthrough, readWalkthroughs } from "./shared-walkthrough.js";
 import { principalKey } from "./eventlog.js";
 import { discard } from "./test-tmp.js";
+import { begin, syncSession } from "./sync-engine.js";
 
 const izzie: Actor = { principal: "izzie@x.com" };
 const dana: Actor = { principal: "dana@x.com" };
@@ -92,47 +93,40 @@ test("two people working independently converge on the same state", async () => 
   } finally { t.cleanup(); }
 });
 
-test("a push rejected by someone else's push retries and succeeds", async () => {
+test("a push that loses the race is replayed on the winner's tip, and lands", async () => {
   const t = await team();
+  const c = tmp("c");
   try {
     await createFinding(t.a, 264, izzie, NEW);
-    await sync(t.a, izzie);
-    // b never pulled, so its push is a non-fast-forward until the retry pulls.
+    await sync(t.b, dana);
+    // Someone else's commit, ready to land the instant b's push starts: a plain clone
+    // appends one well-formed event line and commits it.
+    git(c, "clone", "-q", t.origin, ".");
+    const shard = onRemote(t.origin).find((f) => f.startsWith("findings/264/"))!;
+    const line = JSON.parse(readFileSync(join(c, shard), "utf8").trim().split("\n")[0]!);
+    writeFileSync(join(c, shard), readFileSync(join(c, shard), "utf8")
+      + JSON.stringify({ ...line, id: "0zzzzzzzzz-racer", kind: "finding.commented", data: { body: "the winner" }, seq: 999 }) + "\n");
+    git(c, "commit", "-qam", "the winner");
+    const mark = join(c, "raced");
+    writeFileSync(join(t.b, ".git", "hooks", "pre-push"),
+      `#!/bin/sh\n[ -f '${mark}' ] && exit 0\ntouch '${mark}'\ngit -C '${c}' push -q origin HEAD:main\n`);
+    chmodSync(join(t.b, ".git", "hooks", "pre-push"), 0o755);
+
+    begin(t.b);
     await createFinding(t.b, 264, dana, { ...NEW, targetId: "a_2" });
-    git(t.b, "add", "-A"); git(t.b, "commit", "-q", "-m", "b's work");
-    const r = await push(t.b, "retry me") as { pushed: boolean; retries: number };
-    assert.ok(r.pushed, "the retry loop is what makes a one-button sync honest");
-    assert.ok(r.retries >= 1, `expected at least one retry, got ${r.retries}`);
-    assert.equal((await readFindings(t.b, 264)).size, 2, "and it gained the other side's work");
-  } finally { t.cleanup(); }
+    const r = await syncSession(t.b, dana);
+    assert.ok(!("error" in r), JSON.stringify(r));
+    assert.ok(existsSync(mark), "precondition: the winner really did push first");
+    assert.ok(r.retries >= 1, `expected the lost race to be retried, got ${r.retries}`);
+    assert.ok(r.pushed);
+    const events = readFileSync(join(t.b, shard), "utf8").trim().split("\n").map((l) => JSON.parse(l).id as string);
+    assert.ok(events.indexOf("0zzzzzzzzz-racer") >= 0, "the winner's event is on the tip");
+    assert.equal((await readFindings(t.b, 264)).size, 2, "and b's own landed after it");
+  } finally { t.cleanup(); discard(c); }
 });
 
-test("a shared writer id fails the sync closed instead of merging quietly", async () => {
-  // The whole point of cutting `merge=union`. Two clones hold ONE writer id — a
-  // copied machine image, a synced home directory — so they write the same shard
-  // file. Union stitched both sides together and called it a clean merge, and the
-  // fork surfaced later as a team-wide blocked scope. `-merge` refuses it here, on
-  // the guilty clone, with a person present because sync is a user act.
-  const t = await team();
-  try {
-    // Copy a's writer id into b, which is exactly how the real thing happens.
-    const idFile = (r: string) => join(r, ".git", "codemap-writer");
-    await createFinding(t.a, "pr-1", izzie, NEW);
-    await sync(t.a, izzie);
-    writeFileSync(idFile(t.b), readFileSync(idFile(t.a), "utf8"), "utf8");
-
-    await createFinding(t.b, "pr-1", dana, { ...NEW, targetId: "a_2" });
-    const r = await sync(t.b, dana) as { error?: string };
-
-    assert.ok(r.error, "the sync fails rather than laundering the fork");
-    assert.match(r.error!, /diverged/);
-    assert.match(r.error!, /sidecar heal/, "and says what to do about it");
-    // Nothing was lost on either side: the abort leaves this clone untouched, and
-    // the remote still holds a's work.
-    assert.equal((await readFindings(t.b, "pr-1")).size, 1, "b keeps its own finding");
-    assert.ok(onRemote(t.origin).some((f) => f.startsWith("findings/pr-1/")), "and a's is still there");
-  } finally { t.cleanup(); }
-});
+// "a shared writer id fails the sync closed" lived here. Nothing merges any more, so a
+// shared writer id is one chain in push order; `oracle-cloned-machine.test.ts` proves it harmless.
 
 test("one person on two machines is two shards, and nothing conflicts", async () => {
   // CONTROL, and load-bearing: this is what catches `-merge` breaking the ORDINARY
@@ -387,21 +381,14 @@ test("a commit that cannot succeed fails the sync instead of reporting a push", 
     chmodSync(join(hooks, "pre-commit"), 0o755);
     git(t.a, "config", "core.hooksPath", hooks);
 
-    await createFinding(t.a, "pr-1", izzie, NEW);
-    const r = await sync(t.a, izzie) as { error?: string; pushed?: boolean };
-
-    assert.ok(r.error, "sync reports the failure");
-    assert.match(r.error!, /commit failed/i);
-    assert.notEqual(r.pushed, true, "and never claims to have pushed");
+    // The write syncs inline, so the failing commit fails the WRITE, and its caller is told.
+    await assert.rejects(createFinding(t.a, "pr-1", izzie, NEW), /commit failed/i);
     assert.deepEqual(onRemote(t.origin), [], "nothing reached the remote, which is the point");
 
-    // CONTROL — the same finding, the same sync, with the commit working. Without
-    // this the test above passes just as well against a sync that always fails.
+    // CONTROL — the same finding, with the commit working. Without this the test above
+    // passes just as well against a write that always fails.
     git(t.a, "config", "--unset", "core.hooksPath");
-    const ok = await sync(t.a, izzie) as { error?: string; pushed?: boolean; committed?: boolean };
-    assert.equal(ok.error, undefined, "the control sync succeeds");
-    assert.equal(ok.pushed, true);
-    assert.equal(ok.committed, true, "and says it had something of its own to send");
+    await createFinding(t.a, "pr-1", izzie, NEW);
     assert.ok(onRemote(t.origin).some((f) => f.startsWith("findings/pr-1/")), "the finding is on the remote now");
 
     discard(hooks);
@@ -424,120 +411,10 @@ test("a sync with nothing of its own to send says so rather than claiming a push
   } finally { t.cleanup(); }
 });
 
-// --- G3: once state is pushed, nothing deletes it -------------------------------
-
-test("a shard deleted on one clone is restored, not propagated", async () => {
-  // The one live hole in "nothing is deleted once pushed": shards are append-only by
-  // convention and nothing enforced it, so `git rm` on any clone travelled to every
-  // teammate as a clean, silent merge.
-  const t = await team();
-  try {
-    await createFinding(t.a, "pr-1", izzie, NEW);
-    await sync(t.a, izzie);
-    await sync(t.b, dana);           // dana now holds izzie's finding
-    const shard = onRemote(t.origin).find((f) => f.startsWith("findings/pr-1/"))!;
-    assert.ok(shard, "the finding is on the remote to begin with");
-
-    // Somebody rewrites history the one way append-only cannot survive. Sync first,
-    // so the deletion pushes as a fast-forward rather than being rejected.
-    await sync(t.a, izzie);
-    git(t.a, "rm", "-q", shard);
-    git(t.a, "commit", "-q", "-m", "drop a shard");
-    git(t.a, "push", "-q", "origin", "HEAD:main");
-    assert.equal(onRemote(t.origin).includes(shard), false, "the deletion really is on the remote");
-
-    const r = await sync(t.b, dana) as { error?: string; restored?: { path: string; events: number }[] };
-    assert.equal(r.error, undefined, "the pull still succeeds — refusing would wedge it forever");
-    assert.equal(r.restored?.length, 1, "and it reports what it put back");
-    assert.equal(r.restored![0]!.path, shard);
-    assert.ok(r.restored![0]!.events >= 1);
-
-    assert.equal((await readFindings(t.b, "pr-1")).size, 1, "dana still has the finding");
-    assert.ok(onRemote(t.origin).includes(shard), "and the restore reached the team");
-  } finally { t.cleanup(); }
-});
-
-test("an ordinary pull restores nothing", async () => {
-  // CONTROL. Without it, an audit that flagged every merge — or one that restored
-  // unconditionally — would pass the test above just as well.
-  const t = await team();
-  try {
-    await createFinding(t.a, "pr-1", izzie, NEW);
-    await sync(t.a, izzie);
-    const r = await sync(t.b, dana) as { error?: string; restored?: unknown; gained: number };
-    assert.equal(r.error, undefined);
-    assert.equal(r.restored, undefined, "a normal pull is not an erasure");
-    assert.ok(r.gained > 0, "and it did actually gain the events, so the path ran");
-  } finally { t.cleanup(); }
-});
-
-test("an event added and deleted before we ever fetch is still recovered", async () => {
-  // The endpoint-diff version of this audit missed exactly this: dana never holds the
-  // event, so it is absent from her pre-merge tip AND from the merged tip, the diff is
-  // empty, and the loss is invisible. Only scanning the incoming history sees it.
-  // Verified against git: `diff --numstat base..HEAD` prints nothing for add-then-delete.
-  const t = await team();
-  try {
-    await createFinding(t.a, "pr-1", izzie, NEW);
-    await sync(t.a, izzie);
-    const shard = onRemote(t.origin).find((f) => f.startsWith("findings/pr-1/"))!;
-    git(t.a, "rm", "-q", shard);
-    git(t.a, "commit", "-q", "-m", "drop a shard");
-    git(t.a, "push", "-q", "origin", "HEAD:main");
-
-    // dana's FIRST ever sync — she fetches the add and the delete in one go.
-    const r = await sync(t.b, dana) as { error?: string; restored?: { path: string; events: number }[] };
-    assert.equal(r.error, undefined);
-    assert.equal(r.restored?.length, 1, "the deletion is seen even though both ends lack the event");
-    assert.equal((await readFindings(t.b, "pr-1")).size, 1, "and dana ends up with the finding");
-  } finally { t.cleanup(); }
-});
-
-test("a shard that loses one line keeps its other lines, and gains the new one", async () => {
-  // Partial deletion, which a whole-file repair would pass by restoring the pre-merge
-  // file wholesale — and would then discard whatever was appended alongside.
-  const t = await team();
-  try {
-    await createFinding(t.a, "pr-1", izzie, NEW);
-    await createFinding(t.a, "pr-1", izzie, { ...NEW, targetId: "a_2" });
-    await sync(t.a, izzie);
-    await sync(t.b, dana);
-    await sync(t.a, izzie);   // dana's sync moved the remote; catch up so the push lands
-    const shard = onRemote(t.origin).find((f) => f.startsWith("findings/pr-1/"))!;
-
-    // Drop one event and append another, in the same shard, in one commit.
-    const path = join(t.a, shard);
-    const kept = readFileSync(path, "utf8").split("\n").filter(Boolean);
-    assert.ok(kept.length >= 2, "two events to work with");
-    writeFileSync(path, kept.slice(1).join("\n") + "\n", "utf8");
-    git(t.a, "commit", "-qam", "drop one line");
-    git(t.a, "push", "-q", "origin", "HEAD:main");
-
-    const r = await sync(t.b, dana) as { error?: string; restored?: { events: number }[] };
-    assert.equal(r.error, undefined);
-    assert.equal(r.restored?.length, 1);
-    assert.equal(r.restored![0]!.events, 1, "exactly the one line that went missing");
-
-    const lines = readFileSync(join(t.b, shard), "utf8").split("\n").filter(Boolean);
-    assert.equal(new Set(lines).size, kept.length, "every event is back, exactly once");
-    assert.equal((await readFindings(t.b, "pr-1")).size, 2, "and both findings resolve");
-  } finally { t.cleanup(); }
-});
-
-test("a merge that adds to a shard is not mistaken for an erasure", async () => {
-  // CONTROL. Two people appending concurrently must not look like a deletion — an
-  // audit comparing totals rather than per-shard content would fire here.
-  const t = await team();
-  try {
-    await createFinding(t.a, "pr-1", izzie, NEW);
-    await createFinding(t.b, "pr-1", dana, { ...NEW, targetId: "a_2" });
-    await sync(t.a, izzie);
-    const r = await sync(t.b, dana) as { error?: string; restored?: unknown };
-    assert.equal(r.error, undefined);
-    assert.equal(r.restored, undefined, "concurrent appends are not deletions");
-    assert.equal((await readFindings(t.b, "pr-1")).size, 2, "and both findings survive");
-  } finally { t.cleanup(); }
-});
+// --- G3 lived here: a pull restored events another clone's history had erased. A linear pull
+// takes the tip as it is, and a deletion pushed with raw git is tampering, which the owner ruled
+// out of scope (docs/PROPOSAL-online-only-sync.md). A clone's OWN unsynced or hand-edited
+// events are what a sync must not destroy; `sync-engine.test.ts` covers that.
 
 test("push refuses when the remote already holds a peer this build cannot read", async () => {
   // `pull` gates the merge and covers the sync path, since sync pulls first. This
@@ -551,10 +428,10 @@ test("push refuses when the remote already holds a peer this build cannot read",
     );
     await sync(t.b, dana);          // kai's manifest is now on the remote
 
-    await createFinding(t.a, "pr-1", izzie, NEW);
-    git(t.a, "fetch", "-q", "origin");   // the gate reads the tracking ref, not the tree
+    // Writes sync inline, so the gate meets the write itself.
+    await assert.rejects(createFinding(t.a, "pr-1", izzie, NEW), /ANCHOR_SCHEME/);
     const r = await push(t.a, "m", { actor: izzie }) as { error?: string };
-    assert.ok(r.error, "must refuse");
+    assert.ok(r.error, "and a bare push refuses too");
     assert.match(r.error!, /ANCHOR_SCHEME/);
   } finally { t.cleanup(); }
 });

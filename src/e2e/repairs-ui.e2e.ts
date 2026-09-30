@@ -11,7 +11,7 @@ import { resolvePlaywright, launchPlaywright, startServer } from "./harness.js";
 import { discard } from "../test-tmp.js";
 import { RepairConnection } from "../verifier-boundary.js";
 import { repairVerificationHash, type RepairVerificationCapsule } from "../repair-verification.js";
-import { emitEvent } from "../eventlog.js";
+import { emitEvent } from "../write.js";
 import { requireActor } from "../identity.js";
 import { issueClaimHash } from "../ruling-application.js";
 

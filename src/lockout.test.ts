@@ -87,7 +87,7 @@ test("a pull that would bring damage is refused and locks the clone that refused
     for (const args of [["add", "-A"], ["-c", "user.email=a@x", "-c", "user.name=a", "commit", "-qm", "broken build"], ["push", "-q", "origin", "HEAD"]])
       assert.equal(spawnSync("git", args, { cwd: ana.sidecar }).status, 0, args.join(" "));
     const pulled = await sharedPull(ben.repo) as { error?: string };
-    assert.match(pulled.error ?? "", /refusing to merge/);
+    assert.match(pulled.error ?? "", /refusing to take the remote tip/);
     assert.ok(lockoutOf(ben.sidecar), "damage in an incoming pull it refused locks the app as well (owner, batch 8)");
   } finally { t.dispose(); }
 });

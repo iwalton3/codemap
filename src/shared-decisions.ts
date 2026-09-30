@@ -24,7 +24,8 @@
  */
 import { createHash } from "node:crypto";
 import { comparisonContextHash, deriveComparison, validateComparisonRequest, type AnswerSource, type CanonicalIssue, type ComparisonProjection, type ComparisonRequest, type ReaderJudgment, type HumanResolution } from "./decision-comparison.js";
-import { causality, emitEventChecked, type DoorFold, type LogEvent } from "./eventlog.js";
+import { causality, registerDoor, type DoorFold, type LogEvent } from "./eventlog.js";
+import { emitEventChecked } from "./write.js";
 import { foldHaltingOnDamage } from "./log-damage.js";
 import { decisionEventShape } from "./log-shape.js";
 import { isAgentActor } from "./identity.js";
@@ -2510,6 +2511,7 @@ export function supersededFindings(s: SharedDecisions): Map<string, { decision: 
 
 /** The decisions fold, as the write door asks it (plan 1.1). */
 export const decisionsDoor: DoorFold = (events) => foldDecisionsReport(events);
+registerDoor((scope) => scope.startsWith("decisions/"), () => decisionsDoor);
 
 /** One write, folded at the door: refused with the fold's reason, never appended to be refused later. */
 const put = (logRoot: string, universe: string, actor: Actor, kind: string, subject: string, data: Record<string, unknown>) =>

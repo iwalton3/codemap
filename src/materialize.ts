@@ -21,7 +21,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { db } from "./db.js";
 import { SIDECAR_LINEAGE, type SidecarMark } from "./store.js";
 import { isSameSidecar } from "./sidecar.js";
-import { readScopeChecked, sortEvents, SHARD_EXT, type LogEvent, type ScopeDiagnostic, type ScopeStatus } from "./eventlog.js";
+import { overlayActive, readScopeChecked, sortEvents, SHARD_EXT, type LogEvent, type ScopeDiagnostic, type ScopeStatus } from "./eventlog.js";
 import { isLogDamage } from "./log-damage.js";
 import { assertNotLockedOut, LockedOut, locate, recordLockout } from "./lockout.js";
 
@@ -329,7 +329,10 @@ export async function readCachedMerged<T>(
   const fingerprint = async () =>
     (await Promise.all(scopes.map((sc) => scopeFingerprint(logRoot, sc, identity)))).join("|");
 
-  for (let attempt = 0; attempt < 3; attempt++) {
+  // A session with staged acts reads them on top of the log; that is not the log, so it is
+  // folded fresh and never stored.
+  const staged = scopes.some((sc) => overlayActive(logRoot, sc));
+  for (let attempt = 0; attempt < (staged ? 0 : 3); attempt++) {
     const before = await fingerprint();
     const row = d.prepare("SELECT fingerprint, status, diagnostic FROM shared_scope WHERE scope = ?").get(key) as
       { fingerprint: string; status: string; diagnostic: string | null } | undefined;
@@ -387,10 +390,32 @@ export async function readCachedMerged<T>(
   const readable = new Set(reads.filter((r) => r.status !== "blocked").map((r) => r.sc));
   const blocked = reads.find((r) => r.status === "blocked");
   foldsRun++;
-  return {
-    value: fold(events, { readable }), fresh: false, folded: true,
-    ...(blocked ? { status: "blocked" as const, ...(blocked.diagnostic ? { diagnostic: blocked.diagnostic } : {}) } : { status: "complete" as const }),
-  };
+  const value = fold(events, { readable });
+  const status: ScopeStatus = blocked
+    ? { status: "blocked", ...(blocked.diagnostic ? { diagnostic: blocked.diagnostic } : {}) } : { status: "complete" };
+  if (staged) writeStaged(d, key, value, proj, events.length, status);
+  return { value, fresh: staged, folded: true, ...status };
+}
+
+/**
+ * Rows folded with the calling session's staged acts: written, so a read that QUERIES the
+ * projection sees them too, under a fingerprint no shard set can produce — the next read
+ * without them misses and re-folds from the log alone.
+ */
+function writeStaged<T>(d: ReturnType<typeof db>, key: string, value: T, proj: Projection<T>, events: number, status: ScopeStatus): void {
+  d.exec("BEGIN");
+  try {
+    proj.write(d, key, value);
+    d.prepare("INSERT INTO shared_scope(scope,fingerprint,folded_at,events,status,diagnostic) VALUES(?,?,?,?,?,?) "
+      + "ON CONFLICT(scope) DO UPDATE SET fingerprint=excluded.fingerprint, folded_at=excluded.folded_at, "
+      + "events=excluded.events, status=excluded.status, diagnostic=excluded.diagnostic")
+      .run(key, `staged:${Math.random()}`, new Date().toISOString(), events,
+        status.status, status.diagnostic ? JSON.stringify(status.diagnostic) : null);
+    d.exec("COMMIT");
+  } catch (e) {
+    d.exec("ROLLBACK");
+    throw e;
+  }
 }
 
 export async function scopeFingerprint(logRoot: string, scope: string, identity: string): Promise<string> {
@@ -567,7 +592,7 @@ export async function readCached<T>(
     // is NOT written — nothing is discarded and nothing claims to describe the log.
     catch { return { value: fold([]), status: "blocked", diagnostic: gone }; }
   };
-  for (let attempt = 0; attempt < 3; attempt++) {
+  for (let attempt = 0; attempt < (overlayActive(logRoot, scope) ? 0 : 3); attempt++) {
     const before = await scopeFingerprint(logRoot, scope, identity);
     const row = d.prepare("SELECT fingerprint, status, diagnostic FROM shared_scope WHERE scope = ?").get(scope) as
       { fingerprint: string; status: string; diagnostic: string | null } | undefined;
@@ -615,7 +640,9 @@ export async function readCached<T>(
   if (lastCheck) return decline(lastCheck);
   const { events, ...status } = await readScopeChecked(logRoot, scope);
   foldsRun++;
-  return { value: fold(events), ...status };
+  const value = fold(events);
+  if (overlayActive(logRoot, scope)) writeStaged(d, scope, value, proj, events.length, status);
+  return { value, ...status };
 }
 
 /**

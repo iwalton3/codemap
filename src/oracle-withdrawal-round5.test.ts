@@ -14,6 +14,7 @@ import { discard } from "./test-tmp.js";
 import { readFinding } from "./store.js";
 import { universeKey } from "./sidecar-config.js";
 import { applicationReaderBrief, submitApplicationVerdict, recordApplicationVerdict, applyRuling } from "./ops/ruling-application.js";
+import { begin } from "./sync-engine.js";
 
 const alice = "alice@acme.test", bob = "bob@acme.test";
 const actor = async (principal: string, agent: boolean, work: () => Promise<void>) => {
@@ -70,6 +71,8 @@ test("unanswered withdrawal releases only its hold locally; independent delayed 
   try {
     const [a, b] = u.t.all;
     let withdrawal = "", answer = "";
+    // Alice's withdrawal is staged until the settle; bob's answer lands first and misses it.
+    begin(a!.sidecar);
     await actor(alice, false, async () => {
       const result = await withdrawDecision(a!.repo, { decision: "q1", reason: "The first question needs reframing" }) as any;
       assert.equal(result.ok, true, JSON.stringify(result)); withdrawal = result.withdrawal;

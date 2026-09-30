@@ -28,6 +28,7 @@ import type { Actor } from "./schema.js";
 import { gitBin } from "./git.js";
 import { ensureSidecar } from "./sidecar.js";
 import { sharedSync } from "./ops-shared.js";
+import { begin, syncSession } from "./sync-engine.js";
 import { forgetWriter, principalKey } from "./eventlog.js";
 import { init } from "./ops.js";
 import { clearPrMetaCache } from "./pr.js";
@@ -392,8 +393,15 @@ export async function whileApart(
   // Settle FIRST, or the writes are accidentally concurrent with whatever the scenario
   // did before them and the test measures something it did not mean.
   await settle(t);
-  await aWrite(who(t, a));
+  // The linear log makes this happen only one way (plan 2.4): `a` acts inside a
+  // transaction, so its act is staged knowing the tip as it was; `b` lands inline; `a`'s
+  // sync then replays an act that did not see `b`'s, and `b`'s did not see it.
+  const ma = who(t, a);
+  begin(ma.sidecar);
+  await aWrite(ma);
   await bWrite(who(t, b));
+  const r = await syncSession(ma.sidecar, ma.actor);
+  if ("error" in r) throw new Error(`the apart write by ${ma.actor.principal} did not land: ${r.error}`);
   await settle(t);
 }
 

@@ -18,7 +18,8 @@ import { shareFinding } from "../ops-shared.js";
 import { readFinding } from "../store.js";
 import type { Questionnaire } from "../questionnaire.js";
 import { discard } from "../test-tmp.js";
-import { emitEvent, readScope } from "../eventlog.js";
+import { readScope } from "../eventlog.js";
+import { emitEvent } from "../write.js";
 import { comparisonBriefText, decisionScope, decisionsDoor, foldDecisions } from "../shared-decisions.js";
 import { resolveSidecar } from "../sidecar-config.js";
 

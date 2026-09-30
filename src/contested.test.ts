@@ -2,7 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { scenario, who, concurrently, inSequence, settle, views, assertConverged, asAgent, type Scenario } from "./scenario.js";
 import { createFinding, corroborate, revise, resolveContest, readFindings, promote, ackQueue, findingScope } from "./shared-findings.js";
-import { readScopeChecked, appendEvents, emitEvent, writerFor } from "./eventlog.js";
+import { readScopeChecked, appendEvents, writerFor } from "./eventlog.js";
+import { emitEvent } from "./write.js";
 
 const PR = "acme/api/pr-264";
 const NEW = { targetKind: "anchor" as const, targetId: "a_1", text: "the original text", comment: "the original ask", severity: "medium" as const };

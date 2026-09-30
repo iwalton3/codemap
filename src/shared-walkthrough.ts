@@ -14,7 +14,8 @@
 
 import type { Actor } from "./schema.js";
 import type { PrWalkthrough } from "./walkthrough.js";
-import { emitEvent, mintId, readScope, type LogEvent } from "./eventlog.js";
+import { mintId, readScope, type LogEvent } from "./eventlog.js";
+import { emitEvent } from "./write.js";
 
 /** One person's walkthrough of one pull request, with who wrote it. */
 export interface SharedWalkthrough {

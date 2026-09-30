@@ -31,7 +31,8 @@ import { LogDamage } from "./log-damage.js";
 import { createHash } from "node:crypto";
 import { ISO_DATE, type Actor, type BugSeverity, type BugWitness } from "./schema.js";
 import { isAgentActor, isIndependent, isErrorIndependent, reviewerKey } from "./identity.js";
-import { emitEvent, mintId, readScope, causality, type LogEvent } from "./eventlog.js";
+import { mintId, readScope, causality, type LogEvent } from "./eventlog.js";
+import { emitEvent } from "./write.js";
 import { applyRevision, newContestState, type Contested } from "./contest.js";
 import { issueClaimHash, validateApplicationCapsule, type ApplicationAttempt } from "./ruling-application.js";
 import {

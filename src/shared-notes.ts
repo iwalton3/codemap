@@ -27,7 +27,8 @@
 import { createHash } from "node:crypto";
 import type { Actor, BugSeverity } from "./schema.js";
 import { isAgentActor } from "./identity.js";
-import { emitEvent, mintId, readScope, causality, type LogEvent } from "./eventlog.js";
+import { mintId, readScope, causality, type LogEvent } from "./eventlog.js";
+import { emitEvent } from "./write.js";
 import { applyRevision, newContestState, type Contested } from "./contest.js";
 
 export type NoteKind = "note" | "question" | "finding" | "pointer";

@@ -1,0 +1,347 @@
+/**
+ * The linear log and its sync (plan phase 2): one file per scope in push order, the queue that
+ * is append and drop only, the proposal's kill conditions K1/K2/K4 as SEQUENTIAL syncs,
+ * transactions, and sessions that are gone. docs/PROPOSAL-online-only-sync.md.
+ */
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync, readdirSync, readFileSync, writeFileSync, appendFileSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { scenario, who, settle, type Person } from "./scenario.js";
+import { LINEAR_SHARD, readScope, readScopeChecked, registerDoor, sortEvents, type LogEvent } from "./eventlog.js";
+import { emitEvent, emitEventChecked } from "./write.js";
+import * as queue from "./sync-queue.js";
+import { attemptGone, begin, discard as discardTx, dropOp, localConflicts, staged, syncSession } from "./sync-engine.js";
+import { withSession } from "./sync-session.js";
+import { ensureSidecar, sync, PUSHES_PER_MINUTE } from "./sidecar.js";
+import { lockoutOf } from "./lockout.js";
+import {
+  foldStandardReport, LAW_SCOPE, publishOperation, publishOperationRemoved, publishPointerDeclared, publishSpecDrafted,
+  standardScope,
+} from "./shared-standard.js";
+import { criterionIdFor, requirementIdFor, type Actor, type Operation, type Pointer, type Spec } from "./schema.js";
+import { discard } from "./test-tmp.js";
+
+/**
+ * A scope whose fold refuses a second claim on one subject — the smallest precondition that
+ * the tip can stop meeting, so the engine is tested apart from any real fold's rules.
+ */
+const CLAIMS = "tst/claims";
+registerDoor((s) => s.startsWith("tst/"), () => (events) => {
+  const held = new Set<string>();
+  const refused: { id: string; why: string }[] = [];
+  for (const e of events) {
+    if (e.kind !== "claim") continue;
+    if (held.has(e.subject)) refused.push({ id: e.id, why: `${e.subject} is already claimed` });
+    else held.add(e.subject);
+  }
+  return { refused };
+});
+const claim = (p: Person, subject: string) =>
+  emitEventChecked(p.sidecar, CLAIMS, p.actor, async () => ({ kind: "claim", subject }));
+
+const git = (cwd: string, ...args: string[]) =>
+  spawnSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...args], { cwd, encoding: "utf8" });
+const linesOf = (p: Person, scope: string): LogEvent[] =>
+  readFileSync(join(p.sidecar, scope, LINEAR_SHARD), "utf8").trim().split("\n").map((l) => JSON.parse(l) as LogEvent);
+
+/** C2: nothing a sync put on the remote is refused by its own scope's fold. */
+function clean(events: LogEvent[], report: (e: LogEvent[]) => { refused: { id: string }[] }): void {
+  assert.deepEqual(report(sortEvents(events)).refused, [], "an event on the remote that its fold refuses");
+}
+
+// --- 2.1: one file per scope, order = push order ----------------------------------------
+
+test("two writers append to ONE file per scope, and line order is push order, not id order", async () => {
+  const s = await scenario(["ana@x.com", "ben@x.com"]);
+  try {
+    const ana = who(s, "ana@x.com"), ben = who(s, "ben@x.com");
+    begin(ana.sidecar);
+    const early = await emitEvent(ana.sidecar, "notes/u/b", ana.actor, "noted", "n1");   // minted FIRST, staged
+    const late = await emitEvent(ben.sidecar, "notes/u/b", ben.actor, "noted", "n2");    // lands first
+    assert.ok(early.id < late.id, "precondition: the staged event has the smaller id");
+    const r = await syncSession(ana.sidecar, ana.actor);
+    assert.ok(!("error" in r), JSON.stringify(r));
+    await settle(s);
+    for (const p of [ana, ben]) {
+      assert.deepEqual(readdirSync(join(p.sidecar, "notes/u/b")), [LINEAR_SHARD], "one file, whoever wrote");
+      assert.deepEqual(linesOf(p, "notes/u/b").map((e) => e.id), [late.id, early.id], "lines in push order");
+      assert.deepEqual((await readScope(p.sidecar, "notes/u/b")).map((e) => e.id), [late.id, early.id], "and so is fold order");
+    }
+    const [a, b] = linesOf(ana, "notes/u/b");
+    assert.ok(a!.seq! < b!.seq!, "seq follows the push");
+    assert.deepEqual(b!.after, [], "and the staged act records what its author had SEEN: not ben's");
+  } finally { s.dispose(); }
+});
+
+test("seq orders events across scopes by push, which a merged fold relies on", async () => {
+  const s = await scenario(["ana@x.com", "ben@x.com"]);
+  try {
+    const ana = who(s, "ana@x.com"), ben = who(s, "ben@x.com");
+    begin(ana.sidecar);
+    const staged1 = await emitEvent(ana.sidecar, "tst/a", ana.actor, "noted", "x");
+    const landed = await emitEvent(ben.sidecar, "tst/b", ben.actor, "noted", "y");
+    assert.ok(!("error" in await syncSession(ana.sidecar, ana.actor)));
+    await settle(s);
+    const merged = sortEvents([...await readScope(ben.sidecar, "tst/a"), ...await readScope(ben.sidecar, "tst/b")]);
+    assert.deepEqual(merged.map((e) => e.id), [landed.id, staged1.id], "the merged order is the order they landed");
+  } finally { s.dispose(); }
+});
+
+// --- 2.2: the queue ---------------------------------------------------------------------
+
+test("the queue is append and drop only: nothing exported edits an op or moves it", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codemap-queue-"));
+  try {
+    await ensureSidecar(root, { principal: "q@x.com" });
+    // Every exported function, named. A new one that edits or reorders fails here first.
+    assert.deepEqual(Object.keys(queue).sort(), [
+      "allQueuedIds", "closeQueues", "conflicts", "drop", "forgetSession", "getMeta", "markConflict", "markInflight",
+      "markLanded", "markStaged", "pending", "pruneLanded", "sessionRow", "sessionsWithPending", "setMeta", "setTx",
+      "stage", "touchSession",
+    ]);
+    const ev = (id: string) => ({ id, kind: "k", subject: "s", actor: { principal: "q@x.com" }, at: "t", after: [], sidecarProtocol: 2, eventSchema: 1 });
+    for (const id of ["e1", "e2", "e3"]) queue.stage(root, "s1", "tst/q", ev(id));
+    assert.ok(queue.drop(root, "s1", "e2"));
+    queue.stage(root, "s1", "tst/q", ev("e4"));
+    assert.deepEqual(queue.pending(root, "s1").map((o) => o.event.id), ["e1", "e3", "e4"], "drop, then append at the END");
+    queue.markInflight(root, ["e1"]);
+    assert.equal(queue.drop(root, "s1", "e1"), false, "an op a sync holds cannot be dropped from under it");
+    assert.equal(queue.drop(root, "s2", "e3"), false, "nor by another session");
+    // The transitions move state and nothing else.
+    const before = queue.pending(root, "s1").map((o) => [o.pos, JSON.stringify(o.event)]);
+    queue.markStaged(root, ["e1"]); queue.markInflight(root, ["e3"]); queue.markStaged(root, ["e3"]);
+    assert.deepEqual(queue.pending(root, "s1").map((o) => [o.pos, JSON.stringify(o.event)]), before);
+  } finally { queue.closeQueues(); discard(root); }
+});
+
+// --- 2.3: the kill conditions, as sequential syncs --------------------------------------
+
+test("K1: garbage on the remote — the sync refuses, locks, and no read serves it as clean", async () => {
+  const s = await scenario(["ana@x.com", "ben@x.com"]);
+  try {
+    const ana = who(s, "ana@x.com"), ben = who(s, "ben@x.com");
+    await claim(ana, "x");
+    await settle(s);
+    appendFileSync(join(ana.sidecar, CLAIMS, LINEAR_SHARD), "\x00 not json\n");
+    git(ana.sidecar, "commit", "-qam", "a broken build"); git(ana.sidecar, "push", "-q", "origin", "HEAD:main");
+    const r = await sync(ben.sidecar, ben.actor);
+    assert.ok("error" in r && /damaged/.test(r.error), JSON.stringify(r));
+    assert.ok(lockoutOf(ben.sidecar), "damage this machine can see locks it");
+    assert.equal((await readScopeChecked(ben.sidecar, CLAIMS)).status, "complete", "ben's tree never took the bytes");
+    const inline = await claim(ben, "y");
+    assert.ok("error" in inline, "a write refuses too, rather than landing on top of it");
+  } finally { s.dispose(); }
+});
+
+const SPEC: Spec = { id: "sp_1", title: "T", status: "draft", author: { principal: "izzie@x.com" }, createdAt: "2026-08-01T00:00:00.000Z" };
+const ADD: Operation = { id: "op_1", specId: "sp_1", kind: "add_requirement", ord: 0, title: "Credit line currency",
+  section: "Credit/Limits", statement: "All credit lines are in USD.", provenance: "p", rationale: "r", reversibility: "reversible" };
+const CRIT: Operation = { id: "op_2", specId: "sp_1", kind: "add_criterion", ord: 1, targetOperationId: "op_1",
+  criterion: "c", falsifier: "f", evidenceKind: "lint-test", rationale: "r", reversibility: "reversible" };
+const U = "acme/api";
+const pointer = (by: Actor): Pointer => ({
+  id: "pt_1", requirementId: requirementIdFor("op_1"), criterionId: criterionIdFor("op_2"), operationId: "op_2", universe: U,
+  target: { kind: "anchor", id: "a_lint" }, rationale: "watch it", witnesses: [{ anchorId: "a_lint", bodyHash: "h1:sha256:x" }],
+  state: "pending", declaredBy: by, declaredAt: "2026-08-02T00:00:00.000Z",
+});
+const standardEvents = async (p: Person) =>
+  [...await readScope(p.sidecar, LAW_SCOPE), ...await readScope(p.sidecar, standardScope(U))];
+
+for (const first of ["law", "evidence"] as const) {
+  test(`K2: law and evidence racing (${first} lands first) — one lands, the other is refused and told, nothing locks`, async () => {
+    const s = await scenario(["izzie@x.com", "bob@x.com"]);
+    try {
+      const izzie = who(s, "izzie@x.com"), bob = who(s, "bob@x.com");
+      await publishSpecDrafted(izzie.sidecar, LAW_SCOPE, izzie.actor, SPEC);
+      await publishOperation(izzie.sidecar, LAW_SCOPE, izzie.actor, ADD);
+      await publishOperation(izzie.sidecar, LAW_SCOPE, izzie.actor, CRIT);
+      await settle(s);
+      const removal = () => publishOperationRemoved(izzie.sidecar, LAW_SCOPE, izzie.actor,
+        { ...CRIT, removed: { reason: "not needed", at: "2026-08-03T00:00:00.000Z", by: izzie.actor } } as Operation);
+      const declare = () => publishPointerDeclared(bob.sidecar, standardScope(U), bob.actor, pointer(bob.actor));
+      // The one that lands second acted inside a transaction: it had not seen the other.
+      const [loser, stage, land] = first === "law" ? [bob, declare, removal] : [izzie, removal, declare];
+      begin(loser.sidecar);
+      await stage();
+      await land();
+      const r = await syncSession(loser.sidecar, loser.actor);
+      await settle(s).catch(() => {});
+      for (const p of [izzie, bob]) {
+        assert.equal(lockoutOf(p.sidecar), null, `${p.actor.principal}: a race is not damage`);
+        clean(await standardEvents(p), (e) => foldStandardReport(e));
+      }
+      if ("error" in r) {
+        assert.ok(r.conflicts?.length, "a refusal names what was refused");
+        assert.deepEqual(staged(loser.sidecar).map((o) => o.event.kind), r.conflicts!.map((c) => c.kind), "and it stays staged for its author");
+      }
+    } finally { s.dispose(); }
+  });
+}
+
+test("K4: of two sequential acts the second is validated against the first — refused and told, never silently", async () => {
+  const s = await scenario(["ana@x.com", "ben@x.com"]);
+  try {
+    const ana = who(s, "ana@x.com"), ben = who(s, "ben@x.com");
+    begin(ana.sidecar);
+    const mine = await claim(ana, "the-desk");
+    assert.ok(!("error" in mine), "staging is checked against what ana could see: nobody had claimed it");
+    const theirs = await claim(ben, "the-desk");
+    assert.ok(!("error" in theirs), "ben's lands");
+    const r = await syncSession(ana.sidecar, ana.actor);
+    assert.ok("error" in r, "ana's replays against ben's and is refused");
+    assert.deepEqual(r.conflicts?.map((c) => [c.kind, c.why]), [["claim", "the-desk is already claimed"]], "and she is told why");
+    assert.deepEqual((await readScope(ana.sidecar, CLAIMS)).map((e) => e.actor.principal), ["ben@x.com"],
+      "her refused act stays staged for her, and is NOT read as if it would land");
+    assert.equal(staged(ana.sidecar).length, 1);
+    discardTx(ana.sidecar);
+    await settle(s);
+    for (const p of [ana, ben]) {
+      const events = await readScope(p.sidecar, CLAIMS);
+      assert.deepEqual(events.map((e) => e.actor.principal), ["ben@x.com"], "only the one that landed is in the log");
+      assert.equal(lockoutOf(p.sidecar), null);
+    }
+  } finally { s.dispose(); }
+});
+
+test("a write with the remote unreachable fails loudly and keeps nothing; staged acts stay staged", async () => {
+  const s = await scenario(["ana@x.com"]);
+  try {
+    const ana = who(s, "ana@x.com");
+    git(ana.sidecar, "remote", "set-url", "origin", join(tmpdir(), "codemap-no-such-remote"));
+    const inline = await claim(ana, "x");
+    assert.ok("error" in inline && /could not reach the sidecar remote/.test(inline.error), JSON.stringify(inline));
+    assert.deepEqual(staged(ana.sidecar), [], "an inline act that could not sync is not kept to land later");
+    begin(ana.sidecar);
+    await claim(ana, "y");
+    const r = await syncSession(ana.sidecar, ana.actor);
+    assert.ok("error" in r && /online-only/.test(r.error));
+    assert.equal(staged(ana.sidecar).length, 1, "a transaction's acts wait for a sync that succeeds");
+  } finally { s.dispose(); }
+});
+
+test(`more than ${PUSHES_PER_MINUTE} pushes in a minute warns, and never throttles`, async () => {
+  const s = await scenario(["ana@x.com"]);
+  try {
+    const ana = who(s, "ana@x.com");
+    for (let i = 0; i < PUSHES_PER_MINUTE; i++) assert.ok(!("error" in await claim(ana, `c${i}`)));
+    begin(ana.sidecar);
+    await claim(ana, "one-more");
+    const r = await syncSession(ana.sidecar, ana.actor);
+    assert.ok(!("error" in r) && r.pushed, "the push still happens");
+    assert.match((r as { warning?: string }).warning ?? "", /GitHub recommends at most 6/);
+  } finally { s.dispose(); }
+});
+
+// --- 2.4: transactions ------------------------------------------------------------------
+
+test("a transaction is all or nothing, returns every conflict, and pushes the rest once the refused op is dropped", async () => {
+  const s = await scenario(["ana@x.com", "ben@x.com"]);
+  try {
+    const ana = who(s, "ana@x.com"), ben = who(s, "ben@x.com");
+    begin(ana.sidecar);
+    await claim(ana, "a"); await claim(ana, "b"); await claim(ana, "c");
+    await claim(ben, "b");
+    const refused = await syncSession(ana.sidecar, ana.actor);
+    assert.ok("error" in refused);
+    assert.deepEqual(refused.conflicts!.map((c) => c.why), ["b is already claimed"]);
+    assert.deepEqual((await readScope(ben.sidecar, CLAIMS)).map((e) => e.subject), ["b"], "nothing of ana's was pushed");
+    assert.equal(staged(ana.sidecar).length, 3, "the transaction stays staged");
+    const b = staged(ana.sidecar).find((o) => o.event.subject === "b")!;
+    assert.ok(dropOp(ana.sidecar, b.event.id).ok);
+    const ok = await syncSession(ana.sidecar, ana.actor);
+    assert.ok(!("error" in ok), JSON.stringify(ok));
+    await settle(s);
+    assert.deepEqual((await readScope(ben.sidecar, CLAIMS)).map((e) => `${e.actor.principal}:${e.subject}`),
+      ["ben@x.com:b", "ana@x.com:a", "ana@x.com:c"]);
+  } finally { s.dispose(); }
+});
+
+test("a session reads its own staged acts, and a sync pushes only the caller's", async () => {
+  const s = await scenario(["ana@x.com"]);
+  try {
+    const ana = who(s, "ana@x.com");
+    await withSession("web:" + "a".repeat(16), "web", async () => {
+      begin(ana.sidecar);
+      await claim(ana, "tab-a");
+      assert.deepEqual((await readScope(ana.sidecar, CLAIMS)).map((e) => e.subject), ["tab-a"], "the tab sees its own act");
+    });
+    await withSession("web:" + "b".repeat(16), "web", async () => {
+      assert.deepEqual((await readScope(ana.sidecar, CLAIMS)).map((e) => e.subject), [], "another tab does not");
+      begin(ana.sidecar);
+      await claim(ana, "tab-b");
+      const r = await syncSession(ana.sidecar, ana.actor);
+      assert.ok(!("error" in r), JSON.stringify(r));
+    });
+    assert.deepEqual((await readScope(ana.sidecar, CLAIMS)).map((e) => e.subject), ["tab-b"], "tab b's sync pushed only tab b's");
+    await withSession("web:" + "a".repeat(16), "web", async () => {
+      assert.equal(staged(ana.sidecar).length, 1, "tab a's is still waiting for tab a");
+      discardTx(ana.sidecar);
+      assert.equal(staged(ana.sidecar).length, 0);
+    });
+  } finally { s.dispose(); }
+});
+
+// --- 2.5: sessions that are gone --------------------------------------------------------
+
+const DEAD = "cli:999999:dead";
+
+test("a gone session's transaction is attempted: it lands, or becomes a local conflict — never lost", async () => {
+  const s = await scenario(["ana@x.com", "ben@x.com"]);
+  try {
+    const ana = who(s, "ana@x.com"), ben = who(s, "ben@x.com");
+    await withSession(DEAD, "cli", async () => { begin(ana.sidecar); await claim(ana, "fine"); });
+    await withSession("cli:999998:dead", "cli", async () => { begin(ana.sidecar); await claim(ana, "taken"); });
+    await claim(ben, "taken");
+    const out = await attemptGone(ana.sidecar);
+    assert.deepEqual(out.map((o) => o.outcome).sort(), ["conflict", "landed"]);
+    await settle(s);
+    assert.deepEqual((await readScope(ben.sidecar, CLAIMS)).map((e) => e.subject), ["taken", "fine"]);
+    const shown = localConflicts(ana.sidecar);
+    assert.deepEqual(shown.map((o) => [o.event.subject, o.why]), [["taken", "taken is already claimed"]], "shown on the next open");
+    assert.ok(dropOp(ana.sidecar, shown[0]!.event.id).ok, "and dismissable");
+    assert.deepEqual(localConflicts(ana.sidecar), []);
+  } finally { s.dispose(); }
+});
+
+test("a crash between the push and its bookkeeping: the next attempt finds the op on the remote and pushes nothing twice", async () => {
+  const s = await scenario(["ana@x.com"]);
+  try {
+    const ana = who(s, "ana@x.com");
+    await withSession(DEAD, "cli", async () => { begin(ana.sidecar); await claim(ana, "once"); });
+    const id = queue.pending(ana.sidecar, DEAD)[0]!.event.id;
+    assert.ok(!("error" in await withSession(DEAD, "cli", () => syncSession(ana.sidecar, ana.actor))));
+    // The process died after the push and before `markLanded`: put the row back as it would be.
+    queue.closeQueues();
+    const db = new DatabaseSync(join(ana.sidecar, ".git", "codemap-queue.db"));
+    db.prepare("UPDATE queue SET state = 'inflight' WHERE event_id = ?").run(id);
+    db.close();
+    const out = await attemptGone(ana.sidecar);
+    assert.deepEqual(out.map((o) => o.outcome), ["landed"]);
+    const onRemote = git(s.origin, "show", `main:${CLAIMS}/${LINEAR_SHARD}`).stdout;
+    assert.equal(onRemote.split("\n").filter((l) => l.includes(id)).length, 1, "exactly one copy on the remote");
+  } finally { s.dispose(); }
+});
+
+test("a sync refuses rather than destroy a clone's own unsynced or hand-edited events", async () => {
+  const s = await scenario(["ana@x.com", "ben@x.com"]);
+  try {
+    const ana = who(s, "ana@x.com"), ben = who(s, "ben@x.com");
+    await claim(ana, "x");
+    await claim(ben, "y");
+    // An event an older build appended and never synced.
+    const file = join(ana.sidecar, CLAIMS, LINEAR_SHARD);
+    const [line] = readFileSync(file, "utf8").trim().split("\n");
+    appendFileSync(file, JSON.stringify({ ...JSON.parse(line!), id: "0000000000-orphan" }) + "\n");
+    const r = await sync(ana.sidecar, ana.actor);
+    assert.ok("error" in r && /not staged through a sync|differ from the remote/.test(r.error), JSON.stringify(r));
+    assert.ok(readFileSync(file, "utf8").includes("0000000000-orphan"), "and it is still there");
+    // A hand edit that removes a line: refused, never reset away.
+    writeFileSync(file, "");
+    const r2 = await sync(ana.sidecar, ana.actor);
+    assert.ok("error" in r2 && /edited by hand/.test(r2.error), JSON.stringify(r2));
+  } finally { s.dispose(); }
+});

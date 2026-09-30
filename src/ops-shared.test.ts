@@ -540,13 +540,14 @@ test("a symbol a teammate documented is not offered as a gap", async () => {
 function forkDocScope(sidecar: string, universe: string): void {
   const dir = join(sidecar, "docs", universe);
   const name = readdirSync(dir).find((n) => n.endsWith(".ndjson"))!;
+  const writer = (JSON.parse(readFileSync(join(dir, name), "utf8").trim().split("\n")[0]!) as { writer: string }).writer;
   // Through `testEvent`, so this is a well-formed protocol-1 event that forks rather
   // than a malformed one the reader drops at the door — which would make the test
   // pass by finding no fork in a scope that has none.
   appendFileSync(join(dir, name), JSON.stringify(testEvent({
     id: "9999999999-ffffffffff", kind: "doc.published", subject: "n_other",
     actor: { principal: "dana@x.com" }, at: "2026-08-23T00:00:00Z",
-    writer: name.replace(/\.ndjson$/, ""), writerPrev: "GENESIS",
+    writer, writerPrev: "GENESIS",
   })) + "\n");
 }
 
@@ -748,35 +749,9 @@ async function forkedPair() {
   return { origin, a, b, cleanup: () => { a.cleanup(); b.cleanup(); discard(origin); } };
 }
 
-test("heal unions the divided shard, rotates the writer, and clears the scope", async () => {
-  const t = await forkedPair();
-  try {
-    await withEnv({ CODEMAP_SIDECAR: undefined, CODEMAP_AGENT_MODEL: undefined }, async () => {
-      await shared.shareFinding(t.b.root, 264, { ...NEW, targetId: "a_2" });
-      const before = await shared.sharedSync(t.b.root) as { error?: string };
-      assert.ok(before.error, "precondition: the shared writer id fails the sync closed");
-
-      const beforeId = readFileSync(join(t.b.side, ".git", "codemap-writer"), "utf8").trim();
-      const r = await shared.sharedHeal(t.b.root) as any;
-      assert.equal(r.error, undefined, `heal failed: ${r.error}`);
-
-      assert.equal(r.resolved.length, 1, "the divided shard is unioned");
-      assert.ok(r.resolved[0].events >= 2, "and BOTH sides' events are in it");
-      assert.ok(r.rotated, "this clone held the forked id, so it rotated");
-      assert.notEqual(r.rotated, beforeId);
-      assert.ok(r.acknowledged.length >= 1, "and a person acknowledged the evidence");
-
-      // Nothing was deleted: both findings survive, on both clones.
-      assert.equal((await shared.sharedFindings(t.b.root, 264) as any).findings.length, 2);
-      await shared.sharedSync(t.a.root);
-      assert.equal((await shared.sharedFindings(t.a.root, 264) as any).findings.length, 2);
-
-      // The sync that failed now goes through, which is the point of a repair.
-      const after = await shared.sharedSync(t.b.root) as { error?: string };
-      assert.equal(after.error, undefined, "and syncing works again");
-    });
-  } finally { t.cleanup(); }
-});
+// "heal unions the divided shard" lived here. A shared writer id no longer divides a shard —
+// replay takes `writerPrev` from the tip, and nothing merges — so its fork cannot be built;
+// `oracle-cloned-machine.test.ts` now proves the copy harmless. Heal itself goes in phase 6.
 
 test("heal on a healthy sidecar changes nothing", async () => {
   // CONTROL. Without it, a heal that unioned and rotated unconditionally — or one

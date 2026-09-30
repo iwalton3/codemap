@@ -15,7 +15,8 @@
  * (`docs/review-target-identity.md`, the "unrelated branch" row). Callers enforce that,
  * since only they hold `isCrossRepository`.
  */
-import { emitEvent, readScope, type LogEvent } from "./eventlog.js";
+import { readScope, type LogEvent } from "./eventlog.js";
+import { emitEvent } from "./write.js";
 import type { Actor } from "./schema.js";
 
 export const reviewScope = (universe: string): string => `reviews/${universe}`;

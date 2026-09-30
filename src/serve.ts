@@ -8,7 +8,8 @@
  * Launch: `node dist/serve.js <workspace> [port]`
  */
 
-import { createServer } from "node:http";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { isTabId, webSession, withSession } from "./sync-session.js";
 import { randomBytes } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
@@ -364,7 +365,24 @@ async function serveStatic(urlPath: string): Promise<{ body: Buffer; type: strin
   }
 }
 
-const server = createServer(async (req, res) => {
+/**
+ * Each page load mints a tab id and sends it on every request (F20d). A request carrying one
+ * runs as that tab's session — what it stages is the tab's — and counts as the tab being
+ * alive; one without runs as this server's own session.
+ */
+const server = createServer((req, res) => {
+  const tab = req.headers["x-codemap-tab"];
+  if (!isTabId(tab)) return serveRequest(req, res);
+  const session = webSession(tab);
+  shared.touchWebSession(ws.universes.map((u) => u.path), session);
+  return withSession(session, "web", () => serveRequest(req, res));
+});
+
+// A tab whose polls stopped, or a session of a process that died: attempt its writes (plan 2.5).
+void shared.attemptGoneSessions(ws.universes.map((u) => u.path));
+setInterval(() => { void shared.attemptGoneSessions(ws.universes.map((u) => u.path)); }, 30_000).unref();
+
+async function serveRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
   try {
     const url = new URL(req.url ?? "/", "http://localhost");
     // Damage anywhere this server can see locks every read and act, in every universe. The
@@ -1026,7 +1044,7 @@ const server = createServer(async (req, res) => {
     res.writeHead(500, { "content-type": "application/json" });
     res.end(JSON.stringify({ error: e?.message ?? String(e) }));
   }
-});
+}
 
 // Loopback only. The server has no authentication and now carries write routes that
 // mutate the map, fetch from remotes and post to GitHub; binding every interface put

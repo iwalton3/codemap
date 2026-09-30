@@ -30,7 +30,8 @@
 
 import type { Actor, BugWitness, Complexity, Importance, TriageSource, Triage } from "./schema.js";
 import { isAgentActor } from "./identity.js";
-import { emitEvent, emitEvents, type LogEvent, type Causality, causality } from "./eventlog.js";
+import { type LogEvent, type Causality, causality } from "./eventlog.js";
+import { emitEvent, emitEvents } from "./write.js";
 import { IMPORTANCE_RANK, COMPLEXITY_RANK, ratchet, type RatchetState } from "./triage-rules.js";
 
 /** One universe's stakes. Not per-PR: a symbol's blast radius outlives any branch. */

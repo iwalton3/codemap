@@ -9,7 +9,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { causalHeads, readScope, sortEvents, type LogEvent } from "./eventlog.js";
@@ -65,7 +65,8 @@ async function log(t: string) {
  * causal heads — so a fixture can put a genuine race in the log.
  */
 function rewriteLast(root: string, e: LogEvent, envelope: Partial<LogEvent>): void {
-  const shard = join(root, SCOPE, `${e.writer}.ndjson`);
+  const shard = join(root, SCOPE, readdirSync(join(root, SCOPE)).find((n) => n.endsWith(".ndjson")
+    && readFileSync(join(root, SCOPE, n), "utf8").includes(`"id":"${e.id}"`))!);
   const lines = readFileSync(shard, "utf8").split("\n").filter((l) => l.trim() && JSON.parse(l).id !== e.id);
   writeFileSync(shard, lines.map((l) => l + "\n").join(""));
   const moved = { ...e, ...envelope };

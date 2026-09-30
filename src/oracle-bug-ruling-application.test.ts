@@ -11,7 +11,7 @@ import { applicationReaderBrief, submitApplicationVerdict, recordApplicationVerd
 import { readBug } from "./store.js";
 import { universeKey } from "./sidecar-config.js";
 import { bugScope } from "./shared-bugs.js";
-import { emitEvent } from "./eventlog.js";
+import { emitEvent } from "./write.js";
 
 const A = "ana@acme.test";
 async function as<T>(agent: boolean, run: () => Promise<T>): Promise<T> {

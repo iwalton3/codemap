@@ -102,61 +102,21 @@ test("hostile history: each shape is refused in its own scope, and nowhere else"
       }
     });
 
-    // 1 — a `git rm`, pushed with raw git. The one rewrite append-only cannot survive
-    //     on its own, and the repair is on the RECEIVING side: the deleter's own sync
-    //     has nothing to notice, because from its point of view the deletion is simply
-    //     the state of its tree. Somebody pulling it is the only one who can see that
-    //     history went backwards.
-    //
-    //     NOTE the `raw` step: between the `git rm` and somebody pulling it, NO LOSS is
-    //     genuinely violated on ana's clone — she really has stopped holding an event
-    //     she held. That is not a bug in the property, it is the damage, and the whole
-    //     point of the restore is to end it. Checking the invariants mid-damage would
-    //     assert that a repair mechanism is never needed.
-    let deleted = "";
+    // (A `git rm` pushed with raw git was shape 1 here. It is tampering with the git repository,
+    // which the owner ruled out of scope, and a linear pull takes the tip as it is — there is no
+    // erasure restore to test. docs/PROPOSAL-online-only-sync.md.)
+
+    /** A step the invariants are not judged after — damage in progress, or a clone locked by it. */
     const raw = async (what: string, fn: () => Promise<void>) => {
       try { await fn(); } catch (e) { throw new Error(`during "${what}": ${(e as Error).message}`); }
     };
-    await raw("somebody tidies up a shard with git rm, and pushes it", async () => {
-      const scope = await scopeFor(ana, "pr-23");
-      const [shard] = shardsIn(ana, scope);
-      assert.ok(shard, "there is a shard to delete");
-      deleted = shard!;
 
-      rewriteHistory(ana, "tidy up an old shard", (_paths, sidecar) => {
-        const rm = spawnSync("git", ["rm", "-q", "--", shard!], { cwd: sidecar, encoding: "utf8" });
-        assert.equal(rm.status, 0, `git rm failed: ${rm.stderr}`);
-      });
-      const push = spawnSync("git", ["push", "-q", "origin", "HEAD:main"], { cwd: ana.sidecar, encoding: "utf8" });
+    /** What a build without codemap's gates does: commit whatever is on disk and push it with git. */
+    const pushRaw = (m: typeof ana, message: string, mutate: (paths: string[], sidecar: string) => void = () => {}) => {
+      rewriteHistory(m, message, mutate);
+      const push = spawnSync("git", ["push", "-q", "origin", "HEAD:main"], { cwd: m.sidecar, encoding: "utf8" });
       assert.equal(push.status, 0, `push failed: ${push.stderr}`);
-      assert.deepEqual(shardsIn(ana, scope), [], "the deletion really is on its way to the team");
-    });
-
-    await raw("and the teammate who pulls it puts it back", async () => {
-      // Still `raw`: ben has repaired it, but ana is the one who deleted it and she
-      // does not hold it again until she pulls his restore. The invariants come back
-      // at the `settled` below, which is where they are meant to be judged.
-      const scope = await scopeFor(ben, "pr-23");
-      const r = await syncOne(ben) as any;
-      assert.equal(r.error, undefined, `the pull still succeeds — refusing would wedge it forever: ${r.error}`);
-      assert.equal(r.restored?.length, 1, "and it reports what it put back");
-      assert.equal(r.restored[0].path, deleted);
-      assert.deepEqual(shardsIn(ben, scope), [deleted], "the shard is on disk again");
-    });
-
-    await settled("the deletion");
-
-    await step("the deletion did not travel", async () => {
-      // RESTORED, NOT PROPAGATED. A merge that took the deletion cleanly is the silent
-      // failure here: every clone converges, every property passes, and the finding is
-      // simply gone from the team. NO LOSS in `checkSettled` is watching too, but this
-      // says it at the surface a person reads.
-      for (const m of t.all) {
-        const f = await sharedFindings(m.repo, 23) as any;
-        assert.deepEqual(f.findings.map((x: any) => x.text), ["honest finding on 23"],
-          `${m.machine} lost the finding to somebody else's git rm`);
-      }
-    });
+    };
 
     // 2 — an event from a build that does not exist yet.
     await step("a teammate on a newer codemap writes into pr-21", async () => {
@@ -165,7 +125,7 @@ test("hostile history: each shape is refused in its own scope, and nowhere else"
         id: "9999999999-future", writer: "w_future",
         sidecarProtocol: SIDECAR_PROTOCOL + 1, eventSchema: EVENT_SCHEMA + 1,
       }));
-      rewriteHistory(ana, "an event from a newer protocol", () => {});
+      pushRaw(ana, "an event from a newer protocol");
 
       const r = await syncOne(ana) as any;
       // The sync SUCCEEDS and reports it. A scope this build cannot fully read is not
@@ -227,7 +187,7 @@ test("hostile history: each shape is refused in its own scope, and nowhere else"
       const shard = join(scope, "w_cycle.ndjson");
       appendRaw(ana, shard, envelope({ id: "8888888881-c1", writer: "w_cycle", writerPrev: "8888888882-c2" }));
       appendRaw(ana, shard, envelope({ id: "8888888882-c2", writer: "w_cycle", writerPrev: "8888888881-c1" }));
-      rewriteHistory(ana, "a writerPrev cycle", () => {});
+      pushRaw(ana, "a writerPrev cycle");
     });
 
     await settled("the cycle");
@@ -266,7 +226,7 @@ test("hostile history: each shape is refused in its own scope, and nowhere else"
         id: "7777777777-junk", writer: "w_junk", sidecarProtocol: undefined, eventSchema: undefined,
       }) as any);
       appendRaw(ana, join(scope, "w_junk.ndjson"), {} as any);
-      rewriteHistory(ana, "a malformed line and a meaningless one", () => {});
+      pushRaw(ana, "a malformed line and a meaningless one");
 
       const r = await syncOne(ana) as any;
       assert.equal(r.error, undefined, `a junk line must not fail a sync: ${r.error}`);
@@ -319,7 +279,7 @@ test("hostile history: each shape is refused in its own scope, and nowhere else"
       assert.equal(spawnSync("git", ["push", "-q", "origin", "HEAD:main"], { cwd: ana.sidecar }).status, 0);
 
       const blocked = await syncOne(ben) as { error?: string };
-      assert.match(blocked.error ?? "", /refusing to merge/, "ben's pull refuses the damaged bytes");
+      assert.match(blocked.error ?? "", /refusing to take the remote tip/, "ben's pull refuses the damaged bytes");
       assert.match(blocked.error ?? "", /w_junk\.ndjson:/, "and names the line, so it can be repaired where it was written");
 
       // The promise the refusal makes, and the reason it is worth the collateral: ben's
@@ -332,7 +292,9 @@ test("hostile history: each shape is refused in its own scope, and nowhere else"
 
     await step("and the repair, made where the shard was written, lets the team continue", async () => {
       const scope = await scopeFor(ana, "pr-23");
-      rewriteHistory(ana, "delete the damaged line", (_p, sidecar) => {
+      // A repair is a commit pushed with git (docs/log-repair.md): a sync moves the tree to the
+      // remote tip, which still holds the damage, and refuses a hand edit rather than discard it.
+      pushRaw(ana, "delete the damaged line", (_p, sidecar) => {
         const path = join(sidecar, scope, "w_junk.ndjson");
         const kept = readFileSync(path, "utf8").split("\n").filter((l) => l.trim() && l !== '{"id":"nope"');
         writeFileSync(path, kept.join("\n") + "\n");

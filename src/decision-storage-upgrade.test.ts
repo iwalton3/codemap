@@ -213,7 +213,7 @@ test("missing and wrong sidecars serve marked cached rows and refuse a new rulin
       assert.equal(blocked.status, "blocked", JSON.stringify(blocked));
       assert.equal(blocked.diagnostic?.reason, "corrupt-shard");
       const refused = await as(true, () => applyRuling(root, { issue, answerId: answered.answer, readers: [] })) as any;
-      assert.match(String(refused.error), /blocked|corrupt/i, JSON.stringify(refused));
+      assert.match(String(refused.error), /blocked|corrupt|damaged/i, JSON.stringify(refused));
       assert.equal((await readFinding(root, filed.id))?.applications?.length ?? 0, 0);
     } finally { writeFileSync(shard, intact); }
   } finally { t.dispose(); discard(otherSidecar); }

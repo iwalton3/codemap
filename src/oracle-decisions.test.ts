@@ -5,6 +5,7 @@ import { Ledger, checkAlways, checkSettled } from "./oracle-properties.js";
 import { shareFinding, reassignFinding, reportOnFinding } from "./ops-shared.js";
 import { reviewQueue } from "./ops/annotations.js";
 import { postRound, answerDirect, confirmReading, decisionRound, nominateComparison, withdrawDecision, CONFIRM_YES } from "./ops/decisions.js";
+import { begin } from "./sync-engine.js";
 
 test("a changed response and a stale clone's confirmation converge without reviving its old reading", async () => {
   const previous = process.env.CODEMAP_AGENT_MODEL;
@@ -137,6 +138,8 @@ test("a concurrent withdrawal and answer remain visible and hold work after sync
     await settle(t);
     await checkSettled(t, ledger);
 
+    // Concurrent under the linear log: alice's withdrawal is staged, bob's answer lands, alice's syncs.
+    begin(alice!.sidecar);
     const withdrawn = await withdrawDecision(alice!.repo, { decision: "d1", reason: "question needs reframing" }) as any;
     assert.equal(withdrawn.ok, true, JSON.stringify(withdrawn));
     const answered = await answerDirect(bob!.repo, { decision: "d1", option: "No" }) as any;

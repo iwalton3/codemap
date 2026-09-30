@@ -52,6 +52,7 @@ import { ratifyReviewed } from "./test-approve.js";
 import { acknowledgeGap, listAcknowledgements } from "./acknowledgements.js";
 import { recordAudit, conformance, provisionalAudits, promotableAudits } from "./audits.js";
 import { raiseProblem, adjudicate, listProblems, awaitingAdjudication } from "./problems.js";
+import { begin, dropOp, staged, syncSession } from "./sync-engine.js";
 
 const OWNER = "izzie@acme.test";
 const MATE = "ben@acme.test";
@@ -153,29 +154,34 @@ test("the standard is one law across machines, and a race for it has one winner"
     });
 
     // 2 — THE RACE. Both draft an amendment against the same text, neither having seen the
-    //     other; both local checks pass because the log is never read on an ordinary read.
-    await step("two principals amend the same rule while apart", async () => {
-      await whileApart(
-        t,
-        OWNER, async (m) => {
-          const sp = ok(await draftSpec(m.repo, { title: "Izzie's amendment" }));
-          ok(await addOperation(m.repo, {
-            specId: sp.id, kind: "amend_statement", requirementId: ruleId,
-            statement: "A refund must never call transfer with a negative amount, and must be logged.",
-            rationale: "audit asked for the log line", reversibility: "reversible",
-          }));
-          return ratifyReviewed(m.repo, sp.id);
-        },
-        MATE, async (m) => {
-          const sp = ok(await draftSpec(m.repo, { title: "Ben's amendment" }));
-          ok(await addOperation(m.repo, {
-            specId: sp.id, kind: "amend_statement", requirementId: ruleId,
-            statement: "A refund must be expressed as a positive amount on a credit entry.",
-            rationale: "the ledger team's shape", reversibility: "reversible",
-          }));
-          return ratifyReviewed(m.repo, sp.id);
-        },
-      );
+    //     other. Under the linear log the second to sync is REPLAYED against the first and
+    //     refused, and nothing else of its transaction lands (plan 2.3, K2/K4).
+    const amend = async (m: Member, title: string, statement: string, rationale: string) => {
+      const sp = ok(await draftSpec(m.repo, { title }));
+      ok(await addOperation(m.repo, {
+        specId: sp.id, kind: "amend_statement", requirementId: ruleId, statement, rationale, reversibility: "reversible",
+      }));
+      ok(await ratifyReviewed(m.repo, sp.id));
+      return sp.id;
+    };
+    let izzieSpec = "";
+    await step("two principals amend the same rule while apart, and the later sync is refused", async () => {
+      await settle(t);
+      begin(izzie.sidecar);
+      izzieSpec = await amend(izzie, "Izzie's amendment",
+        "A refund must never call transfer with a negative amount, and must be logged.", "audit asked for the log line");
+      await amend(ben, "Ben's amendment",
+        "A refund must be expressed as a positive amount on a credit entry.", "the ledger team's shape");
+      const refused = await syncSession(izzie.sidecar, izzie.actor);
+      assert.ok("error" in refused && refused.conflicts?.length, `the loser must be refused: ${JSON.stringify(refused)}`);
+      assert.deepEqual(refused.conflicts!.map((c) => c.kind), ["spec.ratified"], "only the act the fold refuses is named");
+      assert.match(refused.conflicts![0]!.why, /base moved/);
+      // The refused transaction stays staged; drop the ratification and sync the draft.
+      const ratify = staged(izzie.sidecar).find((o) => o.event.kind === "spec.ratified")!;
+      assert.ok(dropOp(izzie.sidecar, ratify.event.id).ok);
+      const rest = await syncSession(izzie.sidecar, izzie.actor);
+      assert.ok(!("error" in rest), JSON.stringify(rest));
+      await settle(t);
     });
 
     await step("the race resolves the same way on both machines", async () => {
@@ -183,21 +189,12 @@ test("the standard is one law across machines, and a race for it has one winner"
       const theirs = (await listRequirements(ben.repo)).find((r) => r.id === ruleId)!;
       assert.equal(mine.statement, theirs.statement,
         "two clones disagreeing about what the rule SAYS is the failure this whole subsystem exists to prevent");
-
-      // Both drafts were ratified, so neither is still pending on either machine.
-      for (const m of [izzie, ben]) assert.equal((await pendingSpecs(m.repo)).length, 0);
-
-      // And the loser is `conflicted` on BOTH clones, not just where it was written.
-      const verdicts = await Promise.all([izzie, ben].map(async (m) => {
-        const all = await readSpecs(m.repo, {});
-        return ["Izzie's amendment", "Ben's amendment"].map((title) => {
-          const sp = all.find((x) => x.title === title)!;
-          return `${title}:${sp.conflicted ? "conflicted" : "applied"}`;
-        }).join("|");
-      }));
-      assert.equal(verdicts[0], verdicts[1],
-        "the clones must agree WHICH ratification lost, or the standard is a per-machine opinion");
-      assert.match(verdicts[0]!, /conflicted/, "one of the two must have lost, or there was no race");
+      assert.equal(mine.statement, "A refund must be expressed as a positive amount on a credit entry.", "ben's landed first");
+      // Izzie's amendment is still her draft, on both machines; nothing of it is law.
+      for (const m of [izzie, ben]) {
+        assert.deepEqual((await pendingSpecs(m.repo)).map((s) => s.spec.id), [izzieSpec]);
+        assert.equal((await readSpecs(m.repo, {})).some((s) => s.conflicted), false, "no conflicted ratification exists to land");
+      }
     });
 
     // 3 — branch work reaches the reviewer without reaching the standard.

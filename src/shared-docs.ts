@@ -30,7 +30,8 @@ import type { Actor } from "./schema.js";
 import type { NodeVersion, NodeCitation, LogicalNodeType } from "./schema.js";
 import { winningVersionAt } from "./doc-version.js";
 import type { AnchorIndex } from "./anchor-resolve.js";
-import { emitEvent, mintId, readScope, type LogEvent } from "./eventlog.js";
+import { mintId, readScope, type LogEvent } from "./eventlog.js";
+import { emitEvent } from "./write.js";
 
 export const docScope = (universe: string): string => `docs/${universe}`;
 

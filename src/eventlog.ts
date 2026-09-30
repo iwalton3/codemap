@@ -51,8 +51,16 @@ export const SHARD_EXT = ".ndjson";
  * LOWER number, or none at all, is an older writer and reads fine — every field
  * added here has been optional for exactly that reason.
  */
-export const SIDECAR_PROTOCOL = 1;
+export const SIDECAR_PROTOCOL = 2;
 export const EVENT_SCHEMA = 1;
+
+/**
+ * The one file per scope that every write since the linear log goes to
+ * (docs/PROPOSAL-online-only-sync.md, "one append-only file per scope"). Line position is
+ * order within a scope; `seq` is order across scopes. Per-writer shards from before it still
+ * read, and fold ahead of it.
+ */
+export const LINEAR_SHARD = "events" + SHARD_EXT;
 
 /** The predecessor named by the first event of a `(scope, writer)` chain. */
 export const GENESIS = "GENESIS";
@@ -124,6 +132,14 @@ export interface LogEvent {
   eventSchema: number;
   /** Event-specific payload. Opaque here. */
   data?: Record<string, unknown>;
+  /**
+   * Position in the WHOLE sidecar's linear history, assigned when the event is appended at
+   * the tip (protocol 2): one more than the largest `seq` on disk. Absent on events from
+   * before the linear log. A fold that merges scopes needs it — ids are minted when an act is
+   * staged, so a staged act pushed late would otherwise sort ahead of what it was validated
+   * after, and could invalidate an event already on the remote.
+   */
+  seq?: number;
 }
 
 /**
@@ -318,23 +334,6 @@ export async function writerFor(logRoot: string): Promise<string> {
 export function forgetWriter(logRoot: string): void { writers.delete(logRoot); }
 
 /**
- * Append a person's acknowledgment of one piece of blocking evidence.
- *
- * An ordinary event in the acknowledging writer's own shard, so it syncs like any
- * other write and unblocks the scope for every reader — the point is that the team
- * stops being told about a fork one of them has already dealt with.
- *
- * Carries the DIGEST, not the prose. See `evidenceDigest`.
- */
-export async function acknowledgeScope(
-  logRoot: string, scope: string, actor: Actor, d: ScopeDiagnostic,
-): Promise<LogEvent> {
-  return emitEvent(logRoot, scope, actor, ACK_KIND, scope, {
-    acknowledges: [{ reason: d.reason, digest: evidenceDigest(d) }],
-  });
-}
-
-/**
  * Mint this clone a NEW writer id, replacing whatever it had.
  *
  * The repair for a detected fork, and the only one that works: a fork is two clones
@@ -358,23 +357,6 @@ export async function rotateWriter(logRoot: string): Promise<string> {
 }
 
 /**
- * Read the heads and append, as ONE act under the sidecar lock.
- *
- * The four shared entities each had this sequence written out, and the sequence is
- * the race: `causalHeads` reads what came before and the append commits to it, so
- * two processes that both read the same heads have already forked whichever order
- * their writes land in. A lock around the append alone would not have helped.
- */
-export async function emitEvent(
-  logRoot: string, scope: string, actor: Actor, kind: string, subject: string, data?: Record<string, unknown>,
-  fold?: DoorFold,
-): Promise<LogEvent> {
-  const result = await emitEventChecked(logRoot, scope, actor, async () => ({ kind, subject, data }), fold);
-  if ("error" in result) throw new Error(result.error);
-  return result;
-}
-
-/**
  * The scope's fold, asked whether it would apply one event: the minted one, envelope and all.
  * Passed in by the caller because the folds import this module.
  */
@@ -382,7 +364,28 @@ export type DoorFold = (events: LogEvent[], minted: LogEvent) =>
   Promise<{ refused: { id: string; why: string }[] }> | { refused: { id: string; why: string }[] };
 
 /** Scopes whose every write is folded at the door before it is appended (plan 1.1). */
-const FOLDED_AT_THE_DOOR = /^(decisions|standard|law)\//;
+export const FOLDED_AT_THE_DOOR = /^(decisions|standard|law)\//;
+
+/**
+ * Each scope's fold, for a replay that holds only data (plan 2.3). The folds register
+ * themselves here, because they import this module and a replay cannot import them back.
+ */
+const doors: { match: (scope: string) => boolean; make: (logRoot: string, scope: string) => DoorFold }[] = [];
+export function registerDoor(match: (scope: string) => boolean, make: (logRoot: string, scope: string) => DoorFold): void {
+  doors.push({ match, make });
+}
+
+/**
+ * The fold a staged op to `scope` replays through. A scope that must be folded, with no fold
+ * registered in this process, THROWS rather than replaying unchecked: an unchecked replay is
+ * how an invalid event reaches the remote.
+ */
+export function doorFor(logRoot: string, scope: string): DoorFold | undefined {
+  const d = doors.find((x) => x.match(scope));
+  if (d) return d.make(logRoot, scope);
+  if (FOLDED_AT_THE_DOOR.test(scope)) throw new Error(`no fold is registered for ${scope} in this process, so a write to it cannot be validated`);
+  return undefined;
+}
 
 /**
  * Recheck an admission decision against the scope while holding the append lock, then fold
@@ -390,39 +393,33 @@ const FOLDED_AT_THE_DOOR = /^(decisions|standard|law)\//;
  * and refuse it if the fold would. One door: a stand-in envelope folded differently from the
  * real one (a writer of its own read as having seen nothing).
  */
-export async function emitEventChecked(
-  logRoot: string, scope: string, actor: Actor,
-  check: (events: LogEvent[]) => Promise<
-    | { kind: string; subject: string; data?: Record<string, unknown> }
-    | { existing: LogEvent }
-    | { error: string }
-  >,
-  fold?: DoorFold,
+/** What an act's check answers: the event to write, one already there, or a refusal. */
+export type Admission =
+  | { kind: string; subject: string; data?: Record<string, unknown> }
+  | { existing: LogEvent }
+  | { error: string };
+export type AdmissionCheck = (events: LogEvent[]) => Promise<Admission>;
+
+/**
+ * The door for a sidecar with no remote: its own history is the serializer, so the act is
+ * checked, folded and appended at the tip under the lock, and nothing is pushed. Every other
+ * write goes through `write.ts`, which routes here.
+ */
+export async function appendChecked(
+  logRoot: string, scope: string, actor: Actor, check: AdmissionCheck, fold?: DoorFold,
 ): Promise<LogEvent | { error: string }> {
   return withSidecarLock(logRoot, async () => {
     const events = await readScope(logRoot, scope);
     const admission = await check(events);
     if ("error" in admission) return admission;
     if ("existing" in admission) return admission.existing;
-    if (!fold && FOLDED_AT_THE_DOOR.test(scope) && admission.kind !== ACK_KIND)
-      throw new Error(`a write to ${scope} must be folded at the door`);
     const writer = await writerFor(logRoot);
-    const seen = causalHeads(events);
-    // The chain's own file, not fold order. A shard is single-writer and
-    // append-only, so its last line IS this chain's head by construction —
-    // whereas fold order is a total order over the whole scope and would have to
-    // be trusted to agree with append order for one writer, which is the very
-    // thing a fork breaks.
-    const own = await readShard(join(logRoot, shardFor(scope, writer)));
-    const event: LogEvent = {
+    const event = atTip(events, writer, await maxSeq(logRoot), {
       sidecarProtocol: SIDECAR_PROTOCOL, eventSchema: EVENT_SCHEMA,
-      id: mintId(), kind: admission.kind, subject: admission.subject, actor, at: new Date().toISOString(), writer,
-      writerPrev: own.length ? own[own.length - 1]!.id : GENESIS,
-      // Always present, even empty: `after` is a list in protocol 1, and an absent
-      // one used to be indistinguishable from "saw nothing".
-      after: seen,
+      id: mintId(), kind: admission.kind, subject: admission.subject, actor, at: new Date().toISOString(),
+      after: causalHeads(events),
       ...(admission.data ? { data: admission.data } : {}),
-    };
+    });
     if (fold) {
       let verdict: Awaited<ReturnType<DoorFold>>;
       try { verdict = await fold(sortEvents([...events, event]), event); } catch (err) {
@@ -436,9 +433,71 @@ export async function emitEventChecked(
       const refused = verdict.refused.find((r) => r.id === event.id);
       if (refused) return { error: refused.why };
     }
-    await appendEvents(logRoot, scope, writer, [event]);
+    await appendLinear(logRoot, scope, [event]);
     return event;
   });
+}
+
+/**
+ * An event as staged: everything but what only the tip can say. `after` is what its author
+ * had READ when they acted, fixed at staging — a staged act replayed later did not see what
+ * landed in between, and folds that ask what a person saw must not be told it did.
+ */
+export type StagedEvent = Omit<LogEvent, "writer" | "writerPrev" | "seq">;
+
+/**
+ * Place a staged event at the tip of a scope: its writer chain and its global `seq`.
+ * `events` is the scope in fold order.
+ */
+export function atTip(events: LogEvent[], writer: string, top: number, e: StagedEvent): LogEvent {
+  let prev = GENESIS;
+  for (let i = events.length - 1; i >= 0; i--) if (events[i]!.writer === writer) { prev = events[i]!.id; break; }
+  return { ...e, writer, writerPrev: prev, seq: top + 1 };
+}
+
+/** Append to a scope's one linear file. Whole lines, like `appendEvents`, and the same seal. */
+export async function appendLinear(logRoot: string, scope: string, events: LogEvent[]): Promise<void> {
+  if (!events.length) return;
+  const file = join(logRoot, scope, LINEAR_SHARD);
+  await mkdir(dirname(file), { recursive: true });
+  await appendFile(file, (await separatorFor(file)) + events.map((e) => JSON.stringify(e)).join("\n") + "\n", "utf8");
+}
+
+/**
+ * The largest `seq` anywhere in the sidecar, or 0. Each linear file is appended in `seq`
+ * order, so its last event carries its largest; only a tail is read.
+ */
+export async function maxSeq(logRoot: string): Promise<number> {
+  let top = 0;
+  const walk = async (rel: string): Promise<void> => {
+    let entries;
+    try { entries = await readdir(join(logRoot, rel), { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      if (e.isDirectory()) { if (e.name !== ".git") await walk(rel ? `${rel}/${e.name}` : e.name); continue; }
+      if (e.name !== LINEAR_SHARD) continue;
+      const s = await lastSeq(join(logRoot, rel, e.name));
+      if (s > top) top = s;
+    }
+  };
+  await walk("");
+  return top;
+}
+
+async function lastSeq(file: string): Promise<number> {
+  let fh;
+  try { fh = await open(file, "r"); } catch { return 0; }
+  try {
+    const { size } = await fh.stat();
+    const len = Math.min(size, 65536);
+    const buf = Buffer.alloc(len);
+    await fh.read(buf, 0, len, size - len);
+    const lines = buf.toString("utf8").split("\n").map((l) => l.trim()).filter(Boolean);
+    for (let i = lines.length - 1; i >= 0; i--) {
+      try { const s = (JSON.parse(lines[i]!) as LogEvent).seq; if (typeof s === "number") return s; } catch { /* a torn tail, or the cut */ }
+    }
+  } finally { await fh.close(); }
+  // Nothing parseable in the tail: read it whole rather than restart numbering at 0.
+  return Math.max(0, ...(await readShard(file)).map((e) => e.seq ?? 0));
 }
 
 /**
@@ -452,28 +511,27 @@ export async function emitEventChecked(
  * written knowing the same thing. Their order relative to each other is carried by the
  * chain, exactly as it is for two separate writes by one writer.
  */
-export async function emitEvents(
+export async function appendBatch(
   logRoot: string, scope: string, actor: Actor,
   items: { kind: string; subject: string; data?: Record<string, unknown> }[],
 ): Promise<LogEvent[]> {
   if (!items.length) return [];
   return withSidecarLock(logRoot, async () => {
     const writer = await writerFor(logRoot);
-    const seen = causalHeads(await readScope(logRoot, scope));
-    const own = await readShard(join(logRoot, shardFor(scope, writer)));
-    let prev = own.length ? own[own.length - 1]!.id : GENESIS;
+    const events = await readScope(logRoot, scope);
+    let top = await maxSeq(logRoot);
+    const seen = causalHeads(events);
     const out: LogEvent[] = [];
     for (const it of items) {
-      const event: LogEvent = {
+      const event = atTip(events, writer, top++, {
         sidecarProtocol: SIDECAR_PROTOCOL, eventSchema: EVENT_SCHEMA,
-        id: mintId(), kind: it.kind, subject: it.subject, actor, at: new Date().toISOString(),
-        writer, writerPrev: prev, after: seen,
+        id: mintId(), kind: it.kind, subject: it.subject, actor, at: new Date().toISOString(), after: seen,
         ...(it.data ? { data: it.data } : {}),
-      };
+      });
+      events.push(event);
       out.push(event);
-      prev = event.id;
     }
-    await appendEvents(logRoot, scope, writer, out);
+    await appendLinear(logRoot, scope, out);
     return out;
   });
 }
@@ -686,7 +744,29 @@ export async function scopesOnDisk(logRoot: string): Promise<string[]> {
  * on every single write, under the lock, and only wants the causal heads — judging
  * the scope there would put a fork scan on the hot end of every append.
  */
+/**
+ * What the calling session has staged, read on top of the log (plan 2.4: "a caller reads its
+ * own staged acts"). Registered by the sync engine, which this module cannot import; absent,
+ * nobody has staged anything.
+ */
+export interface OverlayHook {
+  active(logRoot: string, scope: string): boolean;
+  events(logRoot: string, scope: string, tip: LogEvent[]): Promise<LogEvent[]>;
+}
+let overlay: OverlayHook | null = null;
+export function registerOverlay(h: OverlayHook): void { overlay = h; }
+/** Whether a read of `scope` includes staged acts — and so must not be cached as the log's. */
+export const overlayActive = (logRoot: string, scope: string): boolean => !!overlay?.active(logRoot, scope);
+
 async function collect(logRoot: string, scope: string): Promise<{ events: LogEvent[]; collisions: string[]; damage: ShardDamage[] }> {
+  const read = await collectTip(logRoot, scope);
+  if (!overlay?.active(logRoot, scope)) return read;
+  const seen = new Set(read.events.map((e) => e.id));
+  const extra = (await overlay.events(logRoot, scope, read.events)).filter((e) => !seen.has(e.id));
+  return { ...read, events: [...read.events, ...extra] };
+}
+
+async function collectTip(logRoot: string, scope: string): Promise<{ events: LogEvent[]; collisions: string[]; damage: ShardDamage[] }> {
   const dir = join(logRoot, scope);
   let names: string[];
   try { names = await readdir(dir); } catch { return { events: [], collisions: [], damage: [] }; }
@@ -985,7 +1065,16 @@ export const parentsOf = (e: LogEvent): string[] => e.after ?? [];
 const sortEdges = (e: LogEvent): string[] =>
   e.writerPrev && e.writerPrev !== GENESIS ? [...parentsOf(e), e.writerPrev] : parentsOf(e);
 
+/**
+ * Causal order, with one more edge per linear event: its `seq` predecessor in the input.
+ * Within a scope that edge is redundant with `after`; across scopes it is the only thing
+ * that puts events in push order.
+ */
 export function sortEvents(events: LogEvent[]): LogEvent[] {
+  const bySeq = events.filter((e) => typeof e.seq === "number").sort((a, b) => a.seq! - b.seq!);
+  const seqPrev = new Map<string, string>();
+  for (let i = 1; i < bySeq.length; i++) seqPrev.set(bySeq[i]!.id, bySeq[i - 1]!.id);
+  const edges = (e: LogEvent): string[] => { const p = seqPrev.get(e.id); return p ? [...sortEdges(e), p] : sortEdges(e); };
   const byId = new Map(events.map((e) => [e.id, e]));
   // Sorted by id, so "first eligible" is always "lowest id that is eligible".
   const pending = [...events].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
@@ -997,7 +1086,7 @@ export function sortEvents(events: LogEvent[]): LogEvent[] {
     // leave it behind whatever came after. That still produces a causally valid
     // order, but not the same one twice from differently-ordered input — and
     // "every reader folds identically" is the whole point.
-    let i = pending.findIndex((e) => sortEdges(e).every((p) => !byId.has(p) || emitted.has(p)));
+    let i = pending.findIndex((e) => edges(e).every((p) => !byId.has(p) || emitted.has(p)));
     // Nothing eligible means a cycle, which honest writers cannot produce (`after`
     // names an id that already existed). Take the lowest id and carry on: a log
     // that refuses to load is worse than one that orders a cycle arbitrarily.

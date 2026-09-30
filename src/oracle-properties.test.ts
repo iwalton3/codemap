@@ -9,7 +9,7 @@ import { publishLocalDocs, sharedDocs } from "./ops-shared.js";
 import { docScope } from "./shared-docs.js";
 import { universeKey } from "./sidecar-config.js";
 import { db } from "./db.js";
-import { emitEvent } from "./eventlog.js";
+import { emitEvent } from "./write.js";
 
 const A = "ana@acme.test";
 const B = "ben@acme.test";

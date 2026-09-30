@@ -4,6 +4,7 @@ import { scenario, who, step, settle, type Scenario } from "./scenario.js";
 import { createFinding, revise, readFindings, ackQueue, foldFindings } from "./shared-findings.js";
 import type { LogEvent } from "./eventlog.js";
 import { testEvent } from "./test-events.js";
+import { begin } from "./sync-engine.js";
 
 const PR = "acme/api/pr-264";
 const NEW = { targetKind: "anchor" as const, targetId: "a_1", text: "the original text", comment: "the original ask", severity: "medium" as const };
@@ -34,6 +35,7 @@ async function threeWay(fn: (s: Scenario, id: string) => Promise<void>) {
     await settle(s);
 
     const dana = who(s, "dana@x.com");
+    begin(dana.sidecar);                                                     // staged: dana's lands at the settle
     await revise(dana.sidecar, PR, dana.actor, id, { severity: "low" });      // stays put
 
     await revise(alice.sidecar, PR, alice.actor, id, { severity: "critical" });
@@ -132,7 +134,8 @@ test("one person's two machines can disagree, and the fold must not pick", async
     const id = await createFinding(laptop.sidecar, PR, izzie, NEW);
     await settle(s);
 
-    // Apart, and neither pulls before writing.
+    // Apart, and neither pulls before writing: the laptop's act is staged, the desktop's lands.
+    begin(laptop.sidecar);
     await revise(laptop.sidecar, PR, izzie, id, { severity: "critical" });
     await revise(desktop.sidecar, PR, izzie, id, { severity: "low" });
     await settle(s);
