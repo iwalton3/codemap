@@ -2826,8 +2826,11 @@ export async function readVacuityChecks(
 ): Promise<VacuityCheck[]> {
   const where = opts.criterionId ? " WHERE criterion_id = ?" : "";
   const args = opts.criterionId ? [opts.criterionId] : [];
+  // Insertion order, which is the fold's (the projection rewrites in it) or, with no sidecar,
+  // the order they were recorded: "the latest" check. `at` is a millisecond clock, and two
+  // checks in one millisecond tied and broke at random on `id`.
   const rows = db(root).prepare(
-    `SELECT body, origin FROM vacuity_checks${where} ORDER BY at, id`,
+    `SELECT body, origin FROM vacuity_checks${where} ORDER BY rowid`,
   ).all(...args as []) as unknown as { body: string; origin: string | null }[];
   const out: VacuityCheck[] = [];
   for (const r of rows) { const v = hydrateVacuityCheck(r.body, r.origin); if (v) out.push(v); }

@@ -17,7 +17,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { indexBlob } from "./repo.js";
-import { writeStore, readCriteria } from "./store.js";
+import { writeStore, readCriteria, readVacuityChecks } from "./store.js";
+import { db } from "./db.js";
 import type { State } from "./schema.js";
 import { discard } from "./test-tmp.js";
 import { draftSpec, addOperation, ratifySpec } from "./requirements.js";
@@ -416,5 +417,18 @@ test("a criterion with two moved detectors is reported once, with both anchors",
     assert.deepEqual(row.assertionsMoved.map((x) => x.id), [criterion.id],
       "one row for the criterion, however many detectors watch it");
     assert.deepEqual(row.assertionsMoved[0]!.anchors, u.check, "with the anchors unioned, not repeated");
+  } finally { discard(u.root); }
+});
+
+test("two checks recorded in one millisecond: the later one is the latest, not the lower id", async () => {
+  const u = await universe();
+  try {
+    const at = "2026-09-30T12:00:00.000Z";
+    const row = (id: string, verdict: string) => JSON.stringify({ id, criterionId: "ac_1", verdict, at, checkedBy: { principal: "izzie@x.com" } });
+    const d = db(u.root);
+    // Recorded in this order; the later one's id sorts FIRST.
+    d.prepare("INSERT INTO vacuity_checks(id, criterion_id, verdict, at, body) VALUES (?,?,?,?,?)").run("vc_z", "ac_1", "wrong-layer", at, row("vc_z", "wrong-layer"));
+    d.prepare("INSERT INTO vacuity_checks(id, criterion_id, verdict, at, body) VALUES (?,?,?,?,?)").run("vc_a", "ac_1", "vacuous", at, row("vc_a", "vacuous"));
+    assert.deepEqual((await readVacuityChecks(u.root, { criterionId: "ac_1" })).map((v) => v.id), ["vc_z", "vc_a"]);
   } finally { discard(u.root); }
 });
