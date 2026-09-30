@@ -302,8 +302,11 @@ async function materializeUniverse(root: string, cfg: SidecarConfig): Promise<Ma
       // `fresh: false` means the rows are BEHIND the log — the fold kept losing a
       // race with an append. Worth saying out loud here for the same reason a
       // blocked scope is: this is the one moment a person is watching.
-      if (!fresh) out.blocked.push({ scope, reason: "rows are behind the log; the next sync will retry" });
-      else if (status !== "complete") out.blocked.push({ scope, reason: diagnostic?.detail ?? status });
+      // The DIAGNOSTIC first, as `materializeFindingScopes` does: a refused sidecar is also
+      // not fresh, and "the next sync will retry" is false for it.
+      if (diagnostic) out.blocked.push({ scope, reason: diagnostic.detail });
+      else if (!fresh) out.blocked.push({ scope, reason: "rows are behind the log; the next sync will retry" });
+      else if (status !== "complete") out.blocked.push({ scope, reason: status });
     } catch (e: any) {
       out.blocked.push({ scope, reason: `could not fold: ${e?.message ?? e}` });
     }
@@ -375,8 +378,12 @@ async function strandedScopes(root: string, cfg: { path: string; universe: strin
  * Never OVERWRITES. Moving this store to another sidecar is `adoptSidecar`, which says
  * what it costs; a silent re-record here would be the whole guard, undone by itself.
  */
-function rememberSidecar(root: string, cfg: { path: string }): void {
-  if (readStoreMeta<SidecarMark>(root, SIDECAR_LINEAGE)?.lineage) return;
+function rememberSidecar(root: string, cfg: { path: string }, joined = false): void {
+  const mark = readStoreMeta<SidecarMark>(root, SIDECAR_LINEAGE);
+  // Re-recorded only when THIS sync replaced the clone's unrelated local history with its
+  // remote's (a sidecar set up locally, joining its team) at the path it was recorded at: the
+  // binding check passed before the sync, and the sync refused to reset over any local event.
+  if (mark?.lineage && !(joined && mark.path === cfg.path)) return;
   const lineage = sidecarLineage(cfg.path);
   if (lineage) writeStoreMeta(root, SIDECAR_LINEAGE, { lineage, path: cfg.path } satisfies SidecarMark);
 }
@@ -426,7 +433,7 @@ export async function sharedPull(root: string) {
   if ("error" in r) return r;
   const damaged = await damageHere(b.cfg.path);
   if (damaged) return damaged;
-  rememberSidecar(root, b.cfg);
+  rememberSidecar(root, b.cfg, !!r.joined);
   const arrived = await settleArrivals(root, b.cfg);
   return { ...arrived, ok: true, universe: b.cfg.universe, sidecar: b.cfg.path, ...r };
 }
@@ -440,7 +447,7 @@ export async function sharedSync(root: string) {
   if ("error" in r) return r;
   const damaged = await damageHere(b.cfg.path);
   if (damaged) return damaged;
-  rememberSidecar(root, b.cfg);
+  rememberSidecar(root, b.cfg, !!r.joined);
   const arrived = await settleArrivals(root, b.cfg);
   return { ...arrived, ok: true, universe: b.cfg.universe, sidecar: b.cfg.path, ...r };
 }

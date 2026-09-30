@@ -523,7 +523,7 @@ export async function countEvents(root: string): Promise<number> {
   return total;
 }
 
-export interface PullResult { gained: number; warning?: string; restored?: Restored[] }
+export interface PullResult { gained: number; warning?: string; restored?: Restored[]; joined?: boolean }
 
 /** A shard whose lines a pull tried to delete, and how many were put back. */
 export interface Restored { path: string; events: number }
@@ -1083,7 +1083,7 @@ export async function receive(root: string, actor?: Actor, message = "codemap: r
   return pullLinear(root, actor);
 }
 
-export interface SyncResult { gained: number; pushed: boolean; committed: boolean; retries: number; warning?: string; restored?: Restored[] }
+export interface SyncResult { gained: number; pushed: boolean; committed: boolean; retries: number; warning?: string; restored?: Restored[]; joined?: boolean }
 
 /** Send and receive, in the order that makes the publish guard trustworthy. */
 export async function sync(root: string, actor?: Actor, message = "codemap: review state"): Promise<SyncResult | { error: string }> {
@@ -1093,7 +1093,7 @@ export async function sync(root: string, actor?: Actor, message = "codemap: revi
   // A refusal keeps what it refused and what is still staged: the caller repairs from those.
   if ("error" in r) return r as { error: string };
   setTx(root, s.session, s.kind, false);
-  return { gained: r.gained, pushed: r.pushed, committed: r.committed, retries: r.retries, ...(r.warning ? { warning: r.warning } : {}) };
+  return { gained: r.gained, pushed: r.pushed, committed: r.committed, retries: r.retries, ...(r.warning ? { warning: r.warning } : {}), ...(r.joined ? { joined: true } : {}) };
 }
 
 /** The merge-era sync, dormant until phase 6 deletes it. */
@@ -1181,6 +1181,12 @@ export interface LinearResult {
   warning?: string;
   /** The inline act's event: appended, or the one its check found already there. */
   event?: LogEvent;
+  /**
+   * This clone's history was unrelated to the remote's and was replaced by it — a sidecar set
+   * up locally, now joining its team. Its root commit changed; the store's record of which
+   * sidecar it is must follow (`sharedSync`), or the repoint guard refuses the team's own.
+   */
+  joined?: boolean;
 }
 
 export type LinearFailure = {
@@ -1360,6 +1366,7 @@ async function linearHeld(
   const stagedIds = (): string[] => pending(root, session).map((o) => o.event.id);
   let inlineId: string | null = null;
   let warning: string | undefined;
+  let joined = false;
   const forgetInline = () => { if (inlineId) { markStaged(root, [inlineId]); drop(root, session, inlineId); inlineId = null; } };
 
   for (let attempt = 0; attempt < PUSH_ATTEMPTS; attempt++) {
@@ -1423,6 +1430,8 @@ async function linearHeld(
             + `The store is locked until the team's log is repaired: see docs/log-repair.md.` };
         }
       }
+      if (head && head !== remoteSha && !g(root, ["merge-base", "--is-ancestor", head, remoteSha]).ok
+        && !g(root, ["merge-base", "--is-ancestor", remoteSha, head]).ok) joined = true;
       const moved = resetTo(root, remoteSha);
       if (moved) { forgetInline(); return moved; }
       // The reset takes tracked files to the tip; our own manifest goes back on top of it.
@@ -1517,7 +1526,7 @@ async function linearHeld(
     const result = async (pushed: boolean, retries: number): Promise<LinearResult> => ({
       gained: Math.max(0, (await countEvents(root)) - before - landedNow.length), pushed,
       committed: committed === "committed", retries, landed: landedNow,
-      ...(warning ? { warning } : {}), ...(inlineEvent ? { event: inlineEvent } : {}),
+      ...(warning ? { warning } : {}), ...(inlineEvent ? { event: inlineEvent } : {}), ...(joined ? { joined } : {}),
     });
     if (!remote) { markLanded(root, toLand); return result(false, attempt); }
     const head = rev(root, "HEAD");
@@ -1595,10 +1604,12 @@ export async function pullLinear(root: string, actor?: Actor): Promise<PullResul
         + `The store is locked until the team's log is repaired: see docs/log-repair.md.` };
     }
     const before = await countEvents(root);
+    const joined = !!head && !g(root, ["merge-base", "--is-ancestor", head, remoteSha]).ok
+      && !g(root, ["merge-base", "--is-ancestor", remoteSha, head]).ok;
     const moved = resetTo(root, remoteSha);
     if (moved) return moved;
     if (actor) await ensureSidecar(root, actor);
-    return { gained: (await countEvents(root)) - before, ...(incompat ? { warning: incompat.message } : {}) };
+    return { gained: (await countEvents(root)) - before, ...(incompat ? { warning: incompat.message } : {}), ...(joined ? { joined } : {}) };
   });
 }
 

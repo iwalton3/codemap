@@ -709,6 +709,12 @@ test("sync folds the scopes a PULL moved, so a later query never touches the log
 
       // b has never seen this scope. Its sync must leave the rows in SQLite.
       const r = await shared.sharedSync(b.root) as { materialized?: shared.Materialized };
+      // b set its sidecar up locally and this sync JOINED a's history, replacing its root
+      // commit: the store's record of which sidecar it is follows, or the repoint guard
+      // declines to fold the team's own sidecar.
+      const { readStoreMeta, SIDECAR_LINEAGE } = await import("./store.js");
+      const { sidecarLineage } = await import("./sidecar.js");
+      assert.equal(readStoreMeta<{ lineage: string }>(b.root, SIDECAR_LINEAGE)?.lineage, sidecarLineage(b.side), "the recorded identity follows the join");
       assert.ok(r.materialized, "sync reports what it folded");
       assert.ok(r.materialized!.folded >= 1, "it folded the scope the pull brought in");
       assert.deepEqual(r.materialized!.blocked, [], "with nothing blocked");
