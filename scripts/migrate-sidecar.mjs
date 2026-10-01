@@ -75,25 +75,9 @@ const { foldDecisionsReport } = await load(newBuild, "shared-decisions.js");
 const { foldStandardReport, LAW_SCOPE } = await load(newBuild, "shared-standard.js");
 const { isLogDamage } = await load(newBuild, "log-damage.js");
 const newLog = await load(newBuild, "eventlog.js");
+const { splice } = await load(newBuild, "migration-splice.js");
 
-/**
- * Splice dropped events out of the causal record: a kept event that named one in `after` names
- * that event's own heads instead, and a `writerPrev` pointing at one takes its predecessor. A
- * dropped event breaking the chain would make a later act look as if it had not seen what it saw
- * THROUGH the dropped one — measured: contests appeared on the live sidecar that were not there.
- */
-function splice(events, droppedIds) {
-  const byId = new Map(global.map((e) => [e.id, e]));
-  const heads = (id, seen = new Set()) => {
-    if (!droppedIds.has(id)) return [id];
-    if (seen.has(id)) return [];
-    seen.add(id);
-    return (byId.get(id)?.after ?? []).flatMap((p) => heads(p, seen));
-  };
-  const prev = (id) => { let p = id; while (droppedIds.has(p)) p = byId.get(p)?.writerPrev ?? "GENESIS"; return p; };
-  return events.map((e) => ({ ...e, after: [...new Set((e.after ?? []).flatMap((p) => heads(p)))], writerPrev: prev(e.writerPrev) }));
-}
-const withSeq = (events) => splice(events, new Set(dropped.map((d) => d.id))).map((e, i) => ({ ...e, seq: i + 1 }));
+const withSeq = (events) => splice(global, events, new Set(dropped.map((d) => d.id))).map((e, i) => ({ ...e, seq: i + 1 }));
 /** Every event this build refuses in the order given, with why: one pass. */
 function refusals(events) {
   const out = new Map();
