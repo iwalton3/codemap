@@ -447,3 +447,14 @@ test("C8a: a push that exited 0 while another process held the tracking ref's lo
     assert.equal(git(s.origin, "show", "main:tst/c8a/events.ndjson").status, 0);
   } finally { clearInterval(release); rmSync(hook, { force: true }); rmSync(lock, { force: true }); s.dispose(); }
 });
+
+test("C8b: a shard an ignore rule would leave out is still committed and pushed", async () => {
+  const s = await scenario(["ana@x.com"]);
+  try {
+    const ana = who(s, "ana@x.com");
+    appendFileSync(join(ana.sidecar, ".git", "info", "exclude"), "*.ndjson\n");
+    const r = await emitEventChecked(ana.sidecar, "tst/c8b", ana.actor, async () => ({ kind: "noted", subject: "n1" }));
+    assert.ok(!("error" in r), JSON.stringify(r));
+    assert.equal(git(s.origin, "show", "main:tst/c8b/events.ndjson").status, 0, "the event is on the remote");
+  } finally { s.dispose(); }
+});

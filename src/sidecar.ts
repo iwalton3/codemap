@@ -200,8 +200,9 @@ function damagedInboundShards(root: string, headSha: string, remoteSha: string):
  */
 type CommitOutcome = "nothing" | "committed" | { error: string };
 
-function commitLocal(root: string, message: string): CommitOutcome {
-  if (!g(root, ["status", "--porcelain"]).out) return "nothing";
+function commitLocal(root: string, message: string, appended: string[] = []): CommitOutcome {
+  // An ignored shard does not show in `status`, so what this sync appended is reason enough.
+  if (!appended.length && !g(root, ["status", "--porcelain"]).out) return "nothing";
   // THE gate: this is the only place anything is committed, and once damage is in the local
   // history `git status` is clean over it, so the next push would publish it unexamined.
   const damaged = damagedWorkingShards(root);
@@ -213,6 +214,10 @@ function commitLocal(root: string, message: string): CommitOutcome {
       + `not sync in either direction.` };
   }
   g(root, ["add", "-A"]);
+  // Forced: the shards this sync appended are always codemap's, and an ignore rule (a global
+  // `*.ndjson`, say) left them out of the commit while the push reported success (review C8b).
+  if (appended.length) g(root, ["add", "-f", "--", ...appended]);
+  if (g(root, ["diff", "--cached", "--quiet"]).ok) return "nothing";
   const c = g(root, ["commit", "-q", "-m", message]);
   if (!c.ok) return { error: `the sidecar commit failed, so nothing can be pushed: ${(c.err || c.out).slice(0, 300)}` };
   return "committed";
@@ -1079,7 +1084,7 @@ async function linearHeld(
     }
     const toLand = [...landedNow, ...already, ...noop];
 
-    const committed = commitLocal(root, message);
+    const committed = commitLocal(root, message, [...sizes.keys()]);
     if (typeof committed === "object") {
       await truncateBack(root, sizes);
       markStaged(root, ops.map((o) => o.event.id));
