@@ -611,6 +611,11 @@ function foldStandardWithRefusals(events: LogEvent[]): { value: SharedStandard; 
           ? pinned.map((id) => operations.get(id)).filter((o): o is Operation => !!o && !o.removed)
           : [...operations.values()].filter((o) => o.specId === sp.id && !o.removed))
           .sort((a, b) => a.ord - b.ord);
+        // Every live operation is ratified or removed first (owner, O11): one left out stayed on
+        // the ratified spec for ever with its pointer pending. The op pins all it reads, so this
+        // refuses one that landed after the ratifier read the spec.
+        const left = pinned ? [...operations.values()].find((o) => o.specId === sp.id && !o.removed && !pinned.includes(o.id)) : undefined;
+        if (left) { refuse(e, `operation ${left.id} is live on this spec and not in the ratification: ratify or remove every operation`); break; }
 
         // Context, verified here and not only in the tool. The local check is TOCTOU
         // across clones — the log is pull/push and never read on an ordinary read — so two

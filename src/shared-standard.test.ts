@@ -544,7 +544,7 @@ test("the fold refuses a spec adopted against a base that had already moved", as
   } finally { discard(root); }
 });
 
-test("a ratification adopts exactly the operations it pinned", async () => {
+test("a ratification that did not pin an operation landed before it is refused (O11)", async () => {
   const root = await log("pinned");
   try {
     await publishSpecDrafted(root, SCOPE, opus, SPEC);
@@ -556,11 +556,11 @@ test("a ratification adopts exactly the operations it pinned", async () => {
       ...ADD, id: "op_sneak", ord: 1, title: "Unapproved", section: "Credit/Other",
       statement: "Something nobody reviewed.",
     });
-    await ratifyWithReview(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1"]);
-
+    // Owner, O11: every live operation is ratified or removed first, so the principal is told.
+    await assert.rejects(ratifyWithReview(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1"]), /op_sneak is live/);
     const f = await fold(root);
-    assert.equal(f.requirements.length, 1, "only what was pinned");
-    assert.equal(f.requirements[0]!.id, requirementIdFor("op_1"));
+    assert.equal(f.requirements.length, 0, "nothing was adopted, the unseen operation included");
+    assert.equal(f.specs[0]!.status, "draft");
   } finally { discard(root); }
 });
 
@@ -1514,18 +1514,14 @@ test("a detector proposed against a criterion its spec's ratification left out d
       "the control — a detector arriving after a CLEAN adoption is an ordinary one");
   } finally { discard(good); }
 
+  // A ratification that leaves the criterion out cannot land any more (O11), so the state this
+  // half once built — a ratified spec without its criterion — no longer exists to point at.
   const bad = await log("bind-unpinned");
   try {
     await publishSpecDrafted(bad, SCOPE, opus, SPEC);
     await publishOperation(bad, SCOPE, opus, ADD);
     await publishOperation(bad, SCOPE, opus, ADD_CRITERION);
-    await ratifyWithReview(bad, SCOPE, izzie, "sp_1", "2026-08-03T00:00:00.000Z", {}, ["op_1"]);
-    const s = await fold(bad);
-    assert.equal(s.specs[0]!.status, "ratified");
-    assert.equal(s.criteria.length, 0, "the fixture must leave the criterion out, or this proves nothing");
-    const next = await probe.publishPointerDeclared(bad, SCOPE, opus, pending("pt_x", "op_2"));
-    assert.equal(next.value!.pointers.find((p) => p.id === "pt_x")!.state, "pending",
-      "an active detector on a criterion that does not exist is coverage manufactured by the fold");
+    await assert.rejects(ratifyWithReview(bad, SCOPE, izzie, "sp_1", "2026-08-03T00:00:00.000Z", {}, ["op_1"]), /op_2 is live/);
   } finally { discard(bad); }
 });
 
@@ -1756,5 +1752,17 @@ test("a second adjudication: the same verdict is a no-op, a different one is ref
     // An agent's identical verdict is refused, not absorbed: adjudication is a person's act.
     assert.equal((await damage(probe.publishAdjudication(root, SCOPE, opus, "pr_1", "code-wrong", "r", "2026-08-02T00:00:04.000Z"),
       "an agent adjudicating")).why, "adjudication is a person's act");
+  } finally { discard(root); }
+});
+
+test("O11: a ratification that leaves a live operation unpinned is refused", async () => {
+  const root = await log("o11");
+  try {
+    await publishSpecDrafted(root, SCOPE, opus, SPEC);
+    await publishOperation(root, SCOPE, opus, ADD);
+    await publishOperation(root, SCOPE, opus, { ...ADD, id: "op_2", ord: 1, title: "Second", statement: "Another." });
+    await assert.rejects(ratifyWithReview(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1"]), /op_2 is live on this spec/);
+    await ratifyWithReview(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1", "op_2"]);
+    assert.equal((await fold(root)).specs[0]!.status, "ratified");
   } finally { discard(root); }
 });
