@@ -40,6 +40,10 @@ const receiptValid = (v: ReportedSortReceipt | undefined) => v === undefined || 
 export const RETIRED_REPAIR_KINDS: readonly string[] = ["repair.participant-recorded", "repair.verification-producer", "repair.verification-sealed"];
 const VERIFICATION_KINDS: readonly string[] = ["repair.verification-requested", "repair.verification-recorded", "repair.verification-arbitrated"];
 
+/** Every sort a sort replaces: `prior`, and `priors` (owner, O19: "Let a sort name several it replaces"). */
+export const priorsOf = (d: Pick<RepairSortInput, "prior" | "priors">): string[] =>
+  [...(typeof d.prior === "string" ? [d.prior] : []), ...(Array.isArray(d.priors) ? d.priors : [])];
+
 /** Original claims come from creation, never the finding's mutable current text. */
 export function foldRepairRecords(input: LogEvent[]): RepairRecords {
   const out = emptyRepairRecords();
@@ -53,7 +57,7 @@ export function foldRepairRecords(input: LogEvent[]): RepairRecords {
     }
     if (!unique(refs.map(r => r.findingId))) return "duplicate finding coverage";
   };
-  const heads = () => out.sorts.filter(s => !out.sorts.some(next => next.input.prior === s.input.id));
+  const heads = () => out.sorts.filter(s => !out.sorts.some(next => priorsOf(next.input).includes(s.input.id)));
   const overlaps = (a: RepairSortInput, b: RepairSortInput) =>
     a.coverage.some(ref => b.coverage.some(own => own.findingId === ref.findingId && own.claimIds.some(id => ref.claimIds.includes(id))));
   // The log is linear, so corrections are sequential (plan 5.2): a correction names the CURRENT
@@ -61,17 +65,19 @@ export function foldRepairRecords(input: LogEvent[]): RepairRecords {
   // coverage the prior had needs a logged ruling on why those are not instances (owner, batch 5:
   // "Narrowing needs a ruling"). The fold checks the field is there; the op checks the answer.
   const sequenceError = (d: RepairSortInput): string | undefined => {
-    const current = heads();
-    if (d.prior && !current.some(s => s.input.id === d.prior))
-      return `stale correction: ${d.prior} was already corrected by ${out.sorts.find(s => s.input.prior === d.prior)!.input.id}; name the current sort as prior`;
-    const rival = current.find(s => s.input.id !== d.prior && overlaps(s.input, d));
+    const current = heads(), named = priorsOf(d);
+    const stale = named.find(p => !current.some(s => s.input.id === p));
+    if (stale)
+      return `stale correction: ${stale} was already corrected by ${out.sorts.find(s => priorsOf(s.input).includes(stale))!.input.id}; name the current sort as prior`;
+    const rival = current.find(s => !named.includes(s.input.id) && overlaps(s.input, d));
     if (rival) return `these claims are already sorted by ${rival.input.id}: correct it by naming it as prior`;
-    const prior = d.prior ? out.sorts.find(s => s.input.id === d.prior)!.input : undefined;
-    if (!prior || nonempty(d.ruling)) return undefined;
-    const claims = prior.coverage.flatMap(ref => ref.claimIds.filter(id => !d.coverage.some(own => own.findingId === ref.findingId && own.claimIds.includes(id))));
-    const sites = (prior.sites ?? []).filter(site => !(d.sites ?? []).includes(site));
-    if (claims.length || sites.length)
-      return `a correction that removes ${[...claims, ...sites].join(", ")} from ${prior.id} needs a logged ruling citing why they are not instances`;
+    if (!named.length || nonempty(d.ruling)) return undefined;
+    for (const prior of named.map(p => out.sorts.find(s => s.input.id === p)!.input)) {
+      const claims = prior.coverage.flatMap(ref => ref.claimIds.filter(id => !d.coverage.some(own => own.findingId === ref.findingId && own.claimIds.includes(id))));
+      const sites = (prior.sites ?? []).filter(site => !(d.sites ?? []).includes(site));
+      if (claims.length || sites.length)
+        return `a correction that removes ${[...claims, ...sites].join(", ")} from ${prior.id} needs a logged ruling citing why they are not instances`;
+    }
   };
   for (const e of events) {
     const d = e.data as any;
@@ -98,8 +104,9 @@ export function foldRepairRecords(input: LogEvent[]): RepairRecords {
         if (!error && (data.assessments.some(a => !receiptValid(a.receipt)) || !receiptValid(data.arbitration?.receipt))) error = "reported receipt needs exact content and source";
         if (!error && data.provenance !== "owner-reviewed" && data.provenance !== "dual-sorted") error = "unknown sort provenance";
         if (!error && data.provenance === "dual-sorted" && (data.assessments.length !== 2 || new Set(data.assessments.map(a => a.identity.session)).size < 2)) error = "dual sorting needs two sorters in distinct sessions";
-        if (!error && data.prior && (!nonempty(data.reason) || !out.sorts.some(s => s.input.id === data.prior))) error = "correction needs predecessor and reason";
-        if (!error && data.ruling !== undefined && (!nonempty(data.ruling) || !data.prior)) error = "a cited ruling belongs to a correction: it names a logged answer and a prior sort";
+        if (!error && data.priors !== undefined && (!Array.isArray(data.priors) || !data.priors.length || data.priors.some(p => !nonempty(p)) || !unique(priorsOf(data)))) error = "priors must name distinct sorts";
+        if (!error && priorsOf(data).length && (!nonempty(data.reason) || priorsOf(data).some(p => !out.sorts.some(s => s.input.id === p)))) error = "correction needs predecessor and reason";
+        if (!error && data.ruling !== undefined && (!nonempty(data.ruling) || !priorsOf(data).length)) error = "a cited ruling belongs to a correction: it names a logged answer and a prior sort";
         if (!error && data.kind === "pattern" && (!nonempty(data.predicate) || !data.sites?.length || !unique(data.sites))) error = "pattern needs predicate and original sites";
         if (!error) error = sequenceError(data);
         if (!error) out.sorts.push({ ...record(e, data), eligible: false, current: true, holds: [] });

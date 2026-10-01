@@ -109,7 +109,7 @@ class RepairsPage extends Component {
         ${each(detail.records.sorts, (record) => html`<div class="op-card sort-version"><h3>${record.input.id} · ${record.input.classification} · ${record.input.kind}</h3>
           <div class="fs">${record.current ? 'current sort' : 'historical sort'} · ${record.input.provenance} · ${record.eligible ? 'sort eligible for future verification' : 'sort held'}</div>
           <div class="fs">Source: ${record.input.source}</div>
-          ${when(!!record.input.prior, () => html`<div class="fs">Revises ${record.input.prior}: ${record.input.reason}</div>`)}
+          ${when(!!record.input.prior || !!record.input.priors?.length, () => html`<div class="fs">Revises ${[record.input.prior, ...(record.input.priors ?? [])].filter(Boolean).join(", ")}: ${record.input.reason}</div>`)}
           ${this.provenance(record)}${this.coverage(record.input.coverage)}
           ${when(!!record.input.predicate, () => html`<p>Pattern predicate: ${record.input.predicate}</p><div class="fs">Original sites: ${(record.input.sites || []).join(', ')}</div>`)}
           ${when(!!record.input.refutationSubtype, () => html`<div class="fs">Refutation subtype: ${record.input.refutationSubtype}</div>`)}

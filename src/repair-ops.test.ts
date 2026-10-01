@@ -144,3 +144,19 @@ test("B16: the same sort posted by an agent and then by its person are two recor
     t.dispose();
   }
 });
+
+test("O19: one sort may replace several current sorts at once, and they all stop being current", async () => {
+  const t = await team(["alice@acme.test"]);
+  try {
+    const root = t.all[0]!.repo;
+    const f1 = await shareFinding(root, 7, { targetKind: "anchor", targetId: "src/pay.ts#transfer", text: "one" }) as { id: string };
+    const f2 = await shareFinding(root, 7, { targetKind: "anchor", targetId: "src/pay.ts#transfer", text: "two" }) as { id: string };
+    const a = await postRepairSort(root, 7, sort(f1.id, [])) as { id: string };
+    const b = await postRepairSort(root, 7, sort(f2.id, [])) as { id: string };
+    ok(a); ok(b);
+    const merged = await postRepairSort(root, 7, { ...sort(f1.id, []), coverage: [...sort(f1.id, []).coverage, ...sort(f2.id, []).coverage],
+      priors: [a.id, b.id], reason: "one defect, sorted twice" }) as { id: string; records: { sorts: { input: { id: string }; current: boolean }[] } };
+    ok(merged);
+    assert.deepEqual(merged.records.sorts.filter((s) => s.current).map((s) => s.input.id), [merged.id]);
+  } finally { t.dispose(); }
+});

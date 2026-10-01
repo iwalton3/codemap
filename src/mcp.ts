@@ -252,7 +252,9 @@ const repairRun = obj({ id: repairString, command: repairString, commit: repairS
   outcome: { type: "string", enum: ["passed", "failed", "unknown"] },
   exitCode: { type: "integer" }, stdout: repairString, stderr: repairString, reason: repairString },
   ["id", "command", "commit", "environment", "phase", "outcome"], false);
-const repairSortSchema = obj({ prior: repairString, reason: repairString, classification: repairString,
+const repairSortSchema = obj({ prior: repairString,
+  priors: { ...repairStrings, description: "Several current sorts this one replaces at once (a merge); `prior` names one." },
+  reason: repairString, classification: repairString,
   kind: { type: "string", enum: ["isolated", "pattern"] }, coverage: { type: "array", items: obj(repairCoverage, ["findingId", "claimIds"], false) },
   predicate: repairString, sites: repairStrings, refutationSubtype: { type: "string", enum: ["factual", "scope", "assumed"] },
   restsOn: repairStrings, source: repairString, provenance: { type: "string", enum: ["owner-reviewed", "dual-sorted"] },
