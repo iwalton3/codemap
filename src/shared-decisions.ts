@@ -22,7 +22,7 @@
  * against the transcript on the machine that asked; a clone cannot re-read that transcript and
  * trusts the logger for it. Everything that travels is checked here.
  */
-import { registerKinds } from "./eventlog.js";
+import { registerKinds, registerReferences, tipReader, type ScopeReader } from "./eventlog.js";
 import { createHash } from "node:crypto";
 import { comparisonContextHash, deriveComparison, validateComparisonRequest, type AnswerSource, type CanonicalIssue, type ComparisonProjection, type ComparisonRequest, type ReaderJudgment, type HumanResolution } from "./decision-comparison.js";
 import { readSets, readScope, registerDoor, scopesOnDisk, type DoorFold, type LogEvent, type ReadSets } from "./eventlog.js";
@@ -2438,7 +2438,7 @@ export const decisionsDoor: DoorFold = (events, minted) => {
  * 88-91, 96): a round's effects name findings and issues that exist, `follows` a posted decision,
  * `origin.answer` an answer; a logged question names rounds that were posted. Raw events.
  */
-async function decisionReferences(logRoot: string, scope: string, events: LogEvent[], e: LogEvent): Promise<string | null> {
+async function decisionReferences(read: ScopeReader, scope: string, events: LogEvent[], e: LogEvent): Promise<string | null> {
   const universe = scope.slice("decisions/".length);
   const d = e.data as Record<string, any> | undefined;
   const posted = events.filter((x) => x.kind === "decision.round.posted");
@@ -2453,7 +2453,7 @@ async function decisionReferences(logRoot: string, scope: string, events: LogEve
   const findings = new Map<string, Set<string>>();
   const createdIn = async (sc: string) => {
     let s = findings.get(sc);
-    if (!s) { s = new Set((await readScope(logRoot, sc)).filter((x) => x.kind === "finding.created" || x.kind === "bug.filed").map((x) => x.subject)); findings.set(sc, s); }
+    if (!s) { s = new Set((await read.read(sc)).filter((x) => x.kind === "finding.created" || x.kind === "bug.filed").map((x) => x.subject)); findings.set(sc, s); }
     return s;
   };
   let allFindings: Set<string> | null = null;
@@ -2467,7 +2467,7 @@ async function decisionReferences(logRoot: string, scope: string, events: LogEve
           if (typeof f !== "string") continue;
           if (!allFindings) {
             allFindings = new Set<string>();
-            for (const sc of (await scopesOnDisk(logRoot)).filter((s) => s.startsWith(`findings/${universe}/`)))
+            for (const sc of (await read.scopes()).filter((s) => s.startsWith(`findings/${universe}/`)))
               for (const id of await createdIn(sc)) allFindings.add(id);
           }
           if (!allFindings.has(f)) return `no finding ${f} in findings/${universe}`;
@@ -2484,8 +2484,12 @@ async function decisionReferences(logRoot: string, scope: string, events: LogEve
 
 registerDoor((scope) => scope.startsWith("decisions/"), (logRoot, scope) => async (events, minted) => {
   const own = await decisionsDoor(events, minted);
-  const why = await decisionReferences(logRoot, scope, events.filter((x) => x.id !== minted.id), minted);
+  const why = await decisionReferences(tipReader(logRoot), scope, events.filter((x) => x.id !== minted.id), minted);
   return why ? { refused: [...own.refused, { id: minted.id, why }] } : own;
+});
+registerReferences((scope) => scope.startsWith("decisions/"), async (scope, e, own, read) => {
+  const why = await decisionReferences(read, scope, own, e);
+  return why ? [{ id: e.id, kind: e.kind, cls: "reference", why }] : [];
 });
 
 /** One write, folded at the door: refused with the fold's reason, never appended to be refused later. */

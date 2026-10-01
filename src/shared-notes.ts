@@ -24,7 +24,7 @@
  * while a single target's notes stay in exactly one file per person.
  */
 
-import { registerKinds } from "./eventlog.js";
+import { registerKinds, registerReferences, tipReader, type ScopeReader } from "./eventlog.js";
 import { createHash } from "node:crypto";
 import type { Actor, BugSeverity } from "./schema.js";
 import { isAgentActor } from "./identity.js";
@@ -189,13 +189,13 @@ function foldNotesWith(events: LogEvent[], refuse: (e: LogEvent, cls: RefusalCla
  * still something to talk about. A node target is never checked: an unpublished or analyzer
  * node is local, not a foreign key (owner, Q2), and a published one needs no check to resolve.
  */
-async function outsideReferences(logRoot: string, scope: string, e: LogEvent): Promise<Refusal[]> {
+async function outsideReferences(scope: string, e: LogEvent, _own: LogEvent[], read: ScopeReader): Promise<Refusal[]> {
   if (e.kind !== "note.created") return [];
   const d = e.data as Data | undefined;
   const targetKind = str(d, "targetKind"), targetId = str(d, "targetId");
   if ((targetKind !== "spec" && targetKind !== "operation") || !targetId) return [];
   const universe = /^notes\/(.+)\/[^/]+$/.exec(scope)?.[1];
-  const law = [...await readScope(logRoot, "law/standard"), ...universe ? await readScope(logRoot, `standard/${universe}`) : []];
+  const law = [...await read.read("law/standard"), ...universe ? await read.read(`standard/${universe}`) : []];
   const found = targetKind === "spec"
     ? law.some((x) => x.kind === "spec.drafted" && (x.data as { spec?: { id?: unknown } } | undefined)?.spec?.id === targetId)
     : law.some((x) => x.kind === "spec.operation" && (x.data as { operation?: { id?: unknown } } | undefined)?.operation?.id === targetId);
@@ -204,8 +204,9 @@ async function outsideReferences(logRoot: string, scope: string, e: LogEvent): P
 
 registerReport((scope) => scope.startsWith("notes/"), foldNotesReport);
 registerDoor((scope) => scope.startsWith("notes/"), (logRoot, scope) => async (events, minted) => ({
-  refused: [...foldNotesReport(events).refused, ...await outsideReferences(logRoot, scope, minted), ...misfiled(scope, minted)],
+  refused: [...foldNotesReport(events).refused, ...await outsideReferences(scope, minted, events, tipReader(logRoot)), ...misfiled(scope, minted)],
 }));
+registerReferences((scope) => scope.startsWith("notes/"), outsideReferences);
 
 /** A note lives in its target's bucket, the one scope its target's page reads (owner, O26). */
 function misfiled(scope: string, e: LogEvent): Refusal[] {

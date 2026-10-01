@@ -4,20 +4,20 @@
  * exist in `decisions/<u>`. Raw events, not the decisions fold, which imports the issue folds.
  * Existence only; whether the answer still has authority is the op's question.
  */
-import { readScope, type LogEvent } from "./eventlog.js";
+import type { LogEvent, ScopeReader } from "./eventlog.js";
 import { questionnaireAnswerId } from "./ruling-application.js";
 import type { Refusal } from "./validation.js";
 
 type Data = Record<string, unknown>;
 
-export async function rulingReferences(logRoot: string, universe: string, e: LogEvent): Promise<Refusal[]> {
+export async function rulingReferences(read: ScopeReader, universe: string, e: LogEvent): Promise<Refusal[]> {
   const refused = (why: string): Refusal[] => [{ id: e.id, kind: e.kind, cls: "reference", why }];
   const r = (e.data as Data | undefined)?.capsule as { version?: unknown; ruling?: Record<string, unknown> } | undefined;
   const { answerId, roundId, questionId } = r?.ruling ?? {};
   // The fold refuses a capsule without these, and skips a dev-era one.
   if (r?.version !== 3 || typeof answerId !== "string" || typeof roundId !== "string" || typeof questionId !== "string") return [];
   const at = `decisions/${universe}`;
-  const events = await readScope(logRoot, at);
+  const events = await read.read(at);
   const round = events.find((x) => x.kind === "decision.round.posted" && x.id === roundId);
   if (!round) return refused(`no round ${roundId} in ${at}`);
   // A decision's id is `<round event id>:<its label>`.
@@ -37,13 +37,13 @@ export async function rulingReferences(logRoot: string, universe: string, e: Log
  * An operation sign-off's references into the decisions log (rows 139-140): the answer it
  * relays and the decision it answers exist in the scope the capsule names.
  */
-export async function signoffReferences(logRoot: string, e: LogEvent): Promise<Refusal[]> {
+export async function signoffReferences(read: ScopeReader, e: LogEvent): Promise<Refusal[]> {
   const r = ((e.data as Data | undefined)?.capsule as { ruling?: Record<string, unknown> } | undefined)?.ruling;
   const { answerId, decisionId, sourceScope } = r ?? {};
   // The fold refuses a capsule without these.
   if (typeof answerId !== "string" || typeof decisionId !== "string" || typeof sourceScope !== "string" || !sourceScope.startsWith("decisions/")) return [];
   const refused = (why: string): Refusal[] => [{ id: e.id, kind: e.kind, cls: "reference", why }];
-  const events = await readScope(logRoot, sourceScope);
+  const events = await read.read(sourceScope);
   const decided = events.some((x) => (x.kind === "decision.confirm.posted" && x.id === decisionId)
     || (x.kind === "decision.round.posted" && (((x.data as Data | undefined)?.decisions as { id?: unknown }[] | undefined) ?? [])
       .some((q) => `${x.id}:${String(q?.id)}` === decisionId)));

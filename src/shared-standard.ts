@@ -1,4 +1,4 @@
-import { registerKinds } from "./eventlog.js";
+import { registerKinds, registerReferences, tipReader, type ReferenceCheck } from "./eventlog.js";
 import { validateOperationSignoff } from "./operation-signoff.js";
 /**
  * The standard as shared state: what enters the log, and how it folds back.
@@ -129,11 +129,14 @@ export const standardDoor = (logRoot: string, scope: string): DoorFold => async 
   const more = (await Promise.all(others.filter((s) => s !== scope).map((s) => readScope(logRoot, s)))).flat();
   return foldStandardReport(sortEvents([...events, ...more]));
 };
+const standardReferences: ReferenceCheck = async (_scope, e, _own, read) =>
+  e.kind === "spec.operation-signoff-applied" ? signoffReferences(read, e) : [];
+registerReferences((scope) => scope.startsWith("standard/") || scope.startsWith("law/"), standardReferences);
 registerDoor((scope) => scope.startsWith("standard/") || scope.startsWith("law/"), (logRoot, scope) => {
   const fold = standardDoor(logRoot, scope);
   return async (events, minted) => {
     const own = await fold(events, minted);
-    const refs = minted.kind === "spec.operation-signoff-applied" ? await signoffReferences(logRoot, minted) : [];
+    const refs = await standardReferences(scope, minted, events, tipReader(logRoot));
     return { refused: [...own.refused, ...refs] };
   };
 });

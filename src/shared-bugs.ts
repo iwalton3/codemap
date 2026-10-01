@@ -26,7 +26,7 @@
  * from a rename from a deletion that ignored the defect.
  */
 
-import { registerKinds } from "./eventlog.js";
+import { registerKinds, registerReferences, tipReader, type ScopeReader } from "./eventlog.js";
 import { createHash } from "node:crypto";
 import { collector, foldJudged, registerReport, staleRevision, wasOf, type RefusalClass, type Refusal } from "./validation.js";
 import { ISO_DATE, type Actor, type BugSeverity, type BugWitness } from "./schema.js";
@@ -624,7 +624,7 @@ export function findingScopeOfBugKey(universe: string, key: string): string | nu
  * a finding names that finding (rows 70-71), and a ruling application names the round, the
  * decision and the answer in `decisions/<u>` (rows 78-80; `ruling-references.ts`).
  */
-async function outsideReferences(logRoot: string, scope: string, e: LogEvent): Promise<Refusal[]> {
+async function outsideReferences(scope: string, e: LogEvent, _own: LogEvent[], read: ScopeReader): Promise<Refusal[]> {
   const universe = scope.slice("bugs/".length);
   const d = e.data as Data | undefined;
   const refused = (why: string): Refusal[] => [{ id: e.id, kind: e.kind, cls: "reference", why }];
@@ -633,17 +633,18 @@ async function outsideReferences(logRoot: string, scope: string, e: LogEvent): P
     if (!pr || !finding) return [];
     const at = findingScopeOfBugKey(universe, pr);
     if (!at) return [{ id: e.id, kind: e.kind, cls: "shape", why: `"${pr}" is not a pull request number or a branch key` }];
-    const findings = await readScope(logRoot, at);
+    const findings = await read.read(at);
     return findings.some((f) => f.kind === "finding.created" && f.subject === finding) ? [] : refused(`no finding ${finding} in ${at}`);
   }
-  if (e.kind === "bug.rulingApplied") return rulingReferences(logRoot, universe, e);
+  if (e.kind === "bug.rulingApplied") return rulingReferences(read, universe, e);
   return [];
 }
 
 registerReport((scope) => scope.startsWith("bugs/"), foldBugsReport);
 registerDoor((scope) => scope.startsWith("bugs/"), (logRoot, scope) => async (events, minted) => ({
-  refused: [...foldBugsReport(events).refused, ...await outsideReferences(logRoot, scope, minted)],
+  refused: [...foldBugsReport(events).refused, ...await outsideReferences(scope, minted, events, tipReader(logRoot))],
 }));
+registerReferences((scope) => scope.startsWith("bugs/"), outsideReferences);
 
 /**
  * Add a citation, or refresh the witness on one already there.

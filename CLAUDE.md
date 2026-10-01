@@ -346,9 +346,11 @@ the prompt `repair_brief` returns. There is no fixer record and no weaker grade.
 it can see: the requester never fills a slot of its own request, the two runs are distinct, and
 nobody applies their own verdict. A refutation states why the pinned check tests the claim, then
 runs it at the old code. A pattern closes site by site from the SORT's list: each site is fixed or
-filed with `file_site_bug`. Cross-scope facts (the site bug, a cited ruling, inherited
-confirmation) are checked by the op, and the fold checks only that the field is there: an accepted
-gap, stated rather than hidden.
+filed with `file_site_bug`. Cross-scope references (the site bug, a cited ruling, the finding a
+bug came from) are checked at the door AND on read, each against the log before the event
+(`registerReferences`; owner, O30) — one that did not resolve there is damage. What a bug
+INHERITS (the filer, the corroborations) is a copy the fold trusts: an accepted gap, stated rather
+than hidden.
 
 **A confirmation belongs to its confirmer** (R3): `rulerOf(a)` is who rules through an answer.
 Withdrawal, comparison, sign-off and the `ruler:` line key on it. Only a revision and a changed

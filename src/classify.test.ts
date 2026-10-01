@@ -120,3 +120,23 @@ test("C16: a refusal the log before it would not make is never damage; one it wo
   const always = (evs: LogEvent[]) => ({ value: null, refused: evs.some((e) => e.id === "e1") ? [{ id: "e1", kind: "note.created", why: "bad", cls: "state" as const }] : [] });
   assert.throws(() => foldJudged([e1, e2], always, vocab), /damaged log entry e1/);
 });
+
+test("O30: a cross-scope reference is checked on read against the log before it", async () => {
+  const { createFinding, promoteToBug } = await import("./shared-findings.js");
+  const { fileBug } = await import("./shared-bugs.js");
+  const { readFileSync } = await import("node:fs");
+  const root = mkdtempSync(join(tmpdir(), "codemap-refs-"));
+  try {
+    const ana = { principal: "ana@x.com" };
+    const f = await createFinding(root, "u/pr-1", ana, { targetKind: "anchor", targetId: "a_1", text: "t" });
+    const b = await fileBug(root, "u", ana, { title: "b", text: "b", anchors: [] });
+    await assert.rejects(promoteToBug(root, "u/pr-1", ana, f, "bug_nope"), /no bug bug_nope/, "the door refuses it");
+    await promoteToBug(root, "u/pr-1", ana, f, b);
+    assert.equal((await scanSidecar(root)).damage, null, "in order, it resolves");
+    // The same events, the bug now filed AFTER the promotion that names it.
+    const bugs = join(root, "bugs/u/events.ndjson");
+    writeFileSync(bugs, readFileSync(bugs, "utf8").split("\n").filter(Boolean).map((l) => JSON.stringify({ ...JSON.parse(l), seq: 99 })).join("\n") + "\n");
+    const d = (await scanSidecar(root)).damage;
+    assert.equal(d?.kind, "finding.promotedToBug", "a reference that did not resolve in its prefix is damage");
+  } finally { discard(root); }
+});

@@ -9,7 +9,10 @@
 import { createHash } from "node:crypto";
 import { readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { EVENT_SCHEMA, kindsFor, readScopeChecked, scopesOnDisk, SHARD_EXT, SIDECAR_PROTOCOL, sortEvents, type LogEvent, type Vocabulary } from "./eventlog.js";
+import {
+  EVENT_SCHEMA, kindsFor, prefixReader, readScopeChecked, referencesFor, scopesOnDisk, SHARD_EXT, SIDECAR_PROTOCOL, sortEvents,
+  type LogEvent, type ScopeReader, type Vocabulary,
+} from "./eventlog.js";
 import { foldJudged, registerPushGate, reportFor, withPeersAhead, type Report } from "./validation.js";
 import { withoutOverlay } from "./sync-session.js";
 import { foldDecisionsReport } from "./shared-decisions.js";
@@ -99,6 +102,25 @@ async function scanTip(logRoot: string): Promise<SidecarScan> {
   const law = scopes.includes(LAW_SCOPE) ? [LAW_SCOPE] : [];
   for (const group of evidence.length ? evidence.map((s) => [...law, s]) : [law]) {
     if (group.length) judged(group, foldStandardReport, kindsFor(group[group.length - 1]!));
+  }
+  // What each event names in other scopes, against the log before it (owner, O30): a reference
+  // that did not resolve there is a failed foreign key — damage — and nothing later re-judges it.
+  if (!damage) {
+    const all: ScopeReader = { read: async (s) => reads.get(s)?.events ?? [], scopes: async () => scopes };
+    const held = new Set(newer.map((n) => n.id));
+    outer: for (const scope of scopes) {
+      const check = referencesFor(scope);
+      if (!check) continue;
+      const own = reads.get(scope)!.events;
+      for (const [i, e] of own.entries()) {
+        if (typeof e.seq !== "number" || held.has(e.id) || !kindsFor(scope)?.kinds.has(e.kind)) continue;
+        const [bad] = await check(scope, e, own.slice(0, i), prefixReader(all, e.seq));
+        if (!bad) continue;
+        if (ahead) { newer.push({ id: e.id, kind: e.kind, scope, why: `${bad.why} — a teammate's codemap folds a newer version` }); continue; }
+        damage = locate(logRoot, [scope], { id: e.id, kind: e.kind, why: bad.why });
+        break outer;
+      }
+    }
   }
   const scan = { damage, newer: dedupe(newer) };
   scans.set(logRoot, { key, scan });

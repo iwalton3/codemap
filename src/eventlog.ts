@@ -356,6 +356,27 @@ export const ENVELOPE_FIELDS: ReadonlySet<string> = new Set([
   "id", "kind", "subject", "actor", "at", "after", "writer", "writerPrev", "sidecarProtocol", "eventSchema", "data", "seq",
 ]);
 
+/**
+ * Where a cross-scope reference check reads the scopes it names. At the door that is the tip,
+ * which is the log before the event being minted; on read it is the log before the event's
+ * `seq` (owner, O30: checked on read, against the prefix — so a later event never re-judges it).
+ */
+export interface ScopeReader { read(scope: string): Promise<LogEvent[]>; scopes(): Promise<string[]> }
+export const tipReader = (logRoot: string): ScopeReader => ({ read: (s) => readScope(logRoot, s), scopes: () => scopesOnDisk(logRoot) });
+export const prefixReader = (all: ScopeReader, beforeSeq: number): ScopeReader => ({
+  read: async (s) => (await all.read(s)).filter((x) => typeof x.seq === "number" && x.seq < beforeSeq),
+  scopes: () => all.scopes(),
+});
+
+/** What a scope's events name in OTHER scopes (docs/sidecar-references.md), one check per family. */
+export type ReferenceCheck = (scope: string, e: LogEvent, own: LogEvent[], read: ScopeReader) =>
+  Promise<{ id: string; kind: string; why: string; cls: string }[]>;
+const references: { match: (scope: string) => boolean; check: ReferenceCheck }[] = [];
+export function registerReferences(match: (scope: string) => boolean, check: ReferenceCheck): void {
+  references.push({ match, check });
+}
+export const referencesFor = (scope: string): ReferenceCheck | undefined => references.find((r) => r.match(scope))?.check;
+
 /** Scopes whose every write is folded at the door before it is appended (plan 1.1). */
 export const FOLDED_AT_THE_DOOR = /^(decisions|standard|law)\//;
 

@@ -1,4 +1,4 @@
-import { registerKinds } from "./eventlog.js";
+import { registerKinds, registerReferences, tipReader, type ScopeReader } from "./eventlog.js";
 import { RETIRED_REPAIR_KINDS } from "./repair-records.js";
 import { collector, foldJudged, registerReport, staleRevision, wasOf, type RefusalClass, type Refusal } from "./validation.js";
 import { rulingReferences } from "./ruling-references.js";
@@ -1152,10 +1152,10 @@ function universeOfFindingScope(scope: string): string | null {
  * promotion names a filed bug (row 23), a ruling application its round, decision and answer
  * (rows 29-31), and a verification result's sites the bugs they were filed as (row 51).
  */
-async function outsideReferences(logRoot: string, scope: string, e: LogEvent): Promise<Refusal[]> {
+async function outsideReferences(scope: string, e: LogEvent, _own: LogEvent[], read: ScopeReader): Promise<Refusal[]> {
   const universe = universeOfFindingScope(scope);
   if (!universe) return [];
-  if (e.kind === "finding.rulingApplied") return rulingReferences(logRoot, universe, e);
+  if (e.kind === "finding.rulingApplied") return rulingReferences(read, universe, e);
   const named = e.kind === "finding.promotedToBug" ? [str(e.data as Data | undefined, "bug")]
     : e.kind === "repair.verification-recorded"
       ? (((e.data as Data | undefined)?.results as { sites?: { bug?: unknown }[] }[] | undefined) ?? [])
@@ -1163,7 +1163,7 @@ async function outsideReferences(logRoot: string, scope: string, e: LogEvent): P
       : [];
   const wanted = named.filter((b): b is string => !!b);
   if (!wanted.length) return [];
-  const filed = new Set((await readScope(logRoot, `bugs/${universe}`)).filter((b) => b.kind === "bug.filed").map((b) => b.subject));
+  const filed = new Set((await read.read(`bugs/${universe}`)).filter((b) => b.kind === "bug.filed").map((b) => b.subject));
   const missing = wanted.find((b) => !filed.has(b));
   return missing ? [{ id: e.id, kind: e.kind, cls: "reference", why: `no bug ${missing} has been filed in bugs/${universe}` }] : [];
 }
@@ -1175,9 +1175,10 @@ registerDoor((scope) => scope.startsWith("findings/"), (logRoot, scope) => async
   refused: [
     ...foldRepairRecords(events).rejected.map((r) => ({ id: r.eventId, why: r.reason })),
     ...foldFindingsReport(events).refused,
-    ...await outsideReferences(logRoot, scope, minted),
+    ...await outsideReferences(scope, minted, events, tipReader(logRoot)),
   ],
 }));
+registerReferences((scope) => scope.startsWith("findings/"), outsideReferences);
 
 
 /** Every kind this family folds or knows to skip: anything else here is newer (`eventlog.ts registerKinds`). */
