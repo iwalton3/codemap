@@ -40,8 +40,13 @@ export const overlaySuppressed = (): boolean => replaying.getStore() === true;
 export const webSession = (tab: string): string => `web:${tab}`;
 export const isTabId = (s: unknown): s is string => typeof s === "string" && /^[0-9a-f]{16,64}$/.test(s);
 
-/** How long a tab may go without polling before it counts as closed: three 15-second polls. */
-export const TAB_GONE_MS = 45_000;
+/**
+ * How long a tab may go without polling before it counts as closed. Well above a minute (review
+ * C13): Chrome's intensive throttling runs a hidden tab's timers about once a minute, so a 45s
+ * limit swept the writes of tabs that were only in the background. A closed tab is caught sooner
+ * by its pagehide beacon; this is the fallback, and it loses little by waiting.
+ */
+export const TAB_GONE_MS = 180_000;
 /** `CODEMAP_TAB_GONE_MS` shortens it for a test that closes a tab and cannot wait the real time. */
 const tabGoneMs = (): number => Number(process.env.CODEMAP_TAB_GONE_MS) || TAB_GONE_MS;
 
