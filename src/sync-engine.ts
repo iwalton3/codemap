@@ -175,7 +175,7 @@ export function begin(logRoot: string, s = currentSession()): { ok: true; sessio
 
 /** Push the session's staged ops, all or none, and close its transaction if they landed. */
 export async function syncSession(logRoot: string, actor?: Actor, s = currentSession()): Promise<LinearOutcome> {
-  return syncLinear(logRoot, s.session, { actor, closeTx: s.kind });
+  return syncLinear(logRoot, s.session, { actor, closeTx: s.kind, join: true });
 }
 
 /**

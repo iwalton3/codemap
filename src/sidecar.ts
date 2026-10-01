@@ -630,7 +630,7 @@ export interface SyncResult { gained: number; pushed: boolean; committed: boolea
 export async function sync(root: string, actor?: Actor, message = "codemap: review state"): Promise<SyncResult | { error: string }> {
   const { currentSession } = await import("./sync-session.js");
   const s = currentSession();
-  const r = await syncLinear(root, s.session, { actor, message, closeTx: s.kind });
+  const r = await syncLinear(root, s.session, { actor, message, closeTx: s.kind, join: true });
   // A refusal keeps what it refused and what is still staged: the caller repairs from those.
   if ("error" in r) return r as { error: string };
   return { gained: r.gained, pushed: r.pushed, committed: r.committed, retries: r.retries, ...(r.warning ? { warning: r.warning } : {}), ...(r.joined ? { joined: true } : {}) };
@@ -797,24 +797,38 @@ async function unqueuedLocalEvents(root: string, remoteSha: string): Promise<Loc
 }
 
 /**
- * A clone joining a team remote — no history yet, or one unrelated to the remote's — imports what it wrote
- * alone (owner, C12: "Import on join"): each event absent from the remote is staged in `session`,
- * in the order it was written, and replayed through its door like any staged write; one the door
- * refuses is reported and kept. A materializer event is not imported: the bump is re-derived.
- * Answers what it could not import — an event the remote holds with other bytes — for the caller
- * to refuse on, and the ids it staged.
+ * Joining a team remote: no history of its own yet (writes made with no remote stay
+ * uncommitted), or none shared with the remote's.
  */
-function importOnJoin(root: string, session: string, local: LocalOnly[]): { rest: LocalOnly[]; staged: string[] } {
-  const rest: LocalOnly[] = [], staged: string[] = [];
+function joiningRemote(root: string, head: string | null | undefined, remoteSha: string): boolean {
+  return !head || !g(root, ["merge-base", head, remoteSha]).ok;
+}
+
+/**
+ * What a joining clone's writes made alone answer to everything but an explicit sync (owner,
+ * round 3: "imported writes move only on an explicit sync"). An inline write, a batch, a pull
+ * or a gone session's sweep would otherwise carry them, and none of those can undo them.
+ */
+const JOINING = "joining a team: run sync first — `codemap sync` brings along the writes this clone made on its own";
+
+/**
+ * A clone joining a team remote imports what it wrote alone (owner, C12: "Import on join"), at an
+ * explicit sync only: each event absent from the remote is staged in `session`, in the order it
+ * was written, and replayed through its door like any staged write; one the door refuses is
+ * reported and kept. A materializer event is not imported: the bump is re-derived. When any
+ * event cannot be imported — the remote holds it with other bytes — nothing is staged, and that
+ * is answered for the caller to refuse on.
+ */
+function importOnJoin(root: string, session: string, local: LocalOnly[]): LocalOnly[] {
+  const rest = local.filter((l) => !l.absent);
+  if (rest.length) return rest;
   for (const l of [...local].sort((a, b) => (a.event.seq ?? 0) - (b.event.seq ?? 0))) {
-    if (!l.absent) { rest.push(l); continue; }
     const scope = dirname(l.path);
     if (scope === MATERIALIZER_SCOPE) continue;
     const { writer: _w, writerPrev: _p, seq: _s, ...event } = l.event;
     stage(root, session, scope, event as StagedEvent);
-    staged.push(l.id);
   }
-  return { rest, staged };
+  return [];
 }
 
 /**
@@ -929,7 +943,7 @@ function recordPush(root: string, latencyMs: number): string | undefined {
  */
 export async function syncLinear(
   root: string, session: string,
-  opts: { actor?: Actor; message?: string; inline?: InlineAct; conflictOnRefusal?: boolean; closeTx?: SessionKind } = {},
+  opts: { actor?: Actor; message?: string; inline?: InlineAct; conflictOnRefusal?: boolean; closeTx?: SessionKind; join?: boolean } = {},
 ): Promise<LinearOutcome> {
   const pre = await fetchRemote(root);
   return withSidecarLock(root, async () => {
@@ -944,7 +958,7 @@ export async function syncLinear(
 
 async function linearHeld(
   root: string, session: string,
-  opts: { actor?: Actor; message?: string; inline?: InlineAct; conflictOnRefusal?: boolean },
+  opts: { actor?: Actor; message?: string; inline?: InlineAct; conflictOnRefusal?: boolean; join?: boolean },
   fetched0: FetchState,
 ): Promise<LinearOutcome> {
   const message = opts.message ?? "codemap: review state";
@@ -958,8 +972,6 @@ async function linearHeld(
   let inlineId: string | null = null;
   let warning: string | undefined;
   let joined = false;
-  /** Staged by `importOnJoin`: replayed by this sync even when it is an inline one. */
-  const imported = new Set<string>();
   const forgetInline = () => { if (inlineId) { markStaged(root, [inlineId]); drop(root, session, inlineId); inlineId = null; } };
 
   for (let attempt = 0; attempt < PUSH_ATTEMPTS; attempt++) {
@@ -998,12 +1010,9 @@ async function linearHeld(
     }
     if (remoteSha) {
       let lost = await unqueuedLocalEvents(root, remoteSha);
-      const here = rev(root, "HEAD");
-      // Joining: no history of its own yet (writes made with no remote stay uncommitted), or none shared with the remote's.
-      if (lost.length && (!here || !g(root, ["merge-base", here, remoteSha]).ok)) {
-        const imp = importOnJoin(root, session, lost);
-        lost = imp.rest;
-        for (const id of imp.staged) imported.add(id);
+      if (lost.length && joiningRemote(root, rev(root, "HEAD"), remoteSha)) {
+        if (!opts.join) { forgetInline(); return { error: JOINING, staged: stagedIds() }; }
+        lost = importOnJoin(root, session, lost);
       }
       if (lost.length) {
         forgetInline();
@@ -1052,7 +1061,7 @@ async function linearHeld(
         + `each, then sync — ${held.map((o) => `${o.event.kind} ${o.event.id}: ${o.why}`).join("; ")}`,
         conflicts: held.map((o) => ({ id: o.event.id, kind: o.event.kind, scope: o.scope, why: o.why ?? "refused" })), staged: stagedIds() };
     }
-    const ops = opts.inline ? pending(root, session).filter((o) => imported.has(o.event.id)) : pending(root, session);
+    const ops = opts.inline ? [] : pending(root, session);
     if (ops.length || opts.inline) {
       const blocked = await pushGate(root);
       if (blocked) { forgetInline(); return { error: blocked, staged: stagedIds() }; }
@@ -1306,7 +1315,7 @@ export async function pullLinear(root: string, actor?: Actor): Promise<PullResul
     // Only once the tree holds the tip: a row settled as landed leaves the overlay.
     if (head === remoteSha) { settleUnknown(root, currentSession().session, remoteSha); return { gained: 0 }; }
     let lost = await unqueuedLocalEvents(root, remoteSha);
-    if (lost.length && (!head || !g(root, ["merge-base", head, remoteSha]).ok)) lost = importOnJoin(root, currentSession().session, lost).rest;
+    if (lost.length && joiningRemote(root, head, remoteSha)) return { error: JOINING };
     if (lost.length) {
       return { error: `refusing to pull: ${lost.length} event(s) in this sidecar clone are not on the remote and were not `
         + `staged through a sync (first: ${lost[0]!.path} ${lost[0]!.id}). If this sidecar predates the linear log it must be migrated first.` };

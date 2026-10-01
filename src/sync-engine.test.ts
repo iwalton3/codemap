@@ -5,7 +5,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, appendFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, appendFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -738,7 +738,7 @@ test("C12: a sidecar that wrote before joining a team brings those writes along 
     await emitEvent(solo, "tst/c12a", bob, "noted", "one");
     await emitEvent(solo, "tst/c12b", bob, "noted", "two");
     git(solo, "remote", "add", "origin", s.origin);
-    const r = await syncLinear(solo, "cli:1:c12", { actor: bob });
+    const r = await syncLinear(solo, "cli:1:c12", { actor: bob, join: true });
     assert.ok(!("error" in r), JSON.stringify(r));
     for (const scope of ["tst/c12team", "tst/c12a", "tst/c12b"])
       assert.equal(git(s.origin, "show", `main:${scope}/events.ndjson`).status, 0, `${scope} is on the remote`);
@@ -755,8 +755,71 @@ test("C12: a write its door refuses on joining is reported and kept, never dropp
     await ensureSidecar(solo, bob);
     await emitEventChecked(solo, CLAIMS, bob, async () => ({ kind: "claim", subject: "x" }));
     git(solo, "remote", "add", "origin", s.origin);
-    const r = await syncLinear(solo, "cli:1:c12", { actor: bob }) as { error?: string };
+    const r = await syncLinear(solo, "cli:1:c12", { actor: bob, join: true }) as { error?: string };
     assert.match(r.error ?? "", /x is already claimed/);
     assert.deepEqual(queue.pending(solo, "cli:1:c12").map((o) => o.event.subject), ["x"], "kept for its author to drop or redo");
   } finally { discard(solo); s.dispose(); }
+});
+
+/** A clone that wrote alone (`keep-me`), now pointed at a team remote it has never synced with. */
+async function joining() {
+  const s = await scenario(["ana@x.com"]);
+  const solo = mkdtempSync(join(tmpdir(), "codemap-solo-"));
+  const ana = who(s, "ana@x.com");
+  await emitEvent(ana.sidecar, "tst/team", ana.actor, "noted", "team");
+  const bob = { principal: "bob@x.com" } as Actor;
+  await ensureSidecar(solo, bob);
+  await emitEvent(solo, "tst/solo", bob, "noted", "keep-me");
+  git(solo, "remote", "add", "origin", s.origin);
+  const shard = join(solo, "tst/solo", LINEAR_SHARD);
+  const bytes = readFileSync(shard, "utf8");
+  const untouched = () => {
+    assert.deepEqual(queue.sessionsWithPending(solo), [], "nothing staged in any session");
+    assert.equal(readFileSync(shard, "utf8"), bytes, "the local write is where it was");
+    assert.notEqual(git(s.origin, "show", "main:tst/solo/events.ndjson").status, 0, "and not on the remote");
+  };
+  return { s, solo, bob, untouched, dispose: () => { discard(solo); s.dispose(); } };
+}
+const JOINING = /joining a team: run sync first/;
+
+test("round 3, I1: an inline write on a joining clone refuses — only an explicit sync imports", async () => {
+  const j = await joining();
+  try {
+    const r = await withSession("mcp:i1", "mcp", () => emitEventChecked(j.solo, "tst/i1", j.bob, async () => ({ kind: "noted", subject: "n" })));
+    assert.match("error" in r ? r.error : JSON.stringify(r), JOINING);
+    j.untouched();
+    assert.notEqual(git(j.s.origin, "show", "main:tst/i1/events.ndjson").status, 0, "the act was not written");
+  } finally { j.dispose(); }
+});
+
+test("round 3, I3: a batch write on a joining clone refuses, and strands nothing in a batch session", async () => {
+  const j = await joining();
+  try {
+    await withSession("mcp:i3", "mcp", () => assert.rejects(
+      emitEvents(j.solo, "tst/i3", { principal: "carol@x.com" } as Actor, [{ kind: "noted", subject: "a" }]), JOINING));
+    j.untouched();
+  } finally { j.dispose(); }
+});
+
+test("round 3, I4: a pull on a joining clone refuses — it never imports", async () => {
+  const j = await joining();
+  try {
+    const r = await pullLinear(j.solo, j.bob);
+    assert.match("error" in r ? r.error : JSON.stringify(r), JOINING);
+    j.untouched();
+  } finally { j.dispose(); }
+});
+
+test("round 3, I2: an explicit sync that must refuse one local write stages none of the others", async () => {
+  const j = await joining();
+  try {
+    // An event the remote holds, with other bytes here: the sync cannot import it.
+    const team = git(j.s.origin, "show", "main:tst/team/events.ndjson").stdout.trim().split("\n")[0]!;
+    const edited = JSON.stringify({ ...JSON.parse(team), data: { edited: true } });
+    mkdirSync(join(j.solo, "tst/team"), { recursive: true });
+    writeFileSync(join(j.solo, "tst/team", LINEAR_SHARD), edited + "\n");
+    const r = await withSession("cli:i2", "cli", () => sync(j.solo, j.bob)) as { error?: string };
+    assert.match(r.error ?? "", /differ from the remote/);
+    j.untouched();
+  } finally { j.dispose(); }
 });
