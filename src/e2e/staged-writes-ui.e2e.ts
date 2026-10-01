@@ -7,7 +7,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { team, settle, type Member } from "../oracle.js";
-import { localConflicts } from "../sync-engine.js";
+import { conflicts } from "../sync-queue.js";
 import { shareFinding, requestOnFinding, closeFinding, sharedFindings, attemptGoneSessions } from "../ops-shared.js";
 import { resolvePlaywright, launchPlaywright, startServer, type Server } from "./harness.js";
 /** Run `fn` with these environment variables, restoring them after. */
@@ -102,17 +102,21 @@ test("a tab closed with a write queued: the server lands it — or keeps the con
     await closeTab("the second finding, beaten to it", () => closeFinding(ben.repo, 264, refused, "invalid", "not a defect"));
     const out = await withEnv({ CODEMAP_TAB_GONE_MS: "1" }, () => attemptGoneSessions([ana.repo]));
     // Whichever route refused it — the beacon, or this attempt — leaves a local conflict.
-    const kept = localConflicts(ana.sidecar);
+    // Read without adopting: the test process is not the next session the conflict is for.
+    const kept = conflicts(ana.sidecar);
     assert.ok(kept.some((op) => op.event.subject === refused), JSON.stringify({ out, kept }));
-    await settle(t);
-    const state = async (id: string) => ((await sharedFindings(ben.repo, 264)) as any).findings.find((x: any) => x.id === id).state;
-    assert.equal(await state(landed), "resolved", "the closed tab's write landed");
-    assert.equal(await state(refused), "invalid", "and the refused one did not");
-    // The next page open on this machine shows the conflict.
+    // The next page open on this machine shows the conflict, and resolving it there is what
+    // lets this machine push again (review C10: the next session resolves before it pushes).
     const page = await browser.newPage();
     await page.goto(shared, { waitUntil: "networkidle" });
     await page.waitForSelector("#conflicts", { timeout: 20_000 });
     assert.match(await page.textContent("#conflicts"), /may not become resolved/);
+    await page.getByRole("button", { name: "Drop the refused and send the rest" }).click();
+    await page.waitForFunction(() => !document.getElementById("conflicts"));
     await page.close();
+    await settle(t);
+    const state = async (id: string) => ((await sharedFindings(ben.repo, 264)) as any).findings.find((x: any) => x.id === id).state;
+    assert.equal(await state(landed), "resolved", "the closed tab's write landed");
+    assert.equal(await state(refused), "invalid", "and the refused one did not");
   } finally { await browser?.close(); server?.stop(); t.dispose(); }
 });
