@@ -109,3 +109,23 @@ test("a clone checked out with core.autocrlf=true reads the markers as markers, 
     assert.ok(!(await readManifests(win)).some((m) => m.anchorScheme === 0), "the sentinel is still the sentinel");
   } finally { s.dispose(); discard(clone); }
 });
+
+test("an existing clone whose old events the migration DROPPED still moves to the migrated tip (plan C2: ancestry)", async () => {
+  const s = await scenario(["ana@x.com"]);
+  const m = mkdtempSync(join(tmpdir(), "codemap-migrator-"));
+  const git = (cwd: string, ...a: string[]) => spawnSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...a], { cwd, encoding: "utf8" });
+  try {
+    const ana = who(s, "ana@x.com");
+    // What a build before the linear log pushed: a per-writer shard, with an event the migration will drop.
+    const legacy = join(findingScope(PR), "w_0123456789abcdef.ndjson");
+    mkdirSync(join(ana.sidecar, findingScope(PR)), { recursive: true });
+    writeFileSync(join(ana.sidecar, legacy), JSON.stringify(testEvent({ id: "0000000001-dropped", kind: "graph.published", subject: "mh-x" })) + "\n");
+    git(ana.sidecar, "add", "-A"); git(ana.sidecar, "commit", "-qm", "old build"); git(ana.sidecar, "push", "-q", "origin", "HEAD:main");
+    // The migration, elsewhere: the shard goes, the event with it.
+    git(tmpdir(), "clone", "-q", s.origin, join(m, "c"));
+    git(join(m, "c"), "rm", "-q", legacy); git(join(m, "c"), "commit", "-qm", "migrate"); git(join(m, "c"), "push", "-q", "origin", "HEAD:main");
+    const r = await sync(ana.sidecar, ana.actor);
+    assert.ok(!("error" in r), JSON.stringify(r));
+    assert.ok(!existsSync(join(ana.sidecar, legacy)), "the old shard went with the move to the tip");
+  } finally { s.dispose(); discard(m); }
+});

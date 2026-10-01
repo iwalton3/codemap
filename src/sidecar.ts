@@ -808,9 +808,11 @@ const UNMIGRATED = (where: string, first: string) =>
 
 /**
  * Why this clone cannot sync over per-writer shards, or null. Decided on the REMOTE first: once
- * the team's sidecar is migrated, an upgraded clone whose old events all reached it moves to the
- * tip like any other, and one holding events that never did is told exactly that — migrating
- * again is not the way out. Compared by id, since the migration rewrites every line (`seq`).
+ * the team's sidecar is migrated, an upgraded clone with nothing unpushed moves to the tip like any
+ * other (plan C2: "local HEAD its ancestor with nothing unpushed → move to the tip"). By ANCESTRY,
+ * not by id: the migration deliberately drops events, so the migrated tip lacks ids every existing
+ * clone holds (round-2 C4). What is unpushed is named: per-writer lines in local commits the remote's
+ * history lacks, and lines never committed at all.
  */
 async function unmigrated(root: string, remoteSha: string): Promise<string | null> {
   const oldThere = remoteSha ? legacyShards(root, remoteSha) : [];
@@ -818,14 +820,21 @@ async function unmigrated(root: string, remoteSha: string): Promise<string | nul
   const oldHere = legacyShards(root);
   if (!oldHere.length) return null;
   if (!remoteSha) return UNMIGRATED("this clone's sidecar", oldHere[0]!);
-  const shardsThere = g(root, ["ls-tree", "-r", "--name-only", remoteSha]).out.split("\n").map((p) => p.trim()).filter((p) => p.endsWith(SHARD_EXT));
-  const there = linesAtCommit(root, remoteSha, shardsThere);
+  const head = rev(root, "HEAD");
+  const base = head ? g(root, ["merge-base", head, remoteSha]).out : "";
+  // Reached the team: in the shared history (kept or dropped by the migration), or, for a line
+  // never committed, on the remote tip by id (the migration rewrites lines but keeps ids).
+  const tipShards = g(root, ["ls-tree", "-r", "--name-only", remoteSha]).out.split("\n").map((p) => p.trim()).filter((p) => p.endsWith(SHARD_EXT));
+  const pushed = new Map([...(base ? linesAtCommit(root, base, oldHere) : []), ...linesAtCommit(root, remoteSha, tipShards)]);
+  const committed = head ? linesAtCommit(root, head, oldHere) : new Map<string, string>();
   const unpushed: { path: string; id: string }[] = [];
   for (const p of oldHere) {
     let text = "";
     try { text = await readFile(join(root, p), "utf8"); } catch { continue; }
-    for (const { event } of splitShard(text, p).events) if (!there.has(event.id)) unpushed.push({ path: p, id: event.id });
+    for (const { event } of splitShard(text, p).events) if (!pushed.has(event.id)) unpushed.push({ path: p, id: event.id });
   }
+  // Committed here and not in the shared history, though since deleted from the working tree.
+  for (const [id] of committed) if (!pushed.has(id) && !unpushed.some((u) => u.id === id)) unpushed.push({ path: "(a local commit)", id });
   if (!unpushed.length) return null;
   return `refusing to sync: this clone holds ${unpushed.length} event(s) an older build wrote that never reached the team's `
     + `sidecar before it was migrated (first: ${unpushed[0]!.path} ${unpushed[0]!.id}). Moving to the migrated tip would `
