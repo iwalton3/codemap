@@ -1264,9 +1264,9 @@ function foldOnce(events: LogEvent[], excludedPicks: ReadonlySet<string>): { val
       && !checkListRevision(d, { findings, issues }, (answerEvents.get(a.id)?.data as any)?.list)
       && listRevisionMatchesAnswer(d, (answerEvents.get(a.id)?.data as any)?.list,
         (answerEvents.get(a.id)?.data as any)?.via)
-      // Another person's revision is valid when the old answer was in their store when they
-      // revised it (owner's rule; a shown-receipt was too strict — plan Phase 3.2).
-      && (!!relayValid || targets.every((x) => reads.saw(sourceEventId(a.id), sourceEventId(x!.id))));
+      // What it revises comes before it — the door's prefix says so; this is the read's half.
+      // Not whether the reviser SAW it: that refused only hand-built events (round 3, O1).
+      && targets.every((x) => x!.seq < a.seq);
     if (!valid) {
       a.revisionInvalid = "revision needs exact source, scope and verified human act-time context";
       refuseId(answerEvent?.id, a.revisionInvalid);

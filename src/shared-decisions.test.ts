@@ -1329,17 +1329,6 @@ test("scoped revision keeps the older answer on untouched findings and its sourc
   assert.equal(ruledNotCarriedOut(s, () => true).find((x) => x.finding === "F3")?.answer, revised.id);
 });
 
-test("a revision of a source its writer never had is one no build writes", () => {
-  n = 1;
-  const first = page(d1, { option: "Settle" });
-  const revised: any = ev("decision.answer.revised", {
-    decision: d1.id, hash: h(d1), via: { kind: "direct", option: "No" },
-    revision: { of: [first.id], findings: ["F3"] },
-  }, person);
-  // Its writer never had the answer it revises, so its own door refused it: the fold halts on it.
-  assert.throws(() => foldDecisions([round, first, revised]), (e: unknown) => isLogDamage(e) && e.entry.id === revised.id);
-});
-
 test("short-answer revision names its question and preserves both human wordings", () => {
   n = 1;
   const first: any = page(d5, { words: "Keep the existing behavior" });

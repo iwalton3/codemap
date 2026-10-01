@@ -77,7 +77,7 @@ test("an agent withdraws an unanswered question only with two sound readers, or 
   assert.match(refused(undefined), /two readers/, "an agent alone withdraws nothing");
 });
 
-test("another person's revision stands when the old answer was in their store, and not when it was not", () => {
+test("another person's revision stands", () => {
   // The owner's rule; the shown-the-old-answer receipt was too strict (plan Phase 3.2).
   const p = post(findingDecision), first = answer("a2", findingDecision, "Settle", alice, [p.id]);
   const revise = (after: string[]) => event("r4", "decision.answer.revised", "p1:d1", {
@@ -87,8 +87,6 @@ test("another person's revision stands when the old answer was in their store, a
   const accepted = foldDecisions([p, first, revise([first.id])]).decisions.find(byLabel("d1"))!;
   assert.equal(accepted.answers.find((x) => x.id === "r4")?.revisionInvalid, undefined);
   assert.equal(standingForFinding(accepted, "F1")?.id, "r4");
-  assert.match(damageOf([p, first, revise([p.id])]) ?? "", /revision needs exact source/,
-    "a revision of an answer its writer never had revises nothing — and no conforming build writes one");
 });
 
 test("a scoped revision can change one canonical bug without changing an unrelated finding", () => {

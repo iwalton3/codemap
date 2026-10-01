@@ -7,6 +7,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { findingScope, foldFindingsReport, foldFindingsScopeReport } from "./shared-findings.js";
 import { bugScope, foldBugsReport } from "./shared-bugs.js";
+import { decisionHash, decisionsDoor, foldDecisions, standingForFinding } from "./shared-decisions.js";
 import { applicationDisplayHash, applicationKey, issueClaimHash } from "./ruling-application.js";
 import { canonicalIssueKey } from "./decision-issues.js";
 import { foldRepairRecords } from "./repair-records.js";
@@ -123,4 +124,45 @@ test("O2: a teammate decomposing the claim before a staged repair application â€
   f.add("claims-2", "repair.claims-recorded", "f", { findingId: "f", parentId: "f:original", reason: "split", claims: [{ id: "f:second", text: "second guard" }] });
   f.apply([f.tip]);
   assert.deepEqual(f.judge(), { state: "created", doorRefuses: true });
+});
+
+/** A decision question, alice's answer A, and a revision R of it. */
+function revision() {
+  const alice = { principal: "alice" }, bob = { principal: "bob" };
+  const d1 = { id: "d1", round: "R1", ref: "D1", kind: "options",
+    payload: { question: "D1: approve the fix for F3 and F7?", header: "H", options: [{ label: "Settle", description: "d" }, { label: "No", description: "d" }] },
+    options: [{ label: "Settle", effects: [{ findings: ["F3"], on: "settle", as: "refuted" }, { findings: ["F7"], on: "unblock" }], recommended: true }, { label: "No", effects: [] }] };
+  let seq = 0;
+  const ev = (id: string, kind: string, actor: any, after: string[], data: any) =>
+    testEvent({ id, writer: `w-${id}`, seq: ++seq, kind, subject: "s", actor, at: `2026-09-23T00:00:${String(seq).padStart(2, "0")}Z`, after, data });
+  const round = ev("round", "decision.round.posted", alice, [], { round: { id: "R1", source: "plan-x", universe: "u" }, decisions: [d1], publication: 2 });
+  const Q = "round:d1", hash = decisionHash(d1 as any);
+  const answer = (after: string[]) => ev("A", "decision.answer.recorded", alice, after, { decision: Q, hash, via: { kind: "direct", option: "Settle" } });
+  const revise = (by: any, after: string[]) => ev("R", "decision.answer.revised", by, after,
+    { decision: Q, hash, via: { kind: "direct", option: "No" }, revision: { of: ["A"], findings: ["F3"] } });
+  const judge = async (log: LogEvent[]) => {
+    const events = sortEvents(log);
+    const R = events.find((e) => e.id === "R")!;
+    const door = (await decisionsDoor(events.slice(0, events.indexOf(R) + 1), R)).refused.some((x) => x.id === "R");
+    let read: string;
+    try {
+      const d = foldDecisions(events).decisions[0]!;
+      read = d.answers.find((a) => a.id === "R")?.revisionInvalid ? "invalid" : `stands: ${standingForFinding(d, "F3")?.id}`;
+    } catch { read = "locks"; }
+    return { door, read };
+  };
+  return { round, answer, revise, judge, alice, bob };
+}
+
+test("rule 2 gone: another person's revision is not refused for an after that omits what it revises", async () => {
+  const w = revision();
+  assert.deepEqual(await w.judge([w.round, w.answer(["round"]), w.revise(w.bob, ["round"])]), { door: false, read: "stands: R" });
+  assert.deepEqual(await w.judge([w.round, w.answer(["round"]), w.revise(w.alice, ["round"])]), { door: false, read: "stands: R" });
+});
+
+test("a revision placed before the answer it revises: the read refuses what the door refuses", async () => {
+  // Rule 2 was the only ordering check the read had; with it simply dropped the door refused
+  // this and the read let it stand.
+  const w = revision();
+  assert.deepEqual(await w.judge([w.round, w.revise(w.bob, ["round"]), w.answer(["round"])]), { door: true, read: "locks" });
 });
