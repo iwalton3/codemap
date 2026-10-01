@@ -3,6 +3,7 @@ import { liveHashes } from "../reviews.js";
 import { createHash } from "node:crypto";
 import { readAnchorStore, loadNodes, readGraph, readLocalGraph, writeGraph, writeNode, slug, readAnnotations, deleteNode as storeDeleteNode, confirmNode, ackHole as storeAckHole, loadNodeVersions, derivationLookup } from "../store.js";
 import { evalVersion } from "../doc-version.js";
+import { personNodeId } from "../analyzers/node-ids.js";
 import { anchorIndex, derivationsOf } from "../anchor-resolve.js";
 import { snapshotHashes, resolveRefs, rejected, loadNodesShared} from "./shared.js";
 import { type WhereWas, whereWere } from "./orphans.js";
@@ -47,7 +48,7 @@ export async function document(
   // Partial acceptance — but a node with no anchors is a floating claim, so a call
   // where nothing resolved is still rejected outright.
   if (!r.ids.length) return { error: r.errors.join("; ") || "no anchors given" };
-  const id = input.id ?? slug(input.title);
+  const id = input.id ?? personNodeId(slug(input.title));
   const body = input.body ?? "";
   await writeNode(root, { id, type: input.type, title: input.title, summary: input.summary, anchors: r.ids, body }, wopts);
 
@@ -79,7 +80,7 @@ export async function document(
       // half-built and the caller re-sending everything.
       if (!sr.ids.length) { warnings.push(`step "${step.title}" skipped — no anchor resolved: ${sr.errors.join("; ")}`); i++; continue; }
       for (const e of sr.errors) warnings.push(`step "${step.title}": ${e}`);
-      const stepId = step.id ?? existingSteps.get(step.title) ?? uniqueSlug(slug(step.title), taken);
+      const stepId = step.id ?? existingSteps.get(step.title) ?? uniqueSlug(personNodeId(slug(step.title)), taken);
       taken.add(stepId);
       await writeNode(root, { id: stepId, type: "step", title: step.title, summary: step.summary, anchors: sr.ids, body: step.body ?? "" }, wopts);
       created.push(stepId);

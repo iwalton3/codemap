@@ -12,7 +12,10 @@ export const MARTEN_ID = {
 const PREFIXES: readonly string[] = Object.values(MARTEN_ID);
 
 /**
- * Is this id in an analyzer's namespace? A person's node CAN land here (`document` slugs a
- * title "MH …" to `mh-…`), and would then be refused publication like an analyzer node.
+ * Is this id in an analyzer's namespace? A person's node can still land here with an explicit
+ * id; `document` no longer mints one (`personNodeId`).
  */
 export const isAnalyzerNodeId = (id: string): boolean => PREFIXES.some((p) => id.startsWith(p));
+
+/** A slug codemap mints for a PERSON's node, kept out of the analyzer namespace (owner, O27). */
+export const personNodeId = (slugged: string): string => isAnalyzerNodeId(slugged) ? `doc-${slugged}` : slugged;

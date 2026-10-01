@@ -135,3 +135,16 @@ test("compact is SUBSTANTIALLY smaller — the check that can actually fail", as
       `compact is ${(ratio * 100).toFixed(0)}% of full (${lean.length}/${full.length}) — expected under 35%`);
   } finally { u.cleanup(); }
 });
+
+test("O27: a person's document never mints an id in an analyzer's namespace", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codemap-o27-"));
+  try {
+    git(root, "init", "-q", "-b", "main");
+    mkdirSync(join(root, ".codemap"), { recursive: true });
+    const indexed = await indexBlob(SRC, "src/pay.ts");
+    await writeStore(root, indexed, state);
+    const r = await document(root, { type: "module", title: "MH Payments", summary: "s", anchors: indexed.map((a) => a.id) }) as { id: string };
+    assert.ok(!r.id.startsWith("mh-"), r.id);
+    assert.equal(r.id, "doc-mh-payments");
+  } finally { discard(root); }
+});
