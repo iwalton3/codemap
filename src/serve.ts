@@ -400,6 +400,10 @@ async function serveRequest(req: IncomingMessage, res: ServerResponse): Promise<
     if (url.pathname.startsWith("/api/") && !RUNS_WHILE_LOCKED.has(url.pathname)) {
       const lockout = await lockoutGate(ws.universes.map((u) => u.path));
       if (lockout) { sendLockout(res, lockout); return; }
+    }
+    // On EVERY api response, the sync routes included: the page drops the banner on a response
+    // without it (web/core.js `foldDefect`).
+    if (url.pathname.startsWith("/api/")) {
       const defect = await foldDefectGate(ws.universes.map((u) => u.path));
       if (defect) res.setHeader("x-codemap-fold-defect", encodeURIComponent(defect));
     }
