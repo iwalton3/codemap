@@ -1,7 +1,9 @@
 # Causal vectors under a fork, and repairing one
 
-> **Kind: current reference** — describes how codemap works today. Trust it; fix it if it is wrong.
-> built 2026-08-23. Read before touching `eventlog.ts` or `contest.ts`.
+> **Kind: archive — SUPERSEDED 2026-09-30 by the linear log** (`docs/PROPOSAL-online-only-sync.md`,
+> `docs/sidecar-architecture.md`). Under one serializer there are no forks to repair: per-writer
+> shards, the segment vector, `heal` and `scope.acknowledged` are deleted. Kept for the
+> counterexample and the reasoning; it describes nothing the code does.
 
 **Status: BUILT** (2026-08-23, commits `94388a3` and `cd12a94`).
 `docs/sidecar-architecture.md` is the architecture; this is the mechanism behind its

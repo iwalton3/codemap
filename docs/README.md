@@ -18,9 +18,10 @@ How codemap works today. If one of these is wrong, that is a bug — fix the doc
 | [`README.md`](../README.md) | 524 | the project front door: what codemap is, the CLI, the MCP tools, and the agent setup. |
 | [`docs/shared-triage.md`](shared-triage.md) | 423 | triage on the sidecar, built. |
 | [`docs/findings-publishing-spec.md`](findings-publishing-spec.md) | 407 | built, with deviations in §0. §5 is quoted verbatim by `src/mcp.ts`. |
-| [`docs/sidecar-architecture.md`](sidecar-architecture.md) | 383 | NORMATIVE for shared state — it outranks the proposal docs where they disagree. |
+| [`docs/sidecar-architecture.md`](sidecar-architecture.md) | 349 | NORMATIVE for shared state — the linear log (2026-09-30); it outranks the proposal docs where they disagree. |
+| [`docs/log-repair.md`](log-repair.md) | 105 | NORMATIVE: repairing a damaged shared log — one commit pushed with git, approved by a person. |
+| [`docs/sidecar-migration.md`](sidecar-migration.md) | 53 | operator procedure: migrating a merge-era sidecar to the linear log, once per team. |
 | [`docs/triage.md`](triage.md) | 374 | the stakes-triage model, BUILT: `src/triage*.ts` and 5 MCP tools. |
-| [`docs/fork-repair.md`](fork-repair.md) | 322 | built 2026-08-23. Read before touching `eventlog.ts` or `contest.ts`. |
 | [`docs/pr-walkthrough-design.md`](pr-walkthrough-design.md) | 289 | BUILT: `src/walkthrough.ts`, `src/shared-walkthrough.ts`, 3 MCP tools. |
 | [`docs/doc-versioning.md`](doc-versioning.md) | 149 | hash-versioned docs, BUILT. The schema section is aspirational — see the note there. |
 | [`docs/state-map.md`](state-map.md) | 119 | implemented in the Marten analyzer. |
@@ -73,6 +74,7 @@ Why the code looks the way it does. Finished; kept for the argument, not as a to
 
 | doc | lines | |
 |---|---:|---|
+| [`docs/PROPOSAL-online-only-sync.md`](PROPOSAL-online-only-sync.md) | 270 | RATIFIED 2026-09-30 and built; `docs/sidecar-architecture.md` is the current statement. |
 | [`docs/anchor-id-provenance.md`](anchor-id-provenance.md) | 1236 | MIXED and the longest doc here: landed mechanism, cancelled `AnchorReceipt`, and unlanded recovery work. Cited from source, so it cannot simply be retired. |
 | [`PROPOSAL-provenance.md`](../PROPOSAL-provenance.md) | 688 | the provenance design, largely landed. Its §5 `AnchorReceipt` was CANCELLED — see `docs/decision-receipts-vs-prefix.md` and `docs/anchor-id-provenance.md`. Cited from a dozen source files. |
 | [`docs/plan-findings-unification.md`](plan-findings-unification.md) | 510 | all six steps done. |
@@ -89,6 +91,8 @@ Superseded or finished. **Do not plan from these.** They are kept, rather than d
 
 | doc | lines | |
 |---|---:|---|
+| [`docs/fork-repair.md`](fork-repair.md) | 322 | SUPERSEDED 2026-09-30 by the linear log; archive. |
+| [`docs/sidecar-references.md`](sidecar-references.md) | 576 | the plan-phase-3 inventory of every cross-scope reference and how each is validated. |
 | [`docs/decision-rounds-next.md`](decision-rounds-next.md) | 188 | Historical pre-recovery handoff; next-job and branch-freeze instructions are superseded. Current handoff is `SESSION-STATE.md`. |
 | [`docs/plan-decision-log.md`](plan-decision-log.md) | 188 | **SUPERSEDED by `docs/PROPOSAL-decision-rounds.md`** the same day it was written. Kept for the ruling-vs-requirement test and its falsifiers. |
 | [`PROPOSAL-sidecar-materialization.md`](../PROPOSAL-sidecar-materialization.md) | 1084 | **SUPERSEDED by `docs/sidecar-architecture.md`.** Nine source files cite sections of it for the reasoning behind a decision; read those sections, not the plan. |

@@ -134,8 +134,7 @@ test("a doc one person publishes is readable by the other after a sync", async (
 });
 
 test("two clones are two writers, and cloneMachine is what makes them one", async () => {
-  // Same-shard concurrency is untestable without the copy: ordinary clones write
-  // different shards, so no amount of concurrent writing produces a fork.
+  // Ordinary clones mint their own writer ids; the copy is the only way two share one.
   await withTeam(async (t) => {
     const a = who(t, A), b = who(t, B);
     const idOf = (m: { sidecar: string }) => {

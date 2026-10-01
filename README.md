@@ -327,9 +327,7 @@ node dist/cli.js shared 264     --repo <repo>   # the team's findings on a PR
 node dist/cli.js replies 264    --repo <repo>   # what the submitter said back
 node dist/cli.js shared-docs    --repo <repo>   # their docs, resolved against your checkout
 node dist/cli.js shared-triage  --repo <repo>   # their stakes, with receipts
-node dist/cli.js contested      --repo <repo>   # stakes two people disagree about
 node dist/cli.js notes <anchor|node> --repo <repo>   # what the team knows about one symbol
-node dist/cli.js sidecar heal   --repo <repo>   # repair a forked sidecar (a person, not an agent)
 ```
 
 The web UI has a hub at `/#/u/<universe>/shared/` with a sync button. The log is

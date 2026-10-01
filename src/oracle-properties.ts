@@ -14,7 +14,7 @@
  *   3. NO SILENT OK  — an op that returned `ok` is verifiable by an independent read.
  *                     Taken as a receipt at the call site (`verified`), because only
  *                     the caller knows what a given `ok` promised.
- *   4. DETERMINISM   — arrival order does not change what the log folds to.
+ *   4. DETERMINISM   — the order events are READ in does not change what the log folds to.
  *   5. OWNERSHIP     — no local write ever reaches a row the fold owns.
  *   6. COMPLETENESS  — after a sync, an ordinary query never folds the log.
  *
@@ -25,6 +25,7 @@
 import { branchKey } from "./review-target.js";
 import assert from "node:assert/strict";
 import { readScope, scopesOnDisk, sortEvents, type LogEvent } from "./eventlog.js";
+import { withoutOverlay } from "./sync-session.js";
 import { projectionFor } from "./shared-projections.js";
 import { foldCount } from "./materialize.js";
 import { docScope, foldDocs } from "./shared-docs.js";
@@ -72,13 +73,15 @@ async function foldedScopes(m: Member): Promise<Map<string, string>> {
   return out;
 }
 
-const eventIds = async (m: Member): Promise<Map<string, Set<string>>> => {
+// Without the overlay: a session's staged act is not history until it lands, and dropping a
+// refused one is the queue working, not a loss.
+const eventIds = (m: Member): Promise<Map<string, Set<string>>> => withoutOverlay(async () => {
   const out = new Map<string, Set<string>>();
   for (const scope of await scopesOnDisk(m.sidecar)) {
     out.set(scope, new Set((await readScope(m.sidecar, scope)).map((e) => e.id)));
   }
   return out;
-};
+});
 
 // --- 2. no loss ---------------------------------------------------------------------
 
@@ -190,13 +193,12 @@ export function shuffled<T>(items: T[], seed: number): T[] {
 }
 
 /**
- * The order events ARRIVE in must not change what they mean.
+ * The order events are READ in must not change what they mean.
  *
- * Shards are read in filename order and merged, so the order a clone sees depends on
- * who wrote which file and when it pulled. `sortEvents` is what makes that
- * irrelevant — this asserts it actually does, which is a claim about a total order
- * and not a tautology: a comparator that ties on two concurrent events would fold
- * differently depending on which arrived first.
+ * A scope's meaning is its `seq` order, and readers (a merged law-and-evidence fold, a
+ * test's events) do not all read one file top to bottom. `sortEvents` is what makes that
+ * irrelevant; this asserts it does, which fails the moment a linear event is written
+ * without the `seq` that orders it.
  */
 export async function determinism(m: Member, seed: number): Promise<void> {
   for (const scope of await scopesOnDisk(m.sidecar)) {

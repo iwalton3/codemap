@@ -273,7 +273,12 @@ function locking<A extends unknown[], T>(logRoot: string, scopes: string[], fold
 // mind changes, so 18 → 19's reason applies to all of it.
 // 51 → 52: the graph fold no longer applies an analyzer node's wiring (owner, Q2: "Drop them"),
 // merge-era events included.
-export const MATERIALIZER_VERSION = 52;
+// 52 → 53 (plan 2026-09-30-online-only-sync phase 6, one bump for phases 3–6): every fold orders
+// by `seq` and credits reads from `after` alone; every refusal is classed, and a refused linear
+// event is damage in every family; contests, holds, picks, forks, cycles and acknowledgements
+// are gone (stale revisions, raced verdicts and unseen withdrawals refuse at replay); triage and
+// wiring go by push order; K3/K5–K8. Same reason as 18 → 19: the shards do not move.
+export const MATERIALIZER_VERSION = 53;
 
 /**
  * What the events in a scope are, cheaply.

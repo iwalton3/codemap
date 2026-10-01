@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { team, who, settle, type Team } from "./oracle.js";
-import { Ledger, checkAlways, checkSettled, converged, ownership, readsDoNotFold, stable, shuffled } from "./oracle-properties.js";
+import { Ledger, checkAlways, checkSettled, converged, determinism, ownership, readsDoNotFold, stable, shuffled, verified } from "./oracle-properties.js";
+import { begin, discard } from "./sync-engine.js";
+import { updateNode } from "./ops/docs.js";
 import { document } from "./ops.js";
 import { publishLocalDocs, sharedDocs } from "./ops-shared.js";
 import { docScope } from "./shared-docs.js";
@@ -157,4 +159,44 @@ test("shuffled() actually permutes, or determinism passes vacuously", async () =
   // Same seed, same permutation — a failure has to reproduce from the seed alone.
   assert.equal(shuffled(items, 7).join(","), shuffled(items, 7).join(","));
   assert.deepEqual(shuffled(items, 3).slice().sort((a, b) => a - b), items, "nothing is lost or duplicated");
+});
+
+test("NO LOSS does not count a staged act as held: dropping a refused one is not a loss", async () => {
+  await withTeam(async (t) => {
+    const ledger = new Ledger();
+    await published(t);
+    const a = who(t, A);
+    begin(a.sidecar);
+    try {
+      await updateNode(a.repo, { id: "n_transfer", setBody: "staged, never landed" });
+      await publishLocalDocs(a.repo);
+      await ledger.observe(t);
+      discard(a.sidecar);
+      await ledger.observe(t);
+    } finally { discard(a.sidecar); }
+  });
+});
+
+test("DETERMINISM fires when a linear event loses the seq that orders it", async () => {
+  await withTeam(async (t) => {
+    await published(t);
+    const a = who(t, A);
+    await updateNode(a.repo, { id: "n_transfer", setBody: "The guard runs second." });
+    await publishLocalDocs(a.repo);
+    await settle(t);
+    await determinism(a, 1); // holds while every event carries its seq
+
+    const scope = join(a.sidecar, docScope(universeKey(a.repo)));
+    const shard = join(scope, readdirSync(scope).find((f) => f.endsWith(".ndjson"))!);
+    const stripped = readFileSync(shard, "utf8").split("\n").filter(Boolean)
+      .map((l) => { const e = JSON.parse(l); delete e.seq; return JSON.stringify(e); });
+    writeFileSync(shard, stripped.join("\n") + "\n", "utf8");
+    await assert.rejects(() => determinism(a, 1), /DETERMINISM violated/);
+  });
+});
+
+test("NO SILENT OK fires when an op says ok and the read-back finds nothing", async () => {
+  await assert.rejects(() => verified("a publish", Promise.resolve({ ok: true }), async () => undefined), /NO SILENT OK violated/);
+  await assert.rejects(() => verified("a publish", Promise.resolve({ error: "refused" }), async () => true), /a publish failed/);
+  assert.deepEqual(await verified("a publish", Promise.resolve({ ok: true }), async () => true), { ok: true });
 });

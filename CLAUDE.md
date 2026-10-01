@@ -235,19 +235,28 @@ generated file to drift. Both test targets run it (`tsc -p web`, well under a se
 
 ## The sidecar — read `docs/sidecar-architecture.md` before touching shared state
 
-It is short and it is normative; the two proposal documents predate it and lose
-where they disagree. The three things it settles, so a reader knows whether they
-need it: the **log is authoritative** for shared state and SQLite is its
-projection; the log is **pull/push, never read on an ordinary MCP or web read**;
-and there is **one canonical table per entity kind**, so a teammate's doc is a
-`node_versions` row with an origin marker rather than a parallel table needing a
-bridge onto every surface.
+It is short and it is normative. Since 2026-09-30 the sidecar is a **linear log** (online-only
+sync; `docs/PROPOSAL-online-only-sync.md`): the git remote is the one serializer, each scope is
+one `events.ndjson`, every write is replayed at sync against the remote tip through its family's
+door and pushed as a fast-forward, and a lost race replays on the winner's tip. So every event on
+the remote was valid against its exact predecessor. There are no forks, merges, contests or holds
+to reason about — what raced is REFUSED at replay and its author told. Three things it settles:
+the **log is authoritative** for shared state and SQLite is its projection; the log is
+**pull/push, never read on an ordinary MCP or web read**; and there is **one canonical table per
+entity kind**, so a teammate's doc is a `node_versions` row with an origin marker.
 
 One sentence carries most of it, and the codebase has re-derived it five times:
-**acts enter the log at the moment they happen; everything derivable is a local
-projection.** A derived event has no honest actor and no honest causal position, and a
-deterministic fold means every clone mints its own copy; a claim that never entered the
-log cannot be retrofitted with a position, because `after` is captured at append time.
+**acts enter the log at the moment they happen; everything derivable is a local projection.** A
+derived event has no honest actor and no honest position.
+
+**Writes: inline, or in a transaction.** A single act syncs inline (`write.ts`). `begin` opens a
+transaction for the caller's session (an MCP process, or a web tab via `x-codemap-tab`): its acts
+stage in `<sidecar>/.git/codemap-queue.db`, read back through the session's overlay, and one
+`sync` pushes all or none. **The queue is append and drop only** — never reordered or edited; a
+refused op is dropped and redone (owner: "anything more complicated … is bringing back all the
+conflict resolution logic in miniature"). A staged act's `after` is what its author READ, and a
+precondition on having seen something is a refusal at replay, never a hold. In tests, "two
+writers apart" is a transaction, not two clones that merge.
 
 **To review a fold, RUN it.** Every one of the ~12 guard-in-one-end defects this project
 has produced was found by executing the fold on hand-built events, or by writing its second
@@ -257,22 +266,26 @@ people cannot review by eye. A dozen lines of `foldStandard([...])` in a scratch
 found more than any amount of careful reading, on the codebase whose whole thesis is that
 careful reading of this shape does not work.
 
-**A shard that does not PARSE is a destroyed event, not a dropped one.** `readShard` skips
-an unparseable line by design — a torn append leaves one — but the rule had no upper bound,
-so a wholly-garbage shard yielded no events and its scope read `complete`: every finding in
-it gone, every surface agreeing the queue was clear. **A genuinely broken sidecar stops and
-says so rather than being made worse**, at three ends: the reader BLOCKS (`corrupt-shard`,
-ahead of every other diagnostic, and the one that is not acknowledgeable), and the commit
-and the pull both REFUSE — the commit in `commitLocal`, not `push`, because `sync` commits
-before it pulls. Two things make the refusal survivable and both came from RUNNING the
-oracle: the inbound check asks what the merge would add from the `merge-base` (against our
-own tip it read the remote's still-damaged copy and locked the repairer out of publishing
-the repair), and `linesAt` skips unparseable lines (`erasedByMerge` otherwise restored the
-damaged line on every teammate's pull and pushed it back at whoever fixed it). Not a defence
-against hostile shards — that is not a threat this spends anything on. `appendEvents` SEALS a torn tail in
-rather than truncating it — truncation was tried and reverted, because disk corruption that
-eats an event the shard already served leaves bytes identical to a torn append, so the
-repair deletes a real record silently. Loud beats quiet here every time.
+**What a fold refuses on READ is classed** (`validation.ts`): bytes that are not JSON, or an
+event with a `seq` its fold refuses, is **damage** and LOCKS the application; a shape this build
+does not write is **newer** — reads skip it and every push blocks until an upgrade; a known
+dev-era shape is skipped. At replay every class refuses. Damage sets
+`<sidecar>/.git/codemap-lockout.json`; every read and op answers one diagnostic (MCP error, HTTP
+423, CLI exit 1), and a locked sync only fetches, moves to a clean tip and re-checks. **A repair is
+one commit pushed with git** (`docs/log-repair.md`), never a history rewrite — and `codemap sync`
+deliberately will not carry it, because **a sync never silently discards local work**: unqueued
+local events, a hand-edited shard and local damage each refuse rather than being reset away.
+`codemap sidecar check <path>` is the read-only pre-push check.
+
+**A shard that does not PARSE is a destroyed event, not a dropped one.** `readShard` skips a torn
+tail by design, but anywhere else an unparseable line blocks the reader (`corrupt-shard`), and the
+commit and the pull refuse. An append SEALS a torn tail in rather than truncating — truncation was
+tried and reverted, because disk corruption that eats a served event leaves identical bytes.
+
+**A sidecar from before the linear log is refused**, read and transport, until it is migrated
+(`docs/sidecar-migration.md`; `scripts/migrate-sidecar.mjs`). The migration plants a tripwire,
+`linear-log/UPGRADE-CODEMAP.ndjson`, that old builds refuse to pull; this build exempts exactly
+that path and those bytes.
 
 **Repointing `.codemap/sidecar` from one team's repo to another is REFUSED**, and the
 identity is the sidecar's oldest ROOT COMMIT — so a MOVE, a RE-CLONE and a sidecar that has
@@ -307,29 +320,10 @@ otherwise mkdir a new empty sidecar at the wrong path and put somebody on a team
 Absence is only an error when `shared_scope` shows this store has folded from a sidecar
 before, or a first sync could never create one.
 
-**The decisions and standard logs are a durable event store: damage LOCKS the application.**
-Damage is an entry no conforming build could have written: bytes that are not JSON, a wrong
-shape (`log-shape.ts`, which covers dev-era shapes of live kinds too), or an act the fold refuses
-even over its own causal context (`log-damage.ts`, `eventlog.ts causalContext`). What two people
-racing produce is conflict handling and never locks: the same outcome settles quietly, and
-different outcomes HOLD until one side gives way or a person picks (`*.conflict.resolved`). Damage
-anywhere this machine can see sets `<sidecar>/.git/codemap-lockout.json`. Every read and op then
-answers one diagnostic (MCP error, HTTP 423, CLI exit 1), commit and pull refuse, and a locked sync
-only fetches and re-checks. The repair is manual and a person approves each step:
-`docs/log-repair.md`. `codemap sidecar check <path>` is the read-only pre-push check.
-
-**Every decisions, standard and repair write goes through one door**, `emitEventChecked(..., fold)`.
-It mints the envelope, folds that minted event with the log, and refuses what the fold would refuse.
-A test that needs an event this build will not write plants it with `test-door.ts`, never by
-weakening the door.
-
-It defers the mechanisms to two documents: `docs/plan-docs-unification.md` and
-`docs/fork-repair.md`. The second is worth knowing exists before touching
-`eventlog.ts` or `contest.ts` — the causal vector's per-writer ordinal is a **prefix
-claim** that a fork falsifies, and the fix derives the vector from the `writerPrev`
-chain instead of fold order. A design that looked like a soundness argument was wrong
-here for two reviews; both documents open with the counterexample rather than quietly
-dropping it.
+**Every write goes through its family's door** (`registerDoor`; `emitEventChecked(..., fold)` for
+an inline check). Replay uses the same door, so the rule that refuses a write is the rule that
+would refuse the event on read. A test that needs an event this build will not write plants it
+with `test-door.ts`, never by weakening the door.
 
 ## Closing a finding: one bar, and only grants verify — read `docs/repair-verification.md`
 

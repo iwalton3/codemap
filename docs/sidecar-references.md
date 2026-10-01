@@ -7,6 +7,9 @@
 > the linear log; the fold logic cited did not move with it. §1.1b's ambiguous rows wait on the
 > owner's rulings at the phase 1 gate. Measured against the live sidecar by
 > `scripts/measure-references.mjs` (plan 1.3).
+> **Phase 5 and 6 changed rows here (2026-09-30):** every hold, contest and pick it lists (the
+> held withdrawal, `*.conflict.resolved`, field contests, triage contests, graph reordering) was
+> deleted or became a refusal at replay. `docs/sidecar-architecture.md` is the current statement.
 
 Notation: `E` = envelope field, `d.` = a path under `data`. "Checked" means the fold (or the
 door) refuses or drops the event when the reference does not resolve. "Drop" = silently

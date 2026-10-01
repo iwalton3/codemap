@@ -37,8 +37,8 @@ actually asserts, each with its own receipt.
 
 **`triage.cleared`** — a human's assertion that a target has NO stakes. It carries an
 explicit presence discriminator and must NOT be encoded as `importance: undefined`:
-`applyRevision` (`src/contest.ts:70`) reads an absent field as "this event did not touch
-it", so a clear written that way is indistinguishable from silence.
+the fold reads an absent field as "this event did not touch it", so a clear written that
+way is indistinguishable from silence.
 
 ### Supersession is per FIELD
 
@@ -74,8 +74,8 @@ fold** — today's "human-only in practice" is a comment, not a gate.
 > phase 5; owner, Q6: "Correct push order is what matters"). There are no concurrent marks
 > to merge: between people, the later mark in push order supersedes, field by field;
 > higher-wins, presence-beats-a-clear, the armed tripwire and the contest queue below are
-> gone. The agent ratchet stays, judged against the log before the claim. This section is
-> kept as history until phase 8 rewrites it.
+> gone. The agent ratchet stays, judged against the log before the claim. This section and
+> "Triage does NOT use `contest.ts`" below are kept as history; `contest.ts` is deleted.
 
 Triage exists to say how much ceremony a thing deserves. Its own conflicts get the same
 treatment, and that is what keeps the rule from being either lossy or exhausting.

@@ -501,7 +501,7 @@ export function publishManifestAs(
  * deliberately.
  *
  * Pass two machines of ONE principal (`team([izzie, izzie])`). Copying a writer id
- * between two different people is a fork the system should also survive, but it is
+ * between two different people is a case the system should also survive, but it is
  * not what this models, and calling it a cloned machine would misname the scenario.
  */
 export function cloneMachine(from: Member, to: Member): void {
@@ -510,7 +510,7 @@ export function cloneMachine(from: Member, to: Member): void {
   catch {
     // The id is minted on first append, so there is nothing to copy from a clone that
     // has never written — and the copy would silently do nothing, leaving a scenario
-    // that believes it forked and never did.
+    // that believes it copied the id and never did.
     throw new Error(
       `${from.machine} has no writer id yet — a clone mints one on its first append. `
       + `Have it write something shared before cloning it.`,
