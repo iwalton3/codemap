@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import type { Actor } from "./schema.js";
-import { ensureSidecar, pull, push, sync, checkManifest, checkPeers, countEvents, currentManifest, readManifests, withSidecarLock, MANIFEST_DIR, ATTRIBUTES } from "./sidecar.js";
+import { ensureSidecar, pull, sync, checkManifest, checkPeers, countEvents, currentManifest, readManifests, withSidecarLock, MANIFEST_DIR } from "./sidecar.js";
 import { createFinding, corroborate, comment, readFindings, needsHumanAck } from "./shared-findings.js";
 import { publishWalkthrough, readWalkthroughs } from "./shared-walkthrough.js";
 import { principalKey } from "./eventlog.js";
@@ -43,13 +43,12 @@ const NEW = { targetKind: "anchor" as const, targetId: "a_1", text: "evidence", 
 
 // --- setup ----------------------------------------------------------------------
 
-test("a sidecar is a git repo that conflicts a shared shard, plus the writer's manifest", async () => {
+test("a sidecar is a git repo, plus the writer's manifest", async () => {
   const root = tmp("solo");
   try {
     const r = await ensureSidecar(root, izzie);
     assert.ok(!("error" in r) && r.created);
     assert.ok(existsSync(join(root, ".git")));
-    assert.match(readFileSync(join(root, ATTRIBUTES), "utf8"), /\*\.ndjson -merge/);
     const ms = await readManifests(root);
     assert.equal(ms.length, 1);
     assert.equal(ms[0]!.principal, "izzie@x.com");
@@ -125,15 +124,39 @@ test("a push that loses the race is replayed on the winner's tip, and lands", as
   } finally { t.cleanup(); discard(c); }
 });
 
+test("a document that is not an event survives the reset a lost race causes", async () => {
+  // A provisional audit is a file in the tree that the next sync commits. The retry after a
+  // lost race resets to the winner's tip, which deleted the file the first attempt committed:
+  // `publishProvisionalAudit` had answered `published: true` and nothing ever arrived.
+  const t = await team();
+  const c = tmp("c");
+  try {
+    await createFinding(t.a, 264, izzie, NEW);
+    await sync(t.b, dana);
+    git(c, "clone", "-q", t.origin, ".");
+    writeFileSync(join(c, "winner.txt"), "the winner\n");
+    git(c, "add", "-A"); git(c, "commit", "-qm", "the winner");
+    const mark = join(c, "raced");
+    writeFileSync(join(t.b, ".git", "hooks", "pre-push"),
+      `#!/bin/sh\n[ -f '${mark}' ] && exit 0\ntouch '${mark}'\ngit -C '${c}' push -q origin HEAD:main\n`);
+    chmodSync(join(t.b, ".git", "hooks", "pre-push"), 0o755);
+
+    const doc = "provisional/u/" + "0".repeat(40) + "/audit_1.json";
+    mkdirSync(join(t.b, doc, ".."), { recursive: true });
+    writeFileSync(join(t.b, doc), "{\"id\":\"audit_1\"}\n");
+    const r = await sync(t.b, dana);
+    assert.ok(!("error" in r), JSON.stringify(r));
+    assert.ok(existsSync(mark) && r.retries >= 1, "precondition: the first push lost the race");
+    assert.ok(onRemote(t.origin).includes("winner.txt"), "the winner's commit is on the tip");
+    assert.ok(onRemote(t.origin).includes(doc), "and so is the document");
+  } finally { t.cleanup(); discard(c); }
+});
+
 // "a shared writer id fails the sync closed" lived here. Nothing merges any more, so a
 // shared writer id is one chain in push order; `oracle-cloned-machine.test.ts` proves it harmless.
 
 test("one person on two machines is two shards, and nothing conflicts", async () => {
-  // CONTROL, and load-bearing: this is what catches `-merge` breaking the ORDINARY
-  // team flow. It also corrects the claim this test used to make. It was called "the
-  // case sharding does not cover — merges by union", and that was already stale:
-  // shards are per WRITER, so one person's two clones write two files and the merge
-  // never invokes a driver at all. Union was doing nothing here.
+  // CONTROL: one person's two clones are two sessions on one log, and both land.
   const t = await team();
   try {
     const f1 = await createFinding(t.a, 264, izzie, { ...NEW, text: "from the laptop" });
@@ -264,7 +287,7 @@ test("countEvents counts event lines and ignores everything else", async () => {
 // --- one machine, one sidecar, one writer at a time ------------------------------
 
 /**
- * `sync` is `git add -A` + commit + fetch + merge + push against a working tree.
+ * `sync` is fetch + reset + replay + commit + push against a working tree.
  * Two of those at once in one repository is index.lock contention at best; nothing
  * serialized them before (the HTTP path takes no lock, MCP locks the universe
  * rather than the sidecar, the CLI takes none).
@@ -365,9 +388,8 @@ test("a sidecar configures its own committer identity and signs nothing", async 
 });
 
 test("a commit that cannot succeed fails the sync instead of reporting a push", async () => {
-  // R1, reproduced. When the commit fails the shards stay staged, the merge still
-  // succeeds, and `git push HEAD:branch` pushes a tip the remote already has — which
-  // exits 0. So sync returned `pushed: true` and the finding never left the machine,
+  // R1, reproduced. When the commit fails the shards stay staged, and
+  // `git push HEAD:branch` pushes a tip the remote already has — which exits 0. So sync returned `pushed: true` and the finding never left the machine,
   // and every later sync repeated it.
   //
   // A failing pre-commit hook stands in for the original trigger (an unusable signing
@@ -416,9 +438,7 @@ test("a sync with nothing of its own to send says so rather than claiming a push
 // out of scope (docs/PROPOSAL-online-only-sync.md). A clone's OWN unsynced or hand-edited
 // events are what a sync must not destroy; `sync-engine.test.ts` covers that.
 
-test("push refuses when the remote already holds a peer this build cannot read", async () => {
-  // `pull` gates the merge and covers the sync path, since sync pulls first. This
-  // covers `push` on its own, which is exported and reachable without a pull.
+test("a sync refuses when the remote already holds a peer this build cannot read", async () => {
   const t = await team();
   try {
     const m = currentManifest("kai@x.com");
@@ -430,14 +450,14 @@ test("push refuses when the remote already holds a peer this build cannot read",
 
     // Writes sync inline, so the gate meets the write itself.
     await assert.rejects(createFinding(t.a, "pr-1", izzie, NEW), /ANCHOR_SCHEME/);
-    const r = await push(t.a, "m", { actor: izzie }) as { error?: string };
-    assert.ok(r.error, "and a bare push refuses too");
+    const r = await sync(t.a, izzie) as { error?: string };
+    assert.ok(r.error, "and a bare sync refuses too");
     assert.match(r.error!, /ANCHOR_SCHEME/);
   } finally { t.cleanup(); }
 });
 
-test("push into a remote it agrees with is not gated", async () => {
-  // CONTROL. Without it the test above passes against a gate that refuses every push,
+test("a sync into a remote it agrees with is not gated", async () => {
+  // CONTROL. Without it the test above passes against a gate that refuses every sync,
   // and against one that fires on our OWN tree — which would wedge the whole team the
   // moment a single teammate upgraded.
   const t = await team();
@@ -445,7 +465,7 @@ test("push into a remote it agrees with is not gated", async () => {
     await sync(t.b, dana);
     await createFinding(t.a, "pr-1", izzie, NEW);
     git(t.a, "fetch", "-q", "origin");
-    const r = await push(t.a, "m", { actor: izzie }) as { error?: string; pushed?: boolean };
+    const r = await sync(t.a, izzie) as { error?: string; pushed?: boolean };
     assert.equal(r.error, undefined, "an agreeing peer pushes normally");
     assert.equal(r.pushed, true);
     assert.ok(onRemote(t.origin).some((f) => f.startsWith("findings/pr-1/")));

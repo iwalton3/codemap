@@ -1,27 +1,14 @@
 /**
- * The sidecar: a git repo that carries shared review state, and the send/receive
- * loop over it.
+ * The sidecar: a git repo that carries shared review state, and the sync over it.
  *
- * The whole algorithm is four lines, and the reason it can be four lines is that
- * everything above it is append-only and commutative:
- *
- *   pull:  fetch, merge      -> re-fold
- *   push:  commit, push      -> on reject: pull, retry
- *
- * The retry is safe to perform BLINDLY, and that is the property that makes a
- * one-button sync honest rather than a lie over a fragile operation: events are
- * immutable and their order is decided by the fold, not by the file, so a merge
- * can never change what an event means. Nothing here has to understand findings.
- *
- * Merge, not rebase. Rebase replays each local commit onto the remote tip, so a
- * conflict has to be resolved once per commit; a merge resolves once. Linear
- * history would buy nothing here — the log's order comes from `sortEvents`, not
- * from the commit graph.
+ * The remote is the one serializer (docs/PROPOSAL-online-only-sync.md). A sync fetches, moves the
+ * working tree to the remote tip, replays this session's staged ops against it, commits, and
+ * pushes as a fast-forward; a lost race starts again from the new tip. Nothing is merged.
  */
 
 import { spawnSync } from "node:child_process";
-import { appendFile, mkdir, readFile, readdir, rm, stat, truncate, writeFile } from "node:fs/promises";
-import { existsSync, realpathSync, readFileSync } from "node:fs";
+import { mkdir, readFile, readdir, rm, stat, truncate, writeFile } from "node:fs/promises";
+import { existsSync, mkdirSync, realpathSync, readFileSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { ANCHOR_SCHEME, HASH_SCHEME } from "./schema.js";
 import { GRAMMAR_VERSIONS } from "./grammar-versions.js";
@@ -34,7 +21,6 @@ import {
 import { withoutOverlay } from "./sync-session.js";
 import { pushGate } from "./validation.js";
 import { allQueuedIds, drop, getMeta, markConflict, markInflight, markLanded, markStaged, pending, setMeta, setTx, stage } from "./sync-queue.js";
-import { shapeCheckFor } from "./log-shape.js";
 import { recordLockout } from "./lockout.js";
 import type { Actor } from "./schema.js";
 
@@ -65,7 +51,7 @@ export const GIT_CALL_TIMEOUT_MS = 180_000;
  * `spawnSync` blocks the event loop, so the lock's `setInterval` heartbeat cannot
  * fire during a call — and a run of consecutive calls never turns the loop either,
  * so it cannot fire between them. Stamping here is what keeps a legitimately-slow
- * holder from being stolen from mid-merge. Before AND after: before, so the clock
+ * holder from being stolen from mid-sync. Before AND after: before, so the clock
  * starts fresh against the block about to happen; after, so a long call is not
  * followed by an unrefreshed gap.
  */
@@ -111,19 +97,18 @@ const branchOf = (root: string): string => g(root, ["symbolic-ref", "--short", "
  *
  * **Both REFUSE, and the reason is the same one twice.** A genuinely broken sidecar
  * should stop and say so rather than be made worse — outbound, committing damage makes
- * it everybody's; inbound, merging it puts the bytes in one more clone's history and
+ * it everybody's; inbound, taking it puts the bytes in one more clone's history and
  * destroys the scope on one more machine. The collateral on the inbound side is real and
  * accepted: the good events in that pull do not arrive either. That is the trade a broken
  * shared log deserves, and stopping is what gets it repaired.
  *
  * This is NOT a defence against a hostile shard, and it should not be tuned as one. The
- * case it is built for is a sidecar that is genuinely damaged — a bad merge, a disk, an
+ * case it is built for is a sidecar that is genuinely damaged — a broken build, a disk, an
  * interrupted write — where continuing quietly is how the damage spreads.
  *
- * The outbound half hangs off `commitLocal` rather than off `push`, because that is the
- * one function that commits: `syncHeld` commits before it pulls, and a check only on the
- * push would leave the damage in the local history with a clean `git status` over it —
- * which the next push would then publish without ever looking.
+ * The outbound half hangs off `commitLocal`, because that is the one function that commits:
+ * a check only on the push would leave the damage in the local history with a clean
+ * `git status` over it, which the next push would then publish without ever looking.
  *
  * Neither repairs, and nothing else here does either — see `separatorFor` in `eventlog.ts`
  * for why a torn tail is sealed in rather than truncated. Quietly dropping bytes that do
@@ -131,11 +116,6 @@ const branchOf = (root: string): string => g(root, ["symbolic-ref", "--short", "
  * crash from a disk that ate an event somebody had already read.
  */
 
-/**
- * Damage only — the events are `readShard`'s business, not a gate's. Bytes that are not JSON,
- * and, in a scope that has one, an event not in the shape its kind is written in (plan 1.2):
- * the transport sees the same damage a read halts on, or it would publish what locks the team.
- */
 /**
  * Bytes that are not JSON. A wrong SHAPE is not damage any more: it parses, so it is newer
  * than this build (owner, batch 1) — reads skip it, pushes block (`newerIn`).
@@ -185,38 +165,22 @@ function damagedWorkingShards(root: string): ShardDamage[] {
 }
 
 /**
- * Every shard an inbound branch would ADD, read off the fetched COMMIT.
- *
- * **From the MERGE BASE, not from our own tip, and that distinction is load-bearing
- * rather than an optimisation.** `diff HEAD remoteSha` answers "how do these two differ",
- * which includes everything WE have that they do not — so the moment somebody repaired a
- * damaged shard and tried to publish the repair, this read the remote's still-damaged
- * copy of it and refused the pull that the push has to go through first. The repairer
- * was locked out of repairing. `base..remoteSha` asks what is new on their side, which
- * is the only thing a merge can bring, and a remote already contained in our history
- * yields nothing at all.
- *
- * The content at `remoteSha` is what lands, so a shard damaged and then fixed within the
- * incoming range is fine and reads as fine — we validate what arrives, not every state it
+ * Every shard that taking the fetched COMMIT would change, read off that commit. A sync only
+ * ever moves to the remote tip, so what arrives is whatever differs from HEAD; an unborn HEAD
+ * takes everything. The content at `remoteSha` is what lands, so a shard damaged and fixed
+ * within the incoming range reads as fine — what arrives is validated, not every state it
  * passed through.
- *
- * No merge base means unrelated histories, which is a first pull: everything is inbound.
- *
- * One `git show` per changed shard. That is the shape `erasedByMerge` already has, and an
- * ordinary pull changes a handful; a first pull reads every shard once, which is the one
- * time it is genuinely worth doing.
  */
-function damagedInboundShards(root: string, beforeSha: string, remoteSha: string): ShardDamage[] {
-  const base = beforeSha ? g(root, ["merge-base", beforeSha, remoteSha]).out : "";
-  const listing = base
-    ? g(root, ["diff", "--name-only", "-z", base, remoteSha])
+function damagedInboundShards(root: string, headSha: string, remoteSha: string): ShardDamage[] {
+  const listing = headSha
+    ? g(root, ["diff", "--name-only", "-z", headSha, remoteSha])
     : g(root, ["ls-tree", "-r", "--name-only", "-z", remoteSha]);
   if (!listing.ok) return [];
   const out: ShardDamage[] = [];
   for (const path of listing.out.split("\0")) {
     if (!path.endsWith(SHARD_EXT)) continue;
     const blob = gRaw(root, ["show", `${remoteSha}:${path}`]);
-    if (!blob.ok) continue; // deleted on their side — `erasedByMerge` is what judges that
+    if (!blob.ok) continue; // deleted on their side
     out.push(...shardDamage(blob.out, path));
   }
   return out;
@@ -225,16 +189,10 @@ function damagedInboundShards(root: string, beforeSha: string, remoteSha: string
 /**
  * Commit whatever is in the tree.
  *
- * Called BEFORE a merge as well as before a push: a fresh sidecar's scaffold
- * (.gitattributes, the manifest) is untracked, and git refuses a merge that would
- * overwrite untracked files — so a new person's first pull failed on the files
- * their own setup had just written.
- *
  * **Three outcomes, not two.** This returned a bare boolean that was `false` both
  * for "nothing to commit" and for "the commit failed", so no caller could tell a
  * clean no-op from a lost finding — and both call sites dropped it anyway. With a
- * failing commit the shards stay staged, the merge still succeeds, and the push is
- * a no-op that exits 0, so `sync` reported `pushed: true` while nothing left the
+ * failing commit the shards stay staged and the push is a no-op that exits 0, so `sync` reported `pushed: true` while nothing left the
  * machine. Reproduced with `commit.gpgsign=true` and an unusable key, which is an
  * ordinary global git config. See the architecture doc's R1.
  */
@@ -242,20 +200,15 @@ type CommitOutcome = "nothing" | "committed" | { error: string };
 
 function commitLocal(root: string, message: string): CommitOutcome {
   if (!g(root, ["status", "--porcelain"]).out) return "nothing";
-  // THE gate, and it is here rather than in `pushHeld` because this is the only place
-  // anything is committed. `syncHeld` commits before it pulls — the scaffold-vs-merge
-  // fix — so a check on the push side alone would let damage into the local history
-  // there, and `git status` is clean afterwards, so the next push would sail through
-  // and publish it.
+  // THE gate: this is the only place anything is committed, and once damage is in the local
+  // history `git status` is clean over it, so the next push would publish it unexamined.
   const damaged = damagedWorkingShards(root);
   if (damaged.length) {
     lockOn(root, damaged);
-    return { error: `refusing to commit ${damaged.length} unreadable line(s) — bytes that are not JSON, or `
-      + `an event no conforming build writes — and committing them would put them in front of the whole `
-      + `team:\n${damageDetail(damaged)}\n`
+    return { error: `refusing to commit ${damaged.length} unreadable line(s) — bytes that are not JSON — `
+      + `and committing them would put them in front of the whole team:\n${damageDetail(damaged)}\n`
       + `The store is locked until they are repaired: see docs/log-repair.md. Until then this clone does `
-      + `not sync in EITHER direction — a sync commits before it pulls, so nothing is sent and nothing is `
-      + `received.` };
+      + `not sync in either direction.` };
   }
   g(root, ["add", "-A"]);
   const c = g(root, ["commit", "-q", "-m", message]);
@@ -264,14 +217,12 @@ function commitLocal(root: string, message: string): CommitOutcome {
 }
 
 /**
- * Manifests are per-principal, in a directory, for the same reason shards are.
+ * Manifests are per-principal, in a directory.
  *
  * A single shared manifest cannot work: every clone rewrites it with its OWN
- * schemes, so a pull would compare a file to itself and see agreement — and when
- * two people genuinely differ, JSON does not union-merge, so the one file that is
- * supposed to REPORT the incompatibility becomes a merge conflict instead. One
- * file per person conflicts never, and answers the more useful question: not
- * "does this sidecar match me" but "who on this team does not".
+ * schemes, so a pull would compare a file to itself and see agreement. One file
+ * per person answers the more useful question: not "does this sidecar match me"
+ * but "who on this team does not".
  */
 /** Re-exported: the lock lives below this module so the event log can take it too. */
 export { withSidecarLock } from "./lock.js";
@@ -291,9 +242,9 @@ export { withSidecarLock } from "./lock.js";
  *
  * A root commit is created once, by `ensureSidecar`, and pushed on the first sync — so a
  * clone of the same repo has it, and `merge-base --is-ancestor` still finds it after an
- * `--allow-unrelated-histories` merge has added a second root beside it. That last case
- * is not hypothetical: it is the ordinary way this team joins up, everybody running
- * `ensureSidecar` locally and then pointing at one remote.
+ * `--allow-unrelated-histories` merge has added a second root beside it — a history a
+ * sidecar from before the linear log may carry. Joining a team now replaces the local
+ * history with the remote's instead (`joined` in `syncLinear`).
  *
  * Null means the sidecar has no commits yet — a brand-new one, which is not yet anything.
  *
@@ -329,8 +280,6 @@ export function isSameSidecar(root: string, lineage: string): boolean {
 }
 
 export const MANIFEST_DIR = "manifests";
-
-export const ATTRIBUTES = ".gitattributes";
 
 /**
  * What the shards were written under — the team-wide compatibility contract.
@@ -437,24 +386,7 @@ async function gitConfigLooksSet(root: string, identity: string): Promise<boolea
     && /^\s*gpgsign\s*=\s*false\s*$/m.test(cfg);
 }
 
-/**
- * Make `root` a usable sidecar: a git repo, with the shard merge policy in place
- * and a manifest.
- *
- * **`-merge`, not `merge=union`.** Union was justified as covering "the same person
- * appending from two machines", and this branch's own code retired that reason:
- * shards are per-WRITER (`shardFor`), so two clones write one shard file only when
- * they share a writer id — which IS the fork. Union did not prevent that fork, it
- * laundered its evidence into a clean-looking merge, to be discovered later as a
- * team-wide blocked scope instead of at sync time on the two guilty clones. It also
- * ADDED a damage mode: a stitched union is one of the ways a glued line appears.
- *
- * `-merge` conflicts a both-sides-changed shard with no interleaving and no conflict
- * markers written into the file, so a conflicted shard can never poison `readShard`;
- * a one-side-changed shard never invokes a driver and merges clean, so the ordinary
- * team flow of disjoint per-writer files is untouched. `codemap sidecar heal` is the
- * way out, and it is a person.
- */
+/** Make `root` a usable sidecar: its own git repo, with its own committer identity, and a manifest. */
 export async function ensureSidecar(root: string, actor?: Actor): Promise<{ created: boolean } | { error: string }> {
   await mkdir(root, { recursive: true });
   // Is this path a repo ROOT — not "is it inside one". The difference is the whole
@@ -464,8 +396,7 @@ export async function ensureSidecar(root: string, actor?: Actor): Promise<{ crea
   // user's own repository. `commitLocal` there is `git add -A` + commit, and `push`
   // finds that repo's `origin` — one sync committed a developer's uncommitted work
   // and pushed it to the team remote, while sharing nothing, because the shards sit
-  // under the `*`-ignored `.codemap/`. `pull` merged the sidecar's history into
-  // their working tree.
+  // under the `*`-ignored `.codemap/`.
   const top = g(root, ["rev-parse", "--show-toplevel"]);
   const isRepoRoot = top.ok && samePath(top.out, root);
   if (!isRepoRoot) {
@@ -491,8 +422,6 @@ export async function ensureSidecar(root: string, actor?: Actor): Promise<{ crea
     g(root, ["config", "user.name", "codemap"]);
     g(root, ["config", "commit.gpgsign", "false"]);
   }
-  // Written by everyone, identically, so it never conflicts.
-  await writeFile(join(root, ATTRIBUTES), `*${SHARD_EXT} -merge\n`, "utf8");
   if (actor) {
     await mkdir(join(root, MANIFEST_DIR), { recursive: true });
     await writeFile(
@@ -523,169 +452,19 @@ export async function countEvents(root: string): Promise<number> {
   return total;
 }
 
-export interface PullResult { gained: number; warning?: string; restored?: Restored[]; joined?: boolean }
-
-/** A shard whose lines a pull tried to delete, and how many were put back. */
-export interface Restored { path: string; events: number }
-
-/** A shard that came back from a merge with fewer lines than it went in with. */
-interface Erasure { path: string; restored: string[] }
-
-/**
- * Every (commit, shard) in the incoming history that removed lines.
- *
- * **Scanning the range, not the endpoints, and that distinction is the whole fix.**
- * Comparing our pre-merge tip with the merged tip is blind to an event that was added
- * and deleted between them: it is absent at both ends, so the diff is empty and the
- * loss is invisible. Same for a first pull, where every deletion in the incoming
- * history happened before our endpoint existed. Verified — see the test that pushes an
- * event and its deletion before the other clone ever fetches.
- *
- * `-z` so paths arrive NUL-terminated and raw; with `--numstat` alone git C-quotes any
- * non-ASCII path, and the quoted form was then passed to `git show`, which fails, and
- * the shard was skipped in silence. Directory-derived universe keys make that
- * reachable. `core.quotePath=false` belts the same braces.
- */
-function deletingCommits(root: string, range: string): { commit: string; path: string }[] | { error: string } {
-  // `--full-history` is LOAD-BEARING. With a pathspec, git's default history
-  // simplification prunes commits that are TREESAME to their parent — and when the
-  // path is absent from the final tree it prunes the entire side branch that added
-  // and removed it. Measured: an add-then-delete across a merge yields 0 numstat rows
-  // by default and 2 with this flag. Removing it silently restores the exact hole
-  // this function exists to close.
-  const log = g(root, ["-c", "core.quotePath=false", "log", "--full-history", "--numstat", "-z",
-                       "--no-renames", "--format=C%H", range, "--", `*${SHARD_EXT}`]);
-  // An audit that cannot run must not read as "nothing was erased". This guards a
-  // non-negotiable, so a failure here fails the pull.
-  if (!log.ok) return { error: `could not audit the incoming history for deletions: ${log.err.slice(0, 300)}` };
-  const out: { commit: string; path: string }[] = [];
-  let commit = "";
-  for (const rec of log.out.split("\0")) {
-    if (!rec) continue;
-    if (rec.startsWith("C")) { commit = rec.slice(1).trim(); continue; }
-    const [, deleted, path] = rec.split("\t");
-    // "-" is git's binary marker. A shard is never binary, and one we cannot count is
-    // one we cannot vouch for — so treat it as suspect rather than skipping it.
-    if (!path || deleted === "0") continue;
-    out.push({ commit, path });
-  }
-  return out;
-}
-
-/** Lines of a blob at a rev, or null when the path is not there. */
-function linesAt(root: string, rev: string, path: string): string[] | null {
-  const blob = g(root, ["show", `${rev}:${path}`]);
-  if (!blob.ok) return null;
-  return blob.out.split("\n").filter((l) => l.trim() && isEventLine(l, path));
-}
-
-/**
- * Does this line carry an event at all?
- *
- * The append-only restore is about EVENTS, and a line no build can parse is not one — so
- * it was never erased in the sense this protects, and putting it back is actively wrong.
- * Deleting the damaged line is the ONLY repair a corrupt shard has, and without this the
- * repair is undone on every teammate's next pull: their merge sees the removal, restores
- * it, and pushes it back at the person who fixed it. Found by running the oracle, not by
- * reading either mechanism — each is right on its own.
- *
- * Parse only, deliberately NOT `wellFormed`: an event from a newer client parses and
- * fails the envelope check, and that IS a real record whose loss must still be caught.
- * Same line the damage check draws.
- */
-function isEventLine(line: string, path: string): boolean {
-  // A wrong-shaped line is damage too (plan 1.2): restoring one would undo its repair.
-  const check = shapeCheckFor(dirname(path));
-  try { const e = JSON.parse(line) as LogEvent; return !check || !check(e); } catch { return false; }
-}
-
-/**
- * Lines the incoming history removed and the merge result no longer has.
- *
- * A shard is append-only, so its line set may only grow. Nothing enforced that:
- * `git rm` a shard on any clone, push, and every teammate's next pull applied the
- * deletion as a clean silent merge. That was the one live hole in "once state is
- * pushed, nothing deletes it".
- */
-function erasedByMerge(root: string, beforeSha: string): Erasure[] | { error: string } {
-  const deletions = deletingCommits(root, `${beforeSha}..HEAD`);
-  if ("error" in deletions) return deletions;
-
-  /** path -> every line that existed before something dropped it. */
-  const had = new Map<string, Set<string>>();
-  const remember = (path: string, lines: string[] | null) => {
-    if (!lines?.length) return;
-    let set = had.get(path);
-    if (!set) had.set(path, set = new Set());
-    for (const l of lines) set.add(l);
-  };
-
-  // Deletions in the incoming history.
-  for (const { commit, path } of deletions) {
-    // The first parent is the state the deleting commit removed FROM. A root commit
-    // has none, and then there was nothing to lose.
-    remember(path, linesAt(root, `${commit}^`, path));
-  }
-
-  // And lines OUR side had that the merge result no longer does. The range scan
-  // above cannot see these: `git log` omits diffs for merge commits, so a merge that
-  // resolved by dropping our lines contributes no numstat rows at all.
-  const ends = g(root, ["-c", "core.quotePath=false", "diff", "--numstat", "-z", "--no-renames",
-                        beforeSha, "HEAD", "--", `*${SHARD_EXT}`]);
-  if (!ends.ok) return { error: `could not audit the merge result for deletions: ${ends.err.slice(0, 300)}` };
-  for (const rec of ends.out.split("\0")) {
-    if (!rec) continue;
-    const [, deleted, path] = rec.split("\t");
-    if (!path || deleted === "0") continue;
-    remember(path, linesAt(root, beforeSha, path));
-  }
-
-  if (!had.size) return [];
-
-  const out: Erasure[] = [];
-  for (const [path, lines] of had) {
-    const now = new Set(linesAt(root, "HEAD", path) ?? []);
-    const lost = [...lines].filter((l) => !now.has(l));
-    if (lost.length) out.push({ path, restored: lost });
-  }
-  return out;
-}
-
-/**
- * Put the erased lines back, by appending them.
- *
- * Restoring rather than refusing, on purpose. Refusing the merge would wedge pull
- * permanently — the deletion is in history and history cannot be un-made, so there
- * would be no way back, which is the dead-scope failure the architecture doc rejects.
- * Appending is also the only repair consistent with the rule being defended: the fix
- * for "somebody deleted state" is not a rollback, it is more append-only content.
- *
- * Appends rather than rewrites, so a concurrent writer's line cannot be read, held,
- * and then clobbered by the write-back. The caller holds the sidecar lock regardless.
- */
-async function restoreErased(root: string, erased: Erasure[]): Promise<void> {
-  for (const e of erased) {
-    const file = join(root, e.path);
-    await mkdir(dirname(file), { recursive: true });
-    const current = await readFile(file, "utf8").catch(() => "");
-    // A shard whose last line has no terminator would otherwise get the first
-    // restored line glued onto it, turning two events into one unreadable one.
-    const lead = current && !current.endsWith("\n") ? "\n" : "";
-    await appendFile(file, lead + e.restored.join("\n") + "\n", "utf8");
-  }
-}
+export interface PullResult { gained: number; warning?: string; joined?: boolean }
 
 /**
  * Fetch, and it is safe to do this OUTSIDE the sidecar lock.
  *
- * The lock exists to keep two commit-merge-push sequences from interleaving against
+ * The lock exists to keep two fetch-replay-push sequences from interleaving against
  * one working tree. A fetch touches neither the working tree nor the index — it
  * writes objects and `refs/remotes/*`, and git serializes those itself. It is also
  * the slow part: network-bound, up to the full git timeout, during which holding the
  * lock stalls every other local reader and writer of this sidecar for no reason.
  *
  * `false` means there is no remote, which is not an error: a sidecar with no remote
- * is a perfectly good local one and the whole design works offline.
+ * is a local one, and its own history is the only serializer there is.
  */
 /** What an already-attempted fetch left behind: done, not attempted, or its failure. */
 type FetchState = boolean | { error: string };
@@ -722,7 +501,7 @@ function fetchRemote(root: string): { fetched: boolean } | { error: string } {
 
 /**
  * What a LOCKED clone may still do (plan 1.2): fetch, and look at what the fetched tip would
- * bring, without merging it. Nothing is written but the remote-tracking ref. The first damaged
+ * bring, without taking it. Nothing is written but the remote-tracking ref. The first damaged
  * line inbound, or null; an error when the fetch itself fails.
  */
 export async function inboundDamage(root: string): Promise<ShardDamage | null | { error: string }> {
@@ -735,124 +514,16 @@ export async function inboundDamage(root: string): Promise<ShardDamage | null | 
   return damagedInboundShards(root, beforeSha, remoteSha)[0] ?? null;
 }
 
-/**
- * Fetch and merge. A sidecar with no remote is a perfectly good local one, so
- * that is a no-op rather than an error — the whole design works offline and only
- * needs a remote to reach other people.
- */
+/** Bring the tree to the remote tip, pushing nothing. With no remote, a no-op. */
 export async function pull(root: string, actor?: Actor): Promise<PullResult | { error: string }> {
   return pullLinear(root, actor);
-}
-
-/**
- * The pull itself, with the lock already held.
- *
- * Separate because the erasure repair reads a shard and writes it back, and `push`
- * calls this after a rejection from inside `sync`'s lock — so the public entry point
- * must take the lock and the internal one must not, or every sync deadlocks against
- * itself. Same shape as `sync`/`syncHeld`, and the lock is not reentrant.
- */
-async function pullHeld(root: string, actor?: Actor, fetched: FetchState = false): Promise<PullResult | { error: string }> {
-  if (!hasRemote(root)) return { gained: 0 };
-  if (typeof fetched === "object") return fetched;
-  const before = await countEvents(root);
-  // Only when the caller has not already fetched outside the lock. The in-lock fetch
-  // stays for the paths that cannot hoist it: a brand-new sidecar whose repo did not
-  // exist yet, and `pushHeld` re-pulling after a rejection.
-  if (!fetched) {
-    const r = g(root, ["fetch", "--quiet", "origin"]);
-    if (!r.ok) return { error: `fetch failed: ${r.err.slice(0, 300)}` };
-  }
-
-  const branch = branchOf(root);
-  // PINNED to a sha, not left as `origin/<branch>`, and this matters more since the
-  // fetch moved outside the lock: another process's fetch does not take the lock, so
-  // the ref can advance between the manifest check and the merge — and then we would
-  // have vetted one state and merged another. Resolve once, use that sha for both.
-  const remoteSha = g(root, ["rev-parse", "--verify", "--quiet", `origin/${branch}`]).out;
-  // Nothing fetched yet (an empty remote, or a first sync) — not an error.
-  if (!remoteSha) return { gained: 0 };
-
-  // Checked against the FETCHED commit, before merging. Reading the working tree
-  // would compare my manifest to my own, and a fatal mismatch should refuse the
-  // data rather than merge it and then complain.
-  const mine = currentManifest(actor?.principal ?? "");
-  const incompatEarly = checkPeers(remoteManifests(root, remoteSha), mine);
-  if (incompatEarly?.fatal) return { error: incompatEarly.message };
-
-  // Our tip BEFORE the merge, so the append-only audit further down has something to
-  // compare against and the inbound shard check knows what this pull would ADD. `HEAD`
-  // on an unborn branch has no sha — nothing to erase, and everything is inbound.
-  const beforeSha = g(root, ["rev-parse", "--verify", "--quiet", "HEAD"]).out;
-
-  // Checked while the sidecar is still untouched, exactly as the manifest gate above is,
-  // and REFUSED rather than reported. A merge that takes damaged bytes makes a broken
-  // sidecar worse: this clone's history then carries them too, and the scope it destroys
-  // reads as an empty one on one more machine.
-  //
-  // The collateral is real and accepted — the good events in the same pull do not arrive
-  // either, and every scope waits on a repair to one of them. That is the trade a broken
-  // shared log deserves: it is not a hostile act being defended against, it is a genuinely
-  // damaged sidecar, and whoever wrote that shard still holds the only history that can
-  // repair it. Stopping is what gets it repaired; merging is what spreads it.
-  const damaged = damagedInboundShards(root, beforeSha, remoteSha);
-  if (damaged.length) {
-    // Damage this machine can see locks it, an incoming pull it refused included (owner, batch 8).
-    lockOn(root, damaged);
-    return { error: `refusing to merge: ${damaged.length} line(s) in the incoming shards are damaged — `
-      + `bytes that are not JSON, or an event no conforming build writes. The sidecar is untouched.\n`
-      + `${damageDetail(damaged)}\n`
-      + `The store is locked until the team's log is repaired: see docs/log-repair.md.` };
-  }
-
-  // `--allow-unrelated-histories` because the ordinary way a team arrives here is
-  // that everybody ran `ensureSidecar` locally and then pointed it at the same
-  // remote, so the second person's history is genuinely unrelated to the first's.
-  // Safe for this content specifically: per-writer shards are disjoint between
-  // clones, and the only other files are the manifest and .gitattributes, which are
-  // generated identically by the same code. Compatibility is checked below.
-  const merge = g(root, ["merge", "--no-edit", "--allow-unrelated-histories", remoteSha]);
-  if (!merge.ok) {
-    // A conflicted SHARD is the interesting case and it has exactly one cause: two
-    // clones sharing a writer id, since per-writer shards are otherwise disjoint.
-    // Diagnose it before aborting — the abort is what keeps the promise that the
-    // sidecar is untouched, and it also destroys the conflict stages, which is why
-    // `heal` re-runs the merge for itself rather than trying to consume this one.
-    const conflicted = g(root, ["diff", "--name-only", "--diff-filter=U", "-z"]).out
-      .split("\0").map((f) => f.trim()).filter(Boolean);
-    const shards = conflicted.filter((f) => f.endsWith(SHARD_EXT));
-    g(root, ["merge", "--abort"]);
-    if (shards.length) {
-      const writer = shards[0]!.split("/").pop()!.replace(SHARD_EXT, "");
-      return { error: `shard ${shards[0]} diverged: writer id ${writer} exists in two clones `
-        + `(a copied machine image, or a synced home directory). Both sides are intact and the `
-        + `sidecar is untouched. Run \`codemap sidecar heal\` on this clone.` };
-    }
-    return { error: `merge failed and was aborted, the sidecar is untouched: ${merge.err.slice(0, 300)}` };
-  }
-  const incompat = checkPeers(await readManifests(root), mine);
-  if (incompat?.fatal) return { error: incompat.message };
-
-  const erased = beforeSha ? erasedByMerge(root, beforeSha) : [];
-  if ("error" in erased) return erased;
-  if (erased.length) {
-    await restoreErased(root, erased);
-    const c = commitLocal(root, "codemap: restore events a merge deleted");
-    if (typeof c === "object") return c;
-  }
-
-  return {
-    gained: (await countEvents(root)) - before,
-    ...(incompat ? { warning: incompat.message } : {}),
-    ...(erased.length ? { restored: erased.map((e) => ({ path: e.path, events: e.restored.length })) } : {}),
-  };
 }
 
 /**
  * Peers' manifests as they exist at a fetched COMMIT, without touching the tree.
  *
  * A sha rather than `origin/<branch>`: the ref can move under us now that fetching
- * does not take the lock, and a caller that vets one state must merge that same one.
+ * does not take the lock, and a caller that vets one state must take that same one.
  */
 const manifestCache = new Map<string, SidecarManifest[]>();
 /** A full sha — the only rev whose content is guaranteed never to change. */
@@ -888,22 +559,6 @@ function remoteManifests(root: string, rev: string): SidecarManifest[] {
   return out;
 }
 
-export interface PushResult {
-  pushed: boolean;
-  committed: boolean;
-  retries: number;
-  /**
-   * What the retry pulls brought in.
-   *
-   * A rejected push re-pulls, and that pull can gain events, restore ones a merge
-   * deleted, and raise a warning — all of which were dropped on the floor, so a sync
-   * that repaired a deletion on its retry path reported nothing at all.
-   */
-  gained?: number;
-  restored?: Restored[];
-  warning?: string;
-}
-
 /**
  * Did the remote branch actually take our tip?
  *
@@ -921,171 +576,16 @@ function remoteHasHead(root: string, branch: string): boolean {
   return g(root, ["merge-base", "--is-ancestor", "HEAD", `refs/remotes/origin/${branch}`]).ok;
 }
 
-/**
- * Commit whatever is on disk and push it, pulling and retrying on rejection.
- *
- * Retrying without inspecting the rejection is deliberate and only safe because
- * of what is being pushed: append-only files whose meaning does not depend on
- * their position, so a merge in between cannot change what this push says.
- */
-export async function push(root: string, message: string, opts: { attempts?: number; actor?: Actor } = {}): Promise<PushResult | { error: string }> {
-  const r = await sync(root, opts.actor, message);
-  return "error" in r ? r : { pushed: r.pushed, committed: r.committed, retries: r.retries, ...(r.gained ? { gained: r.gained } : {}), ...(r.warning ? { warning: r.warning } : {}) };
-}
-
-async function pushHeld(root: string, message: string, opts: { attempts?: number; actor?: Actor } = {}): Promise<PushResult | { error: string }> {
-  const attempts = opts.attempts ?? 3;
-  // The push-side check lives in `commitLocal`, which is the only thing that commits.
-  const commit = commitLocal(root, message);
-  if (typeof commit === "object") return commit;
-  const committed = commit === "committed";
-  if (!hasRemote(root)) return { pushed: false, committed, retries: 0 };
-
-  const branch = branchOf(root);
-
-  // The push-side gate, and it is deliberately against the REMOTE's manifests, not
-  // the ones in our tree. `pull` already refuses to merge a fatally incompatible
-  // peer, which covers the sync path; this covers `push` called on its own.
-  //
-  // Checking the local tree instead looks equivalent and is not: our tree holds every
-  // peer's manifest, so the moment one teammate upgrades, everybody else would refuse
-  // to push and the team would wedge on somebody else's version. The question a
-  // pusher must ask is "am I the one who disagrees with what is already there", which
-  // is what the fetched ref answers.
-  const gateSha = g(root, ["rev-parse", "--verify", "--quiet", `origin/${branch}`]).out;
-  const gate = gateSha ? checkPeers(remoteManifests(root, gateSha), currentManifest(opts.actor?.principal ?? "")) : null;
-  if (gate?.fatal) return { error: `refusing to push into a sidecar this build cannot agree with: ${gate.message}` };
-
-  // Accumulated across retries, not overwritten: two rejections mean two pulls, and
-  // the events or repairs from the first must not vanish when the second reports.
-  let gained = 0;
-  const restored: Restored[] = [];
-  let warning: string | undefined;
-
-  for (let i = 0; i < attempts; i++) {
-    const p = g(root, ["push", "--quiet", "origin", `HEAD:${branch}`]);
-    if (p.ok) {
-      if (!remoteHasHead(root, branch)) {
-        return { error: `git push reported success but origin/${branch} does not contain this commit — nothing was sent. The sidecar is intact; retry, and check the remote's refusal (a hook, or a protected branch).` };
-      }
-      return {
-        pushed: true, committed, retries: i,
-        ...(gained ? { gained } : {}),
-        ...(restored.length ? { restored } : {}),
-        ...(warning ? { warning } : {}),
-      };
-    }
-    const pulled = await pullHeld(root, opts.actor);
-    if ("error" in pulled) return { error: `push rejected and the follow-up pull failed: ${pulled.error}` };
-    gained += pulled.gained;
-    if (pulled.restored) restored.push(...pulled.restored);
-    warning = pulled.warning ?? warning;
-  }
-  return { error: `push still rejected after ${attempts} attempts — someone is pushing continuously, or the remote refuses this branch` };
-}
-
-export interface HealedMerge { resolved: { path: string; events: number }[] }
-
-/**
- * Re-run the merge and resolve conflicted shards by unioning their lines.
- *
- * **Its own merge, deliberately.** `pull` aborts on conflict, and the abort is what
- * keeps its promise that the sidecar is untouched — it also destroys the `:2:`/`:3:`
- * stages. A heal that tried to consume the conflict `pull` reported would find none
- * left, so it makes its own and consumes that. Loosening `pull`'s abort instead would
- * trade a clear failure for a half-merged tree on every ordinary sync.
- *
- * The union is the correct content resolution for two append-only line files, and it
- * is the same answer `merge=union` used to give — the difference is everything around
- * it. This runs once, loudly, by a person, with the writer rotated and the evidence
- * acknowledged in the same act. The driver did it silently, forever, and hid the fork.
- *
- * Lines from both sides, byte-identical duplicates collapsed, differing-content lines
- * that claim one id BOTH kept: that pair is the duplicate-id evidence, and G3 forbids
- * resolving it by deleting one. `readScope` reports it and a person decides.
- */
-async function healMergeHeld(root: string, actor?: Actor): Promise<HealedMerge | { error: string }> {
-  const ready = await ensureSidecar(root, actor);
-  if ("error" in ready) return ready;
-  const pre = commitLocal(root, "codemap: local state before heal");
-  if (typeof pre === "object") return pre;
-  if (!hasRemote(root)) return { resolved: [] };
-
-  const f = fetchRemote(root);
-  if ("error" in f) return f;
-  const branch = branchOf(root);
-  const remoteSha = g(root, ["rev-parse", "--verify", "--quiet", `origin/${branch}`]).out;
-  if (!remoteSha) return { resolved: [] };
-
-  const merge = g(root, ["merge", "--no-edit", "--allow-unrelated-histories", remoteSha]);
-  if (merge.ok) return { resolved: [] };   // nothing to heal; the merge simply worked
-
-  const conflicted = g(root, ["diff", "--name-only", "--diff-filter=U", "-z"]).out
-    .split("\0").map((x) => x.trim()).filter(Boolean);
-  const shards = conflicted.filter((x) => x.endsWith(SHARD_EXT));
-  // Anything else conflicting is not ours to resolve by union — a manifest or the
-  // attributes file, which are generated identically and should never conflict at all.
-  if (!shards.length || shards.length !== conflicted.length) {
-    g(root, ["merge", "--abort"]);
-    return { error: `heal only resolves shard conflicts, and this merge conflicts on `
-      + `${conflicted.filter((x) => !x.endsWith(SHARD_EXT)).join(", ") || "nothing it can see"}. `
-      + `The sidecar is untouched.` };
-  }
-
-  const resolved: { path: string; events: number }[] = [];
-  for (const path of shards) {
-    // `git show :2:` / `:3:` — the conflict stages. With `-merge` no conflict markers
-    // are ever written into the file, so the working-tree copy is simply "ours" and
-    // the other side is only reachable here.
-    const ours = g(root, ["show", `:2:${path}`]);
-    const theirs = g(root, ["show", `:3:${path}`]);
-    const lines = [...ours.out.split("\n"), ...theirs.out.split("\n")].filter((l) => l.trim());
-    const union = [...new Set(lines)];
-    await mkdir(dirname(join(root, path)), { recursive: true });
-    await writeFile(join(root, path), union.join("\n") + "\n", "utf8");
-    const add = g(root, ["add", "--", path]);
-    if (!add.ok) { g(root, ["merge", "--abort"]); return { error: `could not stage ${path}: ${add.err.slice(0, 200)}` }; }
-    resolved.push({ path, events: union.length });
-  }
-
-  const commit = g(root, ["commit", "-q", "--no-edit"]);
-  if (!commit.ok) {
-    g(root, ["merge", "--abort"]);
-    return { error: `resolved every shard but the merge commit failed, so nothing changed: ${(commit.err || commit.out).slice(0, 300)}` };
-  }
-  return { resolved };
-}
-
-/** `healMergeHeld` with the sidecar lock taken. See the note on `pull`. */
-export async function healMerge(root: string, actor?: Actor): Promise<HealedMerge | { error: string }> {
-  return withSidecarLock(root, () => healMergeHeld(root, actor));
-}
-
-/**
- * Receive only: everything `sync` does except the push.
- *
- * NOT `pull`, and the difference is the whole reason this exists. `pull` is the bare
- * merge: its first line reads `git remote` and returns `gained: 0` on a directory that
- * is not a repository yet, so a teammate who had never synced would click a button and
- * be told, truthfully and uselessly, that nothing arrived. `ensureSidecar` first makes
- * it one; `commitLocal` then clears the scaffold that ensure just wrote, because git
- * refuses a merge that would overwrite untracked files — the same reason `syncHeld`
- * commits before pulling, and the first pull anybody ever runs is exactly that case.
- *
- * The commit is LOCAL. Nothing leaves the machine here; that is the point of the op.
- */
-export async function receive(root: string, actor?: Actor, message = "codemap: review state"): Promise<PullResult | { error: string }> {
-  // Outside the lock, for `sync`'s reason: a failure is remembered rather than retried
-  // inside, so somebody offline waits one git timeout instead of two.
-  void message;
+/** Receive only: make `root` a sidecar if it is not one yet, then bring it to the remote tip. */
+export async function receive(root: string, actor?: Actor): Promise<PullResult | { error: string }> {
   const ready = await withSidecarLock(root, () => ensureSidecar(root, actor));
   if ("error" in ready) return ready;
   return pullLinear(root, actor);
 }
 
-export interface SyncResult { gained: number; pushed: boolean; committed: boolean; retries: number; warning?: string; restored?: Restored[]; joined?: boolean }
+export interface SyncResult { gained: number; pushed: boolean; committed: boolean; retries: number; warning?: string; joined?: boolean }
 
-/** Send and receive, in the order that makes the publish guard trustworthy. */
+/** Send and receive: this session's staged writes, all or none (`syncLinear`). */
 export async function sync(root: string, actor?: Actor, message = "codemap: review state"): Promise<SyncResult | { error: string }> {
   const { currentSession } = await import("./sync-session.js");
   const s = currentSession();
@@ -1094,54 +594,6 @@ export async function sync(root: string, actor?: Actor, message = "codemap: revi
   if ("error" in r) return r as { error: string };
   setTx(root, s.session, s.kind, false);
   return { gained: r.gained, pushed: r.pushed, committed: r.committed, retries: r.retries, ...(r.warning ? { warning: r.warning } : {}), ...(r.joined ? { joined: true } : {}) };
-}
-
-/** The merge-era sync, dormant until phase 6 deletes it. */
-export async function mergeSync(root: string, actor?: Actor, message = "codemap: review state"): Promise<SyncResult | { error: string }> {
-  // Fetch first and unlocked — see `fetchRemote`. A failure is NOT fatal here: the
-  // sidecar may be brand new (no repo yet, so nothing to fetch from) or offline, and
-  // both of those still have local work to commit. `syncHeld` fetches for itself when
-  // this did not, and reports the failure then.
-  const pre = fetchRemote(root);
-  // A failure here is NOT fatal: the sidecar may not be a repo yet (nothing to fetch
-  // from, reported as `fetched: false`, and `ensureSidecar` is about to create it).
-  // But a genuine fetch failure IS remembered rather than retried in the lock — the
-  // retry would fail the same way after another full git timeout, so a user with no
-  // network waited twice as long to be told once.
-  const fetched: FetchState = "error" in pre ? pre : pre.fetched;
-  // The WHOLE remaining sequence, not each git call: commit-then-merge-then-push is
-  // one transaction against one working tree, and interleaving two of them is how you
-  // get a push that carries half of somebody else's merge. See `withSidecarLock`.
-  return withSidecarLock(root, () => syncHeld(root, actor, message, fetched));
-}
-
-async function syncHeld(root: string, actor?: Actor, message = "codemap: review state", fetched: FetchState = false): Promise<SyncResult | { error: string }> {
-  const ready = await ensureSidecar(root, actor);
-  if ("error" in ready) return ready;
-  // Pull FIRST, always. `alreadyPosted` is only a guard against double-publishing
-  // if it has seen what everyone else already published; planning a push against a
-  // stale pull is the one place where being behind is actively destructive rather
-  // than merely incomplete.
-  // Commit BEFORE pulling: the scaffold ensureSidecar just wrote is untracked, and
-  // git refuses a merge that would overwrite untracked files — so without this the
-  // first pull a new person ever runs fails on their own setup's files.
-  const pre = commitLocal(root, message);
-  if (typeof pre === "object") return pre;
-  const pulled = await pullHeld(root, actor, fetched);
-  if ("error" in pulled) return pulled;
-  const pushed = await pushHeld(root, message, { actor });
-  if ("error" in pushed) return pushed;
-  // The push's own numbers are folded in, not dropped: its retry pulls are pulls too.
-  const restored = [...(pulled.restored ?? []), ...(pushed.restored ?? [])];
-  const warning = pulled.warning ?? pushed.warning;
-  return {
-    gained: pulled.gained + (pushed.gained ?? 0),
-    pushed: pushed.pushed,
-    committed: pre === "committed" || pushed.committed,
-    retries: pushed.retries,
-    ...(warning ? { warning } : {}),
-    ...(restored.length ? { restored } : {}),
-  };
 }
 
 // ---- The linear sync (docs/PROPOSAL-online-only-sync.md; plan 2.3) ------------------------
@@ -1312,10 +764,37 @@ const UNMIGRATED = (where: string, first: string) =>
 
 /** Put the working tree at `sha` — tracked files reset, stray shards removed. */
 function resetTo(root: string, sha: string): { error: string } | null {
+  const keep = carried(root, sha);
   const r = g(root, ["reset", "-q", "--hard", sha]);
   if (!r.ok) return { error: `could not move the sidecar to the remote tip: ${r.err.slice(0, 300)}` };
   g(root, ["clean", "-fq", "--", `*${SHARD_EXT}`]);
+  for (const [p, bytes] of keep) {
+    mkdirSync(dirname(join(root, p)), { recursive: true });
+    writeFileSync(join(root, p), bytes);
+  }
   return null;
+}
+
+/**
+ * Files other than shards that this clone committed and `sha` lacks — a provisional audit
+ * whose push never landed (a lost race, a failed push). The reset would delete them, so
+ * they are put back and travel with the next commit. Shards are not carried: replay is how
+ * events travel. Manifests are rewritten by `ensureSidecar` after every reset.
+ */
+function carried(root: string, sha: string): Map<string, Buffer> {
+  const out = new Map<string, Buffer>();
+  const head = rev(root, "HEAD");
+  if (!head || head === sha) return out;
+  const base = g(root, ["merge-base", head, sha]).out;
+  const listing = base
+    ? g(root, ["diff", "--name-only", "-z", "--diff-filter=A", base, head])
+    : g(root, ["ls-tree", "-r", "--name-only", "-z", head]);
+  for (const p of listing.out.split("\0")) {
+    if (!p || p.endsWith(SHARD_EXT) || p.startsWith(`${MANIFEST_DIR}/`) || p === ".gitattributes") continue;
+    if (g(root, ["cat-file", "-e", `${sha}:${p}`]).ok) continue;
+    try { out.set(p, readFileSync(join(root, p))); } catch { /* deleted here since */ }
+  }
+  return out;
 }
 
 /** Undo a refused replay: every appended file back to the length it had. */
@@ -1395,7 +874,7 @@ async function linearHeld(
       forgetInline();
       lockOn(root, local);
       return { error: `refusing to sync: ${local.length} line(s) in this clone's sidecar are damaged — bytes that are not `
-        + `JSON, or an event no conforming build writes.\n${damageDetail(local)}\n`
+        + `JSON.\n${damageDetail(local)}\n`
         + `The store is locked until they are repaired: see docs/log-repair.md.` };
     }
     const edited = await editedShards(root);
@@ -1426,7 +905,7 @@ async function linearHeld(
           forgetInline();
           lockOn(root, damaged);
           return { error: `refusing to take the remote tip: ${damaged.length} line(s) in it are damaged — bytes that are not `
-            + `JSON, or an event no conforming build writes. The sidecar is untouched.\n${damageDetail(damaged)}\n`
+            + `JSON. The sidecar is untouched.\n${damageDetail(damaged)}\n`
             + `The store is locked until the team's log is repaired: see docs/log-repair.md.` };
         }
       }
@@ -1600,7 +1079,7 @@ export async function pullLinear(root: string, actor?: Actor): Promise<PullResul
     if (damaged.length) {
       lockOn(root, damaged);
       return { error: `refusing to take the remote tip: ${damaged.length} line(s) in it are damaged — bytes that are not `
-        + `JSON, or an event no conforming build writes. The sidecar is untouched.\n${damageDetail(damaged)}\n`
+        + `JSON. The sidecar is untouched.\n${damageDetail(damaged)}\n`
         + `The store is locked until the team's log is repaired: see docs/log-repair.md.` };
     }
     const before = await countEvents(root);

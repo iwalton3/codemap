@@ -17,8 +17,7 @@ import { classifyCitations } from "./citation-state.js";
 import { evalVersion } from "./doc-version.js";
 import { readCached, ensureMaterialized, scopeCurrency, type Projection } from "./materialize.js";
 import type { ScopeStatus, ScopeDiagnostic, LogEvent } from "./eventlog.js";
-import { scopesOnDisk, readScopeChecked, writerFor, rotateWriter } from "./eventlog.js";
-import { acknowledgeScope } from "./write.js";
+import { scopesOnDisk } from "./eventlog.js";
 import { reviewLinksProjection, findingsProjection, docsProjection, notesProjection, walkthroughsProjection, triageProjection, docsByNode, projectionFor } from "./shared-projections.js";
 import { anchorIndex, derivationsOf, type AnchorIndex, resolveAnchor} from "./anchor-resolve.js";
 import { findingKeyScope, branchKey, branchOf, isBranchKey, normalizeBranch } from "./review-target.js";
@@ -38,7 +37,7 @@ import { originSlug, headCommit, currentBranch, isAncestor, defaultBranch, revPa
 import { prIsMerged, prMergedAt, mergedAfter, landingOf, knownPrHead } from "./pr.js";
 import { fetchReviewThreads, type GhRunner } from "./pr-push.js";
 import { pullLinear } from "./sidecar.js";
-import { ensureSidecar, sync as sidecarSync, receive as sidecarReceive, healMerge, readManifests, checkPeers, currentManifest, sidecarLineage, isSameSidecar, inboundDamage } from "./sidecar.js";
+import { ensureSidecar, sync as sidecarSync, receive as sidecarReceive, readManifests, checkPeers, currentManifest, sidecarLineage, isSameSidecar, inboundDamage } from "./sidecar.js";
 import { lockoutMessage, lockoutOf } from "./lockout.js";
 import { recheckLockout, scanForDamage } from "./damage-scan.js";
 import {
@@ -409,7 +408,7 @@ export async function sharedPull(root: string) {
   if ("error" in b) return b;
   const locked = await releaseLockout(b.cfg.path);
   if (locked) return locked;
-  const r = await sidecarReceive(b.cfg.path, b.actor, `codemap: ${b.cfg.universe}`);
+  const r = await sidecarReceive(b.cfg.path, b.actor);
   if ("error" in r) return r;
   const damaged = await damageHere(b.cfg.path);
   if (damaged) return damaged;
@@ -431,93 +430,6 @@ export async function sharedSync(root: string) {
   rememberSidecar(root, b.cfg, !!r.joined);
   const arrived = await settleArrivals(root, b.cfg);
   return { ...arrived, ok: true, universe: b.cfg.universe, sidecar: b.cfg.path, ...r };
-}
-
-export interface HealResult {
-  ok: true;
-  universe: string;
-  sidecar: string;
-  /** Shards whose two sides were unioned back together. */
-  resolved: { path: string; events: number }[];
-  /** The new writer id, when this clone was the one holding a forked one. */
-  rotated?: string;
-  /** Scopes whose blocking evidence this person has now acknowledged. */
-  acknowledged: { scope: string; reason: string }[];
-  /** Scopes still blocked, and why — evidence heal cannot clear on its own. */
-  blocked: { scope: string; reason: string }[];
-}
-
-/**
- * Repair a forked sidecar: union the divided shard, stop the fork growing, and record
- * that a person has seen the evidence.
- *
- * **A person, never an agent.** Same rule as `retireSharedDoc`: acknowledging is
- * saying "I have looked at this disagreement and it is understood", which is not an
- * agent's to say. With no server and no auth the gate is cooperative — see
- * `acknowledged` in `eventlog.ts`.
- *
- * **Three separately-locked steps, not one.** The sidecar lock is not reentrant, and
- * `emitEvent` and `sync` each take it — so a heal that held the lock across the whole
- * sequence would deadlock against itself for the full timeout. Sequencing is safe
- * where nesting is not: each step is individually consistent, and if another sync
- * interleaves, the acknowledgment is keyed on evidence, so anything new simply blocks
- * again.
- *
- * Rotation is what actually stops the fork; acknowledgment only silences the warning.
- * They are one command because doing either alone is a trap — acknowledging without
- * rotating leaves the fork growing under a scope that now reports itself healthy.
- */
-export async function sharedHeal(root: string): Promise<HealResult | { error: string }> {
-  const b = bind(root);
-  if ("error" in b) return b;
-  if (isAgentActor(b.actor)) {
-    return { error: "an agent may not acknowledge a fork. A fork means two people's clones "
-      + "disagree about one writer's history, and saying that is understood is a person's call. "
-      + "Ask them to run `codemap sidecar heal`." };
-  }
-
-  // 1. Union the divided shard. Its own merge — `pull` aborts and destroys the stages.
-  const merged = await healMerge(b.cfg.path, b.actor);
-  if ("error" in merged) return merged;
-
-  // 2. Stop it growing. Only when THIS clone holds the forked id: if the fork is
-  //    somebody else's, rotating here changes nothing and loses our own chain.
-  const mine = await writerFor(b.cfg.path);
-  let rotated: string | undefined;
-
-  const acknowledged: { scope: string; reason: string }[] = [];
-  const blocked: { scope: string; reason: string }[] = [];
-
-  for (const scope of await scopesOnDisk(b.cfg.path)) {
-    if (!inUniverse(scope, b.cfg.universe)) continue;
-    const checked = await readScopeChecked(b.cfg.path, scope);
-    if (checked.status === "complete") continue;
-    const d = checked.diagnostic;
-    if (!d) { blocked.push({ scope, reason: checked.status }); continue; }
-    // A newer protocol is never acknowledgeable: clearing it would be agreeing to
-    // read data this build cannot interpret. It resolves by upgrading.
-    //
-    // Nor is a corrupt shard, and for a sharper reason: `scopeStatus` does not consult
-    // acknowledgements for it at all, so writing one would change nothing and this would
-    // report it as healed. The repair is the line — delete it where it was written and
-    // push — and the detail names the file and the line number to do it with.
-    if (d.reason === "protocol" || d.reason === "corrupt-shard") { blocked.push({ scope, reason: d.detail }); continue; }
-
-    if (!rotated && d.reason === "fork" && checked.events.some((e) => e.writer === mine)) {
-      rotated = await rotateWriter(b.cfg.path);
-    }
-    // 3. Record that a person has seen exactly THIS evidence. A later fork digests
-    //    differently and blocks again, which is what makes acknowledging safe.
-    await acknowledgeScope(b.cfg.path, scope, b.actor, d);
-    acknowledged.push({ scope, reason: d.reason });
-  }
-
-  const synced = await sidecarSync(b.cfg.path, b.actor, `codemap: heal ${b.cfg.universe}`);
-  if ("error" in synced) return synced;
-  return {
-    ok: true, universe: b.cfg.universe, sidecar: b.cfg.path,
-    resolved: merged.resolved, ...(rotated ? { rotated } : {}), acknowledged, blocked,
-  };
 }
 
 /**
@@ -2993,11 +2905,9 @@ export async function publishLocalTriage(root: string, opts: { dryRun?: boolean 
  * The onboarding and recovery view: is this universe connected, and what of mine has
  * the team never seen?
  *
- * The shape of the CLI-only gap was not random — everything needed to JOIN a team and
- * to RECOVER from a fork was a terminal command, while day-to-day review was fully
- * covered on every surface. So a beta user could work in the browser only after
- * somebody ran three publish commands for them, and was stuck in a terminal the first
- * time a writer id forked.
+ * The shape of the CLI-only gap was not random — everything needed to JOIN a team was a
+ * terminal command, while day-to-day review was fully covered on every surface. So a beta
+ * user could work in the browser only after somebody ran three publish commands for them.
  *
  * Every count here comes from the publish ops' own DRY RUN rather than a second
  * implementation of "what is publishable" — those rules have real exclusions (graph
@@ -3054,9 +2964,6 @@ export async function sharedHub(root: string) {
     ...status,
     unpublished: { docs, notes, triage, graph },
     blocked,
-    // A fork is the one thing here a person must act on, and `heal` is theirs alone —
-    // there is no MCP tool for it, deliberately.
-    forked: blocked.some((b) => /fork/i.test(b.reason)),
   };
 }
 

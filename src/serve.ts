@@ -620,7 +620,7 @@ async function serveRequest(req: IncomingMessage, res: ServerResponse): Promise<
       const action = url.pathname.slice("/api/shared/".length);
       // Which of these write `.codemap/`. Named explicitly: a new action that mutates
       // and is not listed here races the rest of the server silently.
-      const TOUCHES_LOCAL = new Set(["sync", "pull", "publish_docs", "publish_notes", "publish_triage", "publish_graph", "heal"]);
+      const TOUCHES_LOCAL = new Set(["sync", "pull", "publish_docs", "publish_notes", "publish_triage", "publish_graph"]);
       const run = <T>(fn: () => Promise<T>): Promise<T> =>
         TOUCHES_LOCAL.has(action) ? withLock(root, fn) : fn();
       let out: unknown;
@@ -635,19 +635,12 @@ async function serveRequest(req: IncomingMessage, res: ServerResponse): Promise<
         // never publish: a button that reached other people from wherever you happened
         // to be standing is not one anybody can leave in the chrome.
         case "pull": out = await run(() => shared.sharedPull(root)); break;
-        // Publishing this store's existing state, and repairing a fork. These were
-        // terminal-only, which made JOINING a team and RECOVERING from one the two
-        // things a browser user could not do.
+        // Publishing this store's existing state. These were terminal-only, which made
+        // JOINING a team the one thing a browser user could not do.
         case "publish_docs": out = await run(() => shared.publishLocalDocs(root, { dryRun: body.dryRun === true })); break;
         case "publish_notes": out = await run(() => shared.publishLocalNotes(root, { dryRun: body.dryRun === true })); break;
         case "publish_triage": out = await run(() => shared.publishLocalTriage(root, { dryRun: body.dryRun === true })); break;
         case "publish_graph": out = await run(() => shared.publishLocalGraph(root, { dryRun: body.dryRun === true })); break;
-        // A person's act, and there is deliberately no MCP tool for it: an agent
-        // repairing a fork it may itself have caused is the case the person-gate is
-        // for. `sharedHeal` IS the complete operation — union, rotate, acknowledge,
-        // sync — and it must be called once, not wrapped: the sidecar lock is not
-        // reentrant, so a wrapper that took it around the four steps would deadlock.
-        case "heal": out = await run(() => shared.sharedHeal(root)); break;
         // Dispatched on the RECORD, not sent to the log. This page lists the canonical
         // table — this store's own findings beside the team's, which is the point of one
         // table — so a button that assumed the fold owned every row it was offered on
@@ -676,8 +669,7 @@ async function serveRequest(req: IncomingMessage, res: ServerResponse): Promise<
         case "doc_retire": out = await shared.retireSharedDoc(root, body.nodeId, body.rationale ?? ""); break;
         case "walkthrough_share": out = await shared.shareWalkthrough(root, body.walkthrough); break;
         case "relocate": out = await shared.relocateFinding(root, pr, body.id, body.kind, body.rationale ?? "", { to: body.to, apply: body.apply === true }); break;
-        // Carrying is a PERSON's, like `heal` above, and for the same reason one step
-        // over: with a backlog this size deferral is the cheapest way to empty a queue,
+        // Carrying is a PERSON's: with a backlog this size deferral is the cheapest way to empty a queue,
         // so there is deliberately no MCP tool for it (`ops-reach.test.ts` enforces
         // that). The web is where a principal is actually a principal.
         // Dispatched on the RECORD, like `corroborate` above: the backlog is full of local

@@ -8,7 +8,7 @@ import {
   team, who, syncOne, settle, rewriteHistory, appendRaw, shardsIn, type Team, type Member,
 } from "./oracle.js";
 import { Ledger, checkAlways, checkSettled, verified } from "./oracle-properties.js";
-import { shareFinding, sharedFindings, sharedHeal, publishLocalDocs, sharedDocs } from "./ops-shared.js";
+import { shareFinding, sharedFindings, publishLocalDocs, sharedDocs } from "./ops-shared.js";
 import { document } from "./ops.js";
 import { scopesOnDisk, readScope, readScopeChecked, SIDECAR_PROTOCOL, EVENT_SCHEMA } from "./eventlog.js";
 
@@ -167,18 +167,6 @@ test("hostile history: each shape is refused in its own scope, and nowhere else"
       assert.equal(f.scope.status, "blocked");
       assert.equal(f.scope.diagnostic.reason, "protocol");
       assert.deepEqual(f.scope.diagnostic.evidence, ["9999999999-future"], "and it names the line");
-    });
-
-    await step("and no person may acknowledge their way out of it", async () => {
-      // Every other blocking shape clears when a person says they have looked. This one
-      // cannot: clearing it would be agreeing to read data this build cannot interpret,
-      // and the only exit is an upgrade.
-      const scope = await scopeFor(ana, "pr-21");
-      const r = await sharedHeal(ana.repo) as any;
-      assert.equal(r.error, undefined, `heal itself did not fail: ${r.error}`);
-      assert.deepEqual(r.acknowledged, [], "nothing was acknowledged");
-      assert.deepEqual(r.blocked.map((b: any) => b.scope), [scope], "it is reported as still blocked");
-      assert.equal((await radius(ana))[scope], "blocked:protocol", "and it still is");
     });
 
     // 3 — a chain that loops. No append can produce it; a hand-edit can.

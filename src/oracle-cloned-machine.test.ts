@@ -12,7 +12,7 @@ import { readScopeChecked, scopesOnDisk } from "./eventlog.js";
  * WORKFLOW 3 — one person, two machines, one writer id.
  *
  * A restored backup, a synced home directory, a machine image: one writer id in two clones.
- * Under the merge model that forked the writer's chain and `heal` existed for it. Under the
+ * Under the merge model that forked the writer's chain. Under the
  * linear log it cannot: an event's `writerPrev` is taken from the tip when it is replayed, so
  * two clones sharing an id extend ONE chain in push order. What is left to prove is that the
  * copy is harmless — nothing forks, nothing blocks, nothing is lost — including when the two

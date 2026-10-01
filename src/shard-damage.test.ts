@@ -20,7 +20,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import type { Actor } from "./schema.js";
-import { ensureSidecar, pull, push, sync } from "./sidecar.js";
+import { ensureSidecar, pull, sync } from "./sidecar.js";
 import { createFinding, findingScope, readFindings } from "./shared-findings.js";
 import { splitShard, scopeStatus, readScopeChecked, readShard, SHARD_EXT } from "./eventlog.js";
 import { emitEvent } from "./write.js";
@@ -122,34 +122,10 @@ test("damage outranks every other diagnostic, because it is the only one about t
   assert.equal(scopeStatus([ahead as never]).diagnostic?.reason, "protocol");
 });
 
-test("corruption cannot be acknowledged away — the repair is the line, not a decision", async () => {
-  const root = tmp("corrupt-ack");
-  try {
-    await ensureSidecar(root, izzie);
-    const scope = findingScope(9);
-    await createFinding(root, 9, izzie, NEW);
-    const shard = shardOf(root, scope);
-    const text = await readFile(join(root, shard), "utf8");
-    writeFileSync(join(root, shard), `nonsense\n${text}`);
-
-    const before = await readScopeChecked(root, scope);
-    assert.equal(before.status, "blocked");
-    // A person acknowledging the exact evidence clears a fork or a duplicated id. It
-    // must not clear this: those are ambiguities somebody has to arbitrate, and this is
-    // bytes nobody can read — muting it restores the silence the check exists to end.
-    const { acknowledgeScope } = await import("./write.js");
-    await acknowledgeScope(root, scope, izzie, before.diagnostic!);
-    const after = await readScopeChecked(root, scope);
-    assert.equal(after.status, "blocked");
-    assert.equal(after.acknowledged, undefined);
-
-  } finally { discard(root); }
-});
-
 // --- the append repair ----------------------------------------------------------
 
 test("a crash fragment is SEALED IN and goes loud — it is never quietly deleted", async () => {
-  const root = tmp("heal");
+  const root = tmp("seal");
   try {
     await ensureSidecar(root, izzie);
     const scope = "scratch/x";
@@ -196,7 +172,7 @@ test("an event the disk ate is not silently dropped by the next append", async (
 });
 
 test("a whole event that merely lost its newline is KEPT", async () => {
-  const root = tmp("heal-keep");
+  const root = tmp("seal-keep");
   try {
     await ensureSidecar(root, izzie);
     const scope = "scratch/y";
@@ -217,7 +193,7 @@ test("a whole event that merely lost its newline is KEPT", async () => {
 
 // --- the gates ------------------------------------------------------------------
 
-test("push refuses to commit a shard that does not parse, and nothing leaves", async () => {
+test("a sync refuses to commit a shard that does not parse, and nothing leaves", async () => {
   const origin = tmp("origin"), root = tmp("push-gate");
   git(origin, "init", "-q", "--bare", "-b", "main");
   try {
@@ -230,16 +206,16 @@ test("push refuses to commit a shard that does not parse, and nothing leaves", a
     const text = readFileSync(join(root, shard), "utf8");
     writeFileSync(join(root, shard), `${text}garbage line\n`);
 
-    const r = await push(root, "codemap: review state");
-    assert.ok("error" in r, "the push must refuse");
+    const r = await sync(root, izzie);
+    assert.ok("error" in r, "the sync must refuse");
     assert.match(r.error, /damaged/);
     assert.match(r.error, new RegExp(`${shard}:2`));
     assert.equal(git(origin, "rev-parse", "main").stdout.trim(), tip, "the remote must not have moved");
 
-    // Mutation check: the same push succeeds once the damage is gone, so the refusal
+    // Mutation check: the same sync succeeds once the damage is gone, so the refusal
     // above is the gate and not some unrelated failure.
     writeFileSync(join(root, shard), text);
-    const ok = await push(root, "codemap: review state");
+    const ok = await sync(root, izzie);
     assert.ok(!("error" in ok) && ok.pushed);
   } finally { discard(origin); discard(root); }
 });
@@ -253,10 +229,7 @@ test("pull refuses a damaged inbound shard and leaves the sidecar untouched", as
       git(r, "remote", "add", "origin", origin);
     }
     await createFinding(a, 5, izzie, NEW);
-    assert.ok(!("error" in await push(a, "izzie's finding")));
-    // `sync`, not `pull`: a clone that has never committed its own scaffold cannot
-    // merge — git refuses to overwrite untracked files — which is why `syncHeld`
-    // commits first. That is the ordinary path a person takes.
+    assert.ok(!("error" in await sync(a, izzie)));
     assert.ok(!("error" in await sync(b, dana)));
     assert.equal((await readFindings(b, 5)).size, 1);
     const aHead = git(a, "rev-parse", "HEAD").stdout.trim();
@@ -274,8 +247,8 @@ test("pull refuses a damaged inbound shard and leaves the sidecar untouched", as
     assert.match(r.error, /not JSON/);
     assert.match(r.error, new RegExp(`${shard}:`), "and name the line, so it can be repaired where it was written");
     assert.match(r.error, /sidecar is untouched/);
-    assert.equal(git(a, "rev-parse", "HEAD").stdout.trim(), aHead, "no merge happened");
-    assert.equal(git(a, "status", "--porcelain").stdout.trim(), "", "and no half-merge was left behind");
+    assert.equal(git(a, "rev-parse", "HEAD").stdout.trim(), aHead, "the tree did not move");
+    assert.equal(git(a, "status", "--porcelain").stdout.trim(), "", "and nothing was left half-done");
 
     // The collateral is real and accepted: dana's GOOD finding was in the same push and
     // does not arrive either. Said out loud because it is the cost of the trade, not an
@@ -291,18 +264,8 @@ test("pull refuses a damaged inbound shard and leaves the sidecar untouched", as
   } finally { [origin, a, b].forEach(discard); }
 });
 
-/**
- * The repair must not be undone by the append-only restore.
- *
- * Two mechanisms, each right on its own. `erasedByMerge` puts back lines an incoming
- * history dropped, because a `git rm` is the one rewrite append-only cannot survive.
- * Deleting the damaged line is the ONLY repair a corrupt shard has. Together, the
- * repairer pushes the fix, every teammate's merge sees a deletion, restores it, and
- * pushes the damage back at them — the fix cannot be made to stick, and nothing says why.
- *
- * Found by RUNNING the oracle, not by reading either mechanism.
- */
-test("deleting a damaged line survives a teammate's pull — the restore does not put it back", async () => {
+/** A repair is one commit pushed with git (docs/log-repair.md); a teammate's sync takes it as it is. */
+test("deleting a damaged line survives a teammate's sync, and a sync never discards the hand edit", async () => {
   const origin = tmp("origin"), a = tmp("repair-a"), b = tmp("repair-b");
   git(origin, "init", "-q", "--bare", "-b", "main");
   try {
@@ -311,7 +274,7 @@ test("deleting a damaged line survives a teammate's pull — the restore does no
       git(r, "remote", "add", "origin", origin);
     }
     await createFinding(a, 5, izzie, NEW);
-    assert.ok(!("error" in await push(a, "izzie's finding")));
+    assert.ok(!("error" in await sync(a, izzie)));
     assert.ok(!("error" in await sync(b, dana)));
 
     // Damage, introduced with raw git — the only way past the commit gate.
@@ -323,61 +286,16 @@ test("deleting a damaged line survives a teammate's pull — the restore does no
     // The repair, where the shard was written: a commit pushed with git (docs/log-repair.md).
     // A sync would refuse it — it moves the tree to the remote tip and would discard the edit.
     writeFileSync(join(a, shard), good);
-    const viaSync = await push(a, "delete the damaged line");
+    const viaSync = await sync(a, izzie);
     assert.ok("error" in viaSync && /edited by hand/.test(viaSync.error), "a sync never discards a hand edit silently");
     git(a, "add", "-A"); git(a, "commit", "-q", "-m", "repair"); git(a, "push", "-q", "origin", "main");
 
     const pulled = await sync(b, dana);
     assert.ok(!("error" in pulled), `dana's pull must succeed once it is repaired: ${(pulled as any).error}`);
     assert.deepEqual(splitShard(readFileSync(join(b, shard), "utf8"), "s").damage, [],
-      "the restore must not resurrect a line no build can read");
+      "the damaged line stays gone");
     assert.equal((await readScopeChecked(b, findingScope(5))).status, "complete");
-    // No mutation half any more: it checked the merge-era erasure restore, which a linear
-    // pull does not have — a pull takes the tip as it is, and a deletion pushed with raw
-    // git is tampering, which the owner ruled out of scope (docs/PROPOSAL-online-only-sync.md).
   } finally { [origin, a, b].forEach(discard); }
-});
-
-test("`heal` does not claim to have acknowledged bytes nobody can read", async () => {
-  // It writes an acknowledgement for every diagnostic it does not special-case, and
-  // `scopeStatus` ignores one for this reason — so without the case, heal reported a
-  // scope as healed while it stayed blocked, which is the shape of lie the whole
-  // acknowledgement mechanism exists to prevent.
-  const repo = tmp("heal-repo"), side = tmp("heal-side");
-  try {
-    git(repo, "init", "-q", "-b", "main");
-    git(repo, "remote", "add", "origin", "https://github.com/acme/api.git");
-    mkdirSync(join(repo, "src"), { recursive: true });
-    mkdirSync(join(repo, ".codemap"), { recursive: true });
-    writeFileSync(join(repo, ".codemap", "sidecar"), side, "utf8");
-    writeFileSync(join(repo, "src", "pay.ts"), "export function transfer(c: number) { return c; }\n", "utf8");
-    git(repo, "add", "-A"); git(repo, "commit", "-qm", "one");
-    const ops = await import("./ops.js");
-    await ops.init(repo);
-    const { shareFinding, sharedHeal } = await import("./ops-shared.js");
-    await shareFinding(repo, 5, { targetKind: "anchor", targetId: "a_1", text: "real thing" });
-
-    // Discovered, not constructed: the universe key in a scope path is derived from the
-    // origin URL and is not the string this test would guess.
-    const { scopesOnDisk } = await import("./eventlog.js");
-    const scope = (await scopesOnDisk(side)).find((x) => x.startsWith("findings/"))!;
-    assert.ok(scope, "the finding was shared into some scope");
-    const shard = shardOf(side, scope);
-    writeFileSync(join(side, shard), `nonsense\n${readFileSync(join(side, shard), "utf8")}`);
-    // COMMITTED, which is the realistic shape: damage arrives already in history, from a
-    // pull or a hand-edit. Left uncommitted, heal's closing sync hits the commit gate
-    // instead and reports the refusal — also correct, and also loud, but not what this
-    // is about.
-    git(side, "add", "-A"); git(side, "commit", "-q", "-m", "damage");
-    assert.equal((await readScopeChecked(side, scope)).diagnostic?.reason, "corrupt-shard",
-      "the check could have failed — set the scene first");
-
-    const healed = await sharedHeal(repo) as any;
-    assert.equal(healed.error, undefined, `heal itself must not fail: ${healed.error}`);
-    assert.deepEqual(healed.acknowledged, [], "nothing was acknowledged");
-    assert.deepEqual(healed.blocked.map((b: any) => b.scope), [scope], "it is reported as still blocked");
-    assert.match(healed.blocked[0].reason, /deleting the damaged line/, "with the repair, not a shrug");
-  } finally { [repo, side].forEach(discard); }
 });
 
 /**
@@ -403,11 +321,11 @@ test("the outbound gate checks the alphabetically FIRST changed shard", async ()
     });
     writeFileSync(join(aaa, "events.ndjson"), `${good}\n`);
     writeFileSync(join(bbb, "events.ndjson"), `${good}\n`);
-    assert.ok(!("error" in await push(root, "baseline")));
+    assert.ok(!("error" in await sync(root, izzie)));
 
     // The FIRST one alphabetically, which is the entry that lost its status prefix.
     appendFileSync(join(aaa, "events.ndjson"), "garbage\n");
-    const first = await push(root, "should refuse");
+    const first = await sync(root, izzie);
     assert.ok("error" in first, "the first changed shard must be checked like any other");
     assert.match(first.error, /aaa\/events\.ndjson:2/);
 
@@ -415,7 +333,7 @@ test("the outbound gate checks the alphabetically FIRST changed shard", async ()
     // only damaged that one would have passed against the bug.
     writeFileSync(join(aaa, "events.ndjson"), `${good}\n`);
     appendFileSync(join(bbb, "events.ndjson"), "garbage\n");
-    const second = await push(root, "should also refuse");
+    const second = await sync(root, izzie);
     assert.ok("error" in second);
     assert.match(second.error, /bbb\/events\.ndjson:2/);
   } finally { discard(root); }

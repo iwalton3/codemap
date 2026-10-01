@@ -733,62 +733,6 @@ test("sync folds the scopes a PULL moved, so a later query never touches the log
   } finally { a.cleanup(); b.cleanup(); discard(origin); }
 });
 
-// --- sidecar heal ----------------------------------------------------------------
-
-/** Two clones of one universe sharing a remote, with b holding a's writer id. */
-async function forkedPair() {
-  const origin = tmp("origin");
-  git(origin, "init", "-q", "--bare", "-b", "main");
-  const a = universe(), b = universe();
-  for (const r of [a.root, b.root]) git(r, "remote", "add", "origin", "https://github.com/acme/api.git");
-  git(a.side, "init", "-q", "-b", "main");
-  git(b.side, "init", "-q", "-b", "main");
-  await shared.sharedSync(a.root);
-  await shared.sharedSync(b.root);
-  git(a.side, "remote", "add", "origin", origin);
-  git(b.side, "remote", "add", "origin", origin);
-  await shared.shareFinding(a.root, 264, NEW);
-  await shared.sharedSync(a.root);
-  // The fork itself: b picks up a's writer id, so both write one shard file.
-  const id = (r: string) => join(r, ".git", "codemap-writer");
-  writeFileSync(id(b.side), readFileSync(id(a.side), "utf8"), "utf8");
-  return { origin, a, b, cleanup: () => { a.cleanup(); b.cleanup(); discard(origin); } };
-}
-
-// "heal unions the divided shard" lived here. A shared writer id no longer divides a shard —
-// replay takes `writerPrev` from the tip, and nothing merges — so its fork cannot be built;
-// `oracle-cloned-machine.test.ts` now proves the copy harmless. Heal itself goes in phase 6.
-
-test("heal on a healthy sidecar changes nothing", async () => {
-  // CONTROL. Without it, a heal that unioned and rotated unconditionally — or one
-  // that reported success having done nothing at all — passes the test above.
-  const t = await forkedPair();
-  try {
-    await withEnv({ CODEMAP_SIDECAR: undefined, CODEMAP_AGENT_MODEL: undefined }, async () => {
-      // Give b its own writer id back, so there is no fork.
-      writeFileSync(join(t.b.side, ".git", "codemap-writer"), "w_00000000deadbeef\n", "utf8");
-      const before = readFileSync(join(t.b.side, ".git", "codemap-writer"), "utf8").trim();
-      const r = await shared.sharedHeal(t.b.root) as any;
-      assert.equal(r.error, undefined);
-      assert.deepEqual(r.resolved, [], "nothing to union");
-      assert.equal(r.rotated, undefined, "and no reason to rotate");
-      assert.deepEqual(r.acknowledged, []);
-      assert.equal(readFileSync(join(t.b.side, ".git", "codemap-writer"), "utf8").trim(), before);
-    });
-  } finally { t.cleanup(); }
-});
-
-test("an agent may not heal", async () => {
-  const t = await forkedPair();
-  try {
-    await withEnv({ CODEMAP_SIDECAR: undefined, CODEMAP_AGENT_MODEL: "claude-opus-5" }, async () => {
-      const r = await shared.sharedHeal(t.b.root) as { error?: string };
-      assert.ok(r.error, "refused");
-      assert.match(r.error!, /agent may not/i);
-    });
-  } finally { t.cleanup(); }
-});
-
 // --- the publishable surface -----------------------------------------------------
 
 test("analyzer output is refused at the publish surface, and flows are NOT", async () => {

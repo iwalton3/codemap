@@ -32,8 +32,6 @@ import { appendFile, mkdir, open, readFile, readdir, stat, writeFile } from "nod
 import { dirname, join, resolve } from "node:path";
 import type { Actor } from "./schema.js";
 import { withSidecarLock } from "./lock.js";
-// A person-only gate, and identity.ts imports nothing from here — no cycle.
-import { isAgentActor } from "./identity.js";
 
 /** Line-delimited JSON: one event per line, appended, never rewritten. */
 export const SHARD_EXT = ".ndjson";
@@ -332,42 +330,6 @@ export async function writerFor(logRoot: string): Promise<string> {
   }
   const minted = "w_" + randomBytes(8).toString("hex");
   if (file) await writeFile(file, minted + "\n", "utf8").catch(() => {});
-  writers.set(logRoot, minted);
-  return minted;
-}
-
-/**
- * Forget the memoised writer id for a log root.
- *
- * `writerFor` memoises per root, so installing a forked identity by writing
- * `.git/codemap-writer` only works on a clone that has never APPENDED — after that
- * the cache keeps handing out the old id and the "fork" quietly is not one. That is
- * a test whose subject cannot occur, which is worse than no test.
- *
- * No production caller: `rotateWriter` resets the cache itself, the same way
- * `clearAgentSession` exists only so a test can undo a latch.
- */
-export function forgetWriter(logRoot: string): void { writers.delete(logRoot); }
-
-/**
- * Mint this clone a NEW writer id, replacing whatever it had.
- *
- * The repair for a detected fork, and the only one that works: a fork is two clones
- * holding one id, and it stops growing when one of them stops using it. It cannot be
- * undone — the two events that already exist are history — which is why acknowledging
- * the evidence is a separate, person-only act rather than something rotation implies.
- *
- * Also clears the in-process cache, which is the part a test gets wrong by poking the
- * map: `writerFor` memoises per log root, so a rotation that only touched the file
- * would keep handing out the old id for the life of the process.
- */
-export async function rotateWriter(logRoot: string): Promise<string> {
-  const dir = await gitDirOf(logRoot);
-  const minted = "w_" + randomBytes(8).toString("hex");
-  // Inside the sidecar's GIT DIR, never its work tree: `sync` is `git add -A`, and a
-  // writer id committed there would travel to the whole team and re-create the exact
-  // collision it exists to end.
-  if (dir) await writeFile(join(dir, "codemap-writer"), minted + "\n", "utf8").catch(() => {});
   writers.set(logRoot, minted);
   return minted;
 }
@@ -854,14 +816,6 @@ export interface ScopeDiagnostic {
 export interface ScopeStatus {
   status: "complete" | "blocked";
   diagnostic?: ScopeDiagnostic;
-  /**
-   * The diagnostic is present AND a person has acknowledged it.
-   *
-   * `complete` with a diagnostic is not a contradiction: the evidence is immutable
-   * and stays visible, and this says somebody looked at it. Absent means the
-   * diagnostic (if any) is still blocking.
-   */
-  acknowledged?: boolean;
 }
 
 /**
@@ -922,74 +876,8 @@ export function detectForks(events: LogEvent[]): WriterFork[] {
  * unreadable would let any client wedge a scope by emitting an event the rules
  * correctly refuse — a denial of service built out of a safety mechanism.
  */
-/** The kind a person appends to say "I have seen this blocking evidence". */
-export const ACK_KIND = "scope.acknowledged";
-
-/**
- * The identity of a piece of blocking evidence: a digest of the EVIDENCE, never of
- * the prose describing it.
- *
- * Two properties, and both are load-bearing. Comparing rendered text would make a
- * copy edit look like new evidence — the rule `ackHole` already follows. And a LATER
- * fork, or a third differing claim on a duplicated id, produces a digest no existing
- * acknowledgment covers, so it blocks again. That is what makes acknowledging safe
- * rather than a permanent mute.
- *
- * `JSON.stringify` of an array, NOT a NUL join. A joined digest is not injective —
- * `["a", "b\0c"]` and `["a\0b", "c"]` produce identical bytes — and this repository
- * has now shipped that bug in anchor ids and nearly shipped it twice more in this
- * arc. JSON quotes and escapes every element, so the encoding is reversible.
- */
-export function evidenceDigest(d: ScopeDiagnostic): string {
-  return createHash("sha256")
-    .update(JSON.stringify([d.reason, [...d.evidence].sort()]))
-    .digest("hex");
-}
-
-/**
- * Is this diagnostic covered by an acknowledgment that a person actually made, having
- * actually seen it?
- *
- * Two gates, because the digest alone is not enough. **A person**, consistent with
- * `retireSharedDoc` and with the rule that an agent may not settle a disagreement
- * between two people — though with no server and no auth this is cooperative, and the
- * CLI presents as a person unless the environment marks it otherwise. Saying so here
- * rather than implying a boundary the design cannot hold.
- *
- * **And causally after the evidence.** Without this a digest can be written before
- * its evidence exists and lie dormant until matching evidence appears — acknowledging
- * a fork nobody has seen. The segment vector is what makes this answerable: a fork's
- * two branches both survive in `heads()`, so an ack written after a full pull names
- * them and `saw` is true for both.
- *
- * Evidence with no causal position at all — a chain cycle, which by construction sits
- * in no segment — falls back to id order. That is weaker, and it is here because the
- * alternative is a scope nobody can ever clear. Ids are minted at write time, so it
- * still defeats the accidental case this gate is for.
- */
-function acknowledged(d: ScopeDiagnostic, events: LogEvent[]): boolean {
-  const acks = events.filter((e) => e.kind === ACK_KIND && !isAgentActor(e.actor));
-  if (!acks.length) return false;
-  const want = evidenceDigest(d);
-  const { saw } = causality(sortEvents(events));
-  return acks.some((a) => {
-    const claimed = (a.data?.acknowledges as { digest?: string }[] | undefined) ?? [];
-    if (!claimed.some((x) => x?.digest === want)) return false;
-    return d.evidence.every((id) => saw(a.id, id) || a.id > id);
-  });
-}
-
 export function scopeStatus(events: LogEvent[], duplicateIds: string[] = [], damage: ShardDamage[] = []): ScopeStatus {
-  /**
-   * Blocked unless a person has acknowledged this exact evidence.
-   *
-   * The diagnostic is kept either way, so the history stays visible: `complete` here
-   * means "seen and understood", not "never happened".
-   */
-  const verdict = (diagnostic: ScopeDiagnostic): ScopeStatus =>
-    acknowledged(diagnostic, events)
-      ? { status: "complete", diagnostic, acknowledged: true }
-      : { status: "blocked", diagnostic };
+  const verdict = (diagnostic: ScopeDiagnostic): ScopeStatus => ({ status: "blocked", diagnostic });
   /**
    * Before everything else, because it is the only failure about the BYTES.
    *
@@ -997,14 +885,8 @@ export function scopeStatus(events: LogEvent[], duplicateIds: string[] = [], dam
    * one says the set is not the set that is on disk. A wholly-garbage shard read as an
    * empty one and the scope answered `complete`, so a universe whose findings had been
    * destroyed presented as a universe with no findings — the silent emptying this
-   * whole check exists to stop.
-   *
-   * **Not acknowledgeable, and it is the only one that is not.** An acknowledgement is
-   * a person saying they have seen evidence and it still stands; a fork and a duplicated
-   * id are genuine ambiguities somebody has to arbitrate and cannot repair. Bytes that
-   * are not JSON are neither — the repair is exact and local (delete the line; no build
-   * has ever read it, so nothing is lost), and a mute button here would restore exactly
-   * the silence being fixed.
+   * whole check exists to stop. The repair is exact and local: delete the line (no build has
+   * ever read it, so nothing is lost).
    */
   if (damage.length) {
     const first = damage[0]!;

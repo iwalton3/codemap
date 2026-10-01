@@ -143,9 +143,7 @@ async function branchRollup(root: string) {
  * is `needs_ack`: a person has to look at it.
  *
  * The sidecar half reads the STORED fold verdict (`shared_scope`), never the shards, for
- * the reason `readBlockedScopes` gives. A fork is the one item here a person must act on
- * and `heal` is theirs alone, so it is reported as its own flag rather than buried in a
- * count of blocked scopes.
+ * the reason `readBlockedScopes` gives.
  */
 async function reviewRollup(root: string) {
   const perPr = await findingCountsByPr(root);
@@ -166,7 +164,7 @@ async function reviewRollup(root: string) {
   const sidecar = cfg
     ? await readBlockedScopes(root).then((rows) => {
       const blocked = rows.filter((x) => inUniverse(x.scope, cfg.universe));
-      return { universe: cfg.universe, blocked: blocked.length, forked: blocked.some((x) => /fork/i.test(x.reason)) };
+      return { universe: cfg.universe, blocked: blocked.length };
     })
     : null;
   return { findings, sidecar, backlog: b ? { ...b.counts, attention: b.attention, landed: b.byLanding.landed, blocked: b.blocked.length } : null };
@@ -304,9 +302,9 @@ function attentionFromStandard(s: Awaited<ReturnType<typeof standardRollup>>): n
  * Findings and the team's contribution to `attention`.
  *
  * `waiting` only — the total is a workload, not a queue, and a page that counted every
- * open finding would never reach zero on a repo anyone reviews. A fork is one item
- * because `heal` is one act; blocked scopes are counted individually because each is a
- * different scope that answers non-authoritatively until somebody looks at it.
+ * open finding would never reach zero on a repo anyone reviews. Blocked scopes are counted
+ * individually because each is a different scope that answers non-authoritatively until
+ * somebody looks at it.
  */
 function attentionFromReview(r: Awaited<ReturnType<typeof reviewRollup>>): number {
   // The backlog's number, not `findings.waiting` beside it. `needsAck` is a PROPERTY of
@@ -326,7 +324,7 @@ function attentionFromReview(r: Awaited<ReturnType<typeof reviewRollup>>): numbe
   // A scope that could not be folded counts too: an incomplete backlog presented as a
   // whole one is the failure the rest of this rollup exists to prevent.
   return (r.backlog ? r.backlog.attention + r.backlog.blocked : r.findings.waiting)
-    + (r.sidecar ? r.sidecar.blocked + (r.sidecar.forked ? 1 : 0) : 0);
+    + (r.sidecar ? r.sidecar.blocked : 0);
 }
 
 // Absolutes in a summary are universal claims (highest blast radius, least re-read);

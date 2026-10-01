@@ -1049,10 +1049,6 @@ class DashboardPage extends Component {
           : 'no cached snapshot for this branch’s fork point — run `codemap snapshot`',
       });
     }
-    if (r && r.sidecar && r.sidecar.forked) {
-      out.push({ key: 'forked', cls: 'bad', url: sharedHubUrl(u), label: 'writer id forked',
-        title: 'two clones wrote under one writer id; `heal` is a person’s act and there is no agent tool for it' });
-    }
     add(r && r.sidecar && r.sidecar.blocked, 'blocked', plural(r.sidecar && r.sidecar.blocked, 'blocked scope', 'blocked scopes'),
       sharedHubUrl(u), 'bad', 'these scopes still answer, but not as the team’s settled state');
     const bl = r && r.backlog;
@@ -1128,7 +1124,6 @@ class DashboardPage extends Component {
         ${this.stat('unshared', f.unshared, f.unshared ? 'filed here, not sent' : '')}
       </div>
       ${when(!r.sidecar, () => html`<div class="dim dbnote">no sidecar — findings stay on this machine. <code>CODEMAP_SIDECAR=…</code></div>`)}
-      ${when(!!r.sidecar && !!r.sidecar.forked, () => html`<div class="dbnote bad">writer id forked — <a href="${href(sharedHubUrl(u))}">heal it</a> before publishing more</div>`)}
       <a class="dclink" href="${href(backlogUrl(u))}">backlog ›</a>
     </div>`;
   }
@@ -2952,11 +2947,6 @@ class SharedHubPage extends Component {
         ${when(ok.blocked && ok.blocked.length, () => html`<div class="hubblocked">
           <b class="bad">${ok.blocked.length} scope(s) cannot be read</b>
           ${each(ok.blocked, b => html`<div class="hubrow dim"><code>${b.scope}</code> — ${b.reason}</div>`, b => b.scope)}
-          ${when(ok.forked, () => html`<div class="hubheal">
-            <b>This sidecar has forked</b> — two clones wrote under one writer id. Repairing unions
-            both sides (nothing is discarded), rotates this clone's id and acknowledges the evidence.
-            <button class="bad" disabled="${!!this.state.busy}" on-click="${() => this.act('heal', 'repair')}">${this.state.busy === 'heal' ? 'repairing…' : 'repair this fork'}</button>
-          </div>`)}
         </div>`)}
 
         <div class="sec">what the team has not seen</div>

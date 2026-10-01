@@ -162,10 +162,9 @@ function usable(a: unknown, universe: string, commit: string, file: string): a i
  * (a definite terminal state), and drift is not — a superseded finding can come back with
  * a revert.
  *
- * Deletion here is ordinary, deliberately. `erasedByMerge` audits `*.ndjson` only, so the
- * append-only guarantee that protects the log does not cover these — widening that
- * pathspec would make the prune above impossible and buy nothing, because the author's
- * local row survives a document that goes missing.
+ * Deletion here is ordinary, deliberately: these are documents, not log events, so the
+ * log's append-only rule does not cover them, and the author's local row survives a
+ * document that goes missing.
  */
 export async function readProvisionalAudits(
   root: string, opts: { commit?: string } = {},

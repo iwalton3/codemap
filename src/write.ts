@@ -11,8 +11,7 @@
  * Above `eventlog.ts` and `sidecar.ts` because it needs both, and they must not need it.
  */
 import {
-  ACK_KIND, appendBatch, appendChecked, evidenceDigest, FOLDED_AT_THE_DOOR,
-  type AdmissionCheck, type DoorFold, type LogEvent, type ScopeDiagnostic,
+  appendBatch, appendChecked, FOLDED_AT_THE_DOOR, type AdmissionCheck, type DoorFold, type LogEvent,
 } from "./eventlog.js";
 import { syncLinear, transportsRemotely } from "./sidecar.js";
 import { stageBatch, stageChecked, syncBatch } from "./sync-engine.js";
@@ -31,7 +30,7 @@ export async function emitEventChecked(
 ): Promise<LogEvent | { error: string }> {
   const guarded: AdmissionCheck = async (events) => {
     const admission = await check(events);
-    if (!fold && !("error" in admission) && !("existing" in admission) && FOLDED_AT_THE_DOOR.test(scope) && admission.kind !== ACK_KIND)
+    if (!fold && !("error" in admission) && !("existing" in admission) && FOLDED_AT_THE_DOOR.test(scope))
       throw new Error(`a write to ${scope} must be folded at the door`);
     return admission;
   };
@@ -64,15 +63,4 @@ export async function emitEvents(
   if (sessionRow(logRoot, session)?.tx) return stageBatch(logRoot, session, scope, actor, items);
   if (transportsRemotely(logRoot)) return syncBatch(logRoot, scope, actor, items);
   return appendBatch(logRoot, scope, actor, items);
-}
-
-/**
- * A person's acknowledgment of one piece of blocking evidence. An ordinary event, so it syncs
- * like any other write and unblocks the scope for every reader. Carries the DIGEST, not the
- * prose; see `evidenceDigest`.
- */
-export async function acknowledgeScope(logRoot: string, scope: string, actor: Actor, d: ScopeDiagnostic): Promise<LogEvent> {
-  return emitEvent(logRoot, scope, actor, ACK_KIND, scope, {
-    acknowledges: [{ reason: d.reason, digest: evidenceDigest(d) }],
-  });
 }

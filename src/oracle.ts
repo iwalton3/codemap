@@ -29,7 +29,7 @@ import { gitBin } from "./git.js";
 import { ensureSidecar } from "./sidecar.js";
 import { sharedSync } from "./ops-shared.js";
 import { begin, syncSession } from "./sync-engine.js";
-import { forgetWriter, principalKey } from "./eventlog.js";
+import { principalKey } from "./eventlog.js";
 import { init } from "./ops.js";
 import { clearPrMetaCache } from "./pr.js";
 import { discard } from "./test-tmp.js";
@@ -57,8 +57,7 @@ export interface Member {
   /**
    * This MACHINE, not this person — and the distinction is the whole writer model.
    *
-   * One principal on two clones is the case sharding does not cover and `heal` exists
-   * for, so the oracle has to be able to represent it. Keying members by principal
+   * One principal on two clones is a case the oracle has to be able to represent. Keying members by principal
    * made `team([izzie, izzie])` collapse two machines into one map entry, and every
    * convergence check over it passed by comparing a clone with itself.
    */
@@ -498,9 +497,8 @@ export function publishManifestAs(
 /**
  * Make `to` a CLONE of `from`'s machine: same writer id, same person.
  *
- * The case sharding does not cover, and the one `heal` exists for. Two ordinary
- * clones have different writer ids and so write different shards, so no amount of
- * concurrent writing produces a fork — the id has to be copied deliberately.
+ * Two ordinary clones have different writer ids, so a shared one has to be copied
+ * deliberately.
  *
  * Pass two machines of ONE principal (`team([izzie, izzie])`). Copying a writer id
  * between two different people is a fork the system should also survive, but it is
@@ -518,8 +516,7 @@ export function cloneMachine(from: Member, to: Member): void {
       + `Have it write something shared before cloning it.`,
     );
   }
+  // `writerFor` memoises per process, so on a clone that has already appended this takes
+  // effect in the next process. The writer is audit-only under the linear log.
   writeFileSync(join(to.sidecar, ".git", "codemap-writer"), id + "\n", "utf8");
-  // Without this the copy is inert on a clone that has already appended, and the
-  // fork the test is about never happens. See `forgetWriter`.
-  forgetWriter(to.sidecar);
 }
