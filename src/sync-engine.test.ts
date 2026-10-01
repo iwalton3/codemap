@@ -16,7 +16,7 @@ import { emitEvent, emitEventChecked, emitEvents } from "./write.js";
 import * as queue from "./sync-queue.js";
 import { attemptGone, begin, discard as discardTx, dropOp, localConflicts, staged, syncSession } from "./sync-engine.js";
 import { withSession } from "./sync-session.js";
-import { ensureSidecar, sync, PUSHES_PER_MINUTE } from "./sidecar.js";
+import { ensureSidecar, sync, syncLinear, PUSHES_PER_MINUTE } from "./sidecar.js";
 import { lockoutOf } from "./lockout.js";
 import {
   foldStandardReport, LAW_SCOPE, publishOperation, publishOperationRemoved, publishPointerDeclared, publishSpecDrafted,
@@ -118,7 +118,7 @@ test("the queue is append, drop, and re-assign a dead session's items: nothing e
     // Every exported function, named. A new one that edits or reorders fails here first.
     assert.deepEqual(Object.keys(queue).sort(), [
       "allQueuedIds", "closeQueues", "conflicts", "drop", "forgetSession", "getMeta", "markConflict", "markInflight",
-      "markLanded", "markStaged", "markUnknown", "noteRefusal", "pending", "pruneLanded", "reassign", "sessionRow",
+      "markLanded", "markStaged", "markUnknown", "noteRefusal", "onOverlay", "pending", "pruneLanded", "reassign", "sessionRow",
       "sessionsWithConflicts", "sessionsWithPending", "setMeta", "setTx", "stage", "touchSession",
     ]);
     const ev = (id: string) => ({ id, kind: "k", subject: "s", actor: { principal: "q@x.com" }, at: "t", after: [], sidecarProtocol: 2, eventSchema: 1 });
@@ -565,4 +565,137 @@ test("C11: a sync whose `git add` fails is not reported landed", async () => {
     assert.ok("error" in r, `told it failed, not that it landed: ${JSON.stringify(r)}`);
     assert.equal(git(s.origin, "show", "main:tst/c11add/events.ndjson").status, 128, "and it is not on the remote");
   } finally { rmSync(lock, { force: true }); s.dispose(); }
+});
+
+// --- Round 2 (2026-10-01-online-only-sync-round2): the queue and settlement ---------------
+
+/** A clone whose remote has never logged this build's materializer version: its next actor sync bumps. */
+async function unbumped(): Promise<{ origin: string; local: string; dispose: () => void }> {
+  const base = mkdtempSync(join(tmpdir(), "codemap-bump-"));
+  const origin = join(base, "origin"), local = join(base, "local");
+  git(base, "init", "-q", "--bare", "-b", "main", origin);
+  await ensureSidecar(local);
+  git(local, "remote", "add", "origin", origin);
+  await syncLinear(local, "seed");
+  return { origin, local, dispose: () => discard(base) };
+}
+const BUMPER: Actor = { principal: "review@example.test" } as Actor;
+const breakUrlHook = (sidecar: string, exit: number) => `#!/bin/sh\nunset GIT_DIR GIT_QUARANTINE_PATH GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES\n`
+  + `git -C ${JSON.stringify(sidecar)} remote set-url origin /nonexistent/remote\nexit ${exit}\n`;
+
+test("C1: a failed push whose only new work is the materializer bump reports not pushed", async () => {
+  const c = await unbumped();
+  const hook = join(c.origin, "hooks", "pre-receive");
+  try {
+    writeFileSync(hook, "#!/bin/sh\nexit 1\n"); chmodSync(hook, 0o755);
+    const r = await syncLinear(c.local, "review", { actor: BUMPER }) as { error?: string; pushed?: boolean };
+    assert.match(r.error ?? "", /not pushed/, JSON.stringify(r));
+    assert.notEqual(git(c.origin, "show", "main:materializer/events.ndjson").status, 0, "the remote lacks the bump");
+  } finally { c.dispose(); }
+});
+
+test("C1: an inline act refused on a first sync after an upgrade leaves no unqueued bump behind", async () => {
+  const c = await unbumped();
+  try {
+    const r = await emitEventChecked(c.local, "tst/c1", BUMPER, async () => ({ error: "refused by its check" }));
+    assert.ok("error" in r);
+    const r2 = await emitEventChecked(c.local, "tst/c1", BUMPER, async () => ({ kind: "noted", subject: "n1" }));
+    assert.ok(!("error" in r2), `the clone is not wedged: ${JSON.stringify(r2)}`);
+    assert.equal(git(c.origin, "show", "main:tst/c1/events.ndjson").status, 0);
+  } finally { c.dispose(); }
+});
+
+test("C3: a no-op beside a real write does not turn a landed push into a reported failure", async () => {
+  const s = await scenario(["ana@x.com"]);
+  const hook = join(s.all[0]!.sidecar, ".git", "hooks", "pre-push");
+  const lock = join(s.all[0]!.sidecar, ".git", "refs", "remotes", "origin", "main.lock");
+  const release = setInterval(() => { try { if (Date.now() - statSync(lock).mtimeMs > 120) rmSync(lock); } catch { /* not held */ } }, 40);
+  try {
+    const ana = who(s, "ana@x.com");
+    await withSession("mcp:a", "mcp", async () => {
+      begin(ana.sidecar);
+      await emitEvent(ana.sidecar, "tst/c3", ana.actor, "noted", "n1", { x: 1 });
+      await emitEvent(ana.sidecar, "tst/c3", ana.actor, "noted", "n2");
+    });
+    await withSession("mcp:b", "mcp", () => emitEvent(ana.sidecar, "tst/c3", ana.actor, "noted", "n1", { x: 1 }));
+    writeFileSync(hook, `#!/bin/sh\ntouch ${JSON.stringify(lock)}\nexit 0\n`); chmodSync(hook, 0o755);
+    const r = await withSession("mcp:a", "mcp", () => syncSession(ana.sidecar, ana.actor)) as { error?: string; noop?: string[] };
+    assert.equal(r.error, undefined, String(r.error));
+    assert.equal(r.noop?.length, 1);
+  } finally { clearInterval(release); rmSync(hook, { force: true }); rmSync(lock, { force: true }); s.dispose(); }
+});
+
+test("C2.1: a batch whose push could not be confirmed keeps its writes, handed to the session that wrote them", async () => {
+  const s = await scenario(["ana@x.com"]);
+  const hook = join(s.origin, "hooks", "pre-receive");
+  try {
+    const ana = who(s, "ana@x.com");
+    await emitEvent(ana.sidecar, "tst/seed", ana.actor, "noted", "seed");
+    writeFileSync(hook, breakUrlHook(ana.sidecar, 1)); chmodSync(hook, 0o755);
+    await withSession("mcp:a", "mcp", async () => {
+      await assert.rejects(emitEvents(ana.sidecar, "tst/c21", ana.actor, [{ kind: "noted", subject: "a" }, { kind: "noted", subject: "b" }]),
+        /may already have landed/);
+    });
+    rmSync(hook);
+    git(ana.sidecar, "remote", "set-url", "origin", s.origin);
+    assert.deepEqual(queue.pending(ana.sidecar, "mcp:a").map((o) => [o.event.subject, o.state]), [["a", "unknown"], ["b", "unknown"]]);
+    // C2.3: the session's next write settles them — the push never landed, so they are staged again.
+    await withSession("mcp:a", "mcp", () => emitEvent(ana.sidecar, "tst/c21x", ana.actor, "noted", "x"));
+    assert.deepEqual(queue.pending(ana.sidecar, "mcp:a").map((o) => [o.event.subject, o.state]), [["a", "staged"], ["b", "staged"]]);
+  } finally { rmSync(hook, { force: true }); s.dispose(); }
+});
+
+test("C2.2: a write whose push could not be confirmed is still on its session's reads", async () => {
+  const s = await scenario(["ana@x.com"]);
+  const hook = join(s.origin, "hooks", "pre-receive");
+  try {
+    const ana = who(s, "ana@x.com");
+    await withSession("mcp:a", "mcp", async () => {
+      begin(ana.sidecar);
+      await emitEvent(ana.sidecar, "tst/c22", ana.actor, "noted", "n1");
+      writeFileSync(hook, breakUrlHook(ana.sidecar, 1)); chmodSync(hook, 0o755);
+      assert.match((await syncSession(ana.sidecar, ana.actor) as { error?: string }).error ?? "", /may already have landed/);
+      rmSync(hook);
+      git(ana.sidecar, "remote", "set-url", "origin", s.origin);
+      assert.deepEqual((await readScope(ana.sidecar, "tst/c22")).map((e) => e.subject), ["n1"]);
+    });
+  } finally { rmSync(hook, { force: true }); s.dispose(); }
+});
+
+test("C2.3: an inline write settles the session's unconfirmed push that did land", async () => {
+  const s = await scenario(["ana@x.com"]);
+  const hook = join(s.all[0]!.sidecar, ".git", "hooks", "pre-push");
+  const lock = join(s.all[0]!.sidecar, ".git", "refs", "remotes", "origin", "main.lock");
+  const release = setInterval(() => { try { if (Date.now() - statSync(lock).mtimeMs > 120) rmSync(lock); } catch { /* not held */ } }, 40);
+  try {
+    const ana = who(s, "ana@x.com");
+    await withSession("mcp:a", "mcp", async () => {
+      begin(ana.sidecar);
+      await emitEvent(ana.sidecar, "tst/c23", ana.actor, "noted", "n1");
+      // The push lands, the tracking ref cannot move, and the fetch that would settle it fails.
+      writeFileSync(hook, `#!/bin/sh\ntouch ${JSON.stringify(lock)}\ngit -C ${JSON.stringify(ana.sidecar)} remote set-url origin /nonexistent/remote\nexit 0\n`);
+      chmodSync(hook, 0o755);
+      assert.match((await syncSession(ana.sidecar, ana.actor) as { error?: string }).error ?? "", /may already have landed/);
+      rmSync(hook);
+      git(ana.sidecar, "remote", "set-url", "origin", s.origin);
+      assert.equal(git(s.origin, "show", "main:tst/c23/events.ndjson").status, 0, "it did land");
+      queue.setTx(ana.sidecar, "mcp:a", "mcp", false);   // so the next write syncs inline
+      await emitEvent(ana.sidecar, "tst/c23x", ana.actor, "noted", "x");
+    });
+    assert.deepEqual(queue.pending(ana.sidecar, "mcp:a"), [], "settled as landed by the next write");
+  } finally { clearInterval(release); rmSync(hook, { force: true }); rmSync(lock, { force: true }); s.dispose(); }
+});
+
+test("C9: a batch write adopts a gone session's conflict into its base session, and waits for it", async () => {
+  const s = await scenario(["ana@x.com", "ben@x.com"]);
+  try {
+    const ana = who(s, "ana@x.com"), ben = who(s, "ben@x.com");
+    await withSession(DEAD, "cli", async () => { begin(ana.sidecar); await claim(ana, "x"); });
+    await claim(ben, "x");
+    assert.deepEqual((await attemptGone(ana.sidecar)).map((o) => o.outcome), ["conflict"]);
+    await withSession("mcp:next", "mcp", async () => {
+      await assert.rejects(emitEvents(ana.sidecar, "tst/c9", ana.actor, [{ kind: "noted", subject: "a" }]), /wait for you here/);
+    });
+    assert.equal(queue.conflicts(ana.sidecar, "mcp:next").length, 1, "the base session holds it");
+  } finally { s.dispose(); }
 });

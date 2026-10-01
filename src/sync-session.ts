@@ -59,6 +59,9 @@ function pidAlive(pid: number): boolean {
  * when its polls stop; an MCP or CLI session when its process is. A session with no row
  * staged through nothing that registered it, and is judged by the pid in its id.
  */
+/** The session a batch belongs to: `syncBatch` runs under `<session>#batch-<id>`. */
+export const baseOf = (session: string): string => session.split("#")[0]!;
+
 export function sessionGone(session: string, row: SessionRow | null, now = Date.now()): boolean {
   if (session === processSession()) return false;
   // A tab belongs to the server that served it (`row.pid`): gone when its polls stop, or

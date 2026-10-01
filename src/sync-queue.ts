@@ -30,6 +30,9 @@ import type { StagedEvent } from "./eventlog.js";
  */
 export type QueueState = "staged" | "inflight" | "unknown" | "landed" | "conflict";
 
+/** What a session reads on top of the log (plan C7: an unconfirmed push is "shown on the overlay"). */
+export const onOverlay = (s: QueueState): boolean => s === "staged" || s === "unknown";
+
 export interface QueuedOp {
   /** Queue position. Replay order within a session, and never rewritten. */
   pos: number;
@@ -172,7 +175,8 @@ export function sessionsWithConflicts(logRoot: string): string[] {
 /**
  * Hand a gone session's unfinished items to the session that adopts them (review C10; owner:
  * "Allow the owner change"). The one change besides `state` the queue allows: content and
- * position never move.
+ * position never move. A batch's session is gone the moment `syncBatch` returns; its adopter is
+ * the session that called it (owner, round 2 C2.1: "Hand over at failure").
  */
 export function reassign(logRoot: string, from: string, to: string): number {
   return Number(open(logRoot).prepare("UPDATE queue SET session = ? WHERE session = ? AND state IN ('staged','unknown','conflict')")

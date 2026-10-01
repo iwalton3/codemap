@@ -20,7 +20,7 @@ import {
   SHARD_EXT, LINEAR_SHARD, SIDECAR_PROTOCOL, EVENT_SCHEMA, principalKey, splitShard, damageRef, appendLinear, atTip, causalHeads,
   doorFor, identicalAct, isLegacyShard, isMigrationMarker, maxSeq, SIDECAR_ATTRIBUTES, SIDECAR_ATTRIBUTES_PATH, mintId, readScope, sortEvents, writeDoor, writerFor, type DoorFold, type LogEvent, type ShardDamage, type StagedEvent,
 } from "./eventlog.js";
-import { sessionGone, withoutOverlay } from "./sync-session.js";
+import { baseOf, sessionGone, withoutOverlay } from "./sync-session.js";
 import { pushGate } from "./validation.js";
 import {
   allQueuedIds, conflicts, drop, getMeta, pruneLanded, markConflict, markInflight, markLanded, markStaged, markUnknown, noteRefusal, pending, reassign,
@@ -1004,6 +1004,14 @@ async function linearHeld(
       // The reset takes tracked files to the tip; our own manifest goes back on top of it.
       const again = await ensureSidecar(root, opts.actor ?? opts.inline?.actor);
       if ("error" in again) { forgetInline(); return again; }
+      // Settled at the next fetch, an inline sync's included (plan C7; round 2, C2.3): an
+      // unconfirmed op is on the tip — landed — or not — staged. Replaying it is a staged op's.
+      const unsure = pending(root, session).filter((o) => o.state === "unknown");
+      if (unsure.length) {
+        const there = linesAtCommit(root, remoteSha, [...new Set(unsure.map((o) => `${o.scope}/${LINEAR_SHARD}`))]);
+        markLanded(root, unsure.filter((o) => there.has(o.event.id)).map((o) => o.event.id));
+        markStaged(root, unsure.filter((o) => !there.has(o.event.id)).map((o) => o.event.id));
+      }
     }
 
     // Replay. Written to disk op by op, because a fold may read another scope (the standard
@@ -1011,8 +1019,9 @@ async function linearHeld(
     // A live session adopts what a gone one could not land (review C10, owner: "The new session
     // gets the failing queue and has to read, drop, and re-do (if applicable) the failing items
     // only before the next push"); the sweep of a gone session does not.
-    if (!opts.conflictOnRefusal) adoptGone(root, session);
-    const held = conflicts(root, session);
+    // Into the BASE session: a batch's own session is never synced again (round 2, C9).
+    if (!opts.conflictOnRefusal) adoptGone(root, baseOf(session));
+    const held = conflicts(root, baseOf(session));
     if (held.length) {
       forgetInline();
       return { error: `${held.length} write(s) refused after their session closed wait for you here: read them, drop or redo `
@@ -1057,21 +1066,9 @@ async function linearHeld(
       await append(op.scope, e);
       evs.push(e); top++; landedNow.push(e.id);
     }
-    // The first sync on this version logs it (materializer-log.ts) — never against a log this
-    // build cannot read, so a sync that only pulls is not turned into a refusal by it.
-    const by = opts.actor ?? opts.inline?.actor;
-    let bumped = 0;
-    if (by && remote && !refusals.length) {
-      const evs = await scopeEvents(MATERIALIZER_SCOPE);
-      const bump = bumpEvent(evs, by);
-      if (bump && !(await pushGate(root))) {
-        const e = atTip(evs, writer, top, bump);
-        if (!(await refusalOf(doorFor(root, MATERIALIZER_SCOPE), evs, e))) {
-          await append(MATERIALIZER_SCOPE, e);
-          evs.push(e); top++; bumped = 1;
-        }
-      }
-    }
+    // A no-op's twin is already on the tip: it is settled whatever this push does, and its own id
+    // is never there for a failed push's settlement to find (round 2, C3).
+    markLanded(root, noop);
     let inlineEvent: LogEvent | undefined;
     if (opts.inline) {
       const a = opts.inline;
@@ -1107,6 +1104,24 @@ async function linearHeld(
       evs.push(e); top++; landedNow.push(e.id);
       inlineEvent = e;
     }
+    // The first sync on this version logs it (materializer-log.ts) — never against a log this
+    // build cannot read, so a sync that only pulls is not turned into a refusal by it. After the
+    // inline act: its exits return without undoing appends, and an appended bump left behind is
+    // an unqueued event every later sync refuses to move past (round 2, C1).
+    const by = opts.actor ?? opts.inline?.actor;
+    let bumpId: string | null = null;
+    if (by && remote && !refusals.length) {
+      const evs = await scopeEvents(MATERIALIZER_SCOPE);
+      const bump = bumpEvent(evs, by);
+      if (bump && !(await pushGate(root))) {
+        const e = atTip(evs, writer, top, bump);
+        if (!(await refusalOf(doorFor(root, MATERIALIZER_SCOPE), evs, e))) {
+          await append(MATERIALIZER_SCOPE, e);
+          evs.push(e); top++; bumpId = e.id;
+        }
+      }
+    }
+    const bumped = bumpId ? 1 : 0;
     if (refusals.length) {
       await truncateBack(root, sizes);
       const ids = ops.map((o) => o.event.id);
@@ -1119,7 +1134,7 @@ async function linearHeld(
         conflicts: refusals, staged: stagedIds(),
       };
     }
-    const toLand = [...landedNow, ...already, ...noop];
+    const toLand = [...landedNow, ...already];
 
     const committed = commitLocal(root, message, [...sizes.keys()]);
     if (typeof committed === "object") {
@@ -1156,7 +1171,7 @@ async function linearHeld(
       if (!remoteHasHead(root, branch)) {
         return settleFailedPush(root, branch, `git push exited 0 but origin/${branch} did not move to this commit`, toLand,
           [...new Set([...ops.map((o) => o.scope), ...(opts.inline ? [opts.inline.scope] : []), ...(bumped ? [MATERIALIZER_SCOPE] : [])])],
-          inlineId, forgetInline, stagedIds, () => result(true, attempt));
+          inlineId, bumpId, forgetInline, stagedIds, () => result(true, attempt));
       }
       markLanded(root, toLand);
       inlineId = null;
@@ -1164,7 +1179,7 @@ async function linearHeld(
     }
     if (isRejection(p.err)) continue;
     return settleFailedPush(root, branch, p.err, toLand, [...new Set([...ops.map((o) => o.scope), ...(opts.inline ? [opts.inline.scope] : []),
-      ...(bumped ? [MATERIALIZER_SCOPE] : [])])], inlineId, forgetInline, stagedIds, () => result(true, attempt));
+      ...(bumped ? [MATERIALIZER_SCOPE] : [])])], inlineId, bumpId, forgetInline, stagedIds, () => result(true, attempt));
   }
   if (remote) {
     const tip = rev(root, `origin/${branch}`);
@@ -1179,17 +1194,19 @@ async function linearHeld(
  * A push that failed for a reason other than a lost race, settled at the failure (owner, C7):
  * fetch, and each op is on the tip — landed — or not — staged again, and an inline act is
  * forgotten and its caller told it was NOT written. Only an unreachable remote leaves an op
- * unknown: it stays `inflight`, shown on the overlay, and the next fetch settles it (a sync looks
+ * unknown: it becomes `unknown`, shown on the overlay, and the next fetch settles it (a sync looks
  * for its id at the tip before replaying). A definite `[remote rejected]` is a refusal.
  */
 async function settleFailedPush(
   root: string, branch: string, err: string, toLand: string[], scopes: string[], inlineId: string | null,
+  /** Not queued, so not in `toLand`, but this push's own work: without it a bump-only push that failed reads as landed. */
+  bumpId: string | null,
   forgetInline: () => void, stagedIds: () => string[], landedResult: () => Promise<LinearResult>,
 ): Promise<LinearOutcome> {
   const why = err.slice(0, 300);
   const fetched = await fetchRemote(root);
   if ("error" in fetched) {
-    // Back to the last tip seen: the ops stay queued (inflight) and anything else appended here
+    // Back to the last tip seen: the ops stay queued (`unknown`) and anything else appended here
     // (the materializer bump) is re-derived, so no unqueued event is left for the next sync to refuse.
     const last = rev(root, `origin/${branch}`);
     if (last) resetTo(root, last);
@@ -1205,7 +1222,12 @@ async function settleFailedPush(
   markStaged(root, absent);
   // Every op is now accounted for — landed, or staged to replay — so the unpushed commit goes.
   if (tip) resetTo(root, tip);
-  if (!absent.length) return landedResult();
+  const bumpLost = !!bumpId && !there.has(bumpId);
+  if (!absent.length && !bumpLost) return landedResult();
+  if (!absent.length) {
+    return { error: `the push to the sidecar remote failed (${why}): not pushed. It carried only this build's version record, `
+      + `which the next sync logs again.`, staged: stagedIds() };
+  }
   const inlineLost = !!inlineId && absent.includes(inlineId);
   if (inlineLost) forgetInline();
   const rejected = /\[remote rejected\]/.test(err);
@@ -1217,7 +1239,7 @@ async function settleFailedPush(
 /** Hand every gone session's conflicted queue to `session` (review C10). */
 export function adoptGone(root: string, session: string): void {
   for (const s of sessionsWithConflicts(root)) {
-    const base = s.split("#")[0]!;
+    const base = baseOf(s);
     if (s !== session && sessionGone(base, sessionRow(root, base))) reassign(root, s, session);
   }
 }

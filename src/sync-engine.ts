@@ -15,9 +15,9 @@ import {
 } from "./eventlog.js";
 import { withSidecarLock } from "./lock.js";
 import {
-  conflicts, drop, forgetSession, pending, sessionRow, sessionsWithPending, setTx, stage, type QueuedOp,
+  conflicts, drop, forgetSession, onOverlay, pending, reassign, sessionRow, sessionsWithPending, setTx, stage, type QueuedOp,
 } from "./sync-queue.js";
-import { currentSession, overlaySuppressed, sessionGone, withoutOverlay } from "./sync-session.js";
+import { baseOf, currentSession, overlaySuppressed, sessionGone, withoutOverlay } from "./sync-session.js";
 import { adoptGone, syncLinear, type LinearOutcome } from "./sidecar.js";
 import { arrived } from "./arrivals.js";
 import type { Actor } from "./schema.js";
@@ -29,7 +29,7 @@ type Check = AdmissionCheck;
  * a session reads on top of the log (plan 2.4: "a caller reads its own staged acts").
  */
 export async function overlayFor(logRoot: string, scope: string, events: LogEvent[], session = currentSession().session): Promise<LogEvent[]> {
-  const mine = pending(logRoot, session).filter((o) => o.scope === scope && o.state === "staged");
+  const mine = pending(logRoot, session).filter((o) => o.scope === scope && onOverlay(o.state));
   if (!mine.length) return [];
   const writer = await writerFor(logRoot);
   let top = await maxSeq(logRoot);
@@ -50,7 +50,7 @@ export async function overlayFor(logRoot: string, scope: string, events: LogEven
 
 registerOverlay({
   active: (logRoot, scope) => !overlaySuppressed()
-    && pending(logRoot, currentSession().session).some((o) => o.scope === scope && o.state === "staged"),
+    && pending(logRoot, currentSession().session).some((o) => o.scope === scope && onOverlay(o.state)),
   events: (logRoot, scope, tip) => overlayFor(logRoot, scope, tip),
 });
 
@@ -142,7 +142,8 @@ export async function stageBatch(logRoot: string, session: string, scope: string
 /**
  * A batch outside a transaction: one all-or-nothing sync of just these items, under a session
  * of their own so nothing else the caller staged rides along. On failure they are dropped —
- * the caller is told, and a retry must not find a stale copy waiting.
+ * the caller is told, and a retry must not find a stale copy waiting — except ops whose push
+ * could not be confirmed (`unknown`): those go to the calling session, whose next sync settles them.
  */
 export async function syncBatch(logRoot: string, scope: string, actor: Actor, items: Item[]): Promise<LogEvent[]> {
   const batch = `${currentSession().session}#batch-${mintId()}`;
@@ -153,9 +154,11 @@ export async function syncBatch(logRoot: string, scope: string, actor: Actor, it
   for (const s of staged) stage(logRoot, batch, scope, s);
   const r = await syncLinear(logRoot, batch, { actor });
   if ("error" in r) {
-    // An ambiguous push failure keeps its ops `inflight` for the next sync to confirm; anything
-    // still merely staged was never sent.
-    for (const s of staged) drop(logRoot, batch, s.id);
+    // Anything still staged was never sent; an `unknown` op may have landed, and nothing will
+    // sync this batch session again, so the caller's session takes it.
+    const unsure = new Set(r.unknown ?? []);
+    for (const s of staged) if (!unsure.has(s.id)) drop(logRoot, batch, s.id);
+    if (unsure.size) reassign(logRoot, batch, baseOf(batch));
     throw new Error(r.error);
   }
   if (r.gained) await arrived(logRoot);
@@ -220,7 +223,7 @@ export function localConflicts(logRoot: string, s = currentSession()): QueuedOp[
 export async function attemptGone(logRoot: string, now = Date.now()): Promise<{ session: string; outcome: string }[]> {
   const out: { session: string; outcome: string }[] = [];
   for (const session of sessionsWithPending(logRoot)) {
-    const base = session.split("#")[0]!;
+    const base = baseOf(session);
     if (!sessionGone(base, sessionRow(logRoot, base), now)) continue;
     // A session holding a refusal waits for the next session here to adopt it (C10).
     if (conflicts(logRoot, session).length) continue;
