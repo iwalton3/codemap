@@ -69,6 +69,29 @@ export const TRIPWIRE_PATH = "linear-log/UPGRADE-CODEMAP" + SHARD_EXT;
 export const TRIPWIRE_BYTES = "codemap: this sidecar was migrated to the linear format; upgrade codemap\n";
 
 /**
+ * The tripwire's partner for a FRESH clone, which has no inbound pull for the tripwire to trip:
+ * a manifest no build writes (`anchorScheme` 0) from no real person. A build from before the
+ * linear log refuses to pull or push past another principal's differing scheme on the fetched
+ * ref, so it stops there. This build exempts it by exact path and bytes, as it does the tripwire.
+ */
+export const SENTINEL_MANIFEST_PATH = "manifests/UPGRADE-CODEMAP.json";
+export const SENTINEL_MANIFEST_BYTES = JSON.stringify({
+  principal: "UPGRADE-CODEMAP: this sidecar was migrated to the linear log; upgrade codemap",
+  anchorScheme: 0, hashScheme: 0, grammars: {},
+}, null, 2) + "\n";
+
+/** The migration's markers, by sidecar-relative path. The one exemption list for both. */
+const MIGRATION_MARKERS: ReadonlyMap<string, string> = new Map([
+  [TRIPWIRE_PATH, TRIPWIRE_BYTES], [SENTINEL_MANIFEST_PATH, SENTINEL_MANIFEST_BYTES],
+]);
+
+/** Whether `text` at `path` (sidecar-relative, or ending in one) is exactly a migration marker. */
+export function isMigrationMarker(path: string, text: string): boolean {
+  for (const [p, bytes] of MIGRATION_MARKERS) if ((path === p || path.endsWith("/" + p)) && text === bytes) return true;
+  return false;
+}
+
+/**
  * Whether a shard path is from before the linear log: a per-writer shard. A sidecar holding any
  * is unmigrated, and this build neither syncs nor folds it (plan 7.2b).
  */
@@ -600,7 +623,7 @@ async function readShardLines(
  * damaged shard is, which is the whole class of defect this fixes.
  */
 export function splitShard(text: string, as: string): { events: { event: LogEvent; line: string }[]; damage: ShardDamage[] } {
-  if (text === TRIPWIRE_BYTES && (as === TRIPWIRE_PATH || as.endsWith("/" + TRIPWIRE_PATH))) return { events: [], damage: [] };
+  if (isMigrationMarker(as, text)) return { events: [], damage: [] };
   const events: { event: LogEvent; line: string }[] = [];
   const damage: ShardDamage[] = [];
   const lines = text.split("\n");

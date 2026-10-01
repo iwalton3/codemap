@@ -284,8 +284,9 @@ tried and reverted, because disk corruption that eats a served event leaves iden
 
 **A sidecar from before the linear log is refused**, read and transport, until it is migrated
 (`docs/sidecar-migration.md`; `scripts/migrate-sidecar.mjs`). The migration plants a tripwire,
-`linear-log/UPGRADE-CODEMAP.ndjson`, that old builds refuse to pull; this build exempts exactly
-that path and those bytes.
+`linear-log/UPGRADE-CODEMAP.ndjson`, that old builds refuse to pull, and a sentinel manifest,
+`manifests/UPGRADE-CODEMAP.json`, that stops an old build's FRESH clone (no pull to trip on); this
+build exempts exactly those paths and bytes (`isMigrationMarker`).
 
 **Repointing `.codemap/sidecar` from one team's repo to another is REFUSED**, and the
 identity is the sidecar's oldest ROOT COMMIT — so a MOVE, a RE-CLONE and a sidecar that has

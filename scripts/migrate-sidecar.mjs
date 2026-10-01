@@ -16,7 +16,8 @@
 // 4. Validates the result with THIS build's folds, in that order, with `seq` assigned, and drops
 //    whatever they refuse — so the migrated log reads clean and never locks — repeating until
 //    nothing more drops (a dropped event can orphan a later one).
-// 5. Writes each scope as one `events.ndjson`, removes the per-writer shards, writes the tripwire.
+// 5. Writes each scope as one `events.ndjson`, removes the per-writer shards, writes the tripwire and
+//    the sentinel manifest (a fresh clone's tripwire; eventlog.ts).
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -140,6 +141,8 @@ if (apply) {
   if (tripwire) {
     mkdirSync(join(root, "linear-log"), { recursive: true });
     writeFileSync(join(root, newLog.TRIPWIRE_PATH), newLog.TRIPWIRE_BYTES);
+    mkdirSync(join(root, "manifests"), { recursive: true });
+    writeFileSync(join(root, newLog.SENTINEL_MANIFEST_PATH), newLog.SENTINEL_MANIFEST_BYTES);
   }
   if (existsSync(join(root, ".git"))) {
     git("add", "-A");

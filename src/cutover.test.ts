@@ -5,13 +5,13 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { discard } from "./test-tmp.js";
 import { join } from "node:path";
 import { scenario, who } from "./scenario.js";
-import { readScopeChecked, splitShard, TRIPWIRE_BYTES, TRIPWIRE_PATH } from "./eventlog.js";
-import { sync } from "./sidecar.js";
+import { readScopeChecked, splitShard, SENTINEL_MANIFEST_BYTES, SENTINEL_MANIFEST_PATH, TRIPWIRE_BYTES, TRIPWIRE_PATH } from "./eventlog.js";
+import { readManifests, sync } from "./sidecar.js";
 import { readCached } from "./materialize.js";
 import { findingScope, foldFindings, createFinding } from "./shared-findings.js";
 import { findingsProjection } from "./shared-projections.js";
@@ -32,7 +32,8 @@ test("a sidecar still holding per-writer shards: sync refuses and a read does no
     writeFileSync(join(ana.sidecar, findingScope(PR), "w_0123456789abcdef.ndjson"),
       JSON.stringify(testEvent({ id: "0000000001-old", kind: "finding.created", subject: "f_old", data: { targetKind: "anchor", targetId: "a_2", text: "old" } })) + "\n");
     const r = await sync(ana.sidecar, ana.actor);
-    assert.ok("error" in r && /per-writer shards from before the linear log/.test(r.error), JSON.stringify(r));
+    assert.ok("error" in r && /never reached the team's sidecar before it was migrated \(first: \S+ 0000000001-old\)/.test(r.error), JSON.stringify(r));
+    assert.ok(existsSync(join(ana.sidecar, findingScope(PR), "w_0123456789abcdef.ndjson")), "the old shard is left where it was");
     const read = await readCached(store, ana.sidecar, findingScope(PR), "id2", foldFindings, findingsProjection);
     assert.equal(read.status, "blocked");
     assert.equal(read.diagnostic?.reason, "unmigrated");
@@ -54,5 +55,35 @@ test("the tripwire reads as nothing to this build, and anything else at its path
     assert.ok(!("error" in r), JSON.stringify(r));
     assert.equal((await readScopeChecked(ana.sidecar, "linear-log")).status, "complete");
     assert.equal(lockoutOf(ana.sidecar), null);
+  } finally { s.dispose(); }
+});
+
+test("the sentinel manifest is no peer to this build, and anything else at its path is one", async () => {
+  const s = await scenario(["ana@x.com"]);
+  try {
+    const ana = who(s, "ana@x.com");
+    writeFileSync(join(ana.sidecar, SENTINEL_MANIFEST_PATH), SENTINEL_MANIFEST_BYTES);
+    const r = await sync(ana.sidecar, ana.actor);
+    assert.ok(!("error" in r), JSON.stringify(r));
+    assert.ok(!(await readManifests(ana.sidecar)).some((m) => m.anchorScheme === 0));
+    // Edited, it is an ordinary manifest from a peer on another scheme, and stops the sync.
+    writeFileSync(join(ana.sidecar, SENTINEL_MANIFEST_PATH), SENTINEL_MANIFEST_BYTES.replace("upgrade codemap", "upgrade codemap!"));
+    assert.ok((await readManifests(ana.sidecar)).some((m) => m.anchorScheme === 0));
+  } finally { s.dispose(); }
+});
+
+test("an upgraded clone whose old events all reached the migrated remote moves to its tip", async () => {
+  const s = await scenario(["ana@x.com"]);
+  try {
+    const ana = who(s, "ana@x.com");
+    await createFinding(ana.sidecar, PR, ana.actor, { targetKind: "anchor", targetId: "a_1", text: "migrated" });
+    // The same event as an old build left it in this clone: a per-writer shard, without `seq`.
+    const line = readFileSync(join(ana.sidecar, findingScope(PR), "events.ndjson"), "utf8").split("\n")[0]!;
+    const { seq: _seq, ...old } = JSON.parse(line);
+    const legacy = join(ana.sidecar, findingScope(PR), "w_0123456789abcdef.ndjson");
+    writeFileSync(legacy, JSON.stringify(old) + "\n");
+    const r = await sync(ana.sidecar, ana.actor);
+    assert.ok(!("error" in r), JSON.stringify(r));
+    assert.ok(!existsSync(legacy), "the per-writer shard is gone with the move to the tip");
   } finally { s.dispose(); }
 });

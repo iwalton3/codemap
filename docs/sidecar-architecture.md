@@ -332,8 +332,9 @@ was recorded at (`joined` on the sync result; `rememberSidecar`).
 The migration (`docs/sidecar-migration.md`) rewrites a merge-era sidecar into one file per
 scope, in the order e40e9e3's build folded it. It drops what this build's folds refuse,
 splicing each dropped event out of the causal record, and plants a tripwire
-(`linear-log/UPGRADE-CODEMAP.ndjson`) that builds from before it refuse to pull. This build
-exempts exactly that path and those bytes, and it refuses to sync or fold a sidecar that still
+(`linear-log/UPGRADE-CODEMAP.ndjson`) that builds from before it refuse to pull, and a sentinel
+manifest (`manifests/UPGRADE-CODEMAP.json`) that stops their fresh clones. This build exempts
+exactly those paths and bytes (`isMigrationMarker`), and it refuses to sync or fold a sidecar that still
 holds per-writer shards.
 
 ## Deliberate limits

@@ -7,9 +7,10 @@
 A sidecar from before the linear log keeps one shard per scope *and writer*, merged by git. The
 linear build keeps one `events.ndjson` per scope, appended in push order, and it refuses to sync
 over — or fold — the old layout ("holds per-writer shards from before the linear log"). The
-migration rewrites the sidecar once, in one commit, and plants a tripwire
-(`linear-log/UPGRADE-CODEMAP.ndjson`) that builds from before it refuse to pull, so no old build
-can merge or push into the migrated sidecar.
+migration rewrites the sidecar once, in one commit, and plants two markers no old build gets
+past: a tripwire (`linear-log/UPGRADE-CODEMAP.ndjson`) that an existing clone's pull refuses, and a
+sentinel manifest (`manifests/UPGRADE-CODEMAP.json`, an anchor scheme no build writes) that stops a
+FRESH clone, which never pulls the tripwire in, from pulling or pushing.
 
 ## Before you start
 
@@ -41,13 +42,20 @@ can merge or push into the migrated sidecar.
 5. **Apply**: the same command with `--apply`. It rewrites the clone and commits locally.
 6. **Push** the migration commit: `git -C <clone> push origin HEAD:main`.
 7. **Upgrade every machine.** On first sync each takes the migrated sidecar; its projections refold
-   (the build bumps `MATERIALIZER_VERSION`).
+   (the build bumps `MATERIALIZER_VERSION`). A clone whose old per-writer shards hold only events
+   that reached the team's sidecar moves to the migrated tip and the old shards go with it.
 
 ## If something goes wrong
 
-- **An old build's pull says "refusing to merge … upgrade codemap"**: that is the tripwire working.
-  Upgrade that machine. Do not "repair" the line (docs/log-repair.md is not for this).
-- **A new build says the sidecar holds per-writer shards**: the migration was not pushed, or an old
-  build pushed before the tripwire existed. Re-run from step 2 on a fresh clone.
+- **An old build says "UPGRADE-CODEMAP … is writing under ANCHOR_SCHEME 0"**, or "refusing to
+  merge … upgrade codemap": that is the sentinel or the tripwire working. Upgrade that machine. Do
+  not "repair" either file (docs/log-repair.md is not for this).
+- **A new build says the team's sidecar holds per-writer shards**: the migration was not pushed, or
+  an old build pushed before the tripwire existed. Re-run from step 2 on a fresh clone.
+- **A new build says this clone holds events "that never reached the team's sidecar before it was
+  migrated"**: that machine wrote after its last sync and before upgrading. Migrating again does
+  not help — the remote is already migrated. Copy the sidecar clone aside (the events are in its
+  `w_*.ndjson` files), redo those acts with the new build, then delete the per-writer shards and
+  sync.
 - **The migration refused**: it names the uncommitted change or the unpushed commit. Sync that
   clone with its current build, and start again.

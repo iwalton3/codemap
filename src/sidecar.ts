@@ -16,7 +16,7 @@ import { gitBin } from "./git.js";
 import { withSidecarLock, touchHeldLocks } from "./lock.js";
 import {
   SHARD_EXT, LINEAR_SHARD, SIDECAR_PROTOCOL, EVENT_SCHEMA, principalKey, splitShard, damageRef, appendLinear, atTip, causalHeads,
-  doorFor, isLegacyShard, maxSeq, mintId, readScope, sortEvents, writeDoor, writerFor, type DoorFold, type LogEvent, type ShardDamage, type StagedEvent,
+  doorFor, isLegacyShard, isMigrationMarker, maxSeq, mintId, readScope, sortEvents, writeDoor, writerFor, type DoorFold, type LogEvent, type ShardDamage, type StagedEvent,
 } from "./eventlog.js";
 import { withoutOverlay } from "./sync-session.js";
 import { pushGate } from "./validation.js";
@@ -359,7 +359,9 @@ export async function readManifests(root: string): Promise<SidecarManifest[]> {
   const out: SidecarManifest[] = [];
   for (const n of names.filter((n) => n.endsWith(".json"))) {
     try {
-      const m = JSON.parse(await readFile(join(dir, n), "utf8")) as SidecarManifest;
+      const text = await readFile(join(dir, n), "utf8");
+      if (isMigrationMarker(`${MANIFEST_DIR}/${n}`, text)) continue;
+      const m = JSON.parse(text) as SidecarManifest;
       if (m && typeof m.principal === "string" && typeof m.anchorScheme === "number") out.push(m);
     } catch { /* somebody else's client wrote something odd; not our problem to die on */ }
   }
@@ -557,8 +559,8 @@ function remoteManifests(root: string, rev: string): SidecarManifest[] {
   if (!listing.ok) return [];
   const out: SidecarManifest[] = [];
   for (const name of listing.out.split("\n").map((s) => s.trim()).filter((s) => s.endsWith(".json"))) {
-    const blob = g(root, ["show", `${rev}:${MANIFEST_DIR}/${name}`]);
-    if (!blob.ok) continue;
+    const blob = gRaw(root, ["show", `${rev}:${MANIFEST_DIR}/${name}`]);
+    if (!blob.ok || isMigrationMarker(`${MANIFEST_DIR}/${name}`, blob.out)) continue;
     try {
       const m = JSON.parse(blob.out) as SidecarManifest;
       if (m && typeof m.principal === "string" && typeof m.anchorScheme === "number") out.push(m);
@@ -704,11 +706,6 @@ function linesAtCommit(root: string, sha: string, paths: string[]): Map<string, 
 }
 
 /**
- * Events in this clone — the working tree or a local commit — that are neither on the remote
- * tip nor held by the queue. Resetting to the tip would destroy them, so a sync refuses
- * instead. The ordinary case (a clean tree at, or behind, the tip) costs two git calls.
- */
-/**
  * Lines a shard in the working tree has LOST against its committed version. The engine only
  * ever appends, so this is a hand edit — a repair in progress, most likely — and the reset
  * would throw it away without a word.
@@ -729,16 +726,22 @@ async function editedShards(root: string): Promise<string[]> {
   return edited;
 }
 
+/**
+ * Events in this clone — the working tree or a local commit — that are neither on the remote
+ * tip nor held by the queue. Resetting to the tip would destroy them, so a sync refuses
+ * instead. The ordinary case (a clean tree at, or behind, the tip) costs two git calls.
+ * Per-writer shards are `unmigrated`'s to judge, by id: their lines never match the remote's.
+ */
 async function unqueuedLocalEvents(root: string, remoteSha: string): Promise<{ path: string; id: string }[]> {
   const head = rev(root, "HEAD");
   // `gRaw` and `-z`: see `damagedWorkingShards` for what trimming porcelain output costs.
   const dirty = gRaw(root, ["status", "--porcelain", "-z", "--untracked-files=all", "--", `*${SHARD_EXT}`]).out
-    .split("\0").map((entry) => /^.. (.*)$/.exec(entry)?.[1] ?? entry).filter((p) => p.endsWith(SHARD_EXT));
+    .split("\0").map((entry) => /^.. (.*)$/.exec(entry)?.[1] ?? entry).filter((p) => p.endsWith(SHARD_EXT) && !isLegacyShard(p));
   const ahead = !!head && head !== remoteSha && !g(root, ["merge-base", "--is-ancestor", head, remoteSha]).ok;
   if (!dirty.length && !ahead) return [];
   const changed = new Set(dirty);
   if (ahead) {
-    for (const p of g(root, ["diff", "--name-only", remoteSha, head, "--", `*${SHARD_EXT}`]).out.split("\n")) if (p.trim()) changed.add(p.trim());
+    for (const p of g(root, ["diff", "--name-only", remoteSha, head, "--", `*${SHARD_EXT}`]).out.split("\n")) if (p.trim() && !isLegacyShard(p.trim())) changed.add(p.trim());
   }
   const paths = [...changed];
   const remote = linesAtCommit(root, remoteSha, paths);
@@ -770,6 +773,33 @@ function legacyShards(root: string, sha?: string): string[] {
 const UNMIGRATED = (where: string, first: string) =>
   `refusing to sync: ${where} holds per-writer shards from before the linear log (first: ${first}), which this build `
   + `cannot order. The sidecar must be migrated first — see docs/sidecar-migration.md. Reads carry on from what this store already has.`;
+
+/**
+ * Why this clone cannot sync over per-writer shards, or null. Decided on the REMOTE first: once
+ * the team's sidecar is migrated, an upgraded clone whose old events all reached it moves to the
+ * tip like any other, and one holding events that never did is told exactly that — migrating
+ * again is not the way out. Compared by id, since the migration rewrites every line (`seq`).
+ */
+async function unmigrated(root: string, remoteSha: string): Promise<string | null> {
+  const oldThere = remoteSha ? legacyShards(root, remoteSha) : [];
+  if (oldThere.length) return UNMIGRATED("the team's sidecar", oldThere[0]!);
+  const oldHere = legacyShards(root);
+  if (!oldHere.length) return null;
+  if (!remoteSha) return UNMIGRATED("this clone's sidecar", oldHere[0]!);
+  const shardsThere = g(root, ["ls-tree", "-r", "--name-only", remoteSha]).out.split("\n").map((p) => p.trim()).filter((p) => p.endsWith(SHARD_EXT));
+  const there = linesAtCommit(root, remoteSha, shardsThere);
+  const unpushed: { path: string; id: string }[] = [];
+  for (const p of oldHere) {
+    let text = "";
+    try { text = await readFile(join(root, p), "utf8"); } catch { continue; }
+    for (const { event } of splitShard(text, p).events) if (!there.has(event.id)) unpushed.push({ path: p, id: event.id });
+  }
+  if (!unpushed.length) return null;
+  return `refusing to sync: this clone holds ${unpushed.length} event(s) an older build wrote that never reached the team's `
+    + `sidecar before it was migrated (first: ${unpushed[0]!.path} ${unpushed[0]!.id}). Moving to the migrated tip would `
+    + `destroy them. Copy this sidecar clone aside, then redo those acts with this build — see docs/sidecar-migration.md, `
+    + `"If something goes wrong".`;
+}
 
 /** Put the working tree at `sha` — tracked files reset, stray shards removed. */
 function resetTo(root: string, sha: string): { error: string } | null {
@@ -872,10 +902,8 @@ async function linearHeld(
       }
       remoteSha = rev(root, `origin/${branch}`);
     }
-    const oldHere = legacyShards(root);
-    if (oldHere.length) { forgetInline(); return { error: UNMIGRATED("this clone's sidecar", oldHere[0]!) }; }
-    const oldThere = remoteSha ? legacyShards(root, remoteSha) : [];
-    if (oldThere.length) { forgetInline(); return { error: UNMIGRATED("the team's sidecar", oldThere[0]!) }; }
+    const old = await unmigrated(root, remoteSha);
+    if (old) { forgetInline(); return { error: old }; }
     // Damage in this clone's own tree locks it before anything moves: the reset below would
     // repair it from the remote, and silently — which hides whatever put it there.
     const local = damagedWorkingShards(root);
@@ -1059,10 +1087,8 @@ export async function pullLinear(root: string, actor?: Actor): Promise<PullResul
     const remoteSha = rev(root, `origin/${branch}`);
     if (!remoteSha) return { gained: 0 };
     const head = rev(root, "HEAD");
-    const oldHere = legacyShards(root), oldThere = legacyShards(root, remoteSha);
-    if (oldHere.length || oldThere.length) {
-      return { error: UNMIGRATED(oldHere.length ? "this clone's sidecar" : "the team's sidecar", (oldHere[0] ?? oldThere[0])!) };
-    }
+    const old = await unmigrated(root, remoteSha);
+    if (old) return { error: old };
     const local = damagedWorkingShards(root);
     if (local.length) {
       lockOn(root, local);
