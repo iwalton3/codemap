@@ -61,15 +61,40 @@ function linkedRepairLanded(root: string, finding: SharedFinding, checked: strin
 const lifecycles = new Map<string, RepairCodeLifecycle>();
 
 const tip = (root: string, branch: string) => revParse(root, `origin/${branch}`) ?? revParse(root, branch);
+const prHeads = new Map<string, { at: number; head: { branch: string } | { why: string } }>();
+/** The pull request's head branch as GitHub reports it, or why it could not be asked. */
+function githubHead(root: string, pr: string): { branch: string } | { why: string } {
+  const slug = originSlug(root);
+  if (!slug) return { why: "the origin is not a GitHub repository, so its head branch could not be asked" };
+  const key = `${slug.owner}/${slug.repo}#${pr}`;
+  const hit = prHeads.get(key);
+  if (hit && Date.now() - hit.at < 60_000) return hit.head;
+  const reply = spawnSync("gh", ["pr", "view", pr, "--repo", `${slug.owner}/${slug.repo}`, "--json", "headRefName"],
+    { encoding: "utf8", timeout: 8_000, maxBuffer: 1024 * 1024 });
+  let head: { branch: string } | { why: string };
+  try {
+    const name = reply.status === 0 ? (JSON.parse(reply.stdout) as { headRefName?: unknown }).headRefName : undefined;
+    head = typeof name === "string" && name ? { branch: name }
+      : { why: `GitHub could not be asked for its head branch (${(reply.stderr || reply.error?.message || "no answer").trim().slice(0, 200)})` };
+  } catch { head = { why: "GitHub's answer about its head branch could not be read" }; }
+  prHeads.set(key, { at: Date.now(), head });
+  return head;
+}
+
 /**
  * The branch a finding's repair lives on: its own, else — for a pull request's finding — the PR's
- * head branch as linked (K8, plan 5.4). Several linked branches at different tips judge nothing.
+ * head branch: the one linked, or when linked branches disagree, the one GitHub reports (owner,
+ * O24). A failed lookup judges nothing and says why: "I could not ask" is never a verdict.
  */
-function sourceBranch(root: string, finding: SharedFinding): string | null {
-  if (finding.branch) return tip(root, finding.branch);
-  if (!finding.pr || !/^[1-9]\d*$/.test(finding.pr)) return null;
+export function repairSourceBranch(root: string, finding: SharedFinding): { sha: string | null; why?: string } {
+  if (finding.branch) return { sha: tip(root, finding.branch) };
+  if (!finding.pr || !/^[1-9]\d*$/.test(finding.pr)) return { sha: null };
   const tips = new Set(linkedBranches(root, finding.pr).map((b) => tip(root, b)).filter((s): s is string => !!s));
-  return tips.size === 1 ? [...tips][0]! : null;
+  if (tips.size <= 1) return { sha: [...tips][0] ?? null };
+  const head = githubHead(root, finding.pr);
+  if ("why" in head) return { sha: null, why: `${tips.size} linked branches of #${finding.pr} are at different tips, and ${head.why}` };
+  const sha = tip(root, head.branch);
+  return sha ? { sha } : { sha: null, why: `GitHub names ${head.branch} as #${finding.pr}'s head branch, which this clone has not fetched` };
 }
 
 /** File movement is conservative: unrelated edits in a touched file also need attention. */
@@ -80,12 +105,13 @@ export async function repairCodeLifecycle(root: string, finding: SharedFinding, 
   // What the repair is compared against: the finding's own branch while it has one, else the
   // default branch — a COMMIT either way, never the working tree (F29), so the answer does not
   // depend on what happens to be checked out.
-  const branchSha = sourceBranch(root, finding);
+  const branch = repairSourceBranch(root, finding), branchSha = branch.sha;
   const key = JSON.stringify([root, finding.id, finding.target, checkedCommit, evidence.baseCommit, trunk?.sha ?? null, branchSha,
     evidence.attribution.map((a) => a.file), evidence.inspected.map((i) => i.source)]);
   const memo = lifecycles.get(key);
   if (memo) return structuredClone(memo);
   const done = await computeLifecycle(root, finding, evidence, checkedCommit, trunk, branchSha);
+  if (branch.why) done.reasons.unshift(branch.why);
   // Only a LANDED answer is final for these SHAs: an open repair can still land through a merged
   // pull request, which only GitHub can say, and an unknown one can be proven by deepening history.
   if (done.landing === "landed") lifecycles.set(key, structuredClone(done));
