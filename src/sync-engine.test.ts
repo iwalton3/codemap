@@ -18,7 +18,7 @@ import { emitEvent, emitEventChecked, emitEvents } from "./write.js";
 import * as queue from "./sync-queue.js";
 import { attemptGone, begin, discard as discardTx, dropOp, localConflicts, staged, syncSession } from "./sync-engine.js";
 import { withSession } from "./sync-session.js";
-import { ensureSidecar, sync, syncLinear, PUSHES_PER_MINUTE } from "./sidecar.js";
+import { ensureSidecar, pullLinear, sync, syncLinear, PUSHES_PER_MINUTE } from "./sidecar.js";
 import { lockoutOf } from "./lockout.js";
 import {
   foldStandardReport, LAW_SCOPE, publishOperation, publishOperationRemoved, publishPointerDeclared, publishSpecDrafted,
@@ -686,6 +686,30 @@ test("C2.3: an inline write settles the session's unconfirmed push that did land
       await emitEvent(ana.sidecar, "tst/c23x", ana.actor, "noted", "x");
     });
     assert.deepEqual(queue.pending(ana.sidecar, "mcp:a"), [], "settled as landed by the next write");
+  } finally { clearInterval(release); rmSync(hook, { force: true }); rmSync(lock, { force: true }); s.dispose(); }
+});
+
+test("round 3, I8: a pull settles the session's unconfirmed push that did land — read once, no longer unknown", async () => {
+  const s = await scenario(["ana@x.com"]);
+  const hook = join(s.all[0]!.sidecar, ".git", "hooks", "pre-push");
+  const lock = join(s.all[0]!.sidecar, ".git", "refs", "remotes", "origin", "main.lock");
+  const release = setInterval(() => { try { if (Date.now() - statSync(lock).mtimeMs > 120) rmSync(lock); } catch { /* not held */ } }, 40);
+  try {
+    const ana = who(s, "ana@x.com");
+    await withSession("mcp:a", "mcp", async () => {
+      begin(ana.sidecar);
+      await emitEvent(ana.sidecar, "tst/i8", ana.actor, "noted", "n1");
+      writeFileSync(hook, `#!/bin/sh\ntouch ${JSON.stringify(lock)}\ngit -C ${JSON.stringify(ana.sidecar)} remote set-url origin /nonexistent/remote\nexit 0\n`);
+      chmodSync(hook, 0o755);
+      assert.match((await syncSession(ana.sidecar, ana.actor) as { error?: string }).error ?? "", /may already have landed/);
+      rmSync(hook);
+      git(ana.sidecar, "remote", "set-url", "origin", s.origin);
+      assert.equal(git(s.origin, "show", "main:tst/i8/events.ndjson").status, 0, "it did land");
+      const pulled = await pullLinear(ana.sidecar, ana.actor);
+      assert.ok(!("error" in pulled), JSON.stringify(pulled));
+      assert.deepEqual((await readScope(ana.sidecar, "tst/i8")).map((e) => e.subject), ["n1"], "read once, not again from the overlay");
+      assert.deepEqual(queue.pending(ana.sidecar, "mcp:a"), [], "settled as landed by the pull");
+    });
   } finally { clearInterval(release); rmSync(hook, { force: true }); rmSync(lock, { force: true }); s.dispose(); }
 });
 

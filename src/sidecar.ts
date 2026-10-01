@@ -1035,14 +1035,7 @@ async function linearHeld(
       // The reset takes tracked files to the tip; our own manifest goes back on top of it.
       const again = await ensureSidecar(root, opts.actor ?? opts.inline?.actor);
       if ("error" in again) { forgetInline(); return again; }
-      // Settled at the next fetch, an inline sync's included (plan C7; round 2, C2.3): an
-      // unconfirmed op is on the tip — landed — or not — staged. Replaying it is a staged op's.
-      const unsure = pending(root, session).filter((o) => o.state === "unknown");
-      if (unsure.length) {
-        const there = linesAtCommit(root, remoteSha, [...new Set(unsure.map((o) => `${o.scope}/${LINEAR_SHARD}`))]);
-        markLanded(root, unsure.filter((o) => there.has(o.event.id)).map((o) => o.event.id));
-        markStaged(root, unsure.filter((o) => !there.has(o.event.id)).map((o) => o.event.id));
-      }
+      settleUnknown(root, session, remoteSha);
     }
 
     // Replay. Written to disk op by op, because a fold may read another scope (the standard
@@ -1275,6 +1268,18 @@ export function adoptGone(root: string, session: string): void {
   }
 }
 
+/**
+ * Settled at every fetch, a sync's or a pull's (plan C7; round 2, C2.3; round 3, I8): an
+ * unconfirmed op is on the tip — landed — or not — staged. Replaying it is a staged op's.
+ */
+function settleUnknown(root: string, session: string, tip: string): void {
+  const unsure = pending(root, session).filter((o) => o.state === "unknown");
+  if (!unsure.length) return;
+  const there = linesAtCommit(root, tip, [...new Set(unsure.map((o) => `${o.scope}/${LINEAR_SHARD}`))]);
+  markLanded(root, unsure.filter((o) => there.has(o.event.id)).map((o) => o.event.id));
+  markStaged(root, unsure.filter((o) => !there.has(o.event.id)).map((o) => o.event.id));
+}
+
 /** Bring the tree to the remote tip without pushing anything. */
 export async function pullLinear(root: string, actor?: Actor): Promise<PullResult | { error: string }> {
   const pre = await fetchRemote(root);
@@ -1298,7 +1303,8 @@ export async function pullLinear(root: string, actor?: Actor): Promise<PullResul
       return { error: `refusing to pull: ${edited.length} shard(s) in this sidecar clone were edited by hand (${edited.slice(0, 3).join(", ")}). `
         + `A pull would discard the edit; commit and push a repair with git (docs/log-repair.md), or restore it with \`git checkout\`.` };
     }
-    if (head === remoteSha) return { gained: 0 };
+    // Only once the tree holds the tip: a row settled as landed leaves the overlay.
+    if (head === remoteSha) { settleUnknown(root, currentSession().session, remoteSha); return { gained: 0 }; }
     let lost = await unqueuedLocalEvents(root, remoteSha);
     if (lost.length && (!head || !g(root, ["merge-base", head, remoteSha]).ok)) lost = importOnJoin(root, currentSession().session, lost).rest;
     if (lost.length) {
@@ -1314,6 +1320,7 @@ export async function pullLinear(root: string, actor?: Actor): Promise<PullResul
     const joined = !!head && !g(root, ["merge-base", head, remoteSha]).ok;
     const moved = resetTo(root, remoteSha);
     if (moved) return moved;
+    settleUnknown(root, currentSession().session, remoteSha);
     if (actor) await ensureSidecar(root, actor);
     if (damaged.length) lockOn(root, damaged);
     return { gained: (await countEvents(root)) - before, ...(incompat ? { warning: incompat.message } : {}), ...(joined ? { joined } : {}) };
