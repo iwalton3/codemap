@@ -493,10 +493,19 @@ function hasRemote(root: string): boolean {
   }
 }
 
-function fetchRemote(root: string): { fetched: boolean } | { error: string } {
+// Another git process in this clone holds a ref lock. Two codemap processes share a clone (the
+// web server and an MCP session) and the first fetch runs outside the sidecar lock, so this is
+// ordinary contention, not an unreachable remote.
+const REF_LOCKED = /cannot lock ref|Unable to create '[^']*\.lock'/;
+
+async function fetchRemote(root: string): Promise<{ fetched: boolean } | { error: string }> {
   if (!hasRemote(root)) return { fetched: false };
-  const r = g(root, ["fetch", "--quiet", "origin"]);
-  return r.ok ? { fetched: true } : { error: `fetch failed: ${r.err.slice(0, 300)}` };
+  for (let i = 0; ; i++) {
+    const r = g(root, ["fetch", "--quiet", "origin"]);
+    if (r.ok) return { fetched: true };
+    if (i < 4 && REF_LOCKED.test(r.err)) { await sleep(100 * (i + 1)); continue; }
+    return { error: `fetch failed: ${r.err.slice(0, 300)}` };
+  }
 }
 
 /**
@@ -505,7 +514,7 @@ function fetchRemote(root: string): { fetched: boolean } | { error: string } {
  * line inbound, or null; an error when the fetch itself fails.
  */
 export async function inboundDamage(root: string): Promise<ShardDamage | null | { error: string }> {
-  const f = fetchRemote(root);
+  const f = await fetchRemote(root);
   if ("error" in f) return f;
   if (!f.fetched) return null;
   const remoteSha = g(root, ["rev-parse", "--verify", "--quiet", `origin/${branchOf(root)}`]).out;
@@ -826,7 +835,7 @@ export async function syncLinear(
   root: string, session: string,
   opts: { actor?: Actor; message?: string; inline?: InlineAct; conflictOnRefusal?: boolean } = {},
 ): Promise<LinearOutcome> {
-  const pre = fetchRemote(root);
+  const pre = await fetchRemote(root);
   return withSidecarLock(root, () => withoutOverlay(() => linearHeld(root, session, opts, "error" in pre ? pre : pre.fetched)));
 }
 
@@ -852,9 +861,9 @@ async function linearHeld(
     if (attempt > 0) await sleep(50 + Math.random() * 400 * attempt);
     let remoteSha = "";
     if (remote) {
-      const f = attempt === 0 && fetched0 !== false ? fetched0 : (() => {
-        const r = g(root, ["fetch", "--quiet", "origin"]);
-        return r.ok ? true : { error: `fetch failed: ${r.err.slice(0, 300)}` };
+      const f = attempt === 0 && fetched0 !== false ? fetched0 : await (async () => {
+        const r = await fetchRemote(root);
+        return "error" in r ? r : true;
       })();
       if (typeof f === "object") {
         forgetInline();
@@ -1042,7 +1051,7 @@ async function linearHeld(
 
 /** Bring the tree to the remote tip without pushing anything. */
 export async function pullLinear(root: string, actor?: Actor): Promise<PullResult | { error: string }> {
-  const pre = fetchRemote(root);
+  const pre = await fetchRemote(root);
   if ("error" in pre) return pre;
   return withSidecarLock(root, async () => {
     if (!pre.fetched) return { gained: 0 };

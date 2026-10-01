@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import type { Actor } from "./schema.js";
 import { ensureSidecar, pull, sync, checkManifest, checkPeers, countEvents, currentManifest, readManifests, withSidecarLock, MANIFEST_DIR } from "./sidecar.js";
 import { createFinding, corroborate, comment, readFindings, needsHumanAck } from "./shared-findings.js";
@@ -122,6 +122,25 @@ test("a push that loses the race is replayed on the winner's tip, and lands", as
     assert.ok(events.indexOf("0zzzzzzzzz-racer") >= 0, "the winner's event is on the tip");
     assert.equal((await readFindings(t.b, 264)).size, 2, "and b's own landed after it");
   } finally { t.cleanup(); discard(c); }
+});
+
+test("a fetch that meets another process's ref lock waits for it, and is not an unreachable remote", async () => {
+  // Two codemap processes share a clone (the web server and an MCP session), and two fetches
+  // at once collide on git's ref lock. The loser read as "could not reach the sidecar remote".
+  const t = await team();
+  try {
+    await createFinding(t.a, 264, izzie, NEW);
+    await sync(t.a, izzie);
+    await sync(t.b, dana);
+    await createFinding(t.a, 265, izzie, NEW);
+    await sync(t.a, izzie);
+    const lock = join(t.b, ".git", "refs", "remotes", "origin", "main.lock");
+    writeFileSync(lock, "");
+    spawn("sh", ["-c", `sleep 0.3; rm -f '${lock}'`], { stdio: "ignore" });
+    const r = await sync(t.b, dana);
+    assert.ok(!("error" in r), JSON.stringify(r));
+    assert.equal(r.gained, 1, "and the pull it was part of arrived");
+  } finally { t.cleanup(); }
 });
 
 test("a document that is not an event survives the reset a lost race causes", async () => {

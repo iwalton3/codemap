@@ -7,6 +7,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { team, settle, type Member } from "../oracle.js";
+import { localConflicts } from "../sync-engine.js";
 import { shareFinding, requestOnFinding, closeFinding, sharedFindings, attemptGoneSessions } from "../ops-shared.js";
 import { resolvePlaywright, launchPlaywright, startServer, type Server } from "./harness.js";
 /** Run `fn` with these environment variables, restoring them after. */
@@ -100,7 +101,9 @@ test("a tab closed with a write queued: the server lands it — or keeps the con
     // can take — the beacon, the server's attempt — replays it after ben's and refuses it.
     await closeTab("the second finding, beaten to it", () => closeFinding(ben.repo, 264, refused, "invalid", "not a defect"));
     const out = await withEnv({ CODEMAP_TAB_GONE_MS: "1" }, () => attemptGoneSessions([ana.repo]));
-    assert.ok(out.some((o) => o.outcome === "conflict"), JSON.stringify(out));
+    // Whichever route refused it — the beacon, or this attempt — leaves a local conflict.
+    const kept = localConflicts(ana.sidecar);
+    assert.ok(kept.some((op) => op.event.subject === refused), JSON.stringify({ out, kept }));
     await settle(t);
     const state = async (id: string) => ((await sharedFindings(ben.repo, 264)) as any).findings.find((x: any) => x.id === id).state;
     assert.equal(await state(landed), "resolved", "the closed tab's write landed");
