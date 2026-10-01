@@ -22,7 +22,11 @@ import { isLogDamage, type DamagedEntry } from "./log-damage.js";
 import { clearLockout, locate, lockoutOf, recordLockout, type Lockout } from "./lockout.js";
 
 /** An event this build cannot read as written: pushes block until an upgrade re-folds it. */
-export interface NewerEntry { id: string; kind: string; scope: string; why: string }
+export interface NewerEntry {
+  id: string; kind: string; scope: string; why: string;
+  /** `shape` when it is newer only because its fold refused its shape — the migration's distinction (round 2 C6). */
+  cls?: string;
+}
 
 /**
  * Valid against the log before it, refused over the whole log: a later valid event changed a
@@ -100,9 +104,13 @@ export async function newerIn(logRoot: string): Promise<string | null> {
 }
 registerPushGate(newerIn);
 
-/** What the front ends show while this build's folds leave a valid event out (C8), or null. */
-export async function foldDefectNotice(logRoot: string): Promise<string | null> {
-  const { defects } = await scanSidecar(logRoot);
+/**
+ * What the front ends show while this build's folds leave a valid event out (C8), or null. From
+ * the LAST scan — on open, after every pull, before every push — never a new one: the read path
+ * scanning per request re-folded every scope after each write and timed out the web's writes.
+ */
+export function foldDefectNotice(logRoot: string): string | null {
+  const defects = scans.get(logRoot)?.scan.defects ?? [];
   if (!defects.length) return null;
   return defects.map((d) => `a codemap fold defect left out event ${d.id} (${d.kind}, ${d.scope}): ${d.why} — your data is `
     + `intact; upgrade codemap when a fix ships`).join("\n");
@@ -175,7 +183,7 @@ export async function judgeReads(reads: Map<string, ScopeRead>, ahead: boolean, 
     for (const s of group) for (const e of reads.get(s)!.events) scopeOf.set(e.id, s);
     try {
       const out = withPeersAhead(ahead, () => foldJudged(events, report, kinds));
-      for (const r of out.newer) newer.push({ id: r.id, kind: r.kind, scope: scopeOf.get(r.id) ?? group[0]!, why: r.why });
+      for (const r of out.newer) newer.push({ id: r.id, kind: r.kind, scope: scopeOf.get(r.id) ?? group[0]!, why: r.why, cls: r.cls });
       for (const r of out.defects) defects.push({ id: r.id, kind: r.kind, scope: scopeOf.get(r.id) ?? group[0]!, why: r.why });
     } catch (e) {
       if (!isLogDamage(e)) throw e;

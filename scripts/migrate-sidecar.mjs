@@ -16,8 +16,12 @@
 // 4. Judges the result with THIS build's READ — `judgeReads`, what `scanSidecar` runs: classification,
 //    each event against the log before it, cross-scope references (round 2 C6) — with `seq`
 //    assigned, and drops what it reports as damage, repeating until nothing more drops (a dropped
-//    event can orphan a later one). Anything it reports as NEWER fails the migration: this build
-//    cannot judge it. A fold defect (valid when written, refused over the whole log) is kept.
+//    event can orphan a later one). Anything it reports as NEWER by what it IS — an unknown kind, an
+//    unread envelope field, a higher protocol or schema — fails the migration: this build cannot
+//    judge it. One newer only by its SHAPE is dropped like damage: on a live log a wrong shape can
+//    only be a newer writer's, but nothing newer than this build wrote a log from before the linear
+//    one, so here it is an old build's malformed event (round 1's 7.3 report dropped the same ones).
+//    A fold defect (valid when written, refused over the whole log) is kept.
 //
 // It refuses outright a shard holding a line that does not parse, a torn last line included
 // (round 2 C7): the old build's read skips such lines, and step 5 deletes the shard.
@@ -108,14 +112,15 @@ async function judged(events) {
 let defects = [];
 for (let pass = 0; pass < 1000; pass++) {
   const j = await judged(withSeq(kept));
-  if (j.newer.length) {
-    console.error(`refusing: ${j.newer.length} event(s) are newer than this build, which therefore cannot judge them:\n  `
-      + j.newer.slice(0, 20).map((n) => `${n.kind} ${n.id} in ${n.scope}: ${n.why}`).join("\n  ") + "\nMigrate with a build that reads them.");
+  const newer = j.newer.filter((n) => n.cls !== "shape");
+  if (newer.length) {
+    console.error(`refusing: ${newer.length} event(s) are newer than this build, which therefore cannot judge them:\n  `
+      + newer.slice(0, 20).map((n) => `${n.kind} ${n.id} in ${n.scope}: ${n.why}`).join("\n  ") + "\nMigrate with a build that reads them.");
     process.exit(1);
   }
   defects = j.defects;
-  if (!j.damage.length) break;
-  const bad = new Map(j.damage.map((d) => [d.id, d]));
+  const bad = new Map([...j.damage, ...j.newer.map((n) => ({ ...n, why: `shape: ${n.why}` }))].map((d) => [d.id, d]));
+  if (!bad.size) break;
   if (!kept.some((e) => bad.has(e.id))) {
     console.error(`refusing: the read reports damage it cannot attribute to one event: ${j.damage.map((d) => `${d.id}: ${d.why}`).join("; ")}`);
     process.exit(1);

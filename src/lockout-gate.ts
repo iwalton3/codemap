@@ -39,7 +39,7 @@ export async function lockoutGate(roots: string[]): Promise<LockedOut | null> {
  */
 export async function foldDefectGate(roots: string[]): Promise<string | null> {
   const found: string[] = [];
-  for (const s of sidecarsOf(roots)) { const n = await foldDefectNotice(s); if (n) found.push(n); }
+  for (const s of sidecarsOf(roots)) { const n = foldDefectNotice(s); if (n) found.push(n); }
   return found.length ? found.join("\n") : null;
 }
 

@@ -92,3 +92,19 @@ test("C6: a migrated log whose cross-scope reference precedes its target is not 
     assert.equal((await scanSidecar(root)).damage, null, "the migrated log reads clean");
   } finally { discard(src); if (root) discard(root); }
 });
+
+test("C6: an old build's malformed event is dropped like damage, not refused as newer", async () => {
+  const { readFileSync } = await import("node:fs");
+  const created = legacy("e1", "finding.created", "F1", { text: "t", targetKind: "anchor", targetId: "a_1" });
+  const root = sidecar({ "findings/u/pr-1/w_legacy.ndjson": `${created}\n${legacy("e2", "finding.outcome", "F1", {})}\n` });
+  try {
+    const report = join(root, "..", `${root.split("/").pop()}-report.json`);
+    const r = spawnSync(process.execPath, [join(REPO, "scripts", "migrate-sidecar.mjs"), root, "--old-build", DIST, "--new-build", DIST,
+      "--report", report], { encoding: "utf8" });
+    assert.equal(r.status, 0, r.stderr);
+    const dropped = (JSON.parse(readFileSync(report, "utf8")) as { dropped: { id: string; why: string }[] }).dropped;
+    assert.deepEqual(dropped.map((d) => d.id), ["e2"]);
+    assert.match(dropped[0]!.why, /^shape: /);
+    discard(report);
+  } finally { discard(root); }
+});
