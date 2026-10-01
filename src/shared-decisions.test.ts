@@ -48,7 +48,10 @@ function foldDecisions(events: any[]): SharedDecisions {
     : e.kind === "decision.confirm.posted" ? { ...e, data: { ...e.data, decision: { ...e.data.decision, confirms: point(e.data.decision.confirms) } } }
     : { ...e, subject: exact.get(e.subject) ?? e.subject, data: point(e.data) });
   void roundLabel;
-  return foldPublished(input);
+  // Each act is a linear one, landed in the order the case lists it: a refusal then halts.
+  // `seq: null` keeps an event from before the linear log, which a refusal skips.
+  return foldPublished(input.map((e, i) => !e || typeof e !== "object" ? e
+    : e.seq === null ? (({ seq: _, ...rest }) => rest)(e) : { ...e, seq: e.seq ?? i + 1 }));
 }
 /** A folded decision id as its fixture label ("d1"), for the cases that name one. */
 const lbl = (out: SharedDecisions, id: string): string => out.decisions.find((d) => d.id === id)?.label ?? id;
@@ -571,6 +574,7 @@ test("Q2.1: a later pull bringing a second question numbered like one a confirm 
   const { old, W, C, yes } = pullCase();
   // Another clone's confirm, pulled later, that also took the ref D4.
   const pulled = structuredClone(C);
+  pulled.id = "e-pulled";
   pulled.data.decision = { ...pulled.data.decision, id: "c2", ref: "D4", payload: { ...pulled.data.decision.payload, question: pulled.data.decision.payload.question.replace(/^D9:/, "D4:") } };
   for (const evs of [[old, W, C, ...yes], [old, W, C, pulled, ...yes], [old, W, C, ...yes, pulled]]) {
     const { b, out } = fold(evs);
@@ -1261,8 +1265,12 @@ test("a withdrawal is judged against the answers before it in the log: one its a
   const questionWithdrawal: any = { id: "withdraw-question", kind: "decision.withdrawn", subject: "d1", actor: { principal: "alice" },
     at: at(22), writer: "w-alice", writerPrev: "GENESIS", after: [base.id],
     data: { decision: "d1", reason: "obsolete question", knownAnswers: [] } };
-  // Bob's answer is earlier and alice never read it: refused, and visible with why.
-  let out = foldDecisions([base, bob, questionWithdrawal]);
+  // Bob's answer is earlier and alice never read it: the door refuses it at replay, so on the
+  // log it is one no build writes...
+  assert.throws(() => foldDecisions([base, bob, questionWithdrawal]),
+    (e: unknown) => isLogDamage(e) && e.entry.id === questionWithdrawal.id && /an answer arrived after you read the question/.test(e.entry.why));
+  // ...and from before the linear log it is skipped: refused, and visible with why.
+  let out = foldDecisions([base, bob, { ...questionWithdrawal, seq: null }]);
   let d = out.decisions.find((x) => x.label === "d1")!;
   assert.equal(d.withdrawn, undefined);
   assert.equal(d.withdrawals?.[0]?.state, "refused");
@@ -1291,7 +1299,9 @@ test("a withdrawal is judged against the answers before it in the log: one its a
   const alice: any = { ...bob, id: "answer-alice", actor: { principal: "alice" }, at: at(20), writer: "w-alice", data: { ...bob.data, via: { kind: "direct", option: "No" } } };
   const sourceWithdrawal: any = { ...questionWithdrawal, id: "withdraw-answer", writerPrev: alice.id, after: [alice.id],
     data: { decision: "d1", answer: alice.id, reason: "I retract my ruling", knownAnswers: [alice.id] } };
-  out = foldDecisions([base, alice, bob, sourceWithdrawal]);
+  assert.throws(() => foldDecisions([base, alice, bob, sourceWithdrawal]),
+    (e: unknown) => isLogDamage(e) && e.entry.id === sourceWithdrawal.id);
+  out = foldDecisions([base, alice, bob, { ...sourceWithdrawal, seq: null }]);
   d = out.decisions.find((x) => x.label === "d1")!;
   assert.equal(d.withdrawals?.[0]?.state, "refused");
   assert.match(String(d.withdrawals?.[0]?.refused), /answer-bob/);
@@ -1396,7 +1406,8 @@ test("Q5: the same question withdrawal again is a no-op, whether or not its auth
 });
 
 test("C11: a side pick from before the linear log is skipped, never damage; the door refuses a new one", async () => {
-  const { base, bob, wq, pick } = heldPair();
+  const { base, bob, wq: held, pick } = heldPair();
+  const wq = { ...held, seq: null };   // the withdrawal a pick settled is from before the linear log too
   const plain = d1Of(foldDecisions([base, bob, wq]));
   for (const p of [pick("c-pick-w", "withdrawal"), pick("c-pick-bob", bob.id),
     pick("c-pick-agent", "withdrawal", { principal: "carol", via: { kind: "agent", model: "m" } }),

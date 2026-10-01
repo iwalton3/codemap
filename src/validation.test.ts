@@ -15,8 +15,8 @@ import { begin, syncSession, staged } from "./sync-engine.js";
 import { createFinding, findingScope, foldFindings, readFindings, setState } from "./shared-findings.js";
 import { isLogDamage } from "./log-damage.js";
 import { judge } from "./validation.js";
-import "./shared-decisions.js";   // registers the decisions door
-import "./shared-standard.js";    // and the law door
+import { foldDecisions } from "./shared-decisions.js";   // registers the decisions door
+import { foldStandard } from "./shared-standard.js";      // and the law door
 import { testEvent } from "./test-events.js";
 import { lockoutOf } from "./lockout.js";
 
@@ -54,6 +54,21 @@ test("on read: a refused LINEAR event is damage, a merge-era one is skipped", ()
   assert.throws(() => foldFindings([created, testEvent({ id: "e2", ...orphan, seq: 2 })]),
     (e: unknown) => isLogDamage(e) && e.entry.id === "e2" && /no finding f_missing/.test(e.entry.why));
   assert.equal(foldFindings([created, testEvent({ id: "e2", ...orphan })]).size, 1, "no seq: dropped, as the merge-era fold did");
+});
+
+test("decisions and the standard judge a refusal as every family does: there is no race on read", () => {
+  // Every linear event was validated against the exact log before it, so a refusal on read is
+  // damage — even one its author's read set would explain. The causal classifier used to drop
+  // that as a race: the second withdrawal below read only the drafting, not the first withdrawal.
+  const spec = testEvent({ id: "s1", kind: "spec.drafted", subject: "sp1", data: { spec: { id: "sp1", title: "T", createdAt: "2026-09-30" } }, seq: 1 });
+  const first = testEvent({ id: "s2", kind: "spec.withdrawn", subject: "sp1", data: { reason: "r" }, after: ["s1"], seq: 2 });
+  const second = testEvent({ id: "s3", kind: "spec.withdrawn", subject: "sp1", data: { reason: "r2" }, after: ["s1"], seq: 3 });
+  assert.throws(() => foldStandard([spec, first, second]), (e: unknown) => isLogDamage(e) && e.entry.id === "s3");
+  assert.equal(foldStandard([spec, first, { ...second, seq: undefined }]).specs[0]!.status, "withdrawn", "no seq: skipped");
+
+  const orphan = testEvent({ id: "d1", kind: "decision.withdrawn", subject: "dX", data: { decision: "dX", reason: "r", knownAnswers: [] }, seq: 1 });
+  assert.throws(() => foldDecisions([orphan]), (e: unknown) => isLogDamage(e) && e.entry.id === "d1");
+  assert.deepEqual(foldDecisions([{ ...orphan, seq: undefined }]).decisions, [], "no seq: skipped, never damage");
 });
 
 test("on read: a shape this build does not write is newer — reads go on, it is reported", () => {

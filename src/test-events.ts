@@ -9,7 +9,7 @@
  * Test-only, like `scenario.ts`. Nothing in production imports it.
  *
  * The defaults are deliberately BORING: a single writer whose chain is `GENESIS` and
- * nothing seen. A test that cares about causality or forks states the interesting
+ * nothing seen. A test that cares about read sets or order states the interesting
  * part and inherits the rest — and one that means to build a malformed event should
  * spell that out rather than getting it by omission.
  */

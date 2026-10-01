@@ -3,14 +3,15 @@
  * or broken build. Test-only: it is how a test puts in front of a fold an event this build
  * refuses to write (plan 1.1). Nothing in production may import it.
  *
- * `after`, when given, replaces the causal heads, so an event can be written as CONCURRENT
- * with what it conflicts with: a teammate who had not pulled. Without it the event saw the
- * whole scope, which is what a sequential write on one clone is.
+ * Without options the event is the next linear act (it has a `seq`) and read the whole scope.
+ * `after` or `writer` plants a merge-era event instead — no `seq`, that read set — which a
+ * read skips rather than locks on when the fold refuses it.
  */
 import { appendChecked, appendLinear, causalHeads, EVENT_SCHEMA, GENESIS, mintId, readScope, SIDECAR_PROTOCOL, sortEvents, writerFor, type LogEvent } from "./eventlog.js";
 import { join } from "node:path";
 import { isLogDamage, type DamagedEntry } from "./log-damage.js";
 import { shapeCheckFor } from "./log-shape.js";
+import { judge, type Report } from "./validation.js";
 import { foldStandardReport } from "./shared-standard.js";
 import type { Acknowledgement, Actor, Audit, BugWitness, Operation, Pointer, PopulationPredicate, Problem, ProposalWitness, ScrubPolicy, Spec, VacuityCheck } from "./schema.js";
 
@@ -79,17 +80,17 @@ const standardActs = <R>(act: Act<R>) => ({
 /** The standard's acts as a build without the write door would append them. */
 export const unfolded = standardActs(appendUnfolded);
 
-/** The standard's acts, folded as the next event and NOT written: damage, a race, or applied. */
+/** The standard's acts, folded as the next event and NOT written: damage, newer, or applied. */
 export const probe = standardActs((l, s, a, kind, subject, data) => foldWithNext(l, s, foldStandardReport, a, kind, subject, data));
 
 /**
- * Fold `scope` with one more event on the end, NOT written: as a writer who had seen the whole
- * scope would append it, or — `unseen` — as a teammate who had not seen those events yet.
- * Refused over what its writer saw, it is DAMAGE (that writer's own door would have refused
- * it); refused only because of what it could not see, it is a race (plan 1.2, 1.3).
+ * Fold `scope` with one more event on the end, NOT written: the next linear act, as a writer
+ * who had read the whole scope would append it, or — `unseen` — as one who had not read those
+ * events (its read set leaves them out). A refusal is judged as a read would judge it: damage,
+ * or newer for a shape this build does not write (`validation.ts judge`).
  */
 export async function foldWithNext<T>(
-  logRoot: string, scope: string, report: (events: LogEvent[]) => { value: T; refused: { id: string; why: string }[] },
+  logRoot: string, scope: string, report: Report<T>,
   actor: Actor, kind: string, subject: string, data: Record<string, unknown>, opts: { unseen?: string[] } = {},
 ): Promise<{ id: string; value?: T; refused?: { id: string; why: string }; damage?: DamagedEntry; newer?: string }> {
   const events = sortEvents(await readScope(logRoot, scope));
@@ -98,12 +99,19 @@ export async function foldWithNext<T>(
   if (wrong) return { id: "(not minted)", newer: wrong };
   const seen = opts.unseen ? events.filter((e) => !opts.unseen!.includes(e.id)) : events;
   const e: LogEvent = { sidecarProtocol: SIDECAR_PROTOCOL, eventSchema: EVENT_SCHEMA, id: mintId(), kind, subject, actor,
-    at: new Date().toISOString(), writer: opts.unseen ? "w_teammate" : "w_here", writerPrev: GENESIS, after: causalHeads(seen), data };
-  try {
-    const r = report(sortEvents([...events, e]));
-    return { id: e.id, value: r.value, refused: r.refused.find((x) => x.id === e.id) };
-  } catch (err) {
+    at: new Date().toISOString(), writer: opts.unseen ? "w_teammate" : "w_here", writerPrev: GENESIS, after: causalHeads(seen), data,
+    seq: Math.max(0, ...events.map((x) => x.seq ?? 0)) + 1 };
+  const all = sortEvents([...events, e]);
+  let r: ReturnType<Report<T>>;
+  try { r = report(all); } catch (err) {
     if (isLogDamage(err)) return { id: e.id, damage: err.entry };
     throw err;
   }
+  const mine = r.refused.filter((x) => x.id === e.id);
+  // `refused` is what replay tells its author; `damage` is what a read of a log holding it does.
+  try { judge(all, mine); } catch (err) {
+    if (isLogDamage(err)) return { id: e.id, value: r.value, refused: mine[0], damage: err.entry };
+    throw err;
+  }
+  return { id: e.id, value: r.value, refused: mine[0] };
 }

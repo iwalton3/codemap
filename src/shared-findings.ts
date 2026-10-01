@@ -35,7 +35,7 @@ import { foldRepairVerification, type RepairVerificationApplication } from "./re
 
 import { ISO_DATE, type Actor, type BugSeverity, type BugWitness } from "./schema.js";
 import { isAgentActor, isIndependent, isErrorIndependent, reviewerKey } from "./identity.js";
-import { mintId, readScope, causality, registerDoor, type LogEvent } from "./eventlog.js";
+import { mintId, readScope, readSets, registerDoor, type LogEvent, type ReadSets } from "./eventlog.js";
 import { emitEvent } from "./write.js";
 import { issueClaimHash, validateApplicationCapsule, type ApplicationAttempt } from "./ruling-application.js";
 
@@ -663,7 +663,7 @@ const witnessOf = (w: Data | undefined): BugWitness | undefined => {
  */
 interface ApplicationReplay {
   all: LogEvent[];
-  causal: ReturnType<typeof causality>;
+  reads: ReadSets;
   snapshots: Map<string, Map<string, SharedFinding>>;
   /** Where the top-level fold records what it did not apply. Snapshots record nothing. */
   refuse?: (e: LogEvent, cls: RefusalClass, why: string) => void;
@@ -682,7 +682,7 @@ function foldFindingsInternal(events: LogEvent[], replay: ApplicationReplay): Ma
   const atAct = (e: LogEvent): SharedFinding | undefined => {
     let snapshot = replay.snapshots.get(e.id);
     if (!snapshot) {
-      snapshot = foldFindingsInternal(replay.all.filter((prior) => replay.causal.saw(e.id, prior.id)), { ...replay, refuse: undefined });
+      snapshot = foldFindingsInternal(replay.all.filter((prior) => replay.reads.saw(e.id, prior.id)), { ...replay, refuse: undefined });
       replay.snapshots.set(e.id, snapshot);
     }
     return snapshot.get(e.subject);
@@ -1016,7 +1016,7 @@ function foldFindingsInternal(events: LogEvent[], replay: ApplicationReplay): Ma
 
       case "finding.repairApplied": {
         const application = d as unknown as RepairVerificationApplication;
-        const prior = replay.all.filter(p => replay.causal.saw(e.id, p.id));
+        const prior = replay.all.filter(p => replay.reads.saw(e.id, p.id));
         const verification = foldRepairVerification([...prior, e]);
         if (!verification.applications.some(a => a.id === application?.id)) {
           refuse(e, "state", verification.rejected.find((r) => r.eventId === e.id)?.reason ?? "no verified application matches this repair"); break;
@@ -1183,7 +1183,7 @@ export function foldFindings(events: LogEvent[]): RepairFindingMap<SharedFinding
 }
 
 function foldFindingsWith(events: LogEvent[], refuse: ApplicationReplay["refuse"]): RepairFindingMap<SharedFinding> {
-  const out: RepairFindingMap<SharedFinding> = foldFindingsInternal(events, { all: events, causal: causality(events), snapshots: new Map(), refuse });
+  const out: RepairFindingMap<SharedFinding> = foldFindingsInternal(events, { all: events, reads: readSets(events), snapshots: new Map(), refuse });
   out.repairRecords = foldRepairRecords(events);
   const verification = foldRepairVerification(events);
   out.repairVerification = verification;

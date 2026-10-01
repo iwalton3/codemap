@@ -18,12 +18,12 @@ import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { resolvePlaywright, launchPlaywright, startServer, type Server, settled } from "./harness.js";
 import * as ops from "../ops.js";
 import { lawScope, publishOperation } from "../shared-standard.js";
-import { readScope } from "../eventlog.js";
+import { readScope, SIDECAR_PROTOCOL } from "../eventlog.js";
 import { discard } from "../test-tmp.js";
 import { operationContent } from "../schema.js";
 import type { Operation } from "../schema.js";
@@ -1163,18 +1163,16 @@ describe("the standard UI", { skip: pw ? false : "playwright not resolvable (set
    * LAST, because it corrupts the sidecar for every test after it.
    */
   test("a blocked log says so in the browser, on every page that serves its rows", async () => {
-    // Fork one writer's shard: replay the same events under a second writer id, which is
-    // the shape `scopeStatus` refuses to read as settled.
-    const { readdirSync, readFileSync: rf, writeFileSync: wf, statSync } = await import("node:fs");
+    // Append an event a newer codemap wrote, which `scopeStatus` refuses to read as settled.
+    const { readdirSync, readFileSync: rf, appendFileSync: af, statSync } = await import("node:fs");
     const walk = (dir: string): string[] => readdirSync(dir).flatMap((f) => {
       const p = join(dir, f);
       return statSync(p).isDirectory() ? (f === ".git" ? [] : walk(p)) : p.endsWith(".ndjson") ? [p] : [];
     });
     const shard = walk(side)[0];
     assert.ok(shard, "the fixture must have written events, or blocking it proves nothing");
-    const lines = rf(shard!, "utf8").split("\n").filter(Boolean)
-      .map((l: string) => JSON.stringify({ ...JSON.parse(l), subject: "tampered" }));
-    wf(join(dirname(shard!), "w_impostor.ndjson"), lines.join("\n") + "\n", "utf8");
+    const first = JSON.parse(rf(shard!, "utf8").split("\n").filter(Boolean)[0]!);
+    af(shard!, JSON.stringify({ ...first, id: "zzzzzzzzzz-newer", sidecarProtocol: SIDECAR_PROTOCOL + 1 }) + "\n", "utf8");
     assert.equal((await ops.listRequirements(root) as any).scope?.status, "blocked",
       "the fixture must actually be blocked or the assertions below are vacuous");
 

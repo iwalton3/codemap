@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { isLogDamage } from "./log-damage.js";
-import { decisionHash, foldDecisions, foldDecisionsReport, revisionRelayQuestion, standingForFinding, standingForIssue, waitingOnMe, heldFindings,
+import { decisionHash, foldDecisions, revisionRelayQuestion, standingForFinding, standingForIssue, waitingOnMe, heldFindings,
   withdrawalQuestion, withdrawalBriefContent, withdrawalBriefHash, WITHDRAW_IT, KEEP_IT } from "./shared-decisions.js";
 
 const alice = { principal: "alice" };
@@ -23,9 +23,9 @@ const post = (d: any, id = "p1", round = "R1") => event(id, "decision.round.post
   { publication: 2, round: { id: round, source: "test", universe: "u" }, decisions: [d] }, agent);
 /** A posted decision's id is its posting event's (`p1:d1`); its label is the id it was posted with. */
 const byLabel = (label: string) => (x: { label?: string }) => x.label === label;
-/** Why the fold halts on these events (plan 1.2), or undefined when it folds them. */
+/** Why a read halts on these events landed in this order (plan 1.2), or undefined when it folds them. */
 const damageOf = (evs: any[]): string | undefined => {
-  try { foldDecisionsReport(evs); return undefined; } catch (e) { if (isLogDamage(e)) return e.entry.why; throw e; }
+  try { foldDecisions(evs.map((e, i) => ({ ...e, seq: i + 1 }))); return undefined; } catch (e) { if (isLogDamage(e)) return e.entry.why; throw e; }
 };
 const answer = (id: string, d: any, option: string, actor: any, after: string[]) => event(id, "decision.answer.recorded", d.id,
   { decision: d.id, hash: decisionHash(d), via: { kind: "direct", option } }, actor, after);
@@ -49,8 +49,8 @@ test("an agent retires a ruling only as the person's answer to the relayed withd
   assert.match(damageOf([p, a, posted, answer("a4", relay, KEEP_IT, alice, [posted.id]), withdraw("w5", ["a4"])]) ?? "", /has not answered "Withdraw it"/);
   assert.match(damageOf([p, a, posted, answer("a4", relay, WITHDRAW_IT, bob, [posted.id]), withdraw("w5", ["a4"])]) ?? "", /has not answered/,
     "another person's answer is not the ruling's principal's");
-  // Written without having seen the person's answer: its writer's own door saw no answer.
-  assert.match(damageOf([p, a, posted, yes, withdraw("w5", [posted.id])]) ?? "", /has not answered "Withdraw it"/);
+  // Written without having read the person's answer: refused for exactly that.
+  assert.match(damageOf([p, a, posted, yes, withdraw("w5", [posted.id])]) ?? "", /written before the person's answer/);
   assert.match(damageOf([p, a, posted, yes, withdraw("w5", [yes.id], { reason: "a different reason" })]) ?? "", /relayed withdrawal question/);
   assert.match(damageOf([p, a, withdraw("w5", [a.id], { relay: undefined })]) ?? "", /relayed withdrawal question/, "no relay, no retirement");
 });

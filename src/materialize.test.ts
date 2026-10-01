@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Actor } from "./schema.js";
 import type { PrWalkthrough } from "./walkthrough.js";
-import { readScope, type LogEvent } from "./eventlog.js";
+import { readScope, SIDECAR_PROTOCOL, type LogEvent } from "./eventlog.js";
 import { createFinding, foldFindings, findingScope, comment } from "./shared-findings.js";
 import { createHash } from "node:crypto";
 import { readCached as readCachedChecked, scopeFingerprint, MATERIALIZER_VERSION, type Projection } from "./materialize.js";
@@ -340,30 +340,27 @@ test("a late parent that reorders the scope is re-folded, not patched", async ()
  * a cache HIT, where nothing re-reads the log to work it out again.
  */
 
-/** Fork the writer's chain in place: a second event of theirs opening at GENESIS. */
-const forkShard = (logRoot: string, scope: string) => {
+/** Block the scope in place: an event written by a newer codemap (`protocol`). */
+const blockShard = (logRoot: string, scope: string) => {
   const dir = join(logRoot, scope);
   const name = readdirSync(dir).find((n) => n.endsWith(".ndjson"))!;
-  const writer = (JSON.parse(readFileSync(join(dir, name), "utf8").trim().split("\n")[0]!) as { writer: string }).writer;
-  // Through `testEvent`, so the line is a WELL-FORMED protocol-1 event that happens
-  // to fork. A hand-written literal missing the mandatory envelope is dropped at the
-  // door instead, and the test then proves nothing — it passed for a while by
-  // detecting no fork in a scope that had none.
+  // Through `testEvent`, so the line is a WELL-FORMED event. A hand-written literal missing
+  // the mandatory envelope is dropped at the door instead, and the test then proves nothing.
   appendFileSync(join(dir, name), JSON.stringify(testEvent({
     id: "9999999999-ffffffffff", kind: "finding.commented", subject: "f_x",
-    actor: izzie, at: "2026-08-23T00:00:00Z", writer, writerPrev: "GENESIS",
-    data: { body: "from the copied clone" },
+    actor: izzie, at: "2026-08-23T00:00:00Z", sidecarProtocol: SIDECAR_PROTOCOL + 1,
+    data: { body: "from a newer build" },
   })) + "\n");
 };
 
-test("a fork blocks the scope, and the value still comes back", async () => {
+test("a blocked scope still hands back its value", async () => {
   const f = await fixture();
   try {
     const scope = findingScope(PR);
-    forkShard(f.logRoot, scope);
+    blockShard(f.logRoot, scope);
     const read = await readCachedChecked(f.root, f.logRoot, scope, ID, foldFindings, findingsProjection);
     assert.equal(read.status, "blocked");
-    assert.equal(read.diagnostic?.reason, "fork");
+    assert.equal(read.diagnostic?.reason, "protocol");
     assert.ok(read.value.size > 0, "non-authoritative, not hidden");
   } finally { f.cleanup(); }
 });
@@ -372,14 +369,14 @@ test("the verdict survives a cache hit — the rows do not re-fold to find it ag
   const f = await fixture();
   try {
     const scope = findingScope(PR);
-    forkShard(f.logRoot, scope);
+    blockShard(f.logRoot, scope);
     await readCachedChecked(f.root, f.logRoot, scope, ID, foldFindings, findingsProjection);
     let folds = 0;
     const hit = await readCachedChecked(f.root, f.logRoot, scope, ID,
       (e) => { folds++; return foldFindings(e); }, findingsProjection);
     assert.equal(folds, 0, "served from rows");
     assert.equal(hit.status, "blocked", "and the verdict came with them");
-    assert.equal(hit.diagnostic?.reason, "fork");
+    assert.equal(hit.diagnostic?.reason, "protocol");
   } finally { f.cleanup(); }
 });
 
@@ -394,15 +391,14 @@ test("a healthy scope is complete, and says nothing else", async () => {
 
 test("a scope that repairs itself stops being blocked", async () => {
   // The fingerprint moves when a shard does, so a stored `blocked` is not sticky:
-  // it describes THOSE shards. Rewriting the shard without the second GENESIS is
-  // what a rotation-and-repair leaves behind.
+  // it describes THOSE shards.
   const f = await fixture();
   try {
     const scope = findingScope(PR);
     const dir = join(f.logRoot, scope);
     const name = readdirSync(dir).find((n) => n.endsWith(".ndjson"))!;
     const before = readFileSync(join(dir, name), "utf8");
-    forkShard(f.logRoot, scope);
+    blockShard(f.logRoot, scope);
     assert.equal((await readCachedChecked(f.root, f.logRoot, scope, ID, foldFindings, findingsProjection)).status, "blocked");
     writeFileSync(join(dir, name), before);
     assert.equal((await readCachedChecked(f.root, f.logRoot, scope, ID, foldFindings, findingsProjection)).status, "complete");

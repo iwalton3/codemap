@@ -2110,29 +2110,6 @@ export interface PopulationPredicate {
  * gate but visibility: **a requirement with no pointer can never rise**, so "unwatched" is
  * the requirement-side twin of `unknown` and must not read as settled.
  */
-/**
- * Two writers set one field without having seen each other. See `contest.ts` for the
- * rule; the shape lives here because it is persisted on notes, findings, bugs and pointers.
- */
-export interface Contested {
-  field: string;
-  held: ContestSide;
-  incoming: ContestSide;
-}
-
-export interface ContestSide {
-  value: unknown;
-  /** The PERSON. Attribution and independence want the human, and always did. */
-  by: string;
-  at: string;
-  /**
-   * The CLONE. Present so a reader can tell the two sides apart when `by` cannot:
-   * one person's laptop and desktop genuinely disagreeing shows the same name
-   * twice, and a disagreement whose sides look identical is one nobody acts on.
-   */
-  writer?: string;
-}
-
 export interface Pointer {
   id: string;
   requirementId: string;

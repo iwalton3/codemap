@@ -327,7 +327,7 @@ test("shared_findings on a pull request does not claim complete over a linked br
     assert.equal((await read())?.status, "behind", "the branch's log moved since it was folded");
 
     db(u.root).prepare("UPDATE shared_scope SET status = 'blocked', diagnostic = ? WHERE scope = ?")
-      .run(JSON.stringify({ reason: "fork", detail: "a fork", evidence: [] }), row.scope);
+      .run(JSON.stringify({ reason: "protocol", detail: "a newer codemap wrote here", evidence: [] }), row.scope);
     assert.equal((await read())?.status, "blocked");
   } finally { u.cleanup(); }
 });

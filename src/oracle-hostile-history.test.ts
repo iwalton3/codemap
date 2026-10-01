@@ -169,40 +169,8 @@ test("hostile history: each shape is refused in its own scope, and nowhere else"
       assert.deepEqual(f.scope.diagnostic.evidence, ["9999999999-future"], "and it names the line");
     });
 
-    // 3 — a chain that loops. No append can produce it; a hand-edit can.
-    await step("a hand-edited shard gives pr-22 a writerPrev cycle", async () => {
-      const scope = await scopeFor(ana, "pr-22");
-      const shard = join(scope, "events.ndjson");
-      appendRaw(ana, shard, envelope({ id: "8888888881-c1", writer: "w_cycle", writerPrev: "8888888882-c2" }));
-      appendRaw(ana, shard, envelope({ id: "8888888882-c2", writer: "w_cycle", writerPrev: "8888888881-c1" }));
-      pushRaw(ana, "a writerPrev cycle");
-    });
-
-    await settled("the cycle");
-
-    await step("the cycle blocks pr-22, and the events stay readable", async () => {
-      const cycled = await scopeFor(ana, "pr-22");
-      const future = await scopeFor(ana, "pr-21");
-      for (const m of t.all) {
-        const seen = await radius(m);
-        assert.equal(seen[cycled], "blocked:chain-cycle");
-        assert.equal(seen[future], "blocked:protocol", "the earlier one is still what it was");
-        for (const [other, verdict] of Object.entries(seen)) {
-          if (other !== cycled && other !== future) {
-            assert.equal(verdict, "complete", `${m.machine}: ${other} is collateral damage`);
-          }
-        }
-      }
-
-      // "The events are readable; their causal position is not" — the diagnostic's own
-      // words, and a claim worth holding it to. A log that refuses to load is worse
-      // than one that cannot order itself.
-      const events = await readScope(ana.sidecar, cycled);
-      const ids = events.map((e) => e.id);
-      assert.ok(ids.includes("8888888881-c1") && ids.includes("8888888882-c2"), "both cyclic events are still there");
-      const f = await sharedFindings(ana.repo, 22) as any;
-      assert.ok(f.findings.some((x: any) => x.text === "honest finding on 22"), "and the honest one is still served");
-    });
+    // (A writerPrev cycle was shape 3 here. The log is linear: `writerPrev` orders nothing and
+    // blocks nothing, so a loop in it is not a diagnosis.)
 
     // 4 — an event this build cannot INTERPRET is dropped and must not block. That is
     //     what keeps a version skew from wedging a scope for the whole team, which
@@ -241,9 +209,9 @@ test("hostile history: each shape is refused in its own scope, and nowhere else"
 
       const seen = await radius(ana);
       assert.equal(seen[scope], "blocked:corrupt-shard");
-      const future = await scopeFor(ana, "pr-21"), cycled = await scopeFor(ana, "pr-22");
+      const future = await scopeFor(ana, "pr-21");
       for (const [other, verdict] of Object.entries(seen)) {
-        if (other !== scope && other !== future && other !== cycled) {
+        if (other !== scope && other !== future) {
           assert.equal(verdict, "complete", `${other} is collateral damage`);
         }
       }

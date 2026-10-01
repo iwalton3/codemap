@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import { testEvent } from "./test-events.js";
+import { SIDECAR_PROTOCOL } from "./eventlog.js";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, readdirSync, appendFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -526,28 +527,25 @@ test("a symbol a teammate documented is not offered as a gap", async () => {
     assert.equal(after.documentedByTeam.anchors[0].docs[0].title, "How a transfer settles");
     assert.equal(after.documentedByTeam.anchors[0].docs[0].by, "dana@x.com", "with who to go and read");
 
-    // And now fork that scope. A blocked scope may SHOW what the team wrote and may
+    // And now block that scope. A blocked scope may SHOW what the team wrote and may
     // not decide there is no work here — suppressing a gap is an authoritative act,
     // which is exactly what §7 says a blocked scope may not perform.
-    forkDocScope(cfg.path, cfg.universe);
-    const forked = await findGaps(u.root) as any;
-    assert.equal(forked.openCount, 2, "the gap the team's doc had removed is back");
-    assert.equal(forked.documentedByTeam, undefined);
+    blockDocScope(cfg.path, cfg.universe);
+    const blocked = await findGaps(u.root) as any;
+    assert.equal(blocked.openCount, 2, "the gap the team's doc had removed is back");
+    assert.equal(blocked.documentedByTeam, undefined);
   } finally { u.cleanup(); }
 });
 
-/** Fork the doc scope's chain in place: a second event of one writer at GENESIS. */
-function forkDocScope(sidecar: string, universe: string): void {
+/** Block the doc scope in place: an event written by a newer codemap (`protocol`). */
+function blockDocScope(sidecar: string, universe: string): void {
   const dir = join(sidecar, "docs", universe);
   const name = readdirSync(dir).find((n) => n.endsWith(".ndjson"))!;
-  const writer = (JSON.parse(readFileSync(join(dir, name), "utf8").trim().split("\n")[0]!) as { writer: string }).writer;
-  // Through `testEvent`, so this is a well-formed protocol-1 event that forks rather
-  // than a malformed one the reader drops at the door — which would make the test
-  // pass by finding no fork in a scope that has none.
+  // Through `testEvent`, so this is a well-formed event rather than a malformed one the
+  // reader drops at the door — which would make the test pass on a scope nothing blocks.
   appendFileSync(join(dir, name), JSON.stringify(testEvent({
     id: "9999999999-ffffffffff", kind: "doc.published", subject: "n_other",
-    actor: { principal: "dana@x.com" }, at: "2026-08-23T00:00:00Z",
-    writer, writerPrev: "GENESIS",
+    actor: { principal: "dana@x.com" }, at: "2026-08-23T00:00:00Z", sidecarProtocol: SIDECAR_PROTOCOL + 1,
   })) + "\n");
 }
 

@@ -5,7 +5,7 @@ import { mkdtempSync, writeFileSync, mkdirSync, appendFileSync, readFileSync } f
 import { tmpdir } from "node:os";
 import { join, win32 } from "node:path";
 import type { Actor } from "./schema.js";
-import { chainCycles, wellFormed, mintId, shardFor, appendEvents, readShard, readScope, readScopeChecked, sortEvents, causalHeads, causality, writerFor, detectForks, scopeStatus, scopesOnDisk, SHARD_EXT, GENESIS, SIDECAR_PROTOCOL, EVENT_SCHEMA, type LogEvent } from "./eventlog.js";
+import { wellFormed, mintId, shardFor, appendEvents, appendBatch, readShard, readScope, readScopeChecked, sortEvents, causalHeads, readSets, writerFor, scopeStatus, scopesOnDisk, SHARD_EXT, GENESIS, SIDECAR_PROTOCOL, EVENT_SCHEMA, type LogEvent } from "./eventlog.js";
 import { emitEvent, emitEventChecked } from "./write.js";
 import { projectionFor } from "./shared-projections.js";
 import { docScope } from "./shared-docs.js";
@@ -18,12 +18,9 @@ const dana: Actor = { principal: "dana@x.com" };
 const izzieAgent: Actor = { principal: "izzie@x.com", via: { kind: "agent", model: "claude-opus-5" } };
 
 /**
- * One writer PER PRINCIPAL, which is what these tests mean by "a different person".
- *
- * Before the freeze the vector fell back to `actor.principal`, so passing a different
- * principal was enough to get a different vector key. It keys on the writer alone
- * now, and a shared default would quietly fold two people into one chain — turning
- * "concurrent" into "sequential" and passing tests that assert the opposite.
+ * One writer PER PRINCIPAL, which is what these tests mean by "a different person": a
+ * merge-era read set follows its own writer's chain, so a shared default would quietly
+ * fold two people into one history.
  */
 const ev = (id: string, over: Partial<LogEvent> = {}, principal?: string): LogEvent => {
   const actor = principal ? { principal } : izzie;
@@ -213,49 +210,31 @@ test("a missing shard reads as empty, not as a failure", async () => {
 
 // --- ordering: the property every reader depends on ---------------------------
 
-test("independent events order by id, so every machine folds the same state", () => {
-  const a = ev("0000000001-aa"), b = ev("0000000002-bb"), c = ev("0000000003-cc");
-  assert.deepEqual(sortEvents([c, a, b]).map((e) => e.id), [a.id, b.id, c.id]);
+test("events fold in seq order, whatever their ids: a staged act lands where it was pushed", () => {
+  // Ids are minted at staging. `x` was staged first and pushed last; it folds last.
+  const x = ev("0000000001-xx", { seq: 3 }), y = ev("0000000002-yy", { seq: 1 }), z = ev("0000000003-zz", { seq: 2 });
+  assert.deepEqual(sortEvents([x, y, z]).map((e) => e.id), [y.id, z.id, x.id]);
+  assert.deepEqual(sortEvents([z, x, y]).map((e) => e.id), [y.id, z.id, x.id], "and input order does not matter");
 });
 
-test("causality beats the clock — a fast laptop cannot reorder a reply before its cause", () => {
-  // dana's machine is a minute fast, so her id sorts FIRST; but she wrote it having
-  // already seen izzie's, and `after` says so. Without this the refutation lands
-  // ahead of the confirmation it was answering.
-  const cause = ev("0000000009-izz", { kind: "confirmed" });
-  const reply = ev("0000000001-dan", { kind: "refuted", actor: dana, after: [cause.id] });
-  assert.deepEqual(sortEvents([reply, cause]).map((e) => e.kind), ["confirmed", "refuted"]);
+test("`after` orders nothing: an event earlier in seq stays earlier, whatever it names", () => {
+  // Under the causal sort `q` waited for `p`, the event it named. The remote accepted `q`
+  // first, and every reader folds in that order.
+  const p = ev("0000000001-pp", { seq: 2 }), q = ev("0000000002-qq", { seq: 1, after: [p.id] });
+  assert.deepEqual(sortEvents([p, q]).map((e) => e.id), [q.id, p.id]);
 });
 
-test("an `after` naming an event this scope does not have is not a deadlock", () => {
-  const orphan = ev("0000000005-aa", { after: ["0000000001-elsewhere"] });
-  assert.deepEqual(sortEvents([orphan]).map((e) => e.id), [orphan.id]);
+test("merged scopes interleave by seq — law and evidence fold in push order", () => {
+  const law1 = ev("0000000009-l1", { seq: 1, subject: "law" }), ev2 = ev("0000000001-e1", { seq: 2 }), law3 = ev("0000000005-l3", { seq: 3, subject: "law" });
+  assert.deepEqual(sortEvents([ev2, law1, law3]).map((e) => e.id), [law1.id, ev2.id, law3.id]);
 });
 
-test("a cycle still yields every event — a log that refuses to load is worse", () => {
-  const a = ev("0000000001-aa", { after: ["0000000002-bb"] });
-  const b = ev("0000000002-bb", { after: ["0000000001-aa"] });
-  assert.equal(sortEvents([a, b]).length, 2);
-});
-
-test("sorting is deterministic regardless of input order", () => {
-  const evs = [ev("0000000003-cc"), ev("0000000001-aa", { after: ["0000000002-bb"] }), ev("0000000002-bb")];
-  const one = sortEvents([...evs]).map((e) => e.id);
-  const two = sortEvents([...evs].reverse()).map((e) => e.id);
-  assert.deepEqual(one, two);
-  assert.deepEqual(one, ["0000000002-bb", "0000000001-aa", "0000000003-cc"], "cause before effect, id otherwise");
-});
-
-test("the causal head is what descends from everything, not the highest id", () => {
-  // These differ whenever two events share a millisecond and are ordered by their
-  // random suffix. Taking the highest id made a writer's own consecutive events
-  // read as concurrent — the exact ambiguity `after` exists to remove — because the
-  // second one pointed `after` at something that was not what it had just seen.
-  const first = ev("0000000009-zz");
-  const second = ev("0000000002-aa", { after: [first.id] });
-  const sorted = sortEvents([first, second]);
-  assert.deepEqual(sorted.map((e) => e.id), [first.id, second.id], "causality put the low id last");
-  assert.deepEqual(causalHeads(sorted), [second.id], "so the head is that one, not the max id");
+test("an event without seq keeps its input place; seq events fill the others in seq order", () => {
+  // Only a fixture mixes them: an unmigrated sidecar is refused before anything folds.
+  const old = ev("0000000005-old"), a = ev("0000000009-aa", { seq: 2 }), b = ev("0000000001-bb", { seq: 1 });
+  assert.deepEqual(sortEvents([a, old, b]).map((e) => e.id), [b.id, old.id, a.id]);
+  assert.deepEqual(sortEvents([ev("0000000002-bb"), ev("0000000001-aa")]).map((e) => e.id),
+    ["0000000002-bb", "0000000001-aa"], "no seq at all: input order, not id order");
 });
 
 test("the causal head of nothing is nothing", () => {
@@ -263,95 +242,70 @@ test("the causal head of nothing is nothing", () => {
 });
 
 test("a writer apart from another records BOTH heads, and neither is dropped", () => {
-  // The whole reason `after` is a list. One id can only name one of two concurrent
-  // writers, and everything behind the other vanishes from the record of what this
-  // writer knew — which is how somebody who had read a disagreement in full could
-  // be judged never to have seen half of it.
+  // The whole reason `after` is a list. One id can only name one of two acts neither
+  // had read, and everything behind the other vanishes from the record of what this
+  // author knew.
   const a = ev("0000000001-aa", {}, "alice@x.com");
   const b = ev("0000000002-bb", {}, "dana@x.com");
-  const heads = causalHeads(sortEvents([a, b]));
+  const heads = causalHeads([a, b]);
   assert.deepEqual([...heads].sort(), [a.id, b.id]);
 
   const c = ev("0000000003-cc", { after: heads }, "bob@x.com");
-  const causal = causality(sortEvents([a, b, c]));
-  assert.ok(causal.saw(c.id, a.id), "bob saw alice");
-  assert.ok(causal.saw(c.id, b.id), "bob saw dana");
+  const reads = readSets([a, b, c]);
+  assert.ok(reads.saw(c.id, a.id), "bob saw alice");
+  assert.ok(reads.saw(c.id, b.id), "bob saw dana");
 });
 
-/**
- * A late arrival CAN reorder events already folded. Pinned, because I claimed the
- * opposite and built a design paragraph on it.
- *
- * The shape is a forward reference: B names A as its parent, and A has not arrived
- * yet. While A is absent, B is eligible (`sortEvents` waits only for parents it can
- * SEE) and sorts by id. When A finally lands, B becomes blocked behind it and moves
- * — past events that had been sorting after it. Honest under cross-machine clock
- * skew: B's writer really had seen A, but A's id can still sort later.
- *
- * So there is no incremental shortcut. Anything cached off a scope's fold must be
- * rebuilt from the WHOLE scope when its event set changes, never patched with the
- * arriving event — see `PROPOSAL-sidecar-materialization.md` §2.
- */
-test("a parent arriving late reorders the events that were waiting on it", () => {
-  const A = ev("0000000003-aa");
-  const B = ev("0000000001-bb", { after: [A.id] });   // names A, which is not here yet
-  const C = ev("0000000002-cc");
-
-  assert.deepEqual(sortEvents([B, C]).map((e) => e.id), [B.id, C.id], "B first: its parent is invisible");
-  assert.deepEqual(sortEvents([A, B, C]).map((e) => e.id), [C.id, A.id, B.id], "and now B is last");
+test("what an author never read is not in their read set, whatever the order", () => {
+  // dana staged hers having read only `t`, and it landed after alice's. Position says
+  // dana came after alice; her read set says she never saw it.
+  const t = ev("0000000001-tt", { seq: 1 });
+  const alice = ev("0000000002-aa", { seq: 2, after: [t.id] }, "alice@x.com");
+  const dana = ev("0000000003-dd", { seq: 3, after: [t.id] }, "dana@x.com");
+  const reads = readSets([t, alice, dana]);
+  assert.ok(reads.saw(dana.id, t.id), "dana read t");
+  assert.ok(!reads.saw(dana.id, alice.id), "and did NOT read alice, despite folding after her");
+  assert.deepEqual(causalHeads([t, alice, dana]).sort(), [alice.id, dana.id], "so a later act names both");
+  // CONTROL: the read set is transitive — an act after the head reads everything behind it.
+  const bob = ev("0000000004-bb", { seq: 4, after: [alice.id, dana.id] }, "bob@x.com");
+  assert.ok(readSets([t, alice, dana, bob]).saw(bob.id, t.id));
 });
 
-/**
- * The property that IS true, and the only one worth depending on: fold order is a
- * function of the event SET — not of arrival order, not of file order, not of which
- * shard a line came from.
- *
- * Random DAGs including forward references, which is exactly what the earlier
- * version of this test could not generate: it drew every parent from events already
- * in the list, so the case above was unreachable and 4,000 clean trials meant
- * nothing. The generator now emits some events whose parent arrives afterwards.
- */
-test("fold order depends on the set alone, forward references included", () => {
-  let seed = 987654321;
-  const rand = (n: number) => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) % n;
-  const people = ["a@x", "b@x", "c@x", "d@x"];
-  const mint = () => String(rand(9999)).padStart(10, "0") + "-" + String(rand(1e6)).padStart(6, "0");
-
-  let forwardRefs = 0;
-  for (let trial = 0; trial < 300; trial++) {
-    const ids = Array.from({ length: 14 }, mint);
-    const evs = ids.map((id, i) => {
-      const parents: string[] = [];
-      // Backward refs from what exists, plus — the point of this test — forward
-      // refs to ids that will only appear later in the array.
-      if (i && rand(2)) parents.push(ids[rand(i)]!);
-      if (i < ids.length - 1 && rand(3) === 0) { parents.push(ids[i + 1 + rand(ids.length - i - 1)]!); forwardRefs++; }
-      return ev(id, parents.length ? { after: parents } : {}, people[rand(people.length)]);
-    });
-
-    const canonical = sortEvents([...evs]).map((e) => e.id);
-    // Three different arrival orders of the same set must fold identically.
-    for (let shuffle = 0; shuffle < 3; shuffle++) {
-      const mixed = [...evs];
-      for (let i = mixed.length - 1; i > 0; i--) { const j = rand(i + 1); [mixed[i], mixed[j]] = [mixed[j]!, mixed[i]!]; }
-      assert.deepEqual(sortEvents(mixed).map((e) => e.id), canonical, "input order changed the fold");
-    }
-  }
-  assert.ok(forwardRefs > 0, "no forward reference generated, so the interesting case was not exercised");
+test("a linear event's writerPrev reads nothing: two sessions on one clone share a writer", () => {
+  // `atTip` sets writerPrev to the clone's last event at the tip, which another session on
+  // the same clone may have staged. Following it credited `sb` with `sa`, unread.
+  const t = ev("0000000001-tt", { seq: 1 });
+  const sa = ev("0000000002-sa", { seq: 2, after: [t.id], writer: "w_one" });
+  const sb = ev("0000000003-sb", { seq: 3, after: [t.id], writer: "w_one", writerPrev: sa.id });
+  assert.equal(readSets([t, sa, sb]).saw(sb.id, sa.id), false);
+  assert.deepEqual(causalHeads([t, sa, sb]).sort(), [sa.id, sb.id]);
+  // CONTROL: the same pair as merge-era events (no seq) keeps the chain they were written with.
+  const ma = { ...sa, seq: undefined }, mb = { ...sb, seq: undefined };
+  assert.equal(readSets([t, ma, mb]).saw(mb.id, ma.id), true);
 });
 
+test("asking a read set does not change the events it was asked of", () => {
+  // `readEdges` hands back `after` itself; walking it in place emptied the event's
+  // `after`, and the next `causalHeads` over the same array came back wrong.
+  const a = ev("0000000001-aa", { seq: 1 }), b = ev("0000000002-bb", { seq: 2, after: ["0000000001-aa"] });
+  readSets([a, b]).saw(b.id, a.id);
+  assert.deepEqual(b.after, [a.id]);
+  assert.deepEqual(causalHeads([a, b]), [b.id]);
+});
 
-test("what a writer never pulled is not in their vector, whatever the fold order", () => {
-  // dana writes offline; her id sorts FIRST, so an index comparison against fold
-  // position concludes everyone later saw her. Nobody did until she pushed.
-  const dana = ev("0000000001-aa", {}, "dana@x.com");
-  const alice = ev("0000000005-bb", {}, "alice@x.com");
-  const bob = ev("0000000009-cc", { after: [alice.id] }, "bob@x.com");
-  const sorted = sortEvents([dana, alice, bob]);
-  assert.deepEqual(sorted.map((e) => e.id), [dana.id, alice.id, bob.id], "dana folds first");
-  const causal = causality(sorted);
-  assert.ok(causal.saw(bob.id, alice.id), "bob saw alice");
-  assert.ok(!causal.saw(bob.id, dana.id), "and did NOT see dana, despite her lower index");
+test("a batch's later acts read the earlier ones", async () => {
+  // They share no `writerPrev` a read set follows, so each names the one before it.
+  const root = tmp();
+  try {
+    mkdirSync(join(root, ".git"), { recursive: true });
+    const [x, y, z] = await appendBatch(root, "s", izzie, [
+      { kind: "noted", subject: "f_1" }, { kind: "noted", subject: "f_1" }, { kind: "noted", subject: "f_1" }]);
+    const events = await readScope(root, "s");
+    const reads = readSets(events);
+    assert.ok(reads.saw(z!.id, x!.id) && reads.saw(z!.id, y!.id) && reads.saw(y!.id, x!.id));
+    assert.equal(reads.saw(x!.id, y!.id), false);
+    assert.deepEqual(causalHeads(events), [z!.id]);
+  } finally { discard(root); }
 });
 
 test("a writer's own consecutive events keep their order even within one millisecond", () => {
@@ -361,21 +315,13 @@ test("a writer's own consecutive events keep their order even within one millise
   assert.deepEqual([...ids].sort(), ids, "minted in strictly increasing order");
 });
 
-// --- the vector is per WRITER, and that is not a detail ------------------------
+// --- a merge-era read set follows its own WRITER's chain -------------------------
 
 /**
- * The hole this closes, which I had convinced myself was unreachable.
- *
- * `causality` compresses each writer's history to one ordinal, and `ownLast` treats
- * a writer's own previous event as a causal parent — true by construction for ONE
- * sequential writer. Keyed on the principal it is false for one person on two
- * machines, and the damage is not to that person's own record: it launders an
- * unrelated same-principal event's knowledge into the incoming one, so a real
- * contest between two OTHER people is silently suppressed.
- *
- * The agent is what makes it unambiguous rather than a human-versus-machine
- * question. `contest.ts` forbids an agent from settling a human disagreement, so an
- * agent having seen something cannot establish that the human did.
+ * Merge-era `after` was compressed against the writer's own chain, so a merge-era read set
+ * reaches the writer's previous event — keyed on the WRITER (one clone), never the person:
+ * one person on two machines is two histories. An agent having seen something cannot
+ * establish that the human did.
  */
 const ago = (id: string, principal: string, writer?: string, after?: string[], via?: unknown, prev?: string): LogEvent =>
   testEvent({
@@ -394,7 +340,7 @@ test("one person's two machines do not lend each other knowledge they never had"
   const H = ago("0000000001-aa", "dana@x.com", "w_dana");
   const O = ago("0000000002-bb", "izzie@x.com", "w_laptop", [H.id], { kind: "agent", model: "m" });
   const E = ago("0000000003-cc", "izzie@x.com", "w_desktop");
-  assert.equal(causality([H, O, E]).saw(E.id, H.id), false,
+  assert.equal(readSets([H, O, E]).saw(E.id, H.id), false,
     "the desktop never saw Dana's revision, and the laptop agent's sighting is not its own");
 });
 
@@ -405,85 +351,22 @@ test("…but one machine's own history is still its own", () => {
   const H = ago("0000000001-aa", "dana@x.com", "w_dana");
   const O = ago("0000000002-bb", "izzie@x.com", "w_laptop", [H.id]);
   const E = ago("0000000003-cc", "izzie@x.com", "w_laptop", undefined, undefined, O.id);
-  assert.equal(causality([H, O, E]).saw(E.id, H.id), true);
+  assert.equal(readSets([H, O, E]).saw(E.id, H.id), true);
 });
 
 test("two events of one writer that BOTH open the chain lend nothing", () => {
-  // The other half of the same rule, and the bug that made the old vector unsound:
-  // one writer id on two clones. `O` and `E` both claim GENESIS, so they are not one
-  // history — they are a fork — and fold order must not supply the edge between them.
-  // Under the per-writer ordinal it did, and `E` was credited with Dana's revision
-  // that only the OTHER clone ever saw.
+  // Fold order does not supply the edge between them: only `writerPrev` does.
   const H = ago("0000000001-aa", "dana@x.com", "w_dana");
   const O = ago("0000000002-bb", "izzie@x.com", "w_copied", [H.id]);
   const E = ago("0000000003-cc", "izzie@x.com", "w_copied");
-  assert.equal(causality([H, O, E]).saw(E.id, H.id), false,
-    "a forked writer's branches are separate histories");
-  assert.equal(causality([H, O, E]).saw(E.id, O.id), false, "and they cannot see each other");
+  assert.equal(readSets([H, O, E]).saw(E.id, H.id), false);
+  assert.equal(readSets([H, O, E]).saw(E.id, O.id), false, "and they cannot see each other");
 });
 
-
-// --- the writer chain: writerPrev, GENESIS, and forks ---------------------------
 
 /** An event that makes a chain claim. `prev` defaults to opening the chain. */
 const link = (id: string, writer: string, prev: string = GENESIS, over: Partial<LogEvent> = {}): LogEvent =>
   testEvent({ id, subject: "f_1", actor: izzie, at: "2026-01-01T00:00:00Z", writer, writerPrev: prev, ...over });
-
-test("a chain that never branches is not a fork", () => {
-  const a = link("0000000001-aa", "w_one");
-  const b = link("0000000002-bb", "w_one", a.id);
-  const c = link("0000000003-cc", "w_one", b.id);
-  assert.deepEqual(detectForks([a, b, c]), []);
-});
-
-test("two events naming one predecessor are a fork", () => {
-  const a = link("0000000001-aa", "w_one");
-  const b = link("0000000002-bb", "w_one", a.id);
-  const b2 = link("0000000003-cc", "w_one", a.id);
-  assert.deepEqual(detectForks([a, b, b2]),
-    [{ writer: "w_one", prev: a.id, events: [b.id, b2.id] }]);
-});
-
-test("two clones that both open with GENESIS are a fork — the clause an implementation drops", () => {
-  // Copy a clone BEFORE it has written anything and neither side has a predecessor
-  // to disagree about. Treating the first event of a chain as unremarkable lets
-  // exactly this pair through, and it is the commonest way one writer id ends up
-  // in two places: a machine image, a synced home directory.
-  const a = link("0000000001-aa", "w_copied");
-  const b = link("0000000002-bb", "w_copied");
-  assert.deepEqual(detectForks([a, b]),
-    [{ writer: "w_copied", prev: GENESIS, events: [a.id, b.id] }]);
-});
-
-test("two writers each opening their own chain are not a fork", () => {
-  // The control for the GENESIS rule. Every clone's first event names GENESIS, so
-  // a detector keyed on the predecessor alone would call an ordinary team a fork.
-  assert.deepEqual(detectForks([link("0000000001-aa", "w_one"), link("0000000002-bb", "w_two")]), []);
-});
-
-test("one event stitched in twice is not a fork", () => {
-  // `merge=union` produces duplicate lines, and an id is minted once, so both
-  // sightings are the same event making one chain claim.
-  const a = link("0000000001-aa", "w_one");
-  assert.deepEqual(detectForks([a, { ...a }]), []);
-});
-
-
-test("an event with no writer is malformed, not a chain claim", () => {
-  // Until the protocol-1 freeze, `causality` fell back to the principal so an event
-  // written before writer ids could still fold — and `detectForks` had to ignore such
-  // events, because attributing two machines' chains to one person calls their
-  // independent GENESIS events a fork. No such event has ever existed: nothing was
-  // deployed. The envelope is mandatory now, so the question moves to the door.
-  const a = { ...link("0000000001-aa", "w_x"), writer: undefined } as unknown as LogEvent;
-  const b = { ...link("0000000002-bb", "w_y"), writer: undefined } as unknown as LogEvent;
-  assert.deepEqual(detectForks([a, b]), [], "nothing to fork: neither event names a chain");
-  // CONTROL — the same two events WITH writers, each opening its own chain, are still
-  // not a fork; and two sharing one writer are. Without these the assertion above
-  // would pass against a `detectForks` that had simply stopped working.
-  assert.deepEqual(detectForks([link("0000000001-aa", "w_x"), link("0000000002-bb", "w_y")]), []);
-  assert.equal(detectForks([link("0000000001-aa", "w_x"), link("0000000002-bb", "w_x")]).length, 1);
-});
 
 // --- scope status ---------------------------------------------------------------
 
@@ -491,11 +374,10 @@ test("an ordinary scope is complete", () => {
   assert.deepEqual(scopeStatus([link("0000000001-aa", "w_one")]), { status: "complete" });
 });
 
-test("a fork blocks the scope", () => {
-  const st = scopeStatus([link("0000000001-aa", "w_c"), link("0000000002-bb", "w_c")]);
-  assert.equal(st.status, "blocked");
-  assert.equal(st.diagnostic?.reason, "fork");
-  assert.deepEqual(st.diagnostic?.evidence, ["0000000001-aa", "0000000002-bb"]);
+test("two events of one writer naming one predecessor are not a diagnosis", () => {
+  // The remote serializes every push, so one writer id in two clones is two writers'
+  // events in one order — nothing to block on.
+  assert.deepEqual(scopeStatus([link("0000000001-aa", "w_c"), link("0000000002-bb", "w_c")]), { status: "complete" });
 });
 
 test("an envelope from a newer codemap blocks the scope", () => {
@@ -514,45 +396,29 @@ test("a missing protocol number is an older writer, not a newer one", () => {
   assert.equal(scopeStatus([ev("0000000001-aa")]).status, "complete");
 });
 
-test("an unreadable envelope is reported ahead of a fork it makes unjudgeable", () => {
-  // Precedence, not severity: this reader cannot know what a newer envelope means,
-  // so every judgement downstream of it — the fork included — is unreliable.
-  const st = scopeStatus(
-    [link("0000000001-aa", "w_c"), link("0000000002-bb", "w_c", GENESIS, { sidecarProtocol: 99 })]);
-  assert.equal(st.diagnostic?.reason, "protocol");
-});
-
-test("one id with two different bodies blocks the scope; the same body twice does not", async () => {
+test("one id read twice is one event, and the first sighting stands", async () => {
   const root = tmp();
   try {
     const dir = join(root, "s");
     mkdirSync(dir, { recursive: true });
     const a = link("0000000001-aa", "w_one");
-    // Byte-identical, in two shards: exactly what `merge=union` produces.
     writeFileSync(join(dir, "w_one.ndjson"), JSON.stringify(a) + "\n");
-    writeFileSync(join(dir, "w_two.ndjson"), JSON.stringify(a) + "\n");
-    let read = await readScopeChecked(root, "s");
-    assert.equal(read.status, "complete");
-    assert.equal(read.events.length, 1, "and still deduped");
-
-    // Same id, different content: two writers have claimed one identity.
     writeFileSync(join(dir, "w_two.ndjson"), JSON.stringify({ ...a, subject: "f_2" }) + "\n");
-    read = await readScopeChecked(root, "s");
-    assert.equal(read.status, "blocked");
-    assert.equal(read.diagnostic?.reason, "duplicate-id");
-    assert.deepEqual(read.diagnostic?.evidence, [a.id]);
+    const read = await readScopeChecked(root, "s");
+    assert.equal(read.status, "complete");
+    assert.deepEqual(read.events.map((e) => e.subject), ["f_1"]);
   } finally { discard(root); }
 });
 
 test("a blocked scope still hands back its events", async () => {
   // Non-authoritative, not hidden. A reviewer who can see what the team wrote is
-  // better placed to repair a fork than one staring at an empty page.
+  // better placed to act than one staring at an empty page.
   const root = tmp();
   try {
     const dir = join(root, "s");
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "w_c.ndjson"),
-      [link("0000000001-aa", "w_c"), link("0000000002-bb", "w_c")].map((e) => JSON.stringify(e)).join("\n") + "\n");
+      [link("0000000001-aa", "w_c"), link("0000000002-bb", "w_c", "0000000001-aa", { sidecarProtocol: 99 })].map((e) => JSON.stringify(e)).join("\n") + "\n");
     const read = await readScopeChecked(root, "s");
     assert.equal(read.status, "blocked");
     assert.equal(read.events.length, 2);
@@ -573,7 +439,7 @@ test("emitting builds a chain: GENESIS, then each event naming the last", async 
     assert.equal(a.sidecarProtocol, SIDECAR_PROTOCOL);
     assert.equal(a.eventSchema, EVENT_SCHEMA);
     const read = await readScopeChecked(root, "s");
-    assert.equal(read.status, "complete", "a clone writing its own chain never forks it");
+    assert.equal(read.status, "complete");
   } finally { discard(root); }
 });
 
@@ -607,22 +473,6 @@ test("a chain is per scope, so a writer's first event in a new scope opens a new
   } finally { discard(root); }
 });
 
-test("a copied clone id forks the chain, and that is what the detector is for", async () => {
-  const root = tmp();
-  try {
-    mkdirSync(join(root, ".git"), { recursive: true });
-    await emitEvent(root, "s", izzie, "noted", "f_1");
-    const writer = await writerFor(root);
-    // The other clone, holding the same id, having pulled nothing: it opens with
-    // GENESIS because ITS shard is empty. Union-merged in as a second line.
-    appendFileSync(join(root, "s", writer + ".ndjson"),
-      JSON.stringify(link("0000000009-zz", writer)) + "\n");
-    const read = await readScopeChecked(root, "s");
-    assert.equal(read.status, "blocked");
-    assert.equal(read.diagnostic?.reason, "fork");
-  } finally { discard(root); }
-});
-
 // --- the protocol-1 freeze ------------------------------------------------------
 
 test("the mandatory envelope is checked at the door, field by field", async () => {
@@ -630,11 +480,6 @@ test("the mandatory envelope is checked at the door, field by field", async () =
   // `writerPrev`, list-form `after`, and the version numbers — events that never
   // existed, because nothing was ever deployed. What replaces them is a door: a line
   // missing any of it is dropped, rather than folding under a guessed default.
-  //
-  // This matters beyond tidiness. `writerPrev` is the chain edge the causal vector
-  // derives its segments from, and an absent one is not a missing convenience — it is
-  // an event whose place in its own writer's history is unknown, which is exactly the
-  // input that makes `saw()` fabricate knowledge.
   const dir = mkdtempSync(join(tmpdir(), "codemap-freeze-"));
   try {
     const shard = join(dir, "w_one.ndjson");
@@ -659,159 +504,17 @@ test("the mandatory envelope is checked at the door, field by field", async () =
   } finally { discard(dir); }
 });
 
-// --- the segment vector ---------------------------------------------------------
-
-test("a fork does not credit a third party with the branch they never saw", () => {
-  // THE counterexample. It is why `docs/fork-repair.md` exists, and it defeated the
-  // fix that shipped in the architecture doc first: dropping the writer's own
-  // fold-order edge changes nothing here, because the false claim lives in X's
-  // vector and is produced by the ORDINAL, not by that edge.
-  //
-  //   F1, F2  one writer, two clones, both opening the chain at GENESIS
-  //   X       somebody else, who saw ONLY F2, disagreeing with F1 about the subject
-  const F1 = testEvent({ id: "0000000001-a", writer: "W", subject: "S" });
-  const F2 = testEvent({ id: "0000000002-a", writer: "W", subject: "T" });
-  const X = testEvent({ id: "0000000003-a", writer: "X", subject: "S", after: [F2.id] });
-  const c = causality(sortEvents([F1, F2, X]));
-
-  assert.equal(c.saw(X.id, F1.id), false, "X never saw F1 and is no longer told it did");
-  assert.ok(c.heads().includes(F1.id), "and F1 is still a head, so a later write can name it");
-
-  // CONTROL — the same three events with F2 CHAINED onto F1. Now it is one honest
-  // history, X really does hold all of it, and the vector must say so. Without this
-  // the assertions above pass against a vector that credits nobody with anything.
-  const F2c = testEvent({ id: "0000000002-a", writer: "W", subject: "T", writerPrev: F1.id });
-  const ok = causality(sortEvents([F1, F2c, X]));
-  assert.equal(ok.saw(X.id, F1.id), true, "a sequential writer's prefix is still a prefix");
-  assert.deepEqual(ok.heads(), [X.id], "and only the tip is a head");
-});
-
-test("a fork's shared prefix is credited to both branches, and neither to the other", () => {
-  // The case per-branch designs get wrong in one direction or the other. Everything
-  // before the fork point is genuinely known to both branches; nothing after it is
-  // known to the sibling.
-  const a = testEvent({ id: "0000000001-a", writer: "W" });
-  const b1 = testEvent({ id: "0000000002-a", writer: "W", writerPrev: a.id });
-  const b2 = testEvent({ id: "0000000003-a", writer: "W", writerPrev: a.id });
-  const c = causality(sortEvents([a, b1, b2]));
-  assert.equal(c.saw(b1.id, a.id), true, "the shared prefix belongs to this branch");
-  assert.equal(c.saw(b2.id, a.id), true, "…and to that one");
-  assert.equal(c.saw(b1.id, b2.id), false, "but the branches lend each other nothing");
-  assert.equal(c.saw(b2.id, b1.id), false);
-  assert.deepEqual(c.heads().sort(), [b1.id, b2.id].sort(), "both branches stay reachable");
-});
-
-test("a segment key cannot be forged by a separator in a writer id or an event id", () => {
-  // Segments are interned to INTEGERS. Keyed by `writer + NUL + root` instead, writer
-  // `W` with root `a<NUL>b` collides with writer `W<NUL>a` with root `b` — and the
-  // collision reproduces the very bug segments exist to fix. Third instance of that
-  // class in this repo; see docs/anchor-id-provenance.md for the first.
-  const SEP = String.fromCharCode(0);
-  const target = testEvent({ id: `root${SEP}tail`, writer: "W", subject: "S" });
-  const other = testEvent({ id: "tail", writer: `W${SEP}root`, subject: "T" });
-  const x = testEvent({ id: "0000000009-x", writer: "X", subject: "S", after: [other.id] });
-  const c = causality(sortEvents([target, other, x]));
-  assert.equal(c.saw(x.id, target.id), false, "two different writers are two different keys");
-  assert.ok(c.heads().includes(target.id), "and the aliased event is not covered away");
-});
-
-test("a writerPrev cycle is excluded rather than zeroing the scope", () => {
-  // A.prev = B, B.prev = A. Left in the vector every event covers every other,
-  // `heads()` returns NOTHING, and the next append records having seen nothing at
-  // all — a silent, total loss of causality for the scope. A cycle has no place in
-  // any segment, so it gets none, and `chainCycles` reports it.
-  const a = testEvent({ id: "0000000001-a", writer: "W", writerPrev: "0000000002-b" });
-  const b = testEvent({ id: "0000000002-b", writer: "W", writerPrev: "0000000001-a" });
-  const sane = testEvent({ id: "0000000003-c", writer: "V" });
-  assert.deepEqual(chainCycles([a, b]).sort(), [a.id, b.id].sort(), "both are reported");
-
-  const c = causality(sortEvents([a, b, sane]));
-  assert.equal(c.saw(a.id, b.id), false, "a cycle grants nobody anything");
-  // …but it stays NAMEABLE. See "a cycle grants nothing but stays nameable": dropping
-  // cyclic events from `heads()` makes them unreachable and hands the next append an
-  // empty `after`, which is the loss this is meant to prevent.
-  assert.deepEqual(c.heads().sort(), [a.id, b.id, sane.id].sort());
-
-  // CONTROL — an acyclic chain of the same shape is untouched and reports no cycle.
-  const p = testEvent({ id: "0000000001-a", writer: "W" });
-  const q = testEvent({ id: "0000000002-b", writer: "W", writerPrev: p.id });
-  assert.deepEqual(chainCycles([p, q]), []);
-  assert.deepEqual(causality(sortEvents([p, q])).heads(), [q.id]);
-});
-
-test("a chain cycle blocks the scope ahead of anything it makes unjudgeable", () => {
-  const a = testEvent({ id: "0000000001-a", writer: "W", writerPrev: "0000000002-b" });
-  const b = testEvent({ id: "0000000002-b", writer: "W", writerPrev: "0000000001-a" });
-  const st = scopeStatus([a, b]);
-  assert.equal(st.status, "blocked");
-  assert.equal(st.diagnostic?.reason, "chain-cycle");
-
-  // CONTROL - the same two events acyclic are complete, so this is not "any chain
-  // blocks". And a genuine fork still reports as a fork, not swallowed by the new arm.
-  const p = testEvent({ id: "0000000001-a", writer: "W" });
-  const q = testEvent({ id: "0000000002-b", writer: "W", writerPrev: p.id });
-  assert.deepEqual(scopeStatus([p, q]), { status: "complete" });
-  const f1 = testEvent({ id: "0000000001-a", writer: "W" });
-  const f2 = testEvent({ id: "0000000002-b", writer: "W" });
-  assert.equal(scopeStatus([f1, f2]).diagnostic?.reason, "fork");
-});
-
-test("a cycle with a branch hanging off it is still a cycle", () => {
-  // Inferring cycles from "never got a segment" missed this, and I only found it by
-  // probing: A and B loop, C also names A, so A looks like a fork point, B gets
-  // treated as a segment root, and the loop becomes a segment with invented
-  // ordinals. `saw(A, B)` came back TRUE for a pair with no honest order at all.
-  const A = testEvent({ id: "A", writer: "W", writerPrev: "B" });
-  const B = testEvent({ id: "B", writer: "W", writerPrev: "A" });
-  const C = testEvent({ id: "C", writer: "W", writerPrev: "A" });
-  assert.deepEqual(chainCycles([A, B, C]).sort(), ["A", "B"], "the loop, and not the branch off it");
-  assert.equal(causality(sortEvents([A, B, C])).saw("A", "B"), false, "a loop grants nothing");
-
-  // An event naming ITSELF is the degenerate case of the same shape.
-  const self = testEvent({ id: "S", writer: "V", writerPrev: "S" });
-  assert.deepEqual(chainCycles([self]), ["S"]);
-
-  // CONTROL - a branch off an HONEST chain is not a cycle, and both branches keep
-  // their segments. Without this the rule could be "any branch is a cycle".
-  const p = testEvent({ id: "0000000001-p", writer: "U" });
-  const q1 = testEvent({ id: "0000000002-q", writer: "U", writerPrev: "0000000001-p" });
-  const q2 = testEvent({ id: "0000000003-r", writer: "U", writerPrev: "0000000001-p" });
-  assert.deepEqual(chainCycles([p, q1, q2]), []);
-  assert.equal(causality(sortEvents([p, q1, q2])).saw(q1.id, p.id), true);
-});
-
-test("a cycle grants nothing but stays nameable", () => {
-  // Excluding cyclic events from segments was right and not sufficient: it also took
-  // them out of `heads()`, and `emitEvent` captures `heads()` as the next event's
-  // `after`. A cycle-only scope produced `after: []` — the append recorded having
-  // seen nothing at all, which is the total causality loss the cycle handling exists
-  // to prevent, arriving through the other door.
-  const a = testEvent({ id: "a", writer: "W", writerPrev: "b" });
-  const b = testEvent({ id: "b", writer: "W", writerPrev: "a" });
-  assert.deepEqual(causalHeads(sortEvents([a, b])).sort(), ["a", "b"], "both nameable");
-  assert.equal(causality(sortEvents([a, b])).saw("a", "b"), false, "and neither credited");
-
-  // CONTROL — an honest chain still collapses to its tip. Without this, "everything
-  // is a head" would pass the assertion above and destroy `after` entirely.
-  const p = testEvent({ id: "0000000001-p", writer: "U" });
-  const q = testEvent({ id: "0000000002-q", writer: "U", writerPrev: "0000000001-p" });
-  assert.deepEqual(causalHeads(sortEvents([p, q])), [q.id]);
-});
-
 test("a writerPrev naming another writer's event grants nothing", () => {
-  // `writerPrev` means "my own previous event". `buildSegments` already refused the
-  // link, but the own-edge absorbed the raw field anyway — so an event could name
-  // somebody else's, inherit their entire vector, and cover them in `heads()`. That
-  // is over-crediting, which is the direction that suppresses contests.
+  // `writerPrev` means "my own previous event": naming somebody else's would inherit
+  // their whole read set and cover them as a head — over-crediting.
   const a = testEvent({ id: "0000000001-a", writer: "WA" });
   const b = testEvent({ id: "0000000002-b", writer: "WB", writerPrev: "0000000001-a" });
-  const c = causality(sortEvents([a, b]));
-  assert.equal(c.saw(b.id, a.id), false, "a cross-writer chain claim is not a sighting");
-  assert.deepEqual(c.heads().sort(), [a.id, b.id].sort(), "and it does not cover the other writer");
+  assert.equal(readSets([a, b]).saw(b.id, a.id), false, "a cross-writer chain claim is not a sighting");
+  assert.deepEqual(causalHeads([a, b]).sort(), [a.id, b.id].sort(), "and it does not cover the other writer");
 
   // CONTROL — the same claim made honestly, through `after`, DOES grant sight.
   const b2 = testEvent({ id: "0000000002-b", writer: "WB", after: [a.id] });
-  assert.equal(causality(sortEvents([a, b2])).saw(b2.id, a.id), true);
+  assert.equal(readSets([a, b2]).saw(b2.id, a.id), true);
 });
 
 test("an event may not be named GENESIS", () => {
@@ -820,11 +523,11 @@ test("an event may not be named GENESIS", () => {
   const shadow = testEvent({ id: GENESIS, writer: "W", writerPrev: "absent" });
   assert.equal(wellFormed(shadow), false, "refused at the door");
 
-  // …and even if one reached the vector, the sentinel is never looked up.
+  // …and even if one reached a read set, the sentinel is never looked up.
   const h = testEvent({ id: "h", writer: "V" });
   const ghost = testEvent({ id: GENESIS, writer: "W", writerPrev: "absent", after: [h.id] });
   const fresh = testEvent({ id: "z", writer: "W", writerPrev: GENESIS });
-  assert.equal(causality(sortEvents([fresh, ghost, h])).saw(fresh.id, h.id), false);
+  assert.equal(readSets([fresh, ghost, h]).saw(fresh.id, h.id), false);
 
   // CONTROL — an ordinary chain opening is still well formed and still opens a chain.
   const ok = testEvent({ id: "0000000001-a", writer: "W", writerPrev: GENESIS });

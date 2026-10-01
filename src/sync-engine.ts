@@ -107,11 +107,13 @@ function stagedFrom(actor: Actor, it: Item, after: string[]): StagedEvent {
 export async function stageBatch(logRoot: string, session: string, scope: string, actor: Actor, items: Item[]): Promise<LogEvent[]> {
   return withSidecarLock(logRoot, async () => {
     const events = await readScope(logRoot, scope);
-    const after = causalHeads(events);
     const writer = await writerFor(logRoot);
     let top = Math.max(await maxSeq(logRoot), ...events.map((e) => e.seq ?? 0));
+    // Each act after the first names the one before it: its author composed it knowing that one.
+    let after = causalHeads(events);
     return items.map((it) => {
       const staged = stagedFrom(actor, it, after);
+      after = [staged.id];
       stage(logRoot, session, scope, staged);
       const e = atTip(events, writer, top++, staged);
       events.push(e);
@@ -127,8 +129,9 @@ export async function stageBatch(logRoot: string, session: string, scope: string
  */
 export async function syncBatch(logRoot: string, scope: string, actor: Actor, items: Item[]): Promise<LogEvent[]> {
   const batch = `${currentSession().session}#batch-${mintId()}`;
-  const after = causalHeads(await readScope(logRoot, scope));
-  const staged = items.map((it) => stagedFrom(actor, it, after));
+  // Each act after the first names the one before it: its author composed it knowing that one.
+  let after = causalHeads(await readScope(logRoot, scope));
+  const staged = items.map((it) => { const s = stagedFrom(actor, it, after); after = [s.id]; return s; });
   for (const s of staged) stage(logRoot, batch, scope, s);
   const r = await syncLinear(logRoot, batch, { actor });
   if ("error" in r) {

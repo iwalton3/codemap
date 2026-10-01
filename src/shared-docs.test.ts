@@ -132,9 +132,9 @@ const vEvent = (id: string, actor: Actor, v: Partial<NodeVersion> & { versionId:
   data: { version: { nodeId: "n_1", type: "module", title: "t", summary: "s", body: "b", citations: [], createdCommit: null, createdBranch: null, createdAt: "t", ...v } as never },
 });
 
-test("the fold is order-independent", () => {
-  const a = vEvent("0000000001-a", izzie, { versionId: "nv_1", body: "one" });
-  const b = vEvent("0000000002-b", dana, { versionId: "nv_2", body: "two" }, a.id);
+test("the fold is order-independent: seq decides", () => {
+  const a = { ...vEvent("0000000001-a", izzie, { versionId: "nv_1", body: "one" }), seq: 1 };
+  const b = { ...vEvent("0000000002-b", dana, { versionId: "nv_2", body: "two" }, a.id), seq: 2 };
   const shapes = [[a, b], [b, a]].map((s) => foldDocs(sortEvents(s)).get("n_1")!.versions.map((v) => v.body).join("|"));
   assert.equal(new Set(shapes).size, 1);
   assert.equal(shapes[0], "one|two");

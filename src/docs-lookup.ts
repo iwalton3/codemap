@@ -64,7 +64,7 @@ export async function docsVerdict(root: string): Promise<DocsVerdict> {
   } catch (e: any) {
     return {
       status: "blocked",
-      diagnostic: { reason: "fork", detail: `the shared docs could not be read: ${e?.message ?? e}`, evidence: [] },
+      diagnostic: { reason: "unreadable", detail: `the shared docs could not be read: ${e?.message ?? e}`, evidence: [] },
       scope,
       excludeFromDecisions: new Set([scope]),
     };

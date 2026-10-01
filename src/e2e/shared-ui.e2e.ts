@@ -452,29 +452,29 @@ describe("shared review UI", { skip: pw ? false : "playwright not resolvable (se
 
   // --- a scope that may not be answered from --------------------------------------
 
-  test("a forked scope says so above the rows, and still shows them", async () => {
+  test("a blocked scope says so above the rows, and still shows them", async () => {
     // §7 lets a blocked scope render its rows explicitly non-authoritative, which
     // is only worth anything if the page actually says so — and the failure mode
     // is a banner nobody notices, so this asserts on the rows too.
-    const { appendLinear, mintId } = await import("../eventlog.js");
+    const { appendLinear, mintId, SIDECAR_PROTOCOL } = await import("../eventlog.js");
     const { findingScope } = await import("../shared-findings.js");
     const { universeKey } = await import("../sidecar-config.js");
     const scope = findingScope(`${universeKey(root)}/pr-903`);
     const izzie = { principal: "izzie@x.com" };
-    const base = { kind: "finding.created", subject: "f_forked", actor: izzie, at: "t",
+    const base = { kind: "finding.created", subject: "f_blocked", actor: izzie, at: "t",
       data: { targetKind: "anchor", targetId: anchorId, text: "evidence", comment: "the ask" } };
-    // Two events of ONE writer both opening the chain: a copied clone id.
-    await appendLinear(side, scope, [testEvent({ ...base, id: mintId(), writerPrev: "GENESIS", writer: "w_copied" })]);
+    await appendLinear(side, scope, [testEvent({ ...base, id: mintId() })]);
+    // An event a newer codemap wrote: this build cannot judge the scope as settled.
     await appendLinear(side, scope, [testEvent({
-      id: mintId(), kind: "finding.commented", subject: "f_forked", actor: izzie,
-      writer: "w_copied", writerPrev: "GENESIS", data: { body: "from the other clone" },
+      id: mintId(), kind: "finding.commented", subject: "f_blocked", actor: izzie,
+      sidecarProtocol: SIDECAR_PROTOCOL + 1, data: { body: "from a newer build" },
     })]);
 
     const { page, errors } = await open(`/u/${universe}/shared/903/`);
     await page.waitForSelector(".blocked");
     const banner = await page.textContent(".blocked");
     assert.match(banner, /not authoritative/);
-    assert.match(banner, /forked writer chain/, "and what to do about it");
+    assert.match(banner, /newer codemap/, "and what to do about it");
     // The page opens on "needs a person" and this finding needs nobody, so switch
     // to everything: the claim being tested is that a blocked scope still RENDERS.
     await page.getByRole("button", { name: /showing: needs a person/ }).click();

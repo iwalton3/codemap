@@ -315,8 +315,8 @@ test("a spec ratifies once, so a replayed or duplicated event cannot apply it tw
 
     // A second ratification of the same spec. A fold that applied it again would amend
     // the rule a second time, and `amendedBy` would grow on every sync — the shape of bug
-    // that only appears after a clone has synced more than once. Written having seen the
-    // first, it is damage; racing it, it is refused and the first adoption is the one that counts.
+    // that only appears after a clone has synced more than once. Whether or not its writer had
+    // read the first, replay refuses it and the first adoption is the one that counts.
     const first = (await readScope(root, SCOPE)).find((e) => e.kind === "spec.ratified")!.id;
     await damage(probe.publishSpecRatified(root, SCOPE, izzie, "sp_1", "2026-08-09T00:00:00.000Z", {}, ["op_1"]), "a spec ratifies once");
     const race = await foldWithNext(root, SCOPE, foldStandardReport, izzie, "spec.ratified", "sp_1",

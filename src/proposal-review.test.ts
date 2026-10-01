@@ -529,7 +529,7 @@ test("the fold refuses a sign-off of a spec that is no longer a draft", async ()
     const late = { witness: { id: "rw_late", specId: "sp_1", operationId: "op_1", reviewer: mate,
       at: "2026-08-03T00:00:00.000Z", content: operationContent(ADD) } };
     const adopted = (await readScope(root, SCOPE)).find((e) => e.kind === "spec.ratified")!.id;
-    // A teammate reading the draft while it was adopted: a race, refused, and nothing is claimed.
+    // A teammate reading the draft while it was adopted: refused at replay, and nothing is claimed.
     const race = await next(root, mate, "spec.reviewed", late, { unseen: [adopted] });
     assert.equal(race.refused?.why, "only a draft is reviewed");
     assert.equal(race.value!.witnesses.length, 2,

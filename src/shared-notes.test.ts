@@ -94,9 +94,9 @@ test("an agent may answer a question and may not declare it settled", async () =
   } finally { discard(root); }
 });
 
-test("the fold is order-independent", () => {
+test("the fold is order-independent: seq decides", () => {
   const ev = (id: string, kind: string, actor: Actor, data: Record<string, unknown>, after?: string): LogEvent =>
-    testEvent({ id, kind, subject: "n_1", actor, ...(after ? { after: [after] } : {}), data });
+    testEvent({ id, kind, subject: "n_1", actor, ...(after ? { after: [after] } : {}), data, seq: Number(id.slice(0, 10)) });
   const a = ev("0000000001-a", "note.created", izzie, { targetKind: "anchor", targetId: "a_1", text: "x" });
   const b = ev("0000000002-b", "note.answered", dana, { body: "first" }, a.id);
   const c = ev("0000000003-c", "note.answered", izzie, { body: "second" }, b.id);

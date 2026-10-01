@@ -34,9 +34,7 @@ import { ratifyReviewed, signOffEverything, ratifyWithReview } from "./test-appr
 import { acknowledgeGap, listAcknowledgements } from "./acknowledgements.js";
 import { readAcknowledgements } from "./store.js";
 import { foldStandard, foldStandardReport, standardScope, publishOperation, publishAckGranted, publishAudit, lawScope } from "./shared-standard.js";
-import { appendUnfolded } from "./test-door.js";
-import { causalHeads, EVENT_SCHEMA, GENESIS, mintId, SIDECAR_PROTOCOL, sortEvents, type LogEvent } from "./eventlog.js";
-import { isLogDamage } from "./log-damage.js";
+import { appendUnfolded, foldWithNext } from "./test-door.js";
 
 const state: State = { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State;
 const SRC = "export function creditLine(cents) { return cents; }\n";
@@ -431,27 +429,9 @@ async function log(t: string) {
 /** The fold, over this scope's events. */
 const fold = async (root: string) => foldStandard(await readScope(root, SCOPE));
 
-/**
- * The fold with one more event on the end, NOT written: as a writer who had seen the whole
- * scope would have appended it, or — `unseen` — as a teammate who had not seen those events.
- * Refused over what its writer saw, it is DAMAGE: that writer's own door would have refused
- * it, so no conforming build wrote it (plan 1.2). Refused only because of what it could not
- * see, it is a race, and the fold carries on without it.
- */
-async function withEvent(root: string, actor: Actor, kind: string, subject: string, data: Record<string, unknown>,
-  opts: { unseen?: string[] } = {}) {
-  const events = sortEvents(await readScope(root, SCOPE));
-  const seen = opts.unseen ? events.filter((e) => !opts.unseen!.includes(e.id)) : events;
-  const e: LogEvent = { sidecarProtocol: SIDECAR_PROTOCOL, eventSchema: EVENT_SCHEMA, id: mintId(), kind, subject, actor,
-    at: new Date().toISOString(), writer: opts.unseen ? "w_teammate" : "w_here", writerPrev: GENESIS, after: causalHeads(seen), data };
-  try {
-    const r = foldStandardReport(sortEvents([...events, e]));
-    return { id: e.id, value: r.value, refused: r.refused.find((x) => x.id === e.id) };
-  } catch (err) {
-    if (isLogDamage(err)) return { id: e.id, damage: err.entry };
-    throw err;
-  }
-}
+/** The fold with one more linear event on the end, NOT written (`test-door.ts foldWithNext`). */
+const withEvent = (root: string, actor: Actor, kind: string, subject: string, data: Record<string, unknown>,
+  opts: { unseen?: string[] } = {}) => foldWithNext(root, SCOPE, foldStandardReport, actor, kind, subject, data, opts);
 const isDamage = async (w: ReturnType<typeof withEvent>) => { const r = await w; assert.equal(r.damage?.id, r.id, JSON.stringify(r.damage ?? r.refused)); };
 const REV = [{ at: "2026-08-02T00:00:00.000Z", by: { principal: "izzie@x.com", via: { kind: "agent", model: "claude-opus-5" } }, was: { title: "Credit currency policy" } }];
 
@@ -492,14 +472,9 @@ test("the fold applies a draft's corrections, and refuses them once it is ratifi
       ["spec.operation.removed", { operation: { ...ADD, removed: { at: "2026-08-04T00:00:00.000Z", by: opus, reason: "second thoughts" } } }],
     ];
     for (const [kind, data] of late) {
-      // A teammate who had not pulled the ratification: a race. Refused, and the fold carries on.
-      const race = await withEvent(root, opus, kind, "sp_1", data, { unseen: [ratification] });
-      assert.ok(race.refused, `${kind}, written without seeing the ratification, is refused`);
-      assert.equal(race.value!.specs[0]!.title, "Credit currency policy v2");
-      assert.equal(race.value!.operations[0]!.statement, "All credit lines are in USD or EUR.");
-      assert.equal(race.value!.operations[0]!.removed, undefined);
-      assert.equal(race.value!.requirements[0]!.statement, "All credit lines are in USD or EUR.", "and the standard is untouched");
-      // Written having SEEN it: the writer's own door would have refused it. Damage.
+      // Whether or not its writer had read the ratification, replay refuses it: on the log it
+      // is one no conforming build pushed. Damage.
+      await isDamage(withEvent(root, opus, kind, "sp_1", data, { unseen: [ratification] }));
       await isDamage(withEvent(root, opus, kind, "sp_1", data));
     }
   } finally { discard(root); }
@@ -515,8 +490,7 @@ test("the fold refuses a kind change, a reasonless removal, and a removal someth
       reversibility: "reversible",
     };
     await publishOperationRemote(root, SCOPE, opus, CRIT);
-    // None of these is a race: each is refused over everything its writer saw, so each is
-    // damage — no conforming build wrote it.
+    // Each is refused, so each is damage — no conforming build wrote it.
     await isDamage(withEvent(root, opus, "spec.operation.revised", "sp_1",
       { operation: { ...ADD, kind: "amend_statement", statement: "x", revisions: [{ at: "2026-08-02T00:00:00.000Z", by: opus, was: { statement: ADD.statement } }] } }));
     // The criterion still targets op_1, so this removal has TWO reasons to be refused.

@@ -463,8 +463,10 @@ test("every fold refusal binds a writer whose tool never checked, on every clone
     const scope = standardScope(universeKey(ben.repo));
     const shard = `${scope}/events.ndjson`;
     let prev = "GENESIS";
+    // Linear (a `seq` past everything on the remote): as if a broken build had pushed them.
+    let seq = 1_000_000;
     const append = (id: string, body: Record<string, unknown>) => {
-      appendRaw(ben, shard, forged({ id, writerPrev: prev, ...body }));
+      appendRaw(ben, shard, forged({ id, writerPrev: prev, seq: ++seq, ...body }));
       prev = id;
     };
 
@@ -509,9 +511,9 @@ test("every fold refusal binds a writer whose tool never checked, on every clone
     const forgedIds = ["9000000001-ratify", "9000000002-debt", "9000000003-gap",
       "9000000004-audit", "9000000005-adjudicate"];
 
-    // Each forgery, on its own, is DAMAGE: the fold refuses it over everything its writer saw,
-    // so no conforming build wrote it (plan 1.2). Folded one at a time beside the legitimate
-    // log, or a single forgery would explain every refusal.
+    // Each forgery, on its own, is DAMAGE: a linear event the fold refuses, so no conforming
+    // build pushed it (plan 1.2). Folded one at a time beside the legitimate log, or a single
+    // forgery would explain every refusal.
     const events = await readScope(ben.sidecar, scope);
     const law = await readScope(ben.sidecar, lawScope());
     const legit = events.filter((e) => !forgedIds.includes(e.id));

@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { shardFor, causality, type LogEvent } from "./eventlog.js";
+import { shardFor, causalHeads, readSets, type LogEvent } from "./eventlog.js";
 import { readFindings } from "./shared-findings.js";
 import { publishDocVersion, readDocs, docScope } from "./shared-docs.js";
 import { appendUnfolded } from "./test-door.js";
@@ -28,11 +28,9 @@ const good: LogEvent = testEvent({
  * arrive from other people's clients — older, buggier, or just wrong — and a
  * shared store that refuses to load is worse than one that ignores a record.
  *
- * `causality()` broke that without touching the fold: it keys its vector on
- * `actor.principal` for EVERY event before any fold branch sees any of them, so a
- * line with no actor threw instead of being skipped. It parses, it clears
- * `readShard`'s id/kind/subject check, and it stops the entire team reading the
- * pull request. Envelope validation moved to the door.
+ * A line with no actor parses and clears `readShard`'s id/kind/subject check, and a
+ * fold that reads `actor.principal` for every event would throw on it and stop the
+ * entire team reading the pull request. Envelope validation is at the door.
  */
 test("an event with no actor is skipped, not fatal", async () => {
   const root = tmp();
@@ -64,11 +62,11 @@ test("and neither is one with a blank principal, or no id", async () => {
 });
 
 /** Called directly with a hand-built array, it must not crash either. */
-test("causality tolerates an actorless event", () => {
+test("read sets tolerate an event with no actor and no `after`", () => {
   const evs = [good, { id: "0000000009-zz", kind: "noted", subject: "f_1" } as unknown as LogEvent];
-  const c = causality(evs);
-  assert.equal(c.saw(good.id, "0000000009-zz"), false);
-  assert.deepEqual(c.heads(), [good.id], "the unusable event is not a head anyone must descend from");
+  assert.equal(readSets(evs).saw("0000000009-zz", good.id), false);
+  assert.equal(readSets(evs).saw(good.id, "0000000009-zz"), false);
+  assert.deepEqual(causalHeads(evs), [good.id, "0000000009-zz"]);
 });
 
 /**

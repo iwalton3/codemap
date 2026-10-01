@@ -45,7 +45,8 @@ const before = testChain("signoff-authority", [
 ]);
 const applied = (c: unknown, actor = executor) => ({ ...before[2]!, id: "application", writerPrev: "sibling",
   kind: "spec.operation-signoff-applied", subject: op.id, actor, data: { capsule: c } });
-const credited = (c: unknown, actor = executor) => foldStandard([...before, applied(c, actor)]).witnesses;
+/** As landed: each event linear, in this order, so a refusal halts. */
+const credited = (c: unknown, actor = executor) => foldStandard([...before, applied(c, actor)].map((e, i) => ({ ...e, seq: i + 1 }))).witnesses;
 /** Why the fold halts on this application (plan 1.2): no conforming build writes one it refuses. */
 const halts = (c: unknown, actor = executor): string | undefined => {
   try { credited(c, actor); return undefined; } catch (e) { if (isLogDamage(e)) return e.entry.why; throw e; }

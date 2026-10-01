@@ -1,13 +1,13 @@
 /**
  * Every way the decisions and standard folds refuse an event is one output (plan 1.1), and a
- * refusal is DAMAGE or a RACE by one test: is the event refused over what its own writer saw?
- * Damage halts, naming the entry (1.2); a race is reported for conflict handling (1.3).
+ * read judges it as every family's is (`validation.ts judge`): a linear event refused is
+ * damage, and halts naming the entry (1.2).
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { foldDecisionsReport } from "./shared-decisions.js";
-import { foldStandardReport } from "./shared-standard.js";
+import { foldDecisions, foldDecisionsReport } from "./shared-decisions.js";
+import { foldStandard } from "./shared-standard.js";
 import { sortEvents, type LogEvent } from "./eventlog.js";
 import { isLogDamage } from "./log-damage.js";
 
@@ -30,19 +30,19 @@ test("the oracle's scopes fold with nothing refused", () => {
 test("a decisions event its own writer's door would have refused halts, named with its reason", () => {
   const events = fixture.questionnaire!.map((e) => e.kind === "decision.questionnaire.submitted" ? agent(e) : e);
   const id = events.find((e) => e.kind === "decision.questionnaire.submitted")!.id;
-  const d = damageOf(() => foldDecisionsReport(sortEvents(events)));
+  const d = damageOf(() => foldDecisions(sortEvents(events)));
   assert.deepEqual([d?.id, d?.why], [id, "a questionnaire submission is the person's own act"]);
 });
 
-test("two identical withdrawals written without seeing each other: the second is a no-op, not a refusal (owner, Q5)", () => {
+test("two identical withdrawals: the second is a no-op, not a refusal (owner, Q5)", () => {
   const events = fixture.confirm!;
   const first = events.find((e) => e.kind === "decision.withdrawn")!;
-  const second = { ...first, id: first.id.replace(/.$/, (c) => (c === "0" ? "1" : "0")), writer: "w_other", writerPrev: "GENESIS" } as LogEvent;
+  const second = { ...first, id: first.id.replace(/.$/, (c) => (c === "0" ? "1" : "0")), writer: "w_other", writerPrev: "GENESIS",
+    seq: Math.max(...events.map((e) => e.seq!)) + 1 } as LogEvent;
   const { refused, value } = foldDecisionsReport(sortEvents([...events, second]));
   assert.deepEqual(refused, []);
-  const later = [first.id, second.id].sort()[1]!;
   const records = value.decisions.flatMap((d) => d.withdrawals ?? []);
-  assert.equal(records.find((w) => w.id === later)?.state, "settled");
+  assert.equal(records.find((w) => w.id === second.id)?.state, "settled");
 });
 
 test("a standard event its own writer's door would have refused halts, named with its reason", () => {
@@ -51,21 +51,8 @@ test("a standard event its own writer's door would have refused halts, named wit
     ev("e1", "spec.drafted", "SPEC-1", { spec }),
     ev("e2", "spec.reviewed", "SPEC-1", { witness: { id: "w1", specId: "SPEC-1", content: { title: "t" } } },
       { principal: "alice", via: { kind: "agent", model: "m" } } as LogEvent["actor"], ["e1"]),
-  ];
-  const d = damageOf(() => foldStandardReport(events));
+  ].map((e, i) => ({ ...e, seq: i + 1 }));
+  const d = damageOf(() => foldStandard(events));
   assert.deepEqual([d?.id, d?.why], ["e2", "a sign-off is a person's act"]);
 });
 
-test("a standard event refused only because of what its writer could not see is a race, reported", () => {
-  const spec = { id: "SPEC-1", title: "t", createdAt: "2026-09-28T00:00:00Z", status: "draft" };
-  const events = sortEvents([
-    ev("e1", "spec.drafted", "SPEC-1", { spec }),
-    ev("e2", "spec.withdrawn", "SPEC-1", { reason: "not needed" }, person, ["e1"]),
-    // Bob had not pulled the withdrawal.
-    ev("e3", "spec.revised", "SPEC-1", { spec: { ...spec, title: "t2", revisions: [{ at: "t", by: { principal: "bob" }, was: { title: "t" } }] } },
-      { principal: "bob" }, ["e1"], "w_bob"),
-  ]);
-  const { refused, value } = foldStandardReport(events);
-  assert.deepEqual(refused.map((r) => [r.id, r.why]), [["e3", "only a draft spec is revised"]]);
-  assert.equal(value.specs[0]!.status, "withdrawn");
-});

@@ -15,8 +15,11 @@
  *   (`older`; owner, Q7: "fold or skip"). Merge-era events were never validated against an
  *   order, so refusing one is what the merge-era folds always did: drop it. Phase 7's
  *   migration decides what they become.
+ *
+ * There is no "race" outcome: every event on the remote was validated against the exact log
+ * before it, so a linear refusal on read is never two people writing at once.
  */
-import { LogDamage, namesAny } from "./log-damage.js";
+import { isLogDamage, LogDamage, type DamagedEntry } from "./log-damage.js";
 import type { LogEvent } from "./eventlog.js";
 
 export type RefusalClass = "shape" | "older" | "newer" | "state" | "reference";
@@ -47,6 +50,58 @@ export function judge(events: LogEvent[], refused: Refusal[]): Refusal[] {
     throw new LogDamage({ id: r.id, kind: r.kind, why: r.why });
   }
   return newer;
+}
+
+/**
+ * Whether `e` names one of `skipped` anywhere in its payload: by event id, an `id` the skipped
+ * event carries in its own payload (a request names itself `request.id`), or a subject the
+ * skipped event CREATED — the first event of that subject in `all`. A skipped event that merely
+ * shares a subject (another answer to one decision) excuses nothing.
+ */
+export function namesAny(e: LogEvent | undefined, skipped: LogEvent[], all: LogEvent[]): boolean {
+  if (!e || !skipped.length) return false;
+  const text = JSON.stringify({ subject: e.subject, data: e.data });
+  const created = (s: LogEvent): boolean => all.find((x) => x.subject === s.subject)?.id === s.id;
+  const ids = (s: LogEvent): string[] => [s.id, ...(s.subject !== e.subject || created(s) ? [s.subject] : []),
+    ...Object.values(s.data ?? {}).map((v) => (v as { id?: unknown } | null)?.id).filter((v): v is string => typeof v === "string")];
+  return skipped.some((s) => ids(s).some((id) => id === s.id ? text.includes(id) : text.includes(`"${id}"`)));
+}
+
+/**
+ * A report for a family whose shapes are checked AHEAD of its fold (decisions, the standard:
+ * `log-shape.ts`): a wrong-shaped event is refused as `shape` and never reaches the fold, and
+ * a throw nothing anticipated is damage naming its entry (`culprit`).
+ */
+export function shaped<T>(report: Report<T>, shape: (e: LogEvent) => string | null): Report<T> {
+  return (events) => {
+    const wrong: Refusal[] = [];
+    const kept = events.filter((e) => {
+      const why = shape(e);
+      if (why) wrong.push({ id: e.id, kind: e.kind, why, cls: "shape" });
+      return !why;
+    });
+    let out: ReturnType<Report<T>>;
+    try { out = report(kept); } catch (err) {
+      if (isLogDamage(err)) throw err;
+      throw new LogDamage(culprit(kept, report, err));
+    }
+    return { value: out.value, refused: [...wrong, ...out.refused] };
+  };
+}
+
+/**
+ * Name the entry behind a throw no shape check anticipated: the LATEST event whose absence
+ * lets the fold complete — removing the round a bad answer sits on completes too, and an event
+ * depends on earlier ones, not later. Named, never left out: leaving one out is how a good
+ * answer was dropped.
+ */
+function culprit(events: LogEvent[], report: (events: LogEvent[]) => unknown, err: unknown): DamagedEntry {
+  const message = err instanceof Error ? err.message : String(err);
+  for (let i = events.length - 1; i >= 0; i--) {
+    try { report([...events.slice(0, i), ...events.slice(i + 1)]); } catch { continue; }
+    return { id: events[i]!.id, kind: events[i]!.kind, why: `the fold cannot read it: ${message}` };
+  }
+  return { id: "(unknown)", kind: "(unknown)", why: `the fold cannot read this log, and no single entry explains it: ${message}` };
 }
 
 /** Fold for a READ: the value, having judged the refusals. */

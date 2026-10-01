@@ -3,30 +3,6 @@
   {
    "sidecarProtocol": 1,
    "eventSchema": 1,
-   "id": "00mularbzy-e322d67b54",
-   "kind": "decision.answer.recorded",
-   "subject": "00mularbjm-1dc673981e:d1",
-   "actor": {
-    "principal": "bob@acme.test"
-   },
-   "at": "2026-09-28T13:42:21.310Z",
-   "writer": "w_9e38cc1648a26912",
-   "writerPrev": "GENESIS",
-   "after": [
-    "00mularbqr-d4d0656ec3"
-   ],
-   "data": {
-    "decision": "00mularbjm-1dc673981e:d1",
-    "hash": "d:sha256:1c3b2b5753d6907020560e70",
-    "via": {
-     "kind": "direct",
-     "option": "Fix"
-    }
-   }
-  },
-  {
-   "sidecarProtocol": 1,
-   "eventSchema": 1,
    "id": "00mularbjm-1dc673981e",
    "kind": "decision.round.posted",
    "subject": "R1",
@@ -94,7 +70,8 @@
       ]
      }
     ]
-   }
+   },
+   "seq": 1
   },
   {
    "sidecarProtocol": 1,
@@ -118,7 +95,33 @@
      "kind": "direct",
      "option": "Reject"
     }
-   }
+   },
+   "seq": 2
+  },
+  {
+   "sidecarProtocol": 1,
+   "eventSchema": 1,
+   "id": "00mularbzy-e322d67b54",
+   "kind": "decision.answer.recorded",
+   "subject": "00mularbjm-1dc673981e:d1",
+   "actor": {
+    "principal": "bob@acme.test"
+   },
+   "at": "2026-09-28T13:42:21.310Z",
+   "writer": "w_9e38cc1648a26912",
+   "writerPrev": "GENESIS",
+   "after": [
+    "00mularbqr-d4d0656ec3"
+   ],
+   "data": {
+    "decision": "00mularbjm-1dc673981e:d1",
+    "hash": "d:sha256:1c3b2b5753d6907020560e70",
+    "via": {
+     "kind": "direct",
+     "option": "Fix"
+    }
+   },
+   "seq": 3
   },
   {
    "sidecarProtocol": 1,
@@ -245,7 +248,8 @@
      ],
      "contextHash": "75eaf785b2f3babcfd586fe23c886229718b7e1a1a181b36ef5dde724141cd05"
     }
-   }
+   },
+   "seq": 4
   },
   {
    "sidecarProtocol": 1,
@@ -306,7 +310,8 @@
      "call": "toolu_submit_12",
      "result": "held"
     }
-   }
+   },
+   "seq": 5
   },
   {
    "sidecarProtocol": 1,
@@ -574,7 +579,8 @@
      },
      "executionsHash": "e7ee5e5b1ee220d8d7b74d970a083a01b203a5904dd3237315a7f5a9a597b59d"
     }
-   }
+   },
+   "seq": 6
   }
  ],
  "questionnaire": [
@@ -775,7 +781,8 @@
       ]
      }
     ]
-   }
+   },
+   "seq": 7
   },
   {
    "sidecarProtocol": 1,
@@ -824,7 +831,8 @@
       }
      ]
     }
-   }
+   },
+   "seq": 8
   },
   {
    "sidecarProtocol": 1,
@@ -987,7 +995,8 @@
     },
     "contextHash": "b149829f5286cf811b0ac6331ecc6e748f1f89539bfa4cbf0b46c42e2c98ec0e",
     "sourceReceipt": "2572a960-a3fd-4f31-b09e-1220568e3696"
-   }
+   },
+   "seq": 9
   },
   {
    "sidecarProtocol": 1,
@@ -1055,7 +1064,8 @@
       "f_00mulartjv-54d7b66599"
      ]
     }
-   }
+   },
+   "seq": 10
   }
  ],
  "confirm": [
@@ -1173,7 +1183,8 @@
       ]
      }
     ]
-   }
+   },
+   "seq": 11
   },
   {
    "sidecarProtocol": 1,
@@ -1197,7 +1208,8 @@
      "kind": "direct",
      "option": "Fix"
     }
-   }
+   },
+   "seq": 12
   },
   {
    "sidecarProtocol": 1,
@@ -1221,38 +1233,8 @@
      "kind": "direct",
      "words": "The premise is false after all."
     }
-   }
-  },
-  {
-   "sidecarProtocol": 1,
-   "eventSchema": 1,
-   "id": "00mularma9-a0ff3437b6",
-   "kind": "decision.withdrawn",
-   "subject": "00mularloo-4389f81c6b:q1",
-   "actor": {
-    "principal": "alice@acme.test"
    },
-   "at": "2026-09-28T13:42:34.641Z",
-   "writer": "w_2c71b215d6eaf39d",
-   "writerPrev": "00mularlvh-328a04f422",
-   "after": [
-    "00mularm2y-e00dc11faa"
-   ],
-   "data": {
-    "decision": "00mularloo-4389f81c6b:q1",
-    "answer": "00mularlvh-328a04f422",
-    "reason": "I retract this ruling",
-    "knownAnswers": [
-     "00mularlv3-4737713f9e",
-     "00mularlvh-328a04f422"
-    ],
-    "scope": {
-     "findings": [
-      "f_00mularlhq-d473cf5a06"
-     ],
-     "issues": []
-    }
-   }
+   "seq": 13
   },
   {
    "sidecarProtocol": 1,
@@ -1318,7 +1300,40 @@
       ]
      }
     }
-   }
+   },
+   "seq": 14
+  },
+  {
+   "sidecarProtocol": 1,
+   "eventSchema": 1,
+   "id": "00mularma9-a0ff3437b6",
+   "kind": "decision.withdrawn",
+   "subject": "00mularloo-4389f81c6b:q1",
+   "actor": {
+    "principal": "alice@acme.test"
+   },
+   "at": "2026-09-28T13:42:34.641Z",
+   "writer": "w_2c71b215d6eaf39d",
+   "writerPrev": "00mularlvh-328a04f422",
+   "after": [
+    "00mularm2y-e00dc11faa"
+   ],
+   "data": {
+    "decision": "00mularloo-4389f81c6b:q1",
+    "answer": "00mularlvh-328a04f422",
+    "reason": "I retract this ruling",
+    "knownAnswers": [
+     "00mularlv3-4737713f9e",
+     "00mularlvh-328a04f422"
+    ],
+    "scope": {
+     "findings": [
+      "f_00mularlhq-d473cf5a06"
+     ],
+     "issues": []
+    }
+   },
+   "seq": 15
   }
  ]
 }

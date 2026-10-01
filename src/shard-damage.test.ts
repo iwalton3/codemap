@@ -115,7 +115,7 @@ test("damage outranks every other diagnostic, because it is the only one about t
     id: "m1-a", kind: "x", subject: "s", actor: { principal: "p" }, at: "", after: [],
     writer: "w", writerPrev: "GENESIS", sidecarProtocol: 99, eventSchema: 99,
   };
-  const both = scopeStatus([ahead as never], [], [{ shard: "s.ndjson", line: 2, sample: "x" }]);
+  const both = scopeStatus([ahead as never], [{ shard: "s.ndjson", line: 2, sample: "x" }]);
   assert.equal(both.diagnostic?.reason, "corrupt-shard");
   // Mutation check: without the damage the SAME events report the protocol problem, so
   // the assertion above is about precedence and not about an empty branch.

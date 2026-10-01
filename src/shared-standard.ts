@@ -48,9 +48,9 @@ import type {
 } from "./schema.js";
 import { criterionIdFor, movedSection, normalizeSection, requirementIdFor, EVIDENCE_KINDS, AUDIT_TRIGGERS, COVERING_TRIGGERS, PROBLEM_DISPOSITIONS, ACK_PRIORITIES, ISO_DATE, auditClaimStands, contentDiff, framingContent, operationContent, witnessHash } from "./schema.js";
 import type { LogEvent } from "./eventlog.js";
-import { causality, readScope, registerDoor, scopesOnDisk, sortEvents, type DoorFold } from "./eventlog.js";
+import { readSets, readScope, registerDoor, scopesOnDisk, sortEvents, type DoorFold } from "./eventlog.js";
 import { emitEvent } from "./write.js";
-import { foldHaltingOnDamage } from "./log-damage.js";
+import { foldJudged, shaped, type Refusal } from "./validation.js";
 import { standardEventShape } from "./log-shape.js";
 import { signoffReferences } from "./ruling-references.js";
 
@@ -361,24 +361,19 @@ export function reviewGap(
   return gap;
 }
 
+/** The standard's fold for a READ: HALTS on damage (`LogDamage`), judged by `validation.ts judge`. */
 export function foldStandard(events: LogEvent[]): SharedStandard {
-  return foldStandardReport(events).value;
+  return foldJudged(events, foldStandardReport).value;
 }
 
-/** An event the standard's fold did not apply as written, and why. */
-export interface RefusedStandardEvent { id: string; kind: string; why: string }
+/** The fold and every refusal, unjudged: what the write door asks of a new event (plan 1.1). */
+export const foldStandardReport = shaped(foldStandardWithRefusals, standardEventShape);
 
-/**
- * The fold, HALTING on damage (`LogDamage`) and naming the entry, and the refusals that are not
- * damage — races. The write door asks it whether a new event would be applied (plan 1.1).
- */
-export function foldStandardReport(events: LogEvent[]): { value: SharedStandard; refused: RefusedStandardEvent[] } {
-  return foldHaltingOnDamage(events, foldStandardWithRefusals, standardEventShape);
-}
-
-function foldStandardWithRefusals(events: LogEvent[]): { value: SharedStandard; refused: RefusedStandardEvent[] } {
-  const refused: RefusedStandardEvent[] = [];
-  const refuse = (e: LogEvent, why: string) => { refused.push({ id: e.id, kind: e.kind, why }); };
+function foldStandardWithRefusals(events: LogEvent[]): { value: SharedStandard; refused: Refusal[] } {
+  const refused: Refusal[] = [];
+  // One class for every refusal here, a failed precondition or reference alike: on read both
+  // are damage for a linear event (`judge`). Shapes are refused ahead of the fold (`shaped`).
+  const refuse = (e: LogEvent, why: string) => { refused.push({ id: e.id, kind: e.kind, why, cls: "state" }); };
   const specs = new Map<string, Spec>();
   const operations = new Map<string, Operation>();
   // Keyed on subject-and-reviewer, so a later sign-off REPLACES the earlier one: a
@@ -395,7 +390,7 @@ function foldStandardWithRefusals(events: LogEvent[]): { value: SharedStandard; 
   const acknowledgements = new Map<string, Acknowledgement>();
   const audits = new Map<string, Audit>();
   const problems = new Map<string, Problem>();
-  const causal = causality(events);
+  const reads = readSets(events);
   // The ratification that adopted each spec: withdrawing a ratified spec retires law, so a
   // withdrawal written without having seen the adoption was a withdrawal of a draft, and is
   // refused rather than applied to something its writer never saw.
@@ -698,7 +693,7 @@ function foldStandardWithRefusals(events: LogEvent[]): { value: SharedStandard; 
         const sp = specs.get(e.subject);
         if (!sp || sp.status === "withdrawn" || sp.status === "repealed") { refuse(e, "the spec is already withdrawn or repealed"); break; }
         const adoption = adoptedBy.get(sp.id);
-        if (adoption && !causal.saw(e.id, adoption)) { refuse(e, "the spec was ratified after its withdrawer read it: withdrawing it now would retire law they never saw adopted"); break; }
+        if (adoption && !reads.saw(e.id, adoption)) { refuse(e, "the spec was ratified after its withdrawer read it: withdrawing it now would retire law they never saw adopted"); break; }
         // A withdrawal with no reason. `withdrawSpec` refuses one — "it stays on the record
         // as the act it is" — and the fold did not, so a client that skipped the field
         // removed rules from every clone's standard with nothing on the record saying why.
@@ -984,7 +979,7 @@ function foldStandardWithRefusals(events: LogEvent[]): { value: SharedStandard; 
         // A re-baseline REWRITES a value, so one written without having seen the previous
         // re-baseline would silently replace an observation its writer never read.
         const prior = restatedBy.get(p.id);
-        if (prior && !causal.saw(e.id, prior)) { refuse(e, "another restatement landed that this one did not see: re-read the pointer and restate again"); break; }
+        if (prior && !reads.saw(e.id, prior)) { refuse(e, "another restatement landed that this one did not see: re-read the pointer and restate again"); break; }
         pointers.set(p.id, { ...p, witnesses, restatedBy: e.actor, restatedAt: str(e.data, "at") ?? e.at });
         restatedBy.set(p.id, e.id);
         break;

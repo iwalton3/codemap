@@ -11,8 +11,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { scenario, who, settle, type Person } from "./scenario.js";
-import { LINEAR_SHARD, readScope, readScopeChecked, registerDoor, sortEvents, type LogEvent } from "./eventlog.js";
-import { emitEvent, emitEventChecked } from "./write.js";
+import { LINEAR_SHARD, readScope, readScopeChecked, readSets, registerDoor, sortEvents, type LogEvent } from "./eventlog.js";
+import { emitEvent, emitEventChecked, emitEvents } from "./write.js";
 import * as queue from "./sync-queue.js";
 import { attemptGone, begin, discard as discardTx, dropOp, localConflicts, staged, syncSession } from "./sync-engine.js";
 import { withSession } from "./sync-session.js";
@@ -88,6 +88,24 @@ test("seq orders events across scopes by push, which a merged fold relies on", a
     await settle(s);
     const merged = sortEvents([...await readScope(ben.sidecar, "tst/a"), ...await readScope(ben.sidecar, "tst/b")]);
     assert.deepEqual(merged.map((e) => e.id), [landed.id, staged1.id], "the merged order is the order they landed");
+  } finally { s.dispose(); }
+});
+
+test("a batch's later acts read the earlier ones, synced inline or staged in a transaction", async () => {
+  // A linear `writerPrev` reads nothing (`readSets`), so each act after the first names the one before.
+  const s = await scenario(["ana@x.com"]);
+  try {
+    const ana = who(s, "ana@x.com");
+    const items = [{ kind: "noted", subject: "n1" }, { kind: "noted", subject: "n2" }, { kind: "noted", subject: "n3" }];
+    const check = async (scope: string, batch: LogEvent[]) => {
+      const reads = readSets(await readScope(ana.sidecar, scope));
+      assert.ok(reads.saw(batch[2]!.id, batch[0]!.id) && reads.saw(batch[1]!.id, batch[0]!.id), scope);
+    };
+    await check("notes/u/inline", await emitEvents(ana.sidecar, "notes/u/inline", ana.actor, items));
+    begin(ana.sidecar);
+    const staged = await emitEvents(ana.sidecar, "notes/u/tx", ana.actor, items);
+    assert.ok(!("error" in await syncSession(ana.sidecar, ana.actor)));
+    await check("notes/u/tx", staged);
   } finally { s.dispose(); }
 });
 

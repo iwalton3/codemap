@@ -2,13 +2,13 @@
  * The shape every decisions and standard event must have, checked once where it enters a fold
  * and by the sidecar transport before a commit or a pull (plan 1.2).
  *
- * A wrong shape is DAMAGE: no conforming build writes it, so the store halts and names the
- * entry (docs/log-repair.md). This checks types and the fields a conforming build always
- * writes — never that a field is absent — so a teammate one version ahead, whose events carry
- * a field this build does not know, still reads. An unknown kind is skipped, not checked.
+ * A wrong shape is NEWER (owner, batch 1): skipped on read, refused by the door, and it blocks
+ * pushes until an upgrade. This checks types and the fields a conforming build always writes —
+ * never that a field is absent — so a teammate one version ahead, whose events carry a field
+ * this build does not know, still reads. An unknown kind is skipped, not checked.
  *
  * What depends on other events (an answer to a question that does not exist) is not a shape;
- * the fold refuses it and the damage/conflict classification decides (`classifyRefusals`).
+ * the fold refuses it and `validation.ts judge` decides what the refusal means.
  */
 import type { LogEvent } from "./eventlog.js";
 

@@ -298,9 +298,8 @@ export const MATERIALIZER_VERSION = 52;
  * per-universe, and `foldStandard` cannot be split to match — `spec.withdrawn` consults
  * evidence to decide whether a law act is permitted. So the two streams are folded together.
  *
- * Merging is safe because `sortEvents` is a deterministic topological sort that treats a
- * parent outside the input set as already satisfied: the union of two scopes yields the same
- * order on every clone, with no new ordering machinery.
+ * Merging is safe because `sortEvents` orders by `seq`, the sidecar-wide position the remote
+ * accepted each event at: the union of two scopes yields the same order on every clone.
  *
  * The rows are stored under ONE key (`key`), which is the universe's own standard scope —
  * a store belongs to exactly one universe, nothing downstream asks which scope a row arrived

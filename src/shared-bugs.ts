@@ -30,7 +30,7 @@ import { createHash } from "node:crypto";
 import { collector, foldJudged, registerReport, staleRevision, wasOf, type RefusalClass, type Refusal } from "./validation.js";
 import { ISO_DATE, type Actor, type BugSeverity, type BugWitness } from "./schema.js";
 import { isAgentActor, isIndependent, isErrorIndependent, reviewerKey } from "./identity.js";
-import { mintId, readScope, causality, registerDoor, type LogEvent } from "./eventlog.js";
+import { mintId, readScope, readSets, registerDoor, type LogEvent, type ReadSets } from "./eventlog.js";
 import { emitEvent } from "./write.js";
 import { issueClaimHash, validateApplicationCapsule, type ApplicationAttempt } from "./ruling-application.js";
 import { rulingReferences } from "./ruling-references.js";
@@ -251,7 +251,7 @@ function anchorsIn(d: Data | undefined): { anchorId: string; bodyHash: string; d
 
 interface ApplicationReplay {
   all: LogEvent[];
-  causal: ReturnType<typeof causality>;
+  reads: ReadSets;
   snapshots: Map<string, Map<string, SharedBug>>;
   /** Where the top-level fold records what it did not apply. Snapshots record nothing. */
   refuse?: (e: LogEvent, cls: RefusalClass, why: string) => void;
@@ -264,7 +264,7 @@ function foldBugsInternal(events: LogEvent[], replay: ApplicationReplay): Map<st
   const atAct = (e: LogEvent): SharedBug | undefined => {
     let snapshot = replay.snapshots.get(e.id);
     if (!snapshot) {
-      snapshot = foldBugsInternal(replay.all.filter((prior) => replay.causal.saw(e.id, prior.id)), { ...replay, refuse: undefined });
+      snapshot = foldBugsInternal(replay.all.filter((prior) => replay.reads.saw(e.id, prior.id)), { ...replay, refuse: undefined });
       replay.snapshots.set(e.id, snapshot);
     }
     return snapshot.get(e.subject);
@@ -590,7 +590,7 @@ function foldBugsInternal(events: LogEvent[], replay: ApplicationReplay): Map<st
 /** The fold and every event it did not apply, classed (plan 3.1). The door and the scans read this. */
 export function foldBugsReport(events: LogEvent[]): { value: Map<string, SharedBug>; refused: Refusal[] } {
   const { refused, refuse } = collector();
-  const value = foldBugsInternal(events, { all: events, causal: causality(events), snapshots: new Map(), refuse });
+  const value = foldBugsInternal(events, { all: events, reads: readSets(events), snapshots: new Map(), refuse });
   return { value, refused };
 }
 

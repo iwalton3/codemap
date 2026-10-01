@@ -4,7 +4,7 @@ import { team, who, whileApart, settle } from "./oracle.js";
 import { Ledger, checkSettled } from "./oracle-properties.js";
 import { shareFinding, sharedFindings, corroborateFinding, publishLocalDocs, sharedDocs } from "./ops-shared.js";
 import { document } from "./ops.js";
-import { readScope, scopesOnDisk, sortEvents, causality } from "./eventlog.js";
+import { readScope, scopesOnDisk, sortEvents, readSets } from "./eventlog.js";
 
 /**
  * WORKFLOW 2, the causal half — two people writing with nobody's news in hand.
@@ -30,7 +30,7 @@ async function causalityOf(m: { sidecar: string }, endsWith: string) {
   const scope = (await scopesOnDisk(m.sidecar)).find((s) => s.endsWith(endsWith));
   assert.ok(scope, `no scope ending ${endsWith}`);
   const events = sortEvents(await readScope(m.sidecar, scope!));
-  return { events, ...causality(events) };
+  return { events, ...readSets(events) };
 }
 
 test("whileApart really does produce writes neither side saw", async () => {

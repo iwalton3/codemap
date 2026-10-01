@@ -3,7 +3,7 @@
  *
  * The hole this closes was found by review, not by use: `materializeStandard` reduced the
  * scope verdict to a boolean and ran only on the WRITE path, so nothing on the read path
- * ever asked. A `standard/` scope blocked by a fork still handed back projection rows that
+ * ever asked. A blocked `standard/` scope still handed back projection rows that
  * looked exactly like a healthy team's — §7 of `docs/sidecar-architecture.md` is a
  * fail-CLOSED rule, and the way it fails in practice is a surface that never looked.
  *
@@ -14,9 +14,10 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, readFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, mkdirSync, writeFileSync, readdirSync, readFileSync } from "node:fs";
+import { SIDECAR_PROTOCOL } from "./eventlog.js";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { discard } from "./test-tmp.js";
 import { indexBlob } from "./repo.js";
@@ -63,7 +64,7 @@ async function universeWithRule() {
  *
  * BOTH halves: the law scope (`law/`) carries specs, operations and gaps, the evidence
  * scope (`standard/<universe>`) carries audits and pointers. A fixture that only ratifies
- * a rule writes nothing at all to the second one — so a fork test looking only there would
+ * a rule writes nothing at all to the second one — so a test blocking only there would
  * find no shards and block nothing, and would have gone green proving it.
  *
  * Forking EITHER half must block the standard, which is the fail-closed reading: a standard
@@ -85,18 +86,14 @@ function shards(side: string): string[] {
 }
 
 /**
- * Fork the log the way a real fork happens: a second writer file claiming ids that
- * already exist with different bodies. `readScopeChecked` calls that `duplicate-id`.
+ * Block the log: append an event written by a newer codemap (`protocol`), which this build
+ * cannot judge, so the scope may not be answered from as settled.
  */
-function forkTheLog(side: string) {
+function blockTheLog(side: string) {
   const files = shards(side);
   assert.ok(files.length, "the fixture must have written events, or blocking it proves nothing");
-  const lines = readFileSync(files[0]!, "utf8").split("\n").filter(Boolean);
-  const rewritten = lines.map((l) => JSON.stringify({ ...JSON.parse(l), subject: "tampered" }));
-  // `dirname`, not a regex on the path: a `[^/]+` character class matches backslashes,
-  // so on Windows the whole path collapsed to a bare filename and the impostor shard
-  // landed in the CWD. The fork then existed nowhere the fold looks and nothing blocked.
-  writeFileSync(join(dirname(files[0]!), "w_impostor.ndjson"), rewritten.join("\n") + "\n");
+  const first = JSON.parse(readFileSync(files[0]!, "utf8").split("\n").filter(Boolean)[0]!);
+  appendFileSync(files[0]!, JSON.stringify({ ...first, id: "zzzzzzzzzz-newer", sidecarProtocol: SIDECAR_PROTOCOL + 1 }) + "\n");
 }
 
 test("a healthy standard carries no scope marker at all", async () => {
@@ -117,7 +114,7 @@ test("a blocked standard scope is served with the marker, and still serves its r
   const u = await universeWithRule();
   try {
     assert.equal((await ops.listRequirements(u.root)).scope, undefined, "clean first");
-    forkTheLog(u.side);
+    blockTheLog(u.side);
 
     const r = await ops.listRequirements(u.root);
     assert.equal(r.scope?.status, "blocked", "the rows are no longer the team's word");
@@ -139,7 +136,7 @@ test("a blocked standard scope is served with the marker, and still serves its r
 test("every read on the standard surface carries the marker, not just the one that was checked", async () => {
   const u = await universeWithRule();
   try {
-    forkTheLog(u.side);
+    blockTheLog(u.side);
     const reads: [string, Promise<{ scope?: { status: string } }>][] = [
       ["standardStatus", ops.standardStatus(u.root)],
       ["listRequirements", ops.listRequirements(u.root)],

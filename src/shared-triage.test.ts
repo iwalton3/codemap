@@ -94,11 +94,11 @@ test("the counterexample is real: two agent claims do not commute through the ra
     "the asymmetry this design is built around is gone — a max-fold would now be correct, and this file is over-engineered");
 });
 
-test("and the fold is order-independent anyway, because the order is canonical", () => {
+test("and the fold is order-independent anyway, because the order is canonical (seq)", () => {
   const events = [
     say({ id: "0000000001-aa", by: opus, writer: "w_a", importance: "important" }),
     say({ id: "0000000002-bb", by: bensAgent, writer: "w_b", importance: "business-critical", complexity: "wiring" }),
-  ];
+  ].map((e, i) => ({ ...e, seq: i + 1 }));
   const forward = triageOf(one(events)!);
   const backward = triageOf(one(events.slice().reverse())!);
   assert.deepEqual(forward, backward, "the order events ARRIVED in changed what they mean");

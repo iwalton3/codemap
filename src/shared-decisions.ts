@@ -24,9 +24,9 @@
  */
 import { createHash } from "node:crypto";
 import { comparisonContextHash, deriveComparison, validateComparisonRequest, type AnswerSource, type CanonicalIssue, type ComparisonProjection, type ComparisonRequest, type ReaderJudgment, type HumanResolution } from "./decision-comparison.js";
-import { causality, readScope, registerDoor, scopesOnDisk, type DoorFold, type LogEvent } from "./eventlog.js";
+import { readSets, readScope, registerDoor, scopesOnDisk, type DoorFold, type LogEvent, type ReadSets } from "./eventlog.js";
 import { emitEventChecked } from "./write.js";
-import { foldHaltingOnDamage } from "./log-damage.js";
+import { foldJudged, shaped, type Refusal } from "./validation.js";
 import { decisionEventShape } from "./log-shape.js";
 import { isAgentActor } from "./identity.js";
 import { questionnaireAnswerId } from "./ruling-application.js";
@@ -223,7 +223,7 @@ export interface FoldedDecision extends Decision {
   cancellation?: { by: string; reason: string };
   /** An explicit withdrawal of an unanswered question. */
   withdrawn?: { id: string; by: Actor; at: string; reason: string };
-  /** Every well-formed withdrawal act, including one contested by a concurrent answer. */
+  /** Every well-formed withdrawal act, including a refused one with its reason. */
   withdrawals?: WithdrawalRecord[];
   nominations?: ComparisonNomination[];
 }
@@ -241,9 +241,6 @@ export interface SharedDecisions {
   questions: LoggedQuestion[];
   comparisons: FoldedComparison[];
 }
-
-/** An event the fold did not apply as written, and why. See `foldDecisionsReport`. */
-export interface RefusedEvent { id: string; kind: string; why: string }
 
 const isObject = (v: unknown): v is Record<string, any> => !!v && typeof v === "object" && !Array.isArray(v);
 const str = (v: unknown): string | undefined => (typeof v === "string" && v.trim() ? v : undefined);
@@ -772,27 +769,23 @@ function listRevisionMatchesAnswer(d: FoldedDecision, list: ListRevision | undef
 }
 
 /**
- * The decisions fold. HALTS on damage (`LogDamage`), naming the entry: a wrong shape, or an act
- * its writer's own door would have refused (owner, node 18: "Halt on any bad entry"). It used
- * to leave such an event out and read on, which could drop a good answer and blame it.
+ * The decisions fold for a READ. HALTS on damage (`LogDamage`), naming the entry (owner, node 18:
+ * "Halt on any bad entry"): a linear event the fold refuses, judged by `validation.ts judge` as
+ * every family's is. It used to leave such an event out and read on, which could drop a good
+ * answer and blame it.
  */
 export function foldDecisions(events: LogEvent[]): SharedDecisions {
-  return foldDecisionsReport(events).value;
+  return foldJudged(events, foldDecisionsReport).value;
 }
 
-/**
- * The fold and the refusals that are not damage — races, for conflict handling — for a caller
- * that has to know whether one particular event would be applied: the write door (plan 1.1).
- */
-export function foldDecisionsReport(events: LogEvent[]): { value: SharedDecisions; refused: RefusedEvent[] } {
-  return foldHaltingOnDamage(events, foldDecisionsWithRefusals, decisionEventShape);
-}
+/** The fold and every refusal, unjudged: what the write door asks of a new event (plan 1.1). */
+export const foldDecisionsReport = shaped(foldDecisionsWithRefusals, decisionEventShape);
 
 /**
  * The fold, and every event it did not apply as written. One output for every way the fold
  * refuses, so the write door can ask whether it would refuse a new event (plan 1.1).
  */
-function foldDecisionsWithRefusals(events: LogEvent[]): { value: SharedDecisions; refused: RefusedEvent[] } {
+function foldDecisionsWithRefusals(events: LogEvent[]): { value: SharedDecisions; refused: Refusal[] } {
   // Withdrawals apply after binds, so a withdrawn pick on a confirm had already counted. Fold
   // again without every withdrawn pick until nothing more is excluded: a withdrawn Yes returns
   // the words to unconfirmed (plan 2.2), a withdrawn side of a dispute releases it (K5). The set
@@ -807,9 +800,11 @@ function foldDecisionsWithRefusals(events: LogEvent[]): { value: SharedDecisions
   }
 }
 
-function foldOnce(events: LogEvent[], excludedPicks: ReadonlySet<string>): { value: SharedDecisions; refused: RefusedEvent[] } {
-  const refused: RefusedEvent[] = [];
-  const refuse = (e: LogEvent, why: string) => { refused.push({ id: e.id, kind: e.kind, why }); };
+function foldOnce(events: LogEvent[], excludedPicks: ReadonlySet<string>): { value: SharedDecisions; refused: Refusal[] } {
+  const refused: Refusal[] = [];
+  // One class for every refusal here, a failed precondition or reference alike: on read both
+  // are damage for a linear event (`judge`). Shapes are refused ahead of the fold (`shaped`).
+  const refuse = (e: LogEvent, why: string) => { refused.push({ id: e.id, kind: e.kind, why, cls: "state" }); };
   const eventById = new Map(events.map((e) => [e.id, e]));
   const refuseId = (id: string | undefined, why: string) => { const e = id ? eventById.get(id) : undefined; if (e) refuse(e, why); };
   const rounds = new Map<string, DecisionRound>();
@@ -827,7 +822,7 @@ function foldOnce(events: LogEvent[], excludedPicks: ReadonlySet<string>): { val
     return matching.length === 1 ? matching[0] : undefined;
   };
   const questions = new Map<string, LoggedQuestion>();
-  const causal = causality(events);
+  const reads = readSets(events);
   const answerEvents = new Map<string, LogEvent>();
   const answersById = new Map<string, { a: FoldedAnswer; d: FoldedDecision }>();
   // Position of each decision's posting, so an answer reaches only a decision posted before it.
@@ -1225,7 +1220,7 @@ function foldOnce(events: LogEvent[], excludedPicks: ReadonlySet<string>): { val
         (answerEvents.get(a.id)?.data as any)?.via)
       // Another person's revision is valid when the old answer was in their store when they
       // revised it (owner's rule; a shown-receipt was too strict — plan Phase 3.2).
-      && (!!relayValid || targets.every((x) => causal.saw(sourceEventId(a.id), sourceEventId(x!.id))));
+      && (!!relayValid || targets.every((x) => reads.saw(sourceEventId(a.id), sourceEventId(x!.id))));
     if (!valid) {
       a.revisionInvalid = "revision needs exact source, scope and verified human act-time context";
       refuseId(answerEvent?.id, a.revisionInvalid);
@@ -1314,7 +1309,7 @@ function foldOnce(events: LogEvent[], excludedPicks: ReadonlySet<string>): { val
         const why = !r || !sameQuestion(r.payload, withdrawalQuestion(d, named, data.reason, r.ref))
           ? "an agent withdraws a ruling only as the person's answer to the relayed withdrawal question"
           : latest?.options[0] !== WITHDRAW_IT ? `${rulerOf(named).principal} has not answered "${WITHDRAW_IT}"`
-          : !causal.saw(e.id, sourceEventId(latest.id)) ? "the withdrawal was written before the person's answer" : null;
+          : !reads.saw(e.id, sourceEventId(latest.id)) ? "the withdrawal was written before the person's answer" : null;
         if (why) { refuseWithdrawal(why); continue; }
       } else {
         const why = withdrawalReviewRefusal(d, data.reason, data.review);
@@ -1324,7 +1319,7 @@ function foldOnce(events: LogEvent[], excludedPicks: ReadonlySet<string>): { val
     // The same withdrawal again changes nothing: a no-op, recorded (owner, Q5).
     const same = (!target && !!d.withdrawn) || !!named?.withdrawn;
     const earlier = sources.filter((a) => a.seq < pos);
-    const unseen = earlier.filter((a) => !known.includes(a.id) || !causal.saw(e.id, sourceEventId(a.id)));
+    const unseen = earlier.filter((a) => !known.includes(a.id) || !reads.saw(e.id, sourceEventId(a.id)));
     if (!same && unseen.length) { refuseWithdrawal(`an answer arrived after you read the question: ${unseen.map((a) => a.id).join(", ")}`); continue; }
     // A question with an answer is withdrawn ruling by ruling; the op says so before this does.
     if (!same && !target && earlier.length) { refuseWithdrawal(`${d.ref} has a submitted answer; name the exact answer to withdraw its ruling`); continue; }
@@ -1429,7 +1424,7 @@ function foldOnce(events: LogEvent[], excludedPicks: ReadonlySet<string>): { val
   }
 
   const base: SharedDecisions = { rounds: [...rounds.values()], decisions: [...decisions.values()], questions: [...questions.values()], comparisons: [] };
-  base.comparisons = foldComparisons(base, comparisonEvents, refuse);
+  base.comparisons = foldComparisons(base, comparisonEvents, refuse, reads);
   applyComparisonFrontier(base);
   // One entry per event: an event refused in two passes (a submission with two bad answers) is one refusal.
   const once = new Set<string>();
@@ -1784,10 +1779,12 @@ export function resolutionShownHash(shown: unknown): string {
   return "resolution:v1:" + createHash("sha256").update(canonical({ version: 1, shown })).digest("hex");
 }
 
-/** Replay accepts only requests whose source is exactly the posted question and response. */
-function foldComparisons(s: SharedDecisions, events: LogEvent[], refuse: (e: LogEvent, why: string) => void): FoldedComparison[] {
+/**
+ * Replay accepts only requests whose source is exactly the posted question and response.
+ * `reads` is over the whole log: a read set's path runs through events that are not comparisons.
+ */
+function foldComparisons(s: SharedDecisions, events: LogEvent[], refuse: (e: LogEvent, why: string) => void, reads: ReadSets): FoldedComparison[] {
   const byId = new Map<string, { request: ComparisonRequest; judgments: ReaderJudgment[]; resolutions: HumanResolution[] }>();
-  const causal = causality(events);
   for (const e of events.filter((x) => x.kind === "decision.comparison.requested")) {
     const data = e.data as any;
     if (e.kind === "decision.comparison.requested") {
@@ -1832,8 +1829,8 @@ function foldComparisons(s: SharedDecisions, events: LogEvent[], refuse: (e: Log
       const prior = r ? deriveComparison(r.request,
         { [r.request.left.answerId]: r.request.left.version,
           [r.request.right.answerId]: r.request.right.version },
-        r.judgments.filter((j) => causal.saw(e.id, j.id)),
-        r.resolutions.filter((prior) => causal.saw(e.id, prior.id))) : undefined;
+        r.judgments.filter((j) => reads.saw(e.id, j.id)),
+        r.resolutions.filter((prior) => reads.saw(e.id, prior.id))) : undefined;
       if (!r || !h || e.subject !== h.requestId || !proof
         || proof.purpose !== "human-comparison" || proof.contextHash !== r.request.contextHash
         || proof.shownHash !== h.human.shownHash || proof.receipt !== h.human.receipt

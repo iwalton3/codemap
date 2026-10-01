@@ -4,7 +4,7 @@
  * answer and blame it; the log is immutable, so the entry waits for a person's repair.
  *
  * The fixture is three scopes the oracle wrote (comparison, questionnaire + relayed revision,
- * confirm); each case damages one field of one event the way the structural fuzzer found it.
+ * confirm), each event given the `seq` a migration would give it; each case damages one field of one event the way the structural fuzzer found it.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -12,7 +12,8 @@ import { readFileSync } from "node:fs";
 import { decisionsDoor, foldDecisions } from "./shared-decisions.js";
 import { decisionEventShape } from "./log-shape.js";
 import { sortEvents, type LogEvent } from "./eventlog.js";
-import { foldHaltingOnDamage, isLogDamage, LogDamage } from "./log-damage.js";
+import { isLogDamage, LogDamage } from "./log-damage.js";
+import { shaped } from "./validation.js";
 
 const fixture = JSON.parse(readFileSync("src/testdata/decisions-shapes.json", "utf8")) as Record<string, LogEvent[]>;
 
@@ -96,6 +97,6 @@ test("a throw no shape anticipated names the latest entry whose absence lets the
     if (es.some((e) => e.data?.boom) && es.some((e) => e.data?.dep)) throw new Error("boom");
     return { value: es.length, refused: [] };
   };
-  assert.throws(() => foldHaltingOnDamage(events, report, () => null),
+  assert.throws(() => shaped(report, () => null)(events),
     (e: unknown) => isLogDamage(e) && e.entry.id === "bad" && /cannot read it: boom/.test(e.entry.why));
 });

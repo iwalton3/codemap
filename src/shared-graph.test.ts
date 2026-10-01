@@ -113,8 +113,8 @@ test("publications written apart: the one pushed later is served, whatever its i
 
 test("every clone picks the same winner, whatever order the events arrived in", () => {
   const same = "2026-08-24T01:00:00Z";
-  const a = pub({ id: "0000000001-aa", by: izzie, at: same, edges: [{ to: "n_a", type: "step_of" }] });
-  const b = pub({ id: "0000000002-bb", by: ben, writer: "w_b", at: same, edges: [{ to: "n_b", type: "step_of" }] });
+  const a = { ...pub({ id: "0000000001-aa", by: izzie, at: same, edges: [{ to: "n_a", type: "step_of" }] }), seq: 1 };
+  const b = { ...pub({ id: "0000000002-bb", by: ben, writer: "w_b", at: same, edges: [{ to: "n_b", type: "step_of" }] }), seq: 2 };
   assert.deepEqual(wiring([a, b])!.winner.edges.map((e) => e.to), ["n_b"]);
   assert.deepEqual(wiring([b, a])!.winner.edges.map((e) => e.to), ["n_b"], "and the arrival order changes nothing");
 });

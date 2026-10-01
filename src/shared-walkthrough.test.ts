@@ -104,10 +104,10 @@ test("a second write records what the writer had already seen", async () => {
 const ev = (id: string, actor: Actor, w: PrWalkthrough, after?: string): LogEvent =>
   testEvent({ id, kind: "walkthrough.published", subject: `pr-${w.pr}`, actor, ...(after ? { after: [after] } : {}), data: { walkthrough: w as never } });
 
-test("the fold is order-independent — every reader lands on the same state", () => {
-  const a = ev("0000000001-aa", izzie, wt(264, "h", "first"));
-  const b = ev("0000000002-bb", izzie, wt(264, "h", "second"), a.id);
-  const c = ev("0000000003-cc", dana, wt(264, "h", "dana"));
+test("the fold is order-independent — every reader lands on the same state (seq decides)", () => {
+  const a = { ...ev("0000000001-aa", izzie, wt(264, "h", "first")), seq: 1 };
+  const b = { ...ev("0000000002-bb", izzie, wt(264, "h", "second"), a.id), seq: 2 };
+  const c = { ...ev("0000000003-cc", dana, wt(264, "h", "dana")), seq: 3 };
   const shuffles = [[a, b, c], [c, b, a], [b, c, a], [c, a, b]];
   const results = shuffles.map((s) =>
     foldWalkthroughs(sortEvents(s)).map((x) => `${x.actor.principal}:${x.walkthrough.features[0]!.title}`).sort().join("|"));
@@ -115,11 +115,11 @@ test("the fold is order-independent — every reader lands on the same state", (
   assert.equal(results[0], "dana@x.com:dana|izzie@x.com:second");
 });
 
-test("a revision arriving before its predecessor still wins, because causality says so", () => {
-  // dana's clock is fast; izzie's revision has a lower id but names the first as
-  // `after`. A pure id sort would leave the ORIGINAL standing.
-  const first = ev("0000000005-zz", izzie, wt(264, "h", "first"));
-  const revision = ev("0000000002-aa", izzie, wt(264, "h", "revised"), first.id);
+test("a revision with the lower id still wins when it landed after the first: push order, not ids", () => {
+  // izzie's clock is slow, so her revision has the lower id. A pure id sort would leave
+  // the ORIGINAL standing.
+  const first = { ...ev("0000000005-zz", izzie, wt(264, "h", "first")), seq: 1 };
+  const revision = { ...ev("0000000002-aa", izzie, wt(264, "h", "revised"), first.id), seq: 2 };
   const folded = foldWalkthroughs(sortEvents([revision, first]));
   assert.equal(folded[0]!.walkthrough.features[0]!.title, "revised");
 });
