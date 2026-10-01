@@ -133,9 +133,17 @@ context, diff and the analyzer. It must degrade to `status: "blocked"`, never th
   more and syncs again. A staged act keeps `after` equal to what its author had actually
   read, and a precondition that depends on having seen something is a REFUSAL at replay
   ("this changed since you read it"), never a hold.
-- **The queue is append and drop only.** In the owner's words: *"Anything more complicated
-  than that is bringing back all the conflict resolution logic in miniature."* If an insert
-  is needed, the dependent ops are dropped and redone.
+- **The queue is append, drop, and re-assign a dead session's items to the session that adopts
+  them.** In the owner's words: *"Anything more complicated than that is bringing back all the
+  conflict resolution logic in miniature."* A drop removes an item anywhere in the queue. A
+  staged act names the tip it read and the write before it, so dropping a write costs the later
+  ones only what they read through it (review C19: "tip + previous write"); replay refuses one
+  only if it truly depended on the dropped write.
+- **A gone session's refusal** marks only the refused ops `conflict` (review C10). The next
+  session on this machine adopts the gone session's queue — the one change besides `state` the
+  queue allows ("Allow the owner change") — and must read, drop, and redo the refused items before
+  its next push, which refuses until it has; the valid ones land with it. The `staged` read
+  carries each refused write's reason and content (O10).
 
   > **Standing note (owner):** *"if this becomes really problematic, we deal with it
   > later"*, with the standing rule being **sync and push often** to avoid it.

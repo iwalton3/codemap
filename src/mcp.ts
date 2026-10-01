@@ -1537,7 +1537,7 @@ const tools: Tool[] = [
   },
   {
     name: "staged",
-    description: "What this session has staged and not yet synced, whether a transaction is open, and the local conflicts: writes refused when they were attempted after their session ended (a closed tab, an ended MCP session) — kept on this machine until dismissed.",
+    description: "What this session has staged and not yet synced, whether a transaction is open, and the local conflicts: writes refused when they were attempted after their session ended (a closed tab, an ended MCP session). Each row carries why it was last refused and the write itself (`data`), so you can redo it. Reading them makes them this session's: resolve each conflict (`drop_staged`, then write it again if it still applies) before the next sync, which refuses until you do; the closed session's valid writes come with them and land on that sync.",
     inputSchema: obj({}),
     handler: (_a, c) => shared.stagedWrites(c.universe.path),
   },

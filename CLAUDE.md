@@ -252,9 +252,13 @@ derived event has no honest actor and no honest position.
 **Writes: inline, or in a transaction.** A single act syncs inline (`write.ts`). `begin` opens a
 transaction for the caller's session (an MCP process, or a web tab via `x-codemap-tab`): its acts
 stage in `<sidecar>/.git/codemap-queue.db`, read back through the session's overlay, and one
-`sync` pushes all or none. **The queue is append and drop only** — never reordered or edited; a
-refused op is dropped and redone (owner: "anything more complicated … is bringing back all the
-conflict resolution logic in miniature"). A staged act's `after` is what its author READ, and a
+`sync` pushes all or none. **The queue is append, drop, and re-assign a dead session's items to the
+session that adopts them** — never reordered or edited; a refused op is dropped (from anywhere in
+the queue) and redone (owner: "anything more complicated … is bringing back all the conflict
+resolution logic in miniature"; the re-assignment is review C10's, "Allow the owner change"). A
+gone session's refused writes are the only conflicts; the next session here adopts its queue and
+resolves them before it pushes. A staged act's `after` is what its author READ — the tip it read
+AND the write before it (C19), so a drop costs only the dropped write's credit — and a
 precondition on having seen something is a refusal at replay, never a hold. In tests, "two
 writers apart" is a transaction, not two clones that merge.
 

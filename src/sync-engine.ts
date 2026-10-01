@@ -18,7 +18,7 @@ import {
   conflicts, drop, forgetSession, pending, sessionRow, sessionsWithPending, setTx, stage, type QueuedOp,
 } from "./sync-queue.js";
 import { currentSession, overlaySuppressed, sessionGone, withoutOverlay } from "./sync-session.js";
-import { syncLinear, type LinearOutcome } from "./sidecar.js";
+import { adoptGone, syncLinear, type LinearOutcome } from "./sidecar.js";
 import { arrived } from "./arrivals.js";
 import type { Actor } from "./schema.js";
 
@@ -82,7 +82,7 @@ export async function stageChecked(
     if ("existing" in admission) return admission.existing;
     const staged: StagedEvent = {
       sidecarProtocol: SIDECAR_PROTOCOL, eventSchema: EVENT_SCHEMA, id: mintId(), kind: admission.kind,
-      subject: admission.subject, actor, at: new Date().toISOString(), after: causalHeads(events),
+      subject: admission.subject, actor, at: new Date().toISOString(), after: await readAfter(logRoot, scope, events),
       ...(admission.data ? { data: admission.data } : {}),
     };
     const top = Math.max(await maxSeq(logRoot), ...events.map((e) => e.seq ?? 0));
@@ -92,6 +92,17 @@ export async function stageChecked(
     stage(logRoot, session, scope, staged);
     return e;
   });
+}
+
+/**
+ * What a staged act read: the remote tip AND the write before it (owner, C19: "tip + previous
+ * write"). Compressed to the previous write alone, a drop of that write left the act having
+ * read nothing, and every seen-rule refused it; named both ways, a drop costs only the dropped
+ * write's own credit, and replay refuses the act only if it truly depended on it.
+ */
+async function readAfter(logRoot: string, scope: string, withOverlay: LogEvent[]): Promise<string[]> {
+  const tip = await withoutOverlay(() => readScope(logRoot, scope));
+  return [...new Set([...causalHeads(tip), ...causalHeads(withOverlay)])];
 }
 
 type Item = { kind: string; subject: string; data?: Record<string, unknown> };
@@ -109,11 +120,13 @@ export async function stageBatch(logRoot: string, session: string, scope: string
     const events = await readScope(logRoot, scope);
     const writer = await writerFor(logRoot);
     let top = Math.max(await maxSeq(logRoot), ...events.map((e) => e.seq ?? 0));
-    // Each act after the first names the one before it: its author composed it knowing that one.
-    let after = causalHeads(events);
+    // Each act after the first names the one before it — its author composed it knowing that
+    // one — and the tip it read (C19).
+    const tipHeads = causalHeads(await withoutOverlay(() => readScope(logRoot, scope)));
+    let after = await readAfter(logRoot, scope, events);
     return items.map((it) => {
       const staged = stagedFrom(actor, it, after);
-      after = [staged.id];
+      after = [...new Set([...tipHeads, staged.id])];
       stage(logRoot, session, scope, staged);
       const e = atTip(events, writer, top++, staged);
       events.push(e);
@@ -129,9 +142,10 @@ export async function stageBatch(logRoot: string, session: string, scope: string
  */
 export async function syncBatch(logRoot: string, scope: string, actor: Actor, items: Item[]): Promise<LogEvent[]> {
   const batch = `${currentSession().session}#batch-${mintId()}`;
-  // Each act after the first names the one before it: its author composed it knowing that one.
-  let after = causalHeads(await readScope(logRoot, scope));
-  const staged = items.map((it) => { const s = stagedFrom(actor, it, after); after = [s.id]; return s; });
+  // Each act after the first names the one before it, and the tip it read (C19).
+  const tipHeads = causalHeads(await withoutOverlay(() => readScope(logRoot, scope)));
+  let after = await readAfter(logRoot, scope, await readScope(logRoot, scope));
+  const staged = items.map((it) => { const s = stagedFrom(actor, it, after); after = [...new Set([...tipHeads, s.id])]; return s; });
   for (const s of staged) stage(logRoot, batch, scope, s);
   const r = await syncLinear(logRoot, batch, { actor });
   if ("error" in r) {
@@ -186,8 +200,12 @@ export function staged(logRoot: string, s = currentSession()): QueuedOp[] {
   return pending(logRoot, s.session);
 }
 
-/** What the next open on this machine shows: writes refused after their session was gone. */
-export function localConflicts(logRoot: string): QueuedOp[] {
+/**
+ * What the next open on this machine shows: writes refused after their session was gone. The
+ * session that reads them adopts them, with the gone session's valid writes (C10).
+ */
+export function localConflicts(logRoot: string, s = currentSession()): QueuedOp[] {
+  adoptGone(logRoot, s.session);
   return conflicts(logRoot);
 }
 
@@ -202,6 +220,8 @@ export async function attemptGone(logRoot: string, now = Date.now()): Promise<{ 
   for (const session of sessionsWithPending(logRoot)) {
     const base = session.split("#")[0]!;
     if (!sessionGone(base, sessionRow(logRoot, base), now)) continue;
+    // A session holding a refusal waits for the next session here to adopt it (C10).
+    if (conflicts(logRoot, session).length) continue;
     const r = await syncLinear(logRoot, session, { conflictOnRefusal: true });
     out.push({ session, outcome: "error" in r ? (r.conflicts ? "conflict" : `left staged: ${r.error}`) : "landed" });
     if (!("error" in r) || r.conflicts) forgetSession(logRoot, base);

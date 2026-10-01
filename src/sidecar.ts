@@ -20,9 +20,12 @@ import {
   SHARD_EXT, LINEAR_SHARD, SIDECAR_PROTOCOL, EVENT_SCHEMA, principalKey, splitShard, damageRef, appendLinear, atTip, causalHeads,
   doorFor, identicalAct, isLegacyShard, isMigrationMarker, maxSeq, SIDECAR_ATTRIBUTES, SIDECAR_ATTRIBUTES_PATH, mintId, readScope, sortEvents, writeDoor, writerFor, type DoorFold, type LogEvent, type ShardDamage, type StagedEvent,
 } from "./eventlog.js";
-import { withoutOverlay } from "./sync-session.js";
+import { sessionGone, withoutOverlay } from "./sync-session.js";
 import { pushGate } from "./validation.js";
-import { allQueuedIds, drop, getMeta, markConflict, markInflight, markLanded, markStaged, markUnknown, pending, setMeta, setTx, stage } from "./sync-queue.js";
+import {
+  allQueuedIds, conflicts, drop, getMeta, markConflict, markInflight, markLanded, markStaged, markUnknown, noteRefusal, pending, reassign,
+  sessionRow, sessionsWithConflicts, setMeta, setTx, stage,
+} from "./sync-queue.js";
 import { recordLockout } from "./lockout.js";
 import type { Actor } from "./schema.js";
 
@@ -987,6 +990,17 @@ async function linearHeld(
 
     // Replay. Written to disk op by op, because a fold may read another scope (the standard
     // folds law beside evidence) and must see what this replay already put there.
+    // A live session adopts what a gone one could not land (review C10, owner: "The new session
+    // gets the failing queue and has to read, drop, and re-do (if applicable) the failing items
+    // only before the next push"); the sweep of a gone session does not.
+    if (!opts.conflictOnRefusal) adoptGone(root, session);
+    const held = conflicts(root, session);
+    if (held.length) {
+      forgetInline();
+      return { error: `${held.length} write(s) refused after their session closed wait for you here: read them, drop or redo `
+        + `each, then sync — ${held.map((o) => `${o.event.kind} ${o.event.id}: ${o.why}`).join("; ")}`,
+        conflicts: held.map((o) => ({ id: o.event.id, kind: o.event.kind, scope: o.scope, why: o.why ?? "refused" })), staged: stagedIds() };
+    }
     const ops = opts.inline ? [] : pending(root, session);
     if (ops.length || opts.inline) {
       const blocked = await pushGate(root);
@@ -1015,7 +1029,11 @@ async function linearHeld(
       const evs = await scopeEvents(op.scope);
       if (evs.some((e) => e.id === op.event.id)) { already.push(op.event.id); continue; }
       if (identicalAct(evs, op.event)) { noop.push(op.event.id); continue; }
-      const e = atTip(evs, writer, top, op.event);
+      // A write it read that was dropped since is no longer something it read (C19): it keeps the
+      // tip it read, and the door refuses it only if it truly depended on the dropped one.
+      const known = new Set(evs.map((x) => x.id));
+      const read = op.event.after.filter((id) => known.has(id));
+      const e = atTip(evs, writer, top, read.length === op.event.after.length ? op.event : { ...op.event, after: read });
       const why = await refusalOf(doorFor(root, op.scope), evs, e);
       if (why) { refusals.push({ id: e.id, kind: e.kind, scope: op.scope, why }); continue; }
       await append(op.scope, e);
@@ -1075,11 +1093,12 @@ async function linearHeld(
       await truncateBack(root, sizes);
       const ids = ops.map((o) => o.event.id);
       markStaged(root, ids);
-      if (opts.conflictOnRefusal) markConflict(root, refusals, ids);
+      // Only the refused become conflicts; the rest stay staged for whoever adopts them (C10).
+      if (opts.conflictOnRefusal) markConflict(root, refusals); else noteRefusal(root, refusals);
       return {
         error: `${refusals.length} staged write(s) were refused against the current log, so none was pushed: `
           + refusals.map((r) => `${r.kind} ${r.id}: ${r.why}`).join("; "),
-        conflicts: refusals, staged: opts.conflictOnRefusal ? [] : stagedIds(),
+        conflicts: refusals, staged: stagedIds(),
       };
     }
     const toLand = [...landedNow, ...already, ...noop];
@@ -1175,6 +1194,14 @@ async function settleFailedPush(
   return { error: `${rejected ? "the sidecar remote refused the push" : "the push to the sidecar remote failed"} (${why}). `
     + `Checked the remote: ${inlineLost ? "the act was NOT written" : `${absent.length} write(s) did not land and stay staged`}`
     + `${landed.length ? `; ${landed.length} did land` : ""}.`, staged: stagedIds(), ...(rejected ? { refused: true } : {}) };
+}
+
+/** Hand every gone session's conflicted queue to `session` (review C10). */
+export function adoptGone(root: string, session: string): void {
+  for (const s of sessionsWithConflicts(root)) {
+    const base = s.split("#")[0]!;
+    if (s !== session && sessionGone(base, sessionRow(root, base))) reassign(root, s, session);
+  }
 }
 
 /** Bring the tree to the remote tip without pushing anything. */

@@ -111,15 +111,15 @@ test("a batch's later acts read the earlier ones, synced inline or staged in a t
 
 // --- 2.2: the queue ---------------------------------------------------------------------
 
-test("the queue is append and drop only: nothing exported edits an op or moves it", async () => {
+test("the queue is append, drop, and re-assign a dead session's items: nothing exported edits an op or moves it", async () => {
   const root = mkdtempSync(join(tmpdir(), "codemap-queue-"));
   try {
     await ensureSidecar(root, { principal: "q@x.com" });
     // Every exported function, named. A new one that edits or reorders fails here first.
     assert.deepEqual(Object.keys(queue).sort(), [
       "allQueuedIds", "closeQueues", "conflicts", "drop", "forgetSession", "getMeta", "markConflict", "markInflight",
-      "markLanded", "markStaged", "markUnknown", "pending", "pruneLanded", "sessionRow", "sessionsWithPending", "setMeta", "setTx",
-      "stage", "touchSession",
+      "markLanded", "markStaged", "markUnknown", "noteRefusal", "pending", "pruneLanded", "reassign", "sessionRow",
+      "sessionsWithConflicts", "sessionsWithPending", "setMeta", "setTx", "stage", "touchSession",
     ]);
     const ev = (id: string) => ({ id, kind: "k", subject: "s", actor: { principal: "q@x.com" }, at: "t", after: [], sidecarProtocol: 2, eventSchema: 1 });
     for (const id of ["e1", "e2", "e3"]) queue.stage(root, "s1", "tst/q", ev(id));
@@ -133,6 +133,10 @@ test("the queue is append and drop only: nothing exported edits an op or moves i
     const before = queue.pending(root, "s1").map((o) => [o.pos, JSON.stringify(o.event)]);
     queue.markStaged(root, ["e1"]); queue.markInflight(root, ["e3"]); queue.markStaged(root, ["e3"]);
     assert.deepEqual(queue.pending(root, "s1").map((o) => [o.pos, JSON.stringify(o.event)]), before);
+    // Re-assignment moves the session and nothing else (owner: "Allow the owner change").
+    queue.markStaged(root, ["e1"]);
+    queue.reassign(root, "s1", "s3");
+    assert.deepEqual(queue.pending(root, "s3").map((o) => [o.pos, JSON.stringify(o.event)]), before);
   } finally { queue.closeQueues(); discard(root); }
 });
 
@@ -456,5 +460,57 @@ test("C8b: a shard an ignore rule would leave out is still committed and pushed"
     const r = await emitEventChecked(ana.sidecar, "tst/c8b", ana.actor, async () => ({ kind: "noted", subject: "n1" }));
     assert.ok(!("error" in r), JSON.stringify(r));
     assert.equal(git(s.origin, "show", "main:tst/c8b/events.ndjson").status, 0, "the event is on the remote");
+  } finally { s.dispose(); }
+});
+
+test("C10: a gone session's refused write is the only conflict; the next session adopts the rest and lands it once it resolves", async () => {
+  const s = await scenario(["ana@x.com", "ben@x.com"]);
+  try {
+    const ana = who(s, "ana@x.com"), ben = who(s, "ben@x.com");
+    await withSession(DEAD, "cli", async () => { begin(ana.sidecar); await claim(ana, "x"); await claim(ana, "y"); });
+    await claim(ben, "x");
+    assert.deepEqual((await attemptGone(ana.sidecar)).map((o) => o.outcome), ["conflict"]);
+    assert.deepEqual(localConflicts(ana.sidecar, { session: "cli:1:next", kind: "cli" }).map((o) => [o.event.subject, o.why]),
+      [["x", "x is already claimed"]], "only the refused one");
+    // The next session here has adopted the closed one's queue: it must resolve before it pushes.
+    const next = { session: "cli:1:next", kind: "cli" as const };
+    const blocked = await withSession(next.session, next.kind, () => syncSession(ana.sidecar, ana.actor, next)) as { error?: string };
+    assert.match(blocked.error ?? "", /wait for you here/);
+    assert.ok(dropOp(ana.sidecar, localConflicts(ana.sidecar, next)[0]!.event.id, next).ok);
+    const r = await withSession(next.session, next.kind, () => syncSession(ana.sidecar, ana.actor, next));
+    assert.ok(!("error" in r), JSON.stringify(r));
+    await settle(s);
+    assert.deepEqual((await readScope(ben.sidecar, CLAIMS)).map((e) => `${e.subject} ${e.actor.principal}`), ["x ben@x.com", "y ana@x.com"],
+      "the valid write landed; the refused one did not");
+  } finally { s.dispose(); }
+});
+
+test("C19: dropping a staged write leaves the next one the tip it read", async () => {
+  const s = await scenario(["ana@x.com"]);
+  try {
+    const ana = who(s, "ana@x.com");
+    const t = await claim(ana, "seen") as LogEvent;
+    begin(ana.sidecar);
+    const a = await claim(ana, "a") as LogEvent;
+    const b = await claim(ana, "b") as LogEvent;
+    assert.ok(dropOp(ana.sidecar, a.id).ok);
+    assert.ok(!("error" in await syncSession(ana.sidecar, ana.actor)));
+    const all = await readScope(ana.sidecar, CLAIMS);
+    assert.ok(readSets(all).saw(b.id, t.id), "B still read what was on the tip when it was written");
+    assert.ok(!all.find((e) => e.id === b.id)!.after.includes(a.id), "and names nothing that is not in the log");
+  } finally { s.dispose(); }
+});
+
+test("O10: the refused writes read back with why and what they said, so they can be redone", async () => {
+  const s = await scenario(["ana@x.com", "ben@x.com"]);
+  try {
+    const ana = who(s, "ana@x.com"), ben = who(s, "ben@x.com");
+    begin(ana.sidecar);
+    await emitEventChecked(ana.sidecar, CLAIMS, ana.actor, async () => ({ kind: "claim", subject: "x", data: { note: "mine" } }));
+    await claim(ben, "x");
+    assert.ok("error" in await syncSession(ana.sidecar, ana.actor));
+    const [op] = staged(ana.sidecar);
+    assert.equal(op!.why, "x is already claimed");
+    assert.deepEqual(op!.event.data, { note: "mine" });
   } finally { s.dispose(); }
 });

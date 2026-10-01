@@ -155,9 +155,28 @@ export function sessionsWithPending(logRoot: string): string[] {
     .all() as { session: string }[]).map((r) => r.session);
 }
 
-/** Ops refused after their session was gone, on this machine. */
-export function conflicts(logRoot: string): QueuedOp[] {
-  return (open(logRoot).prepare("SELECT * FROM queue WHERE state = 'conflict' ORDER BY pos").all() as Row[]).map(toOp);
+/** Ops refused after their session was gone, on this machine — one session's, or all. */
+export function conflicts(logRoot: string, session?: string): QueuedOp[] {
+  const d = open(logRoot);
+  return (session === undefined
+    ? d.prepare("SELECT * FROM queue WHERE state = 'conflict' ORDER BY pos").all()
+    : d.prepare("SELECT * FROM queue WHERE state = 'conflict' AND session = ? ORDER BY pos").all(session) as Row[]).map((r) => toOp(r as Row));
+}
+
+/** Every session holding a conflict, on this machine. */
+export function sessionsWithConflicts(logRoot: string): string[] {
+  return (open(logRoot).prepare("SELECT DISTINCT session FROM queue WHERE state = 'conflict' ORDER BY session")
+    .all() as { session: string }[]).map((r) => r.session);
+}
+
+/**
+ * Hand a gone session's unfinished items to the session that adopts them (review C10; owner:
+ * "Allow the owner change"). The one change besides `state` the queue allows: content and
+ * position never move.
+ */
+export function reassign(logRoot: string, from: string, to: string): number {
+  return Number(open(logRoot).prepare("UPDATE queue SET session = ? WHERE session = ? AND state IN ('staged','unknown','conflict')")
+    .run(to, from).changes);
 }
 
 /**
@@ -195,14 +214,18 @@ export const markInflight = (l: string, ids: string[]): void => transition(l, id
 export const markLanded = (l: string, ids: string[]): void => transition(l, ids, ["staged", "inflight", "unknown"], "landed");
 export const markStaged = (l: string, ids: string[]): void => transition(l, ids, ["inflight", "unknown"], "staged");
 export const markUnknown = (l: string, ids: string[]): void => transition(l, ids, ["inflight"], "unknown");
-export function markConflict(logRoot: string, refusals: { id: string; why: string }[], all: string[]): void {
+/** Only the refused ops become conflicts (review C10): the valid ones stay staged for whoever adopts them. */
+export function markConflict(logRoot: string, refusals: { id: string; why: string }[]): void {
   const d = open(logRoot);
   const st = d.prepare("UPDATE queue SET state = 'conflict', why = ? WHERE event_id = ? AND state IN ('staged','inflight','unknown')");
-  const why = new Map(refusals.map((r) => [r.id, r.why]));
-  const first = refusals[0];
-  inTx(d, () => {
-    for (const id of all) st.run(why.get(id) ?? `not attempted: its transaction was refused (${first?.id}: ${first?.why})`, id);
-  });
+  inTx(d, () => { for (const r of refusals) st.run(r.why, r.id); });
+}
+
+/** Why a staged op was last refused, kept with it so the session can read what to redo (O10). */
+export function noteRefusal(logRoot: string, refusals: { id: string; why: string }[]): void {
+  const d = open(logRoot);
+  const st = d.prepare("UPDATE queue SET why = ? WHERE event_id = ? AND state = 'staged'");
+  inTx(d, () => { for (const r of refusals) st.run(r.why, r.id); });
 }
 
 /** Landed rows older than this are pruned; they exist only so a crash can be reasoned about. */

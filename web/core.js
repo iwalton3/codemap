@@ -599,7 +599,7 @@ export async function syncNow() {
   return r;
 }
 
-/** @param {{ id: string, kind: string, why: string }[]} conflicts */
+/** @param {{ id: string, kind: string, why: string, subject?: string }[]} conflicts */
 function showConflicts(conflicts) {
   document.getElementById('conflicts')?.remove();
   const el = document.createElement('div');
@@ -614,11 +614,13 @@ function showConflicts(conflicts) {
   const list = document.createElement('ul');
   for (const c of conflicts) {
     const li = document.createElement('li');
-    li.textContent = `${c.kind} — ${c.why}`;
+    li.textContent = `${c.kind}${c.subject ? ` ${c.subject}` : ''} — ${c.why}`;
     list.append(li);
   }
   const p = document.createElement('p');
-  p.textContent = 'Nothing you wrote has been sent. Drop the refused changes and send the rest, or drop everything unsaved.';
+  // The rest are this tab's now, a closed tab's valid writes included (review C10): only the
+  // refused need redoing, and dropping one costs the others nothing they read (C19).
+  p.textContent = 'Nothing listed has been sent. Drop the refused changes — redo any that still apply — and send the rest, or drop everything unsaved.';
   const drop = document.createElement('button');
   drop.textContent = 'Drop the refused and send the rest';
   drop.onclick = async () => {

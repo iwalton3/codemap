@@ -213,15 +213,22 @@ export function openTabTransaction(roots: string[], session: string): void {
   for (const s of sidecarsOf(roots)) { try { setTx(s, session, "web", true); } catch { /* no queue yet */ } }
 }
 
-/** What this session has staged, and the writes refused after their session was gone. */
+/**
+ * What this session has staged, and the writes refused after their session was gone — each with
+ * why it was last refused and what it says, so it can be redone (owner, O10: "Need a way to read
+ * back the rejected queue to see what specific actions were rejected so they can be re-done").
+ * Reading them adopts a gone session's queue (C10), so conflicts come first.
+ */
 export async function stagedWrites(root: string) {
   const b = bind(root, {}, { reading: true });
   if ("error" in b) return b;
-  const row = (o: QueuedOp) => ({ id: o.event.id, kind: o.event.kind, subject: o.event.subject, scope: o.scope, at: o.event.at, ...(o.why ? { why: o.why } : {}) });
+  const row = (o: QueuedOp) => ({ id: o.event.id, kind: o.event.kind, subject: o.event.subject, scope: o.scope, at: o.event.at,
+    state: o.state, ...(o.why ? { why: o.why } : {}), ...(o.event.data ? { data: o.event.data } : {}) });
+  const conflicted = localConflicts(b.cfg.path).map(row);
   return {
     staged: staged(b.cfg.path).map(row),
     transaction: !!sessionRow(b.cfg.path, currentSession().session)?.tx,
-    conflicts: localConflicts(b.cfg.path).map(row),
+    conflicts: conflicted,
     lastPull: lastPulls.get(b.cfg.path) ?? null,
   };
 }
