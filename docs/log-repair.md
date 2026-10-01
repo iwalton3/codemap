@@ -104,9 +104,9 @@ of what wrote it. Then go to step 4.
 
 ### 4. Every clone releases on its next sync
 
-`codemap sync`, on every clone, the repairer's included. A locked sync still fetches. It checks
-the fetched tip, moves to it if the tip is clean, and folds again, and **the lock clears once
-nothing is damaged**. No re-clone, and nothing to copy between clones: staged writes live in the
+`codemap sync`, on every clone, the repairer's included. A locked clone still pulls: it moves to
+the tip — damaged or repaired — and folds again, and **the lock clears once nothing is
+damaged**. Pushes stay blocked until then. No re-clone, and nothing to copy between clones: staged writes live in the
 queue, not the tree.
 
 The `log.repaired` entry and the commit are the record that the log was repaired, and by whom.

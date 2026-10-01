@@ -37,7 +37,7 @@ import { originSlug, headCommit, currentBranch, isAncestor, defaultBranch, revPa
 import { prIsMerged, prMergedAt, mergedAfter, landingOf, knownPrHead } from "./pr.js";
 import { fetchReviewThreads, type GhRunner } from "./pr-push.js";
 import { pullLinear } from "./sidecar.js";
-import { ensureSidecar, sync as sidecarSync, receive as sidecarReceive, readManifests, checkPeers, currentManifest, sidecarLineage, isSameSidecar, inboundDamage } from "./sidecar.js";
+import { ensureSidecar, sync as sidecarSync, receive as sidecarReceive, readManifests, checkPeers, currentManifest, sidecarLineage, isSameSidecar } from "./sidecar.js";
 import { lockoutMessage, lockoutOf } from "./lockout.js";
 import { recheckLockout, scanForDamage } from "./damage-scan.js";
 import {
@@ -368,27 +368,17 @@ function rememberSidecar(root: string, cfg: { path: string }, joined = false): v
 }
 
 /**
- * The transport's half of the lockout (plan 1.2). A locked clone still fetches and re-checks —
- * here, and on the fetched tip without merging it — and the lock clears once neither holds any
- * damage; that is how a repaired team log releases every clone without a re-clone
- * (docs/log-repair.md). Anything still damaged refuses, naming it.
+ * The transport's half of the lockout (plan 1.2). A locked clone still pulls — the tip, damaged or
+ * repaired (owner, RULE-locked: "If another instance pushes broken state we should still pull
+ * it") — and re-checks; the lock clears once nothing here is damaged. That is how a repaired team
+ * log releases every clone without a re-clone (docs/log-repair.md). Pushes stay blocked meanwhile
+ * (`pushGate`). The pull still refuses to destroy anything of this clone's own.
  */
 async function releaseLockout(logRoot: string): Promise<{ error: string } | null> {
   if (!lockoutOf(logRoot)) return null;
-  const inbound = await inboundDamage(logRoot);
-  if (inbound && "error" in inbound) return inbound;
-  // A fetched tip with no unreadable bytes may be the repair: move to it, so damage that
-  // arrived in this tree can leave the same way. It cannot make a locked clone worse, and the
-  // pull still refuses to destroy anything of this clone's own.
-  if (!inbound) {
-    const moved = await pullLinear(logRoot);
-    if ("error" in moved) return moved;
-  }
-  const still = await recheckLockout(logRoot, inbound ? {
-    id: inbound.id ?? "(unreadable bytes)", kind: inbound.kind ?? "(unreadable bytes)",
-    why: inbound.why ?? "the line is not JSON, so no build can read the event it held",
-    shard: inbound.shard, line: inbound.line,
-  } : null);
+  const moved = await pullLinear(logRoot);
+  if ("error" in moved) return moved;
+  const still = await recheckLockout(logRoot, null);
   return still ? { error: lockoutMessage(still) } : null;
 }
 

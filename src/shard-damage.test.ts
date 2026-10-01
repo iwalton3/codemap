@@ -25,6 +25,8 @@ import { createFinding, findingScope, readFindings } from "./shared-findings.js"
 import { splitShard, scopeStatus, readScopeChecked, readShard, SHARD_EXT } from "./eventlog.js";
 import { emitEvent } from "./write.js";
 import { discard } from "./test-tmp.js";
+import { lockoutOf } from "./lockout.js";
+import { recheckLockout } from "./damage-scan.js";
 
 const izzie: Actor = { principal: "izzie@x.com" };
 const dana: Actor = { principal: "dana@x.com" };
@@ -220,7 +222,7 @@ test("a sync refuses to commit a shard that does not parse, and nothing leaves",
   } finally { discard(origin); discard(root); }
 });
 
-test("pull refuses a damaged inbound shard and leaves the sidecar untouched", async () => {
+test("a pull takes a damaged tip and locks; pushes are blocked until the repair arrives (RULE-locked)", async () => {
   const origin = tmp("origin"), a = tmp("pull-a"), b = tmp("pull-b");
   git(origin, "init", "-q", "--bare", "-b", "main");
   try {
@@ -232,7 +234,6 @@ test("pull refuses a damaged inbound shard and leaves the sidecar untouched", as
     assert.ok(!("error" in await sync(a, izzie)));
     assert.ok(!("error" in await sync(b, dana)));
     assert.equal((await readFindings(b, 5)).size, 1);
-    const aHead = git(a, "rev-parse", "HEAD").stdout.trim();
 
     // Damage introduced with raw git, which is the only way it can reach the remote
     // now — the push gate is what a codemap client would hit.
@@ -242,25 +243,24 @@ test("pull refuses a damaged inbound shard and leaves the sidecar untouched", as
     git(b, "add", "-A"); git(b, "commit", "-q", "-m", "raw");
     assert.equal(git(b, "push", "-q", "origin", "main").status, 0);
 
+    // Owner: "If another instance pushes broken state we should still pull it." It moves, and locks.
     const r = await pull(a, izzie);
-    assert.ok("error" in r, "a genuinely broken sidecar must stop, not be made worse");
-    assert.match(r.error, /not JSON/);
-    assert.match(r.error, new RegExp(`${shard}:`), "and name the line, so it can be repaired where it was written");
-    assert.match(r.error, /sidecar is untouched/);
-    assert.equal(git(a, "rev-parse", "HEAD").stdout.trim(), aHead, "the tree did not move");
-    assert.equal(git(a, "status", "--porcelain").stdout.trim(), "", "and nothing was left half-done");
+    assert.ok(!("error" in r), JSON.stringify(r));
+    assert.equal(git(a, "rev-parse", "HEAD").stdout.trim(), git(origin, "rev-parse", "main").stdout.trim(), "the tree took the tip");
+    const held = lockoutOf(a);
+    assert.ok(held, "and the application flags itself as broken");
+    assert.equal(held!.entry.shard, shard, "naming the line, so it can be repaired where it was written");
+    // "Pushes should be blocked": a write here does not reach the team.
+    const before = git(origin, "rev-parse", "main").stdout.trim();
+    await assert.rejects(createFinding(a, 5, izzie, { ...NEW, comment: "while locked" }), /locked/);
+    assert.equal(git(origin, "rev-parse", "main").stdout.trim(), before, "nothing was pushed");
 
-    // The collateral is real and accepted: dana's GOOD finding was in the same push and
-    // does not arrive either. Said out loud because it is the cost of the trade, not an
-    // oversight — a shard is append-only, so the repair belongs where it was written.
-    assert.equal((await readFindings(a, 5)).size, 1, "izzie's own finding, and nothing new");
-
-    // Mutation check: once the damage is gone the same pull succeeds and brings it.
+    // The repair arrives by the same pull, and the re-check releases the lock.
     writeFileSync(join(b, shard), readFileSync(join(b, shard), "utf8").replace(/\x00 not json\n/, ""));
     git(b, "add", "-A"); git(b, "commit", "-q", "-m", "repair"); git(b, "push", "-q", "origin", "main");
-    const fixed = await pull(a, izzie);
-    assert.ok(!("error" in fixed), `the repaired pull must succeed: ${(fixed as any).error}`);
-    assert.equal((await readFindings(a, 5)).size, 2, "and dana's finding arrives");
+    assert.ok(!("error" in await pull(a, izzie)));
+    assert.equal(await recheckLockout(a, null), null);
+    assert.equal((await readFindings(a, 5)).size, 2, "and dana's finding is here");
   } finally { [origin, a, b].forEach(discard); }
 });
 

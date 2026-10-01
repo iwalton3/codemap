@@ -138,7 +138,7 @@ test("the queue is append and drop only: nothing exported edits an op or moves i
 
 // --- 2.3: the kill conditions, as sequential syncs --------------------------------------
 
-test("K1: garbage on the remote — the sync refuses, locks, and no read serves it as clean", async () => {
+test("K1: garbage on the remote — the sync takes it, locks, and no write lands on top of it", async () => {
   const s = await scenario(["ana@x.com", "ben@x.com"]);
   try {
     const ana = who(s, "ana@x.com"), ben = who(s, "ben@x.com");
@@ -149,7 +149,8 @@ test("K1: garbage on the remote — the sync refuses, locks, and no read serves 
     const r = await sync(ben.sidecar, ben.actor);
     assert.ok("error" in r && /damaged/.test(r.error), JSON.stringify(r));
     assert.ok(lockoutOf(ben.sidecar), "damage this machine can see locks it");
-    assert.equal((await readScopeChecked(ben.sidecar, CLAIMS)).status, "complete", "ben's tree never took the bytes");
+    // Owner, RULE-locked: "If another instance pushes broken state we should still pull it".
+    assert.equal((await readScopeChecked(ben.sidecar, CLAIMS)).status, "blocked", "ben's tree took the bytes, and says so");
     const inline = await claim(ben, "y");
     assert.ok("error" in inline, "a write refuses too, rather than landing on top of it");
   } finally { s.dispose(); }
@@ -378,5 +379,19 @@ test("a staged act whose identical twin landed first replays as a no-op: one eve
     assert.equal(r.error, undefined, String(r.error));
     assert.deepEqual(r.noop, [staged1.id]);
     assert.equal((await readScope(ana.sidecar, "tst/u/dup")).length, 1, "one event on the log");
+  } finally { s.dispose(); }
+});
+
+test("C9: a locked clone's sweep of a gone session pushes nothing; the writes stay for the repair", async () => {
+  const s = await scenario(["ana@x.com"]);
+  try {
+    const ana = who(s, "ana@x.com");
+    await withSession(DEAD, "cli", async () => { begin(ana.sidecar); await claim(ana, "while-locked"); });
+    const { recordLockout } = await import("./lockout.js");
+    recordLockout(ana.sidecar, { id: "e_bad", kind: "decision.answered", why: "the fold refuses it", scope: "decisions/u", shard: "decisions/u/events.ndjson", line: 1 });
+    const before = git(s.origin, "rev-parse", "main").stdout.trim();
+    const out = await attemptGone(ana.sidecar);
+    assert.equal(git(s.origin, "rev-parse", "main").stdout.trim(), before, `nothing reached the remote: ${JSON.stringify(out)} ${git(s.origin, "log", "--stat", "-1", "main").stdout}`);
+    assert.equal(queue.pending(ana.sidecar, DEAD).length + localConflicts(ana.sidecar).length, 1, "the write is kept");
   } finally { s.dispose(); }
 });

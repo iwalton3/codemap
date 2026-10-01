@@ -189,9 +189,13 @@ Every scope family's fold reports what it does not apply, classed (`validation.t
 |---|---|---|
 | bytes that are not JSON | **damage** | the application locks (`docs/log-repair.md`) |
 | an event with a `seq` that its fold refuses (a precondition, or a reference into the shared log) | **damage** | the application locks |
-| a shape this build does not write, or from a newer protocol | **newer** | every push blocks until an upgrade refolds it; reads carry on without it |
-| an event naming one this build skipped as newer | **newer** | the same |
-| a known dev-era shape | **skipped** | nothing (owner, Q7) |
+| a kind outside its family's vocabulary, an envelope field this build does not read, a newer protocol or schema, or a shape this build does not write | **newer** | never folded; every push blocks until an upgrade; reads carry on without it (`classify`) |
+| an event that names or read one this build holds out as newer | **newer** | the same |
+| a validator failure while a teammate's manifest records a higher `materializerVersion` | **newer** | the same, until this build reaches that version |
+| a known dev-era shape, or `log.repaired` | **skipped** | nothing (owner, Q7) |
+
+Each event is judged against the log BEFORE it (owner, C16): a refusal the prefix would not make
+is a fold defect, never a lock on a valid history.
 
 At replay every class refuses. A reference to a LOCAL item (an anchor, a path, a commit) is
 never a foreign key: it may be a stale checkout that becomes valid later.
@@ -208,13 +212,16 @@ would reset away.
 `readShard` skips an unparseable line by design, because a process killed mid-append leaves a
 partial last line. That rule has an upper bound: a line that does not parse, anywhere but a
 torn tail, is a **destroyed event, not a dropped one**. Before the bound existed, a wholly
-garbage shard read as `complete` and empty. Now three ends refuse:
+garbage shard read as `complete` and empty. Now:
 
 - **the reader BLOCKS** (`corrupt-shard`, ahead of every other diagnostic);
-- **the commit REFUSES** (`commitLocal`);
-- **the pull REFUSES** before moving to a damaged tip.
+- **the commit REFUSES** this clone's own damage (`commitLocal`);
+- **every push blocks** while the clone is locked (`pushGate`, which every push passes);
+- **the pull TAKES a damaged tip and locks** (owner, RULE-locked: "Pushes should be blocked and
+  the application should flag itself as broken. If another instance pushes broken state we should
+  still pull it"). The repair arrives by the same pull, and the re-check releases the lock.
 
-A genuinely broken sidecar stops and says so rather than being made worse. This is not a
+A genuinely broken sidecar stops and says so rather than being built on. This is not a
 defence against a hostile shard, which is not a threat this design spends anything on.
 
 An append **seals a torn tail in rather than truncating it**. Disk corruption that truncates an

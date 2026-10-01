@@ -957,19 +957,20 @@ async function linearHeld(
       const incompat = checkPeers(remoteManifests(root, remoteSha), mine);
       if (incompat?.fatal) { forgetInline(); return { error: incompat.message }; }
       warning = incompat?.message ?? warning;
-      if (head !== remoteSha) {
-        const damaged = damagedInboundShards(root, head, remoteSha);
-        if (damaged.length) {
-          forgetInline();
-          lockOn(root, damaged);
-          return { error: `refusing to take the remote tip: ${damaged.length} line(s) in it are damaged — bytes that are not `
-            + `JSON. The sidecar is untouched.\n${damageDetail(damaged)}\n`
-            + `The store is locked until the team's log is repaired: see docs/log-repair.md.` };
-        }
-      }
+      // A damaged tip is still taken (owner, RULE-locked: "If another instance pushes broken state
+      // we should still pull it") and then locks: nothing is pushed on top of it.
+      const damaged = head !== remoteSha ? damagedInboundShards(root, head, remoteSha) : [];
       if (head && !g(root, ["merge-base", head, remoteSha]).ok) joined = true;
       const moved = resetTo(root, remoteSha);
       if (moved) { forgetInline(); return moved; }
+      if (damaged.length) {
+        forgetInline();
+        lockOn(root, damaged);
+        await ensureSidecar(root, opts.actor ?? opts.inline?.actor);
+        return { error: `took the remote tip, and ${damaged.length} line(s) in it are damaged — bytes that are not JSON.\n`
+          + `${damageDetail(damaged)}\nThe store is locked and pushes are blocked until the team's log is repaired: see `
+          + `docs/log-repair.md. ${opts.inline ? "The act was NOT written." : "Staged writes stay staged."}`, staged: stagedIds() };
+      }
       // The reset takes tracked files to the tip; our own manifest goes back on top of it.
       const again = await ensureSidecar(root, opts.actor ?? opts.inline?.actor);
       if ("error" in again) { forgetInline(); return again; }
@@ -1093,6 +1094,11 @@ async function linearHeld(
     // sync had anything of its own; conflating them trades a lie for a false alarm.
     if (head && head === remoteSha) { markLanded(root, toLand); return result(true, attempt); }
 
+    // Every push, not only one carrying staged ops: a commit of anything else goes through it too.
+    if (!ops.length && !opts.inline) {
+      const blocked = await pushGate(root);
+      if (blocked) return { error: blocked, staged: stagedIds() };
+    }
     const t0 = Date.now();
     const p = g(root, ["push", "--quiet", "origin", `HEAD:${branch}`]);
     const rate = recordPush(root, Date.now() - t0);
@@ -1153,18 +1159,14 @@ export async function pullLinear(root: string, actor?: Actor): Promise<PullResul
     const mine = currentManifest(actor?.principal ?? "");
     const incompat = checkPeers(remoteManifests(root, remoteSha), mine);
     if (incompat?.fatal) return { error: incompat.message };
+    // Taken even when damaged, then locked (owner, RULE-locked): a pull always works.
     const damaged = damagedInboundShards(root, head, remoteSha);
-    if (damaged.length) {
-      lockOn(root, damaged);
-      return { error: `refusing to take the remote tip: ${damaged.length} line(s) in it are damaged — bytes that are not `
-        + `JSON. The sidecar is untouched.\n${damageDetail(damaged)}\n`
-        + `The store is locked until the team's log is repaired: see docs/log-repair.md.` };
-    }
     const before = await countEvents(root);
     const joined = !!head && !g(root, ["merge-base", head, remoteSha]).ok;
     const moved = resetTo(root, remoteSha);
     if (moved) return moved;
     if (actor) await ensureSidecar(root, actor);
+    if (damaged.length) lockOn(root, damaged);
     return { gained: (await countEvents(root)) - before, ...(incompat ? { warning: incompat.message } : {}), ...(joined ? { joined } : {}) };
   });
 }

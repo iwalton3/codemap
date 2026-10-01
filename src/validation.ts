@@ -22,6 +22,7 @@
  */
 import { AsyncLocalStorage } from "node:async_hooks";
 import { isLogDamage, LogDamage, type DamagedEntry } from "./log-damage.js";
+import { lockoutMessage, lockoutOf } from "./lockout.js";
 import { ENVELOPE_FIELDS, EVENT_SCHEMA, readSets, SIDECAR_PROTOCOL, SKIPPED_KINDS, type LogEvent, type Vocabulary } from "./eventlog.js";
 
 export type RefusalClass = "shape" | "older" | "newer" | "state" | "reference";
@@ -198,7 +199,18 @@ export const reportFor = (scope: string): Report<unknown> | undefined => reports
  */
 let gate: ((logRoot: string) => Promise<string | null>) | null = null;
 export function registerPushGate(g: (logRoot: string) => Promise<string | null>): void { gate = g; }
-export const pushGate = (logRoot: string): Promise<string | null> => gate ? gate(logRoot) : Promise.resolve(null);
+
+/**
+ * The one gate every push passes — the background sync, a gone session's sweep, an inline write.
+ * A locked clone first (owner, RULE-locked: "Pushes should be blocked and the application should
+ * flag itself as broken"), checked HERE, not registered: a process that never imported the damage
+ * scan had no gate at all. Then anything newer than this build.
+ */
+export async function pushGate(logRoot: string): Promise<string | null> {
+  const held = lockoutOf(logRoot);
+  if (held) return `${lockoutMessage(held)} Pushes are blocked until it is repaired; pulls carry on.`;
+  return gate ? gate(logRoot) : null;
+}
 
 /**
  * A revision's compare-and-swap. `was` is each field it changes as its author read it (`null`:

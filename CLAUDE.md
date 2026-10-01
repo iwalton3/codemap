@@ -277,15 +277,16 @@ refusal that depends on a newer event (names it, or read it via `after`) is newe
 dev-era shape, and `log.repaired`, are skipped. The door refuses to mint a kind outside the
 vocabulary, which is what keeps the vocabulary complete. At replay every class refuses. Damage sets
 `<sidecar>/.git/codemap-lockout.json`; every read and op answers one diagnostic (MCP error, HTTP
-423, CLI exit 1), and a locked sync only fetches, moves to a clean tip and re-checks. **A repair is
+423, CLI exit 1); a locked clone pushes nothing (`pushGate`) and still pulls — a damaged tip
+included, which then locks — and re-checks. **A repair is
 one commit pushed with git** (`docs/log-repair.md`), never a history rewrite — and `codemap sync`
 deliberately will not carry it, because **a sync never silently discards local work**: unqueued
 local events, a hand-edited shard and local damage each refuse rather than being reset away.
 `codemap sidecar check <path>` is the read-only pre-push check.
 
 **A shard that does not PARSE is a destroyed event, not a dropped one.** `readShard` skips a torn
-tail by design, but anywhere else an unparseable line blocks the reader (`corrupt-shard`), and the
-commit and the pull refuse. An append SEALS a torn tail in rather than truncating — truncation was
+tail by design, but anywhere else an unparseable line blocks the reader (`corrupt-shard`), the
+commit refuses this clone's own, and a pull takes the team's and locks (owner, RULE-locked). An append SEALS a torn tail in rather than truncating — truncation was
 tried and reverted, because disk corruption that eats a served event leaves identical bytes.
 
 **A sidecar from before the linear log is refused**, read and transport, until it is migrated

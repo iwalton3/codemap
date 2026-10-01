@@ -213,13 +213,12 @@ test("hostile history: each shape is refused in its own scope, and nowhere else"
       assert.equal((await readScope(ana.sidecar, scope)).length, before);
     });
 
-    // 4c — and it STOPS rather than spreading. This is the half a per-scope verdict
-    //      cannot deliver: a blocked scope is a diagnosis on the clone that already has
-    //      the bytes, and the point of the transport gate is that one more clone never
-    //      gets them.
+    // 4c — and it STOPS: nothing is built on top of it. A pull still takes it (owner,
+    //      RULE-locked: "If another instance pushes broken state we should still pull it"), and
+    //      every clone that has it flags itself broken and pushes nothing until the repair.
     // `raw`, not `step`: both clones are LOCKED at the end of it, and every read the invariants
     // make refuses — which is the lockout working, not an invariant failing.
-    await raw("a damaged sidecar stops the pull instead of being merged into one more clone", async () => {
+    await raw("a damaged sidecar is pulled, and locks every clone that has it", async () => {
       // Ana's clone holds the bytes, so it is LOCKED (plan 1.2: damage anywhere this machine
       // can see), and a locked sync publishes nothing. Only plain git gets them out — a
       // person, or a build with no such gate — which is what the pull gate is for.
@@ -228,14 +227,10 @@ test("hostile history: each shape is refused in its own scope, and nowhere else"
       assert.equal(spawnSync("git", ["push", "-q", "origin", "HEAD:main"], { cwd: ana.sidecar }).status, 0);
 
       const blocked = await syncOne(ben) as { error?: string };
-      assert.match(blocked.error ?? "", /refusing to take the remote tip/, "ben's pull refuses the damaged bytes");
+      assert.match(blocked.error ?? "", /took the remote tip/, "ben's sync takes the damaged bytes");
       assert.match(blocked.error ?? "", /events\.ndjson:/, "and names the line, so it can be repaired where it was written");
-
-      // The promise the refusal makes, and the reason it is worth the collateral: ben's
-      // clone never took the bytes, so the scope is healthy on his machine and his own
-      // work is untouched.
-      assert.equal((await radius(ben))[await scopeFor(ben, "pr-23")], "complete");
-      // And the pull it refused locks ben too: damage this machine can see (owner, batch 8).
+      assert.equal((await radius(ben))[await scopeFor(ben, "pr-23")], "blocked:corrupt-shard", "his tree has them, and says so");
+      // And ben is locked too: damage this machine can see (owner, batch 8).
       await assert.rejects(sharedFindings(ben.repo, 23), LockedOut);
     });
 
