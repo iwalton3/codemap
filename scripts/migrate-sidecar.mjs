@@ -95,9 +95,7 @@ let kept = global.filter((e) => {
 });
 
 // --- 4. validate with this build, until nothing more drops ---------------------------------------
-for (const m of ["shared-findings.js", "shared-bugs.js", "shared-notes.js", "shared-docs.js", "shared-triage.js",
-  "shared-graph.js", "shared-reviews.js", "shared-walkthrough.js"]) await load(newBuild, m);
-await load(newBuild, "materializer-log.js");
+await load(newBuild, "families.js");
 const { judgeReads } = await load(newBuild, "damage-scan.js");
 const newLog = await load(newBuild, "eventlog.js");
 const { splice } = await load(newBuild, "migration-splice.js");

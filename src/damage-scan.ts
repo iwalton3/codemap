@@ -15,6 +15,7 @@ import {
 } from "./eventlog.js";
 import { classify, foldJudged, registerPushGate, reportFor, withPeersAhead, type Report } from "./validation.js";
 import { withoutOverlay } from "./sync-session.js";
+import "./families.js";
 import { foldDecisionsReport } from "./shared-decisions.js";
 import { foldStandardReport, LAW_SCOPE } from "./shared-standard.js";
 import { peersAhead } from "./sidecar.js";
