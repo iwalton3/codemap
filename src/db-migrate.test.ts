@@ -297,3 +297,23 @@ test("repair verification event vocabulary and projection are pinned to the mate
   assert.match(readFileSync("src/db.ts", "utf8"), /CREATE TABLE IF NOT EXISTS repair_verifications/);
   assert.equal(MATERIALIZER_VERSION, 53);
 });
+
+test("the upgrade drops the merge era's contest and divergence questions, and only those", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codemap-retired-q-"));
+  try {
+    mkdirSync(join(root, ".codemap"), { recursive: true });
+    const anns = [
+      { id: "q1", kind: "question", category: "contested-triage", text: "x" },
+      { id: "q2", kind: "question", category: "diverged-wiring", text: "y" },
+      { id: "q3", kind: "question", category: "other", text: "z" },
+      { id: "n4", kind: "note", text: "w" },
+    ];
+    // Written before the store is opened, so the migration at open is the one under test.
+    const d = new DatabaseSync(join(root, ".codemap", "codemap.db"));
+    d.exec("CREATE TABLE meta (k TEXT PRIMARY KEY, v TEXT)");
+    d.prepare("INSERT INTO meta(k,v) VALUES('annotations', ?)").run(JSON.stringify({ schemaVersion: 1, annotations: anns }));
+    d.close();
+    const { readAnnotations } = await import("./store.js");
+    assert.deepEqual((await readAnnotations(root)).annotations.map((a) => a.id), ["q3", "n4"]);
+  } finally { discard(root); }
+});

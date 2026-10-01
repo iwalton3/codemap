@@ -54,6 +54,7 @@ function runMigrations(root: string, d: DatabaseSync): void {
   migrateBugsBlob(d);
   migrateWalkthroughBlob(d);
   compactLegacySnapshots(d);
+  dropRetiredQueueItems(d);
 }
 
 /** How long a pre-upgrade copy of the store is kept. */
@@ -407,6 +408,24 @@ function migrateWalkthroughBlob(d: DatabaseSync): void {
     }
     d.prepare("DELETE FROM meta WHERE k = 'pr_walkthrough'").run();
   });
+}
+
+/**
+ * The local review-queue questions the merge-era sync filed for a triage contest or a wiring
+ * divergence. Both mechanisms are gone (the linear log refuses what raced instead), so these
+ * can never close themselves; the owner ruled a one-off cleanup at upgrade (review O14).
+ * Writes only when one is present, or every open would count as a change and back up.
+ */
+const RETIRED_QUEUE_CATEGORIES = new Set(["contested-triage", "diverged-wiring"]);
+function dropRetiredQueueItems(d: DatabaseSync): void {
+  const row = d.prepare("SELECT v FROM meta WHERE k = 'annotations'").get() as { v: string } | undefined;
+  if (!row) return;
+  let blob: { annotations?: { category?: string }[] };
+  try { blob = JSON.parse(row.v); } catch { return; }
+  const all = blob.annotations ?? [];
+  const kept = all.filter((a) => !RETIRED_QUEUE_CATEGORIES.has(a.category ?? ""));
+  if (kept.length === all.length) return;
+  tx(d, () => { d.prepare("UPDATE meta SET v = ? WHERE k = 'annotations'").run(JSON.stringify({ ...blob, annotations: kept })); });
 }
 
 /**
