@@ -909,8 +909,7 @@ async function linearHeld(
             + `The store is locked until the team's log is repaired: see docs/log-repair.md.` };
         }
       }
-      if (head && head !== remoteSha && !g(root, ["merge-base", "--is-ancestor", head, remoteSha]).ok
-        && !g(root, ["merge-base", "--is-ancestor", remoteSha, head]).ok) joined = true;
+      if (head && !g(root, ["merge-base", head, remoteSha]).ok) joined = true;
       const moved = resetTo(root, remoteSha);
       if (moved) { forgetInline(); return moved; }
       // The reset takes tracked files to the tip; our own manifest goes back on top of it.
@@ -1083,8 +1082,7 @@ export async function pullLinear(root: string, actor?: Actor): Promise<PullResul
         + `The store is locked until the team's log is repaired: see docs/log-repair.md.` };
     }
     const before = await countEvents(root);
-    const joined = !!head && !g(root, ["merge-base", "--is-ancestor", head, remoteSha]).ok
-      && !g(root, ["merge-base", "--is-ancestor", remoteSha, head]).ok;
+    const joined = !!head && !g(root, ["merge-base", head, remoteSha]).ok;
     const moved = resetTo(root, remoteSha);
     if (moved) return moved;
     if (actor) await ensureSidecar(root, actor);

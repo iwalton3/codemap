@@ -147,6 +147,7 @@ test("a document that is not an event survives the reset a lost race causes", as
     const r = await sync(t.b, dana);
     assert.ok(!("error" in r), JSON.stringify(r));
     assert.ok(existsSync(mark) && r.retries >= 1, "precondition: the first push lost the race");
+    assert.ok(!r.joined, "a lost race diverges from the tip; it is not a join of unrelated history");
     assert.ok(onRemote(t.origin).includes("winner.txt"), "the winner's commit is on the tip");
     assert.ok(onRemote(t.origin).includes(doc), "and so is the document");
   } finally { t.cleanup(); discard(c); }
