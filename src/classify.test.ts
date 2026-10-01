@@ -9,7 +9,8 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { kindsFor, registerKinds, type LogEvent } from "./eventlog.js";
-import { foldJudged, registerReport, reportFor } from "./validation.js";
+import { foldJudged, registerReport, reportFor, shaped } from "./validation.js";
+import { readSets } from "./eventlog.js";
 import { foldDefectNotice, newerIn, scanSidecar } from "./damage-scan.js";
 import { decisionHash, foldDecisions, foldDecisionsReport } from "./shared-decisions.js";
 import "./shared-findings.js";
@@ -160,6 +161,16 @@ test("C5: after a dev-era round, damage that does not name it still locks", () =
   const round = ev("r1", "decision.round.posted", "R1", { round: { id: "R1", source: "s" }, decisions: [{ id: "d1", ref: "D1" }] }, 1);
   const stray = ev("b1", "decision.answer.recorded", "d9", { decision: "d9", hash: "h", via: { kind: "direct", option: "x" } }, 2, ["r1"]);
   assert.deepEqual(verdict("decisions/u", [round, stray], foldDecisionsReport), { lock: "b1" });
+});
+
+test("C5: a dev-era event the shape check strips is re-linked too, so an act that read past it keeps what it read", () => {
+  const w = ev("w", "note.created", "W", {}, 1), x = ev("x", "note.created", "X", { devEra: true }, 2, ["w"]);
+  const e = ev("e", "note.created", "E", {}, 3, ["x"]);
+  // A seen-rule: E is refused unless it read W.
+  const inner = (evs: LogEvent[]) => ({ value: null, refused: evs.some((v) => v.id === "e") && !readSets(evs).saw("e", "w")
+    ? [{ id: "e", kind: "note.created", why: "has not seen W", cls: "state" as const }] : [] });
+  const report = shaped(inner, (v) => ((v.data as { devEra?: boolean } | undefined)?.devEra ? "a dev-era shape" : null), (v) => v.id === "x");
+  assert.deepEqual(foldJudged([w, x, e], report, { kinds: new Set(["note.created"]) }).newer, []);
 });
 
 test("a dev-era decisions posting is skipped as older: no lock, and pushes are not blocked", () => {

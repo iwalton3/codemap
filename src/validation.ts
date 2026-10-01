@@ -154,10 +154,14 @@ export function shaped<T>(report: Report<T>, shape: (e: LogEvent) => string | nu
       if (why) wrong.push({ id: e.id, kind: e.kind, why, cls: devEra(e) ? "older" : "shape" });
       return !why;
     });
+    // A dev-era event stripped here is skipped like `classify`'s (round 2 C5, "Re-link"): the
+    // fold's read graph goes around it, or every act that read past it loses what it read.
+    const older = new Set(wrong.filter((w) => w.cls === "older").map((w) => w.id));
+    const input = older.size ? splice(events, kept, older) : kept;
     let out: ReturnType<Report<T>>;
-    try { out = report(kept); } catch (err) {
+    try { out = report(input); } catch (err) {
       if (isLogDamage(err)) throw err;
-      throw new LogDamage(culprit(kept, report, err));
+      throw new LogDamage(culprit(input, report, err));
     }
     return { value: out.value, refused: [...wrong, ...out.refused] };
   };
