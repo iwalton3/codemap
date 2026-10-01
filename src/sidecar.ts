@@ -23,7 +23,7 @@ import {
 import { sessionGone, withoutOverlay } from "./sync-session.js";
 import { pushGate } from "./validation.js";
 import {
-  allQueuedIds, conflicts, drop, getMeta, markConflict, markInflight, markLanded, markStaged, markUnknown, noteRefusal, pending, reassign,
+  allQueuedIds, conflicts, drop, getMeta, pruneLanded, markConflict, markInflight, markLanded, markStaged, markUnknown, noteRefusal, pending, reassign,
   sessionRow, sessionsWithConflicts, setMeta, setTx, stage, type SessionKind,
 } from "./sync-queue.js";
 import { recordLockout } from "./lockout.js";
@@ -902,6 +902,8 @@ export async function syncLinear(
     const r = await withoutOverlay(() => linearHeld(root, session, opts, "error" in pre ? pre : pre.fetched));
     // Closed under the lock its writers check it under (review C11), never after releasing it.
     if (opts.closeTx && !("error" in r)) setTx(root, session, opts.closeTx, false);
+    // Once per sync, whatever path it took (review C15): landed rows past retention go.
+    pruneLanded(root);
     return r;
   });
 }

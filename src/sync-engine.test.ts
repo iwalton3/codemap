@@ -536,3 +536,19 @@ test("C11: an act that waited on the lock while a sync closed its transaction wr
     assert.equal(git(s.origin, "show", "main:tst/c11/events.ndjson").status, 0, "it landed inline");
   } finally { s.dispose(); }
 });
+
+test("C15: a sync prunes landed rows past their retention", async () => {
+  const s = await scenario(["ana@x.com"]);
+  try {
+    const ana = who(s, "ana@x.com");
+    const landed = await emitEvent(ana.sidecar, "tst/c15", ana.actor, "noted", "n1");
+    queue.closeQueues();
+    const db = new DatabaseSync(join(ana.sidecar, ".git", "codemap-queue.db"));
+    db.prepare("UPDATE queue SET landed_at = '2000-01-01T00:00:00.000Z' WHERE event_id = ?").run(landed.id);
+    const before = (db.prepare("SELECT COUNT(*) n FROM queue WHERE event_id = ?").get(landed.id) as { n: number }).n;
+    db.close();
+    assert.equal(before, 1, "the fixture must hold the landed row, or this proves nothing");
+    await sync(ana.sidecar, ana.actor);
+    assert.ok(!queue.allQueuedIds(ana.sidecar).includes(landed.id));
+  } finally { s.dispose(); }
+});
