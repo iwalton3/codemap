@@ -628,7 +628,14 @@ function showConflicts(conflicts) {
   };
   const all = document.createElement('button');
   all.textContent = 'Drop everything unsaved';
-  all.onclick = async () => { await apiPost('/api/shared/discard', { u: lastUniverse }).catch(() => null); el.remove(); await refreshStatus(); };
+  all.onclick = async () => {
+    const r = await apiPost('/api/shared/discard', { u: lastUniverse }).catch(() => null);
+    el.remove();
+    await refreshStatus();
+    // A write whose push could not be settled may already be on the remote (review C7).
+    if (r && r.mayHaveLanded && r.mayHaveLanded.length)
+      flashError(`${r.mayHaveLanded.length} of the dropped changes may already have reached the team — check before redoing them`);
+  };
   const keep = document.createElement('button');
   keep.textContent = 'Keep them for now';
   keep.onclick = () => el.remove();

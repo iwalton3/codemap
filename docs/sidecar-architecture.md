@@ -145,6 +145,12 @@ context, diff and the analyzer. It must degrade to `status: "blocked"`, never th
 - **A session that is gone** (a closed tab, an ended MCP connection, a dead process) has its
   staged writes attempted by whichever codemap process notices, all or none. A refusal
   becomes a local conflict, shown on the next open on this machine.
+- **A failed push is settled at the failure** (review C7): the sync fetches and each op is on
+  the tip (landed) or not (staged again; an inline act is forgotten and its caller told it was
+  NOT written). Only an unreachable remote leaves an op `unknown`: shown on the overlay, settled
+  by the next sync, and a drop or discard of it says it may already have landed. A process that
+  dies mid-push leaves its ops `inflight`, and the next sync finds their ids at the tip before it
+  replays anything.
 
 Behind every family's write is one door, registered by its fold (`registerDoor` in
 `eventlog.ts`), and replay goes through it as an inline act's write does. The owner's rule for

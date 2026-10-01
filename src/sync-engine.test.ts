@@ -5,7 +5,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readdirSync, readFileSync, writeFileSync, appendFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync, appendFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -118,7 +118,7 @@ test("the queue is append and drop only: nothing exported edits an op or moves i
     // Every exported function, named. A new one that edits or reorders fails here first.
     assert.deepEqual(Object.keys(queue).sort(), [
       "allQueuedIds", "closeQueues", "conflicts", "drop", "forgetSession", "getMeta", "markConflict", "markInflight",
-      "markLanded", "markStaged", "pending", "pruneLanded", "sessionRow", "sessionsWithPending", "setMeta", "setTx",
+      "markLanded", "markStaged", "markUnknown", "pending", "pruneLanded", "sessionRow", "sessionsWithPending", "setMeta", "setTx",
       "stage", "touchSession",
     ]);
     const ev = (id: string) => ({ id, kind: "k", subject: "s", actor: { principal: "q@x.com" }, at: "t", after: [], sidecarProtocol: 2, eventSchema: 1 });
@@ -394,4 +394,41 @@ test("C9: a locked clone's sweep of a gone session pushes nothing; the writes st
     assert.equal(git(s.origin, "rev-parse", "main").stdout.trim(), before, `nothing reached the remote: ${JSON.stringify(out)} ${git(s.origin, "log", "--stat", "-1", "main").stdout}`);
     assert.equal(queue.pending(ana.sidecar, DEAD).length + localConflicts(ana.sidecar).length, 1, "the write is kept");
   } finally { s.dispose(); }
+});
+
+test("C7: an inline act whose push the remote refused is NOT written, and no later sync lands it", async () => {
+  const s = await scenario(["ana@x.com"]);
+  const hook = join(s.origin, "hooks", "pre-receive");
+  try {
+    const ana = who(s, "ana@x.com");
+    await emitEvent(ana.sidecar, "tst/seed", ana.actor, "noted", "seed");
+    writeFileSync(hook, "#!/bin/sh\necho no >&2\nexit 1\n"); chmodSync(hook, 0o755);
+    const r = await emitEventChecked(ana.sidecar, "tst/c7", ana.actor, async () => ({ kind: "noted", subject: "n1" }));
+    assert.ok("error" in r && /NOT written/.test(r.error), JSON.stringify(r));
+    rmSync(hook);
+    begin(ana.sidecar);
+    assert.ok(!("error" in await syncSession(ana.sidecar, ana.actor)));
+    assert.equal(git(s.origin, "show", "main:tst/c7/events.ndjson").status, 128, "it never reached the remote");
+  } finally { rmSync(hook, { force: true }); s.dispose(); }
+});
+
+test("C7: a failed push with the remote unreachable leaves the ops unknown, and dropping them says they may have landed", async () => {
+  const s = await scenario(["ana@x.com"]);
+  const hook = join(s.origin, "hooks", "pre-receive");
+  try {
+    const ana = who(s, "ana@x.com");
+    begin(ana.sidecar);
+    const op = await emitEvent(ana.sidecar, "tst/c7u", ana.actor, "noted", "n1");
+    // The push fails, and so does the fetch that would settle it: the hook breaks this clone's URL.
+    writeFileSync(hook, `#!/bin/sh\nunset GIT_DIR GIT_QUARANTINE_PATH GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES\n`
+      + `git -C ${JSON.stringify(ana.sidecar)} remote set-url origin /nonexistent/remote\nexit 1\n`);
+    chmodSync(hook, 0o755);
+    const r = await syncSession(ana.sidecar, ana.actor) as { error?: string; unknown?: string[] };
+    assert.match(r.error ?? "", /may already have landed/, JSON.stringify(r));
+    assert.deepEqual(r.unknown, [op.id]);
+    git(ana.sidecar, "remote", "set-url", "origin", s.origin);
+    assert.deepEqual(staged(ana.sidecar).map((o) => o.state), ["unknown"], "shown, not lost");
+    const d = discardTx(ana.sidecar);
+    assert.deepEqual(d.mayHaveLanded, [op.id], "never a bare ok");
+  } finally { rmSync(hook, { force: true }); s.dispose(); }
 });

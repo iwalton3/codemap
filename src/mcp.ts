@@ -1523,7 +1523,7 @@ const tools: Tool[] = [
   },
   {
     name: "discard",
-    description: "Drop every write this session has staged and close its transaction. Nothing of it reaches the team.",
+    description: "Drop every write this session has staged and close its transaction. What was only staged never reaches the team. A write whose push failed while the remote was unreachable may already have landed: it is dropped too and listed in `mayHaveLanded`, so check the shared state before redoing it.",
     inputSchema: obj({}),
     mutates: true,
     handler: (_a, c) => shared.discardTransaction(c.universe.path),

@@ -23,7 +23,12 @@ import type { StagedEvent } from "./eventlog.js";
  * pushing it again. `landed`: on the remote. `conflict`: its session was gone when it was
  * attempted and it was refused; shown on the next open until someone dismisses it.
  */
-export type QueueState = "staged" | "inflight" | "landed" | "conflict";
+/**
+ * `inflight`: a sync holds it. `unknown`: its push failed and the remote could not be reached to
+ * see whether it landed (review C7) — replayed or settled by the next sync, droppable, and a drop
+ * says it may already have landed.
+ */
+export type QueueState = "staged" | "inflight" | "unknown" | "landed" | "conflict";
 
 export interface QueuedOp {
   /** Queue position. Replay order within a session, and never rewritten. */
@@ -74,7 +79,7 @@ function open(logRoot: string): DatabaseSync {
       scope TEXT NOT NULL,
       event_id TEXT NOT NULL UNIQUE,
       event TEXT NOT NULL,
-      state TEXT NOT NULL CHECK(state IN ('staged','inflight','landed','conflict')),
+      state TEXT NOT NULL CHECK(state IN ('staged','inflight','unknown','landed','conflict')),
       why TEXT,
       staged_at TEXT NOT NULL,
       landed_at TEXT
@@ -89,6 +94,20 @@ function open(logRoot: string): DatabaseSync {
     );
     CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
   `);
+  // A queue from before `unknown` (review C7): SQLite cannot widen a CHECK, so rebuild the table.
+  const sql = (d.prepare("SELECT sql FROM sqlite_master WHERE name = 'queue'").get() as { sql: string } | undefined)?.sql ?? "";
+  if (!sql.includes("'unknown'")) {
+    d.exec(`BEGIN IMMEDIATE;
+      ALTER TABLE queue RENAME TO queue_old;
+      CREATE TABLE queue(pos INTEGER PRIMARY KEY AUTOINCREMENT, session TEXT NOT NULL, scope TEXT NOT NULL,
+        event_id TEXT NOT NULL UNIQUE, event TEXT NOT NULL,
+        state TEXT NOT NULL CHECK(state IN ('staged','inflight','unknown','landed','conflict')),
+        why TEXT, staged_at TEXT NOT NULL, landed_at TEXT);
+      INSERT INTO queue SELECT * FROM queue_old;
+      DROP TABLE queue_old;
+      CREATE INDEX IF NOT EXISTS queue_session ON queue(session, state);
+      COMMIT;`);
+  }
   // Opened in memory before the sidecar became a repository: carry what it holds over.
   if (hit) {
     for (const table of ["queue", "sessions", "meta"]) {
@@ -124,15 +143,15 @@ export function stage(logRoot: string, session: string, scope: string, event: St
   return { pos: Number(r.lastInsertRowid), session, scope, event, state: "staged", stagedAt: at };
 }
 
-/** A session's ops still to land — `staged` and `inflight` — in queue order. */
+/** A session's ops still to land — `staged`, `inflight` and `unknown` — in queue order. */
 export function pending(logRoot: string, session: string): QueuedOp[] {
-  return (open(logRoot).prepare("SELECT * FROM queue WHERE session = ? AND state IN ('staged','inflight') ORDER BY pos")
+  return (open(logRoot).prepare("SELECT * FROM queue WHERE session = ? AND state IN ('staged','inflight','unknown') ORDER BY pos")
     .all(session) as Row[]).map(toOp);
 }
 
 /** Every session holding ops still to land. */
 export function sessionsWithPending(logRoot: string): string[] {
-  return (open(logRoot).prepare("SELECT DISTINCT session FROM queue WHERE state IN ('staged','inflight') ORDER BY session")
+  return (open(logRoot).prepare("SELECT DISTINCT session FROM queue WHERE state IN ('staged','inflight','unknown') ORDER BY session")
     .all() as { session: string }[]).map((r) => r.session);
 }
 
@@ -142,15 +161,19 @@ export function conflicts(logRoot: string): QueuedOp[] {
 }
 
 /**
- * Drop a session's op, by event id. Only one still `staged`, or a `conflict` being
- * dismissed; an `inflight` op belongs to a sync in progress, and a `landed` one is history.
+ * Drop a session's op, by event id: `staged`, a `conflict` being dismissed, or an `unknown` one
+ * (C7) — which may already have landed, and says so. An `inflight` op belongs to a sync in
+ * progress, and a `landed` one is history. Answers what was dropped, or false.
  */
-export function drop(logRoot: string, session: string | null, eventId: string): boolean {
+export function drop(logRoot: string, session: string | null, eventId: string): false | { mayHaveLanded: boolean } {
   const d = open(logRoot);
-  const r = session === null
-    ? d.prepare("DELETE FROM queue WHERE event_id = ? AND state = 'conflict'").run(eventId)
-    : d.prepare("DELETE FROM queue WHERE event_id = ? AND session = ? AND state IN ('staged','conflict')").run(eventId, session);
-  return Number(r.changes) > 0;
+  const row = (session === null
+    ? d.prepare("SELECT state FROM queue WHERE event_id = ? AND state = 'conflict'").get(eventId)
+    : d.prepare("SELECT state FROM queue WHERE event_id = ? AND session = ? AND state IN ('staged','conflict','unknown')").get(eventId, session)) as
+    { state: QueueState } | undefined;
+  if (!row) return false;
+  d.prepare("DELETE FROM queue WHERE event_id = ? AND state = ?").run(eventId, row.state);
+  return { mayHaveLanded: row.state === "unknown" };
 }
 
 // ---- The sync engine's transitions. `state` alone; nothing else about an op moves. ----
@@ -168,12 +191,13 @@ function transition(logRoot: string, ids: string[], from: QueueState[], to: Queu
   inTx(d, () => { for (const id of ids) st.run(to, why ?? null, at, id, ...from); });
 }
 
-export const markInflight = (l: string, ids: string[]): void => transition(l, ids, ["staged", "inflight"], "inflight");
-export const markLanded = (l: string, ids: string[]): void => transition(l, ids, ["staged", "inflight"], "landed");
-export const markStaged = (l: string, ids: string[]): void => transition(l, ids, ["inflight"], "staged");
+export const markInflight = (l: string, ids: string[]): void => transition(l, ids, ["staged", "inflight", "unknown"], "inflight");
+export const markLanded = (l: string, ids: string[]): void => transition(l, ids, ["staged", "inflight", "unknown"], "landed");
+export const markStaged = (l: string, ids: string[]): void => transition(l, ids, ["inflight", "unknown"], "staged");
+export const markUnknown = (l: string, ids: string[]): void => transition(l, ids, ["inflight"], "unknown");
 export function markConflict(logRoot: string, refusals: { id: string; why: string }[], all: string[]): void {
   const d = open(logRoot);
-  const st = d.prepare("UPDATE queue SET state = 'conflict', why = ? WHERE event_id = ? AND state IN ('staged','inflight')");
+  const st = d.prepare("UPDATE queue SET state = 'conflict', why = ? WHERE event_id = ? AND state IN ('staged','inflight','unknown')");
   const why = new Map(refusals.map((r) => [r.id, r.why]));
   const first = refusals[0];
   inTx(d, () => {

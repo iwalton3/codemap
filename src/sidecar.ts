@@ -22,7 +22,7 @@ import {
 } from "./eventlog.js";
 import { withoutOverlay } from "./sync-session.js";
 import { pushGate } from "./validation.js";
-import { allQueuedIds, drop, getMeta, markConflict, markInflight, markLanded, markStaged, pending, setMeta, setTx, stage } from "./sync-queue.js";
+import { allQueuedIds, drop, getMeta, markConflict, markInflight, markLanded, markStaged, markUnknown, pending, setMeta, setTx, stage } from "./sync-queue.js";
 import { recordLockout } from "./lockout.js";
 import type { Actor } from "./schema.js";
 
@@ -679,6 +679,10 @@ export type LinearFailure = {
   conflicts?: Refusal[];
   /** Ops still staged for this session after the failure. */
   staged?: string[];
+  /** A push failed and the remote could not be reached: these may already have landed (C7). */
+  unknown?: string[];
+  /** The remote refused the push outright (`[remote rejected]`: a hook, a protected branch). */
+  refused?: boolean;
 };
 
 export type LinearOutcome = LinearResult | LinearFailure;
@@ -1113,10 +1117,8 @@ async function linearHeld(
       return result(true, attempt);
     }
     if (isRejection(p.err)) continue;
-    // Not a lost race. The push may or may not have reached the remote, so the ops stay
-    // `inflight`: the next sync looks for their ids at the tip before it replays anything.
-    return { error: `the push to the sidecar remote failed: ${p.err.slice(0, 300)}. The write(s) are kept on this machine and `
-      + `the next sync confirms or retries them — never both.`, staged: stagedIds() };
+    return settleFailedPush(root, branch, p.err, toLand, [...new Set([...ops.map((o) => o.scope), ...(opts.inline ? [opts.inline.scope] : []),
+      ...(bumped ? [MATERIALIZER_SCOPE] : [])])], inlineId, forgetInline, stagedIds, () => result(true, attempt));
   }
   if (remote) {
     const tip = rev(root, `origin/${branch}`);
@@ -1125,6 +1127,45 @@ async function linearHeld(
   markStaged(root, pending(root, session).map((o) => o.event.id));
   forgetInline();
   return { error: `busy: the sidecar remote moved under ${PUSH_ATTEMPTS} attempts in a row. Nothing was pushed; try again.`, staged: stagedIds() };
+}
+
+/**
+ * A push that failed for a reason other than a lost race, settled at the failure (owner, C7):
+ * fetch, and each op is on the tip — landed — or not — staged again, and an inline act is
+ * forgotten and its caller told it was NOT written. Only an unreachable remote leaves an op
+ * unknown: it stays `inflight`, shown on the overlay, and the next fetch settles it (a sync looks
+ * for its id at the tip before replaying). A definite `[remote rejected]` is a refusal.
+ */
+async function settleFailedPush(
+  root: string, branch: string, err: string, toLand: string[], scopes: string[], inlineId: string | null,
+  forgetInline: () => void, stagedIds: () => string[], landedResult: () => Promise<LinearResult>,
+): Promise<LinearOutcome> {
+  const why = err.slice(0, 300);
+  const fetched = await fetchRemote(root);
+  if ("error" in fetched) {
+    // Back to the last tip seen: the ops stay queued (inflight) and anything else appended here
+    // (the materializer bump) is re-derived, so no unqueued event is left for the next sync to refuse.
+    const last = rev(root, `origin/${branch}`);
+    if (last) resetTo(root, last);
+    markUnknown(root, toLand);
+    return { error: `the push to the sidecar remote failed (${why}), and the remote could not be reached to see whether it `
+      + `landed. ${inlineId ? "The act" : "The write(s)"} may already have landed: the next sync settles it — do not redo it.`,
+      staged: stagedIds(), unknown: toLand };
+  }
+  const tip = rev(root, `origin/${branch}`);
+  const there = tip ? linesAtCommit(root, tip, scopes.map((s) => `${s}/${LINEAR_SHARD}`)) : new Map<string, string>();
+  const landed = toLand.filter((id) => there.has(id)), absent = toLand.filter((id) => !there.has(id));
+  markLanded(root, landed);
+  markStaged(root, absent);
+  // Every op is now accounted for — landed, or staged to replay — so the unpushed commit goes.
+  if (tip) resetTo(root, tip);
+  if (!absent.length) return landedResult();
+  const inlineLost = !!inlineId && absent.includes(inlineId);
+  if (inlineLost) forgetInline();
+  const rejected = /\[remote rejected\]/.test(err);
+  return { error: `${rejected ? "the sidecar remote refused the push" : "the push to the sidecar remote failed"} (${why}). `
+    + `Checked the remote: ${inlineLost ? "the act was NOT written" : `${absent.length} write(s) did not land and stay staged`}`
+    + `${landed.length ? `; ${landed.length} did land` : ""}.`, staged: stagedIds(), ...(rejected ? { refused: true } : {}) };
 }
 
 /** Bring the tree to the remote tip without pushing anything. */

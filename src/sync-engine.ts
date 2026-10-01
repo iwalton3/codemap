@@ -159,17 +159,27 @@ export async function syncSession(logRoot: string, actor?: Actor, s = currentSes
   return r;
 }
 
-/** Drop every staged op of the session and close its transaction. */
-export function discard(logRoot: string, s = currentSession()): { ok: true; dropped: number } {
+/**
+ * Drop every staged op of the session and close its transaction. An op whose failed push could
+ * not be settled (C7) may already have landed: it is named in `mayHaveLanded`, never a bare ok.
+ */
+export function discard(logRoot: string, s = currentSession()): { ok: true; dropped: number; mayHaveLanded?: string[] } {
   let dropped = 0;
-  for (const op of pending(logRoot, s.session)) if (drop(logRoot, s.session, op.event.id)) dropped++;
+  const unknown: string[] = [];
+  for (const op of pending(logRoot, s.session)) {
+    const r = drop(logRoot, s.session, op.event.id);
+    if (!r) continue;
+    dropped++;
+    if (r.mayHaveLanded) unknown.push(op.event.id);
+  }
   setTx(logRoot, s.session, s.kind, false);
-  return { ok: true, dropped };
+  return { ok: true, dropped, ...(unknown.length ? { mayHaveLanded: unknown } : {}) };
 }
 
 /** Drop one staged op of the session (or dismiss a local conflict). Appending is `emit`. */
-export function dropOp(logRoot: string, eventId: string, s = currentSession()): { ok: boolean } {
-  return { ok: drop(logRoot, s.session, eventId) || drop(logRoot, null, eventId) };
+export function dropOp(logRoot: string, eventId: string, s = currentSession()): { ok: boolean; mayHaveLanded?: true } {
+  const r = drop(logRoot, s.session, eventId) || drop(logRoot, null, eventId);
+  return { ok: !!r, ...(r && r.mayHaveLanded ? { mayHaveLanded: true as const } : {}) };
 }
 
 export function staged(logRoot: string, s = currentSession()): QueuedOp[] {
