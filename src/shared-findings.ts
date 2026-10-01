@@ -37,7 +37,7 @@ import { foldRepairVerification, type RepairVerificationApplication } from "./re
 
 import { ISO_DATE, type Actor, type Agreement, type BugSeverity, type BugWitness } from "./schema.js";
 import { isAgentActor, isIndependent, isErrorIndependent, reviewerKey } from "./identity.js";
-import { mintId, readScope, readSets, registerDoor, type LogEvent, type ReadSets } from "./eventlog.js";
+import { mintId, readScope, registerDoor, type LogEvent } from "./eventlog.js";
 import { emitEvent } from "./write.js";
 import { issueClaimHash, validateApplicationCapsule, type ApplicationAttempt } from "./ruling-application.js";
 
@@ -666,10 +666,7 @@ const witnessOf = (w: Data | undefined): BugWitness | undefined => {
  * worse than one that ignores a record.
  */
 interface ApplicationReplay {
-  all: LogEvent[];
-  reads: ReadSets;
-  snapshots: Map<string, Map<string, SharedFinding>>;
-  /** Where the top-level fold records what it did not apply. Snapshots record nothing. */
+  /** Where the fold records what it did not apply. */
   refuse?: (e: LogEvent, cls: RefusalClass, why: string) => void;
 }
 
@@ -683,14 +680,6 @@ function foldFindingsInternal(events: LogEvent[], replay: ApplicationReplay): Ma
   // A verification application is one-shot per finding epoch, spent only by a closure that
   // happens here — like `spent` for ruling applications (F34).
   const repairSpent = new Set<string>();
-  const atAct = (e: LogEvent): SharedFinding | undefined => {
-    let snapshot = replay.snapshots.get(e.id);
-    if (!snapshot) {
-      snapshot = foldFindingsInternal(replay.all.filter((prior) => replay.reads.saw(e.id, prior.id)), { ...replay, refuse: undefined });
-      replay.snapshots.set(e.id, snapshot);
-    }
-    return snapshot.get(e.subject);
-  };
 
   for (let at = 0; at < events.length; at++) {
     const e = events[at]!;
@@ -1029,26 +1018,19 @@ function foldFindingsInternal(events: LogEvent[], replay: ApplicationReplay): Ma
 
       case "finding.repairApplied": {
         const application = d as unknown as RepairVerificationApplication;
-        const prior = replay.all.filter(p => replay.reads.saw(e.id, p.id));
-        const verification = foldRepairVerification([...prior, e]);
+        const verification = foldRepairVerification(events.slice(0, at + 1));
         if (!verification.applications.some(a => a.id === application?.id)) {
           refuse(e, "state", verification.rejected.find((r) => r.eventId === e.id)?.reason ?? "no verified application matches this repair"); break;
         }
-        const act = atAct(e);
-        if (!act || isClosed(act.state) || act.openEpoch !== application.openEpoch
-          || issueClaimHash("finding", act) !== application.claimHash) { refuse(e, "state", "the finding was not open with this claim"); break; }
+        if (isClosed(f.state) || f.openEpoch !== application.openEpoch
+          || issueClaimHash("finding", f) !== application.claimHash) { refuse(e, "state", "the finding was not open with this claim"); break; }
         const once = `${application.requestId}\0${application.findingId}\0${application.openEpoch}`;
         if (repairSpent.has(once)) { refuse(e, "state", "this verification has already been applied"); break; }
-        if (isClosed(f.state) || f.openEpoch !== application.openEpoch
-          || issueClaimHash("finding", f) !== application.claimHash) refuse(e, "state", "the finding was no longer open with this claim");
-        if (!isClosed(f.state) && f.openEpoch === application.openEpoch
-          && issueClaimHash("finding", f) === application.claimHash) {
-          repairSpent.add(once);
-          f.state = application.outcome === "fixed" ? "resolved" : application.outcome === "invalid" ? "invalid" : "refuted";
-          f.closed = { eventId: e.id, at: e.at, by: e.actor, reason: application.reason };
-          f.repairClosure = { requestId: application.requestId, applicationId: application.id, outcome: application.outcome, attention: [] };
-          f.pending = undefined;
-        }
+        repairSpent.add(once);
+        f.state = application.outcome === "fixed" ? "resolved" : application.outcome === "invalid" ? "invalid" : "refuted";
+        f.closed = { eventId: e.id, at: e.at, by: e.actor, reason: application.reason };
+        f.repairClosure = { requestId: application.requestId, applicationId: application.id, outcome: application.outcome, attention: [] };
+        f.pending = undefined;
         break;
       }
 
@@ -1073,23 +1055,15 @@ function foldFindingsInternal(events: LogEvent[], replay: ApplicationReplay): Ma
           attempts.push({ eventId: e.id, at: e.at, by: e.actor, status: "duplicate", key: capsule.key, capsule });
           break;
         }
-        const act = atAct(e);
-        if (!act || isClosed(act.state) || act.state !== capsule.issue.openState
-          || act.openEpoch !== capsule.issue.openEpoch
-          || issueClaimHash("finding", act) !== capsule.issue.claimHash) {
-          attempts.push({ eventId: e.id, at: e.at, by: e.actor, status: "refused",
-            key: capsule.key, capsule, reason: "issue was not open with this claim in the act-time view" });
-          refuse(e, "state", "the finding was not open with this claim");
-          break;
-        }
         // Spent only by a closure that happens (owner: "spend only when a closure actually
-        // executes"): valid when written, but a concurrent close got there first, so this one
-        // closed nothing and a fresh application of the same ruling must still be able to.
-        if (isClosed(f.state) || f.openEpoch !== capsule.issue.openEpoch
+        // executes"): one a concurrent close got to first closes nothing, and a fresh application
+        // of the same ruling must still be able to.
+        if (isClosed(f.state) || f.state !== capsule.issue.openState
+          || f.openEpoch !== capsule.issue.openEpoch
           || issueClaimHash("finding", f) !== capsule.issue.claimHash) {
           attempts.push({ eventId: e.id, at: e.at, by: e.actor, status: "refused",
-            key: capsule.key, capsule, reason: "issue was no longer open with this claim when this was applied; nothing was spent" });
-          refuse(e, "state", "the finding was no longer open with this claim");
+            key: capsule.key, capsule, reason: "issue was not open with this claim when this was applied; nothing was spent" });
+          refuse(e, "state", "the finding was not open with this claim");
           break;
         }
         spent.add(capsule.key);
@@ -1228,7 +1202,7 @@ export function foldFindings(events: LogEvent[]): RepairFindingMap<SharedFinding
 }
 
 function foldFindingsWith(events: LogEvent[], refuse: ApplicationReplay["refuse"]): RepairFindingMap<SharedFinding> {
-  const out: RepairFindingMap<SharedFinding> = foldFindingsInternal(events, { all: events, reads: readSets(events), snapshots: new Map(), refuse });
+  const out: RepairFindingMap<SharedFinding> = foldFindingsInternal(events, { refuse });
   out.repairRecords = foldRepairRecords(events);
   const verification = foldRepairVerification(events);
   out.repairVerification = verification;

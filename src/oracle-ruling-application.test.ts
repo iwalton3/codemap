@@ -175,7 +175,7 @@ test("an already-closed issue spends nothing, and an application racing an ordin
     const replayed = await syncSession(a.sidecar, a.actor);
     assert.ok("error" in replayed, "the application's replay is refused");
     assert.deepEqual(replayed.conflicts?.map((c) => c.kind), ["finding.rulingApplied"]);
-    assert.match(replayed.conflicts![0]!.why, /no longer open/);
+    assert.match(replayed.conflicts![0]!.why, /not open with this claim/);
     discardTx(a.sidecar);
     await settle(t);
     for (const issue of await readBoth(a, b, racing.id)) {
