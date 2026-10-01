@@ -95,6 +95,12 @@ git push origin HEAD:<branch>
 
 If the push is rejected, someone pushed in between. Run the same steps again from the fetch.
 
+**Damage only in your clone** (the remote's copy of the shard is clean:
+`git diff origin/<branch> -- <shard>` shows the damaged line as a local change) has nothing to
+commit: the reset in the first line removes it, and there is nothing to push. **Copy the damaged
+shard aside before the reset** (`cp <shard> /somewhere/safe`) — the reset destroys the only evidence
+of what wrote it. Then go to step 4.
+
 ### 4. Every clone releases on its next sync
 
 `codemap sync`, on every clone, the repairer's included. A locked sync still fetches. It checks
