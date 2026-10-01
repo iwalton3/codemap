@@ -204,8 +204,16 @@ async function outsideReferences(logRoot: string, scope: string, e: LogEvent): P
 
 registerReport((scope) => scope.startsWith("notes/"), foldNotesReport);
 registerDoor((scope) => scope.startsWith("notes/"), (logRoot, scope) => async (events, minted) => ({
-  refused: [...foldNotesReport(events).refused, ...await outsideReferences(logRoot, scope, minted)],
+  refused: [...foldNotesReport(events).refused, ...await outsideReferences(logRoot, scope, minted), ...misfiled(scope, minted)],
 }));
+
+/** A note lives in its target's bucket, the one scope its target's page reads (owner, O26). */
+function misfiled(scope: string, e: LogEvent): Refusal[] {
+  const targetId = e.kind === "note.created" ? str(e.data as Data | undefined, "targetId") : undefined;
+  if (!targetId) return [];
+  const want = bucketFor(targetId);
+  return scope.endsWith(`/${want}`) ? [] : [{ id: e.id, kind: e.kind, cls: "reference", why: `a note on ${targetId} belongs in bucket ${want}, not ${scope}` }];
+}
 
 // ---------------------------------------------------------------------------
 // Writing

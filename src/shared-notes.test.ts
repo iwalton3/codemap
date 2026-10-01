@@ -634,3 +634,16 @@ test("a pre-canonical finding in the note log is not pinned to the code", async 
     assert.deepEqual(seg.sharedNotes?.map((n) => n.kind), ["pointer"]);
   } finally { u.cleanup(); }
 });
+
+test("a note written into another target's bucket is refused at the door (O26)", async () => {
+  const root = tmp("bucket");
+  try {
+    const wrong = bucketFor("a_1") === "00" ? "01" : "00";
+    const { emitEvent } = await import("./write.js");
+    await assert.rejects(
+      emitEvent(root, noteScope(U, wrong), izzie, "note.created", "n_misfiled", { ...NEW, kind: "note" }),
+      /belongs in bucket/,
+      "its target's page reads one bucket, so a note anywhere else is never seen",
+    );
+  } finally { discard(root); }
+});
