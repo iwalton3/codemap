@@ -1314,7 +1314,8 @@ function foldOnce(events: LogEvent[], excludedPicks: ReadonlySet<string>): { val
       // An agent never retires a ruling on its own: the person answers a relayed question.
       if (named) {
         const r = decisions.get(str(data?.relay) ?? "");
-        const theirs = r ? r.answers.filter((a) => a.verified && !a.sourceAnswer && !a.cancelled && a.by.principal === rulerOf(named).principal) : [];
+        // Before the withdrawal, not across the log: a later answer must not turn it into damage (C16).
+        const theirs = r ? r.answers.filter((a) => a.seq < pos && a.verified && !a.sourceAnswer && !a.cancelled && a.by.principal === rulerOf(named).principal) : [];
         const latest = theirs.reduce<FoldedAnswer | undefined>((x, a) => (!x || outranksByTime(a, x) ? a : x), undefined);
         // The whole question, not its text alone (F28): same options, same order.
         const why = !r || !sameQuestion(r.payload, withdrawalQuestion(d, named, data.reason, r.ref))

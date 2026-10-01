@@ -110,3 +110,13 @@ test("an analyzer doc version on the log is skipped, never damage (O25)", () => 
   const v = { versionId: "v1", nodeId: "n1", type: "concept", title: "t", summary: "", body: "", citations: [], createdAt: "2026-01-01T00:00:00Z", generatedBy: "marten" };
   assert.deepEqual(verdict("docs/u", [ev("e1", "doc.version", "n1", { version: v }, 1)]), { newer: [] });
 });
+
+test("C16: a refusal the log before it would not make is never damage; one it would make is", () => {
+  const e1 = ev("e1", "note.created", "N1", { text: "x" }, 1), e2 = ev("e2", "note.created", "N2", { text: "y" }, 2);
+  const vocab = { kinds: new Set(["note.created"]) };
+  // A fold whose verdict on e1 changes once e2 exists — the defect class, not a real fold.
+  const flips = (evs: LogEvent[]) => ({ value: null, refused: evs.some((e) => e.id === "e2") ? [{ id: "e1", kind: "note.created", why: "later", cls: "state" as const }] : [] });
+  assert.deepEqual(foldJudged([e1, e2], flips, vocab).newer, []);
+  const always = (evs: LogEvent[]) => ({ value: null, refused: evs.some((e) => e.id === "e1") ? [{ id: "e1", kind: "note.created", why: "bad", cls: "state" as const }] : [] });
+  assert.throws(() => foldJudged([e1, e2], always, vocab), /damaged log entry e1/);
+});

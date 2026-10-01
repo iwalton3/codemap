@@ -82,7 +82,11 @@ export const withPeersAhead = <T>(flag: boolean, fn: () => T): T => ahead.run(fl
  * excluded or skipped event — names it, or read it (`after`) — takes that event's class:
  * newer, or skipped with it (owner, batch 2).
  */
-export function judge(events: LogEvent[], refused: Refusal[], excluded: LogEvent[] = [], skipped: LogEvent[] = []): Refusal[] {
+export function judge(
+  events: LogEvent[], refused: Refusal[], excluded: LogEvent[] = [], skipped: LogEvent[] = [],
+  /** Whether the fold accepts `e` over the log BEFORE it; see the last check below. */
+  validWhenWritten: (e: LogEvent) => boolean = () => false,
+): Refusal[] {
   if (!refused.length) return [];
   const all = [...events, ...excluded, ...skipped];
   const byId = new Map(all.map((e) => [e.id, e]));
@@ -101,6 +105,12 @@ export function judge(events: LogEvent[], refused: Refusal[], excluded: LogEvent
       newer.push({ ...r, cls: "newer", why: `${r.why} — a teammate's codemap folds a newer version, which may accept it` });
       continue;
     }
+    // Judged as the door judged it, against the log before it (owner, C16: "Validations are for
+    // the database at the time the item was created not the future"). Refused only over the
+    // whole log means a later valid event changed an earlier verdict: a fold defect to fix at
+    // its arm (classify.test.ts holds the property), never a lock on a valid history. Paid only
+    // by a refusal, so a healthy log costs nothing.
+    if (validWhenWritten(e)) continue;
     throw new LogDamage({ id: r.id, kind: r.kind, why: r.why });
   }
   return newer;
@@ -164,7 +174,11 @@ export function foldJudged<T>(events: LogEvent[], report: Report<T>, vocab: Voca
   const out = report(fold);
   const ids = new Set(newer.map((n) => n.id));
   const excluded = events.filter((e) => ids.has(e.id));
-  return { value: out.value, newer: [...newer, ...judge(fold, out.refused, excluded, skipped)] };
+  const validWhenWritten = (e: LogEvent): boolean => {
+    const at = fold.indexOf(e);
+    try { return at >= 0 && !report(fold.slice(0, at + 1)).refused.some((r) => r.id === e.id); } catch { return false; }
+  };
+  return { value: out.value, newer: [...newer, ...judge(fold, out.refused, excluded, skipped, validWhenWritten)] };
 }
 
 /**
