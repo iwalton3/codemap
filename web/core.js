@@ -539,8 +539,18 @@ const TAB = Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toSt
 const QUEUE_PATHS = /^\/api\/shared\/(sync|pull|begin|discard|drop|staged)$/;
 const nativeFetch = window.fetch.bind(window);
 let unsaved = 0;
-/** @type {string|null} */
-let lastUniverse = null;
+/**
+ * Every universe this tab wrote to (review C14). In a workspace each has its own sidecar and
+ * queue, so the unsaved count, the background sync and the closing beacon cover each — tracking
+ * only the last one left a write to the first unsynced and uncounted. `null`: the server's only
+ * universe, named by no `u`.
+ * @type {Set<string|null>}
+ */
+const written = new Set();
+/** The universes to sync and ask about: those written to, or the server's default before any write. */
+const universes = () => (written.size ? [...written] : [null]);
+/** @param {string|null} u */
+const withU = (u) => (u ? { u } : {});
 
 /**
  * @param {RequestInfo | URL} input
@@ -553,7 +563,7 @@ window.fetch = async (input, init = {}) => {
   headers.set('x-codemap-tab', TAB);
   const r = await nativeFetch(input, { ...init, headers });
   if ((init.method ?? 'GET').toUpperCase() === 'POST' && !QUEUE_PATHS.test(url.pathname) && r.ok) {
-    try { lastUniverse = JSON.parse(String(init.body ?? '{}')).u ?? lastUniverse; } catch { /* not JSON */ }
+    try { written.add(JSON.parse(String(init.body ?? '{}')).u ?? null); } catch { written.add(null); }
     scheduleSync();
   }
   return r;
@@ -585,21 +595,28 @@ function scheduleSync() {
 
 // A tab closing with writes staged hands them to the server now, not when its polls lapse.
 window.addEventListener('pagehide', () => {
-  if (unsaved > 0) navigator.sendBeacon(`/api/shared/sync?tab=${TAB}`, new Blob([JSON.stringify({ u: lastUniverse })], { type: 'application/json' }));
+  if (unsaved > 0) for (const u of universes())
+    navigator.sendBeacon(`/api/shared/sync?tab=${TAB}`, new Blob([JSON.stringify(withU(u))], { type: 'application/json' }));
 });
 
-/** Push this tab's staged writes, all or none; a refusal opens the modal with every conflict. */
+/** Push this tab's staged writes in each universe, all or none per universe; refusals open the modal. */
 export async function syncNow() {
-  const r = await nativeFetch('/api/shared/sync', {
-    method: 'POST', headers: { 'content-type': 'application/json', 'x-codemap-tab': TAB }, body: JSON.stringify({ u: lastUniverse }),
-  }).then((x) => x.json()).catch((e) => ({ error: errText(e) }));
+  /** @type {any[]} */ const refused = [];
+  /** @type {any} */ let last = null;
+  for (const u of universes()) {
+    const r = await nativeFetch('/api/shared/sync', {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-codemap-tab': TAB }, body: JSON.stringify(withU(u)),
+    }).then((x) => x.json()).catch((e) => ({ error: errText(e) }));
+    if (r && r.conflicts && r.conflicts.length) refused.push(...r.conflicts.map((/** @type {any} */ c) => ({ ...c, u })));
+    else if (r && r.error) flashError(`not synced yet — your changes are kept on this machine: ${r.error}`);
+    last = r;
+  }
   await refreshStatus();
-  if (r && r.conflicts && r.conflicts.length) showConflicts(r.conflicts);
-  else if (r && r.error) flashError(`not synced yet — your changes are kept on this machine: ${r.error}`);
-  return r;
+  if (refused.length) showConflicts(refused);
+  return last;
 }
 
-/** @param {{ id: string, kind: string, why: string, subject?: string }[]} conflicts */
+/** @param {{ id: string, kind: string, why: string, subject?: string, u?: string|null }[]} conflicts */
 function showConflicts(conflicts) {
   document.getElementById('conflicts')?.remove();
   const el = document.createElement('div');
@@ -624,19 +641,22 @@ function showConflicts(conflicts) {
   const drop = document.createElement('button');
   drop.textContent = 'Drop the refused and send the rest';
   drop.onclick = async () => {
-    for (const c of conflicts) await apiPost('/api/shared/drop', { u: lastUniverse, id: c.id }).catch(() => null);
+    for (const c of conflicts) await apiPost('/api/shared/drop', { ...withU(c.u ?? null), id: c.id }).catch(() => null);
     el.remove();
     await syncNow();
   };
   const all = document.createElement('button');
   all.textContent = 'Drop everything unsaved';
   all.onclick = async () => {
-    const r = await apiPost('/api/shared/discard', { u: lastUniverse }).catch(() => null);
+    let unknown = 0;
+    for (const u of universes()) {
+      const r = await apiPost('/api/shared/discard', withU(u)).catch(() => null);
+      unknown += r?.mayHaveLanded?.length ?? 0;
+    }
     el.remove();
     await refreshStatus();
     // A write whose push could not be settled may already be on the remote (review C7).
-    if (r && r.mayHaveLanded && r.mayHaveLanded.length)
-      flashError(`${r.mayHaveLanded.length} of the dropped changes may already have reached the team — check before redoing them`);
+    if (unknown) flashError(`${unknown} of the dropped changes may already have reached the team — check before redoing them`);
   };
   const keep = document.createElement('button');
   keep.textContent = 'Keep them for now';
@@ -646,14 +666,22 @@ function showConflicts(conflicts) {
   document.body.append(el);
 }
 
-/** @type {{ staged?: unknown[], conflicts?: { id: string, kind: string, why: string }[], lastPull?: { at: string, ok: boolean, error?: string } | null } | null} */
+/** @type {{ staged?: unknown[], conflicts?: { id: string, kind: string, why: string, u?: string|null }[], lastPull?: { at: string, ok: boolean, error?: string } | null } | null} */
 let status = null;
 let shownLeftover = false;
 
 async function refreshStatus() {
-  status = await nativeFetch(`/api/shared/staged${lastUniverse ? `?u=${encodeURIComponent(lastUniverse)}` : ''}`, { headers: { 'x-codemap-tab': TAB } })
-    .then((r) => (r.ok ? r.json() : null)).catch(() => null);
-  unsaved = status?.staged?.length ?? 0;
+  /** @type {any[]} */ const staged = [], conflicts = [];
+  let lastPull = null;
+  for (const u of universes()) {
+    const s = await nativeFetch(`/api/shared/staged${u ? `?u=${encodeURIComponent(u)}` : ''}`, { headers: { 'x-codemap-tab': TAB } })
+      .then((r) => (r.ok ? r.json() : null)).catch(() => null);
+    staged.push(...(s?.staged ?? []));
+    conflicts.push(...(s?.conflicts ?? []).map((/** @type {any} */ c) => ({ ...c, u })));
+    lastPull ??= s?.lastPull ?? null;
+  }
+  status = { staged, conflicts, lastPull };
+  unsaved = staged.length;
   paintStatus();
   // Writes refused after their tab or session had closed: shown once per page, on open.
   if (!shownLeftover && status?.conflicts?.length) { shownLeftover = true; showConflicts(status.conflicts); }
