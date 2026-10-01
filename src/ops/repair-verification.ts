@@ -161,14 +161,10 @@ async function append(root: string, review: number | string, identity: VerifierI
   if ("error" in actor) return actor;
   if (actor.principal !== identity.principal) return { error: "this work belongs to another principal" };
   const scope = findingScope(findingKeyScope(cfg, review));
+  // The verification rules are the findings door's, so replay applies them too.
   const emitted = await emitEventChecked(cfg.path, scope, actor, async (events) => {
     if ((await readScopeChecked(cfg.path, scope)).status !== "complete") return { error: "repair scope is blocked" };
     return produce(events);
-  }, (events, minted) => {
-    const refused = foldRepairVerification(events).rejected.map((r) => ({ id: r.eventId, why: r.reason }));
-    if (minted.kind === "finding.repairApplied" && foldFindings(events).get(minted.subject)?.closed?.eventId !== minted.id)
-      refused.push({ id: minted.id, why: "canonical finding application refused current claim, epoch or authority" });
-    return { refused };
   });
   if ("error" in emitted) return emitted;
   const refreshed = await repairVerificationRecords(root, review);

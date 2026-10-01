@@ -42,7 +42,7 @@ function previousFingerprint(path: string, scope: string, identity: string): str
   return hash.digest("hex");
 }
 
-test("repair verification replays unchanged shards after an upgrade and retains rejected attempts", async () => {
+test("repair verification replays unchanged shards after an upgrade, and the door refuses a run naming no verifier", async () => {
   const t = await team(["alice@acme.test", "bob@acme.test"]);
   try {
     const root = t.all[0]!.repo, peer = t.all[1]!.repo, cfg = resolveSidecar(root)!;
@@ -67,11 +67,13 @@ test("repair verification replays unchanged shards after an upgrade and retains 
       code: { witnessCommit: sha, baseCommit: sha, fixCommit: sha, touched: [], availability: "unknown", reason: "commit unavailable" } };
     const request = { id: "upgrade-request", capsule, capsuleHash: repairVerificationHash(capsule) };
     await emitEvent(cfg.path, scope, { principal: "alice@acme.test" }, "repair.verification-requested", request.id, { ...request });
-    const attempt = await emitEvent(cfg.path, scope, { principal: "alice@acme.test" }, "repair.verification-recorded", "anonymous", { id: "anonymous" });
+    // Refused at the door, which replay also uses (review C18): it never reaches the log.
+    await assert.rejects(emitEvent(cfg.path, scope, { principal: "alice@acme.test" }, "repair.verification-recorded", "anonymous", { id: "anonymous" }),
+      /must name the identity/);
     await settle(t);
     const initial = verificationOf(await repairRecords(root, 7));
     assert.equal(initial.requests.length, 1);
-    assert.ok(initial.rejected.some(rejection => rejection.eventId === attempt.id));
+    assert.equal(initial.rejected.length, 0);
     const other = verificationOf(await repairRecords(peer, 7));
     assert.deepEqual(other, initial);
     const bytes = shardBytes(cfg.path, scope);
@@ -82,7 +84,7 @@ test("repair verification replays unchanged shards after an upgrade and retains 
     assert.ok(foldCount() > before, "new materializer refolds the unchanged scope");
     assert.deepEqual(upgraded, initial);
     assert.equal(shardBytes(cfg.path, scope), bytes);
-    assert.equal(upgraded.runs.length, 0, "a run that names no verifier stays rejected");
+    assert.equal(upgraded.runs.length, 0);
     const again = foldCount();
     await repairRecords(root, 7);
     assert.equal(foldCount(), again, "ordinary cache reads do not refold the log");

@@ -274,3 +274,29 @@ test("a corrected resolution changes the shown frontier before another human act
     assert.equal((await comparisonDetail(u.root, id) as any).comparison.projection.preservedAnswer, u.bob);
   } finally { u.cleanup(); }
 });
+
+test("a judgment staged against a comparison resolved meanwhile is refused at the door, as replay applies it (C18)", async () => {
+  const u = await fixture();
+  try {
+    const id = await requestAndJudge(u, "incompatible");
+    const brief = await comparisonResolutionBrief(u.root, id) as any;
+    const request = brief.shown.request;
+    await env("resolver", false, async () => {
+      const resolved = await resolveComparison(u.root, { request: id, preserve: u.alice, rationale: "Keep Alice's.",
+        shownHash: brief.shownHash, executionsHash: brief.executionsHash, source: "web" }) as any;
+      assert.equal(resolved.ok, true, JSON.stringify(resolved));
+    });
+    const scope = decisionScope(universeKey(u.root));
+    const tip = await readScope(u.side, scope);
+    const late = { ...tip.at(-1)!, id: "late-judgment", seq: (tip.at(-1)!.seq ?? 0) + 1, kind: "decision.comparison.judged", subject: id,
+      actor: { principal: "another-reader" }, data: {
+        judgment: { requestId: id, contextHash: request.contextHash, issues: request.issues,
+          answerVersions: [`${request.left.answerId}\0${request.left.version}`, `${request.right.answerId}\0${request.right.version}`],
+          verdict: "incompatible", rationale: "late", reader: { principal: "another-reader", agent: "a2", session: "s2", request: "l2", receipt: "r2" } },
+        proof: { purpose: "pair-comparison", requestId: id, contextHash: request.contextHash, brief: comparisonBriefText(request),
+          receipt: "r2", agent: "a2", session: "s2", launch: "l2", toolUseId: "l2", call: "c2" } } };
+    const { decisionsDoor } = await import("./shared-decisions.js");
+    const refused = (decisionsDoor([...tip, late], late) as { refused: { id: string; why: string }[] }).refused.find((r) => r.id === late.id);
+    assert.match(refused?.why ?? "", /comparison changed before judgment append/);
+  } finally { u.cleanup(); }
+});

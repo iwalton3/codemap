@@ -78,14 +78,7 @@ export async function requestComparison(root: string,
     const current = foldDecisions(events);
     const existing = events.find((e) => e.kind === "decision.comparison.requested" && e.subject === id);
     if (existing) return { existing };
-    const nowCandidate = intentCandidates(current).find((x) => pairKey(x.answers) === pairKey(ids));
-    if (!nowCandidate) return { error: "comparison candidate changed before append" };
-    const each = requested.every((issue) => issue.kind === "decision"
-      ? nowCandidate.decisionScope?.includes(issue.id)
-      : issue.kind === "finding" ? nowCandidate.findings.includes(issue.id)
-          || (nowCandidate.issues ?? []).some((ref) => canonicalIssueKey(ref) === canonicalIssueKey(issue as CanonicalIssueReference))
-        : (nowCandidate.issues ?? []).some((ref) => canonicalIssueKey(ref) === canonicalIssueKey(issue as CanonicalIssueReference)));
-    if (!each) return { error: "affected issue scope changed before append" };
+    // The candidate and its issue scope are the door's to check (`comparisonActRefusal`).
     const request = comparisonRequestFor(current, id, ids, requested);
     if (!request || request.contextHash !== source.contextHash)
       return { error: "answer source changed before comparison request" };
@@ -167,13 +160,7 @@ export async function recordComparisonJudgment(root: string, input: { request: s
       const old = events.find((e) => e.kind === "decision.comparison.judged"
         && (e.data as any)?.proof?.receipt === held.receipt);
       if (old) return { existing: old };
-      const trial: ReaderJudgment = { ...judgment, id: `trial_${held.receipt}`, at: new Date().toISOString() };
-      const folded = foldDecisions(events);
-      if (!comparisonSourcesCurrent(folded, current.request)) return { error: "an answer version changed before judgment append" };
-      const currentVersions = comparisonCurrentVersions(folded, current.request);
-      const result = deriveComparison(current.request, currentVersions, [...current.judgments, trial], current.resolutions);
-      if (!result.ok || !result.value.acceptedJudgments.some((x) => x.id === trial.id))
-        return { error: "judgment is not independent or does not match the current comparison" };
+      // Sources, independence and the derivation are the door's to check (`comparisonActRefusal`).
       return { kind: "decision.comparison.judged", subject: input.request, data: { judgment, proof } };
     }, decisionsDoor);
     if ("error" in event) return event;
@@ -252,13 +239,8 @@ export async function resolveComparison(root: string,
       return { error: "comparison judgments, resolutions or executed closures changed; review a fresh brief" };
     if (hash(resolutionExecutions(root, current)) !== input.executionsHash)
       return { error: "executed closure receipts changed before resolution append" };
-    const folded = foldDecisions(events);
-    if (!comparisonSourcesCurrent(folded, current.request)) return { error: "an answer version changed before resolution append" };
-    const versions = comparisonCurrentVersions(folded, current.request);
-    const trial = { ...resolution, id: `trial_${receipt}`, at: new Date().toISOString() } as HumanResolution;
-    const projected = deriveComparison(current.request, versions, current.judgments, [...current.resolutions, trial]);
-    if (!projected.ok || !projected.value.acceptedResolutions.some((x) => x.id === trial.id))
-      return { error: "comparison has no established judgment or this correction does not match the authority frontier" };
+    // Sources and the derivation are the door's to check (`comparisonActRefusal`); the executed
+    // closures above read this machine's store, so they stay here.
     return { kind: "decision.comparison.resolved", subject: input.request, data: { resolution, proof } };
   }, decisionsDoor);
   if ("error" in event) return event;

@@ -350,10 +350,12 @@ test("the fold refuses an agent's debt acknowledgement", async () => {
     // The draft spec and its operation have to be in the log for that: a gap names the
     // OPERATION it was raised against, and the fold checks it rather than taking the
     // record's word. This test used to publish neither and assert the gap bound anyway.
-    await publishSpecDrafted(root, SCOPE, opus, SPEC);
-    await publishOperation(root, SCOPE, opus, ADD);
+    // Its own draft: `ruled` ratified SPEC, and a gap is raised only against a draft.
+    const draft = { ...SPEC, id: "sp_gap" }, op = { ...ADD, id: "op_gap", specId: draft.id };
+    await publishSpecDrafted(root, SCOPE, opus, draft);
+    await publishOperation(root, SCOPE, opus, op);
     await publishAckGranted(root, SCOPE, opus, {
-      ...base, id: "ack_2", basis: "gap", operationId: ADD.id, requirementId: undefined, grantedBy: opus,
+      ...base, id: "ack_2", basis: "gap", operationId: op.id, requirementId: undefined, grantedBy: opus,
     });
     assert.equal((await fold(root)).acknowledgements.length, 1);
 

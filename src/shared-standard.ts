@@ -127,7 +127,17 @@ export const standardDoor = (logRoot: string, scope: string): DoorFold => async 
   if (RETIRED_KINDS.has(minted.kind)) return { refused: [{ id: minted.id, why: `${minted.kind} is no longer written: the log is linear, so there are no concurrent verdicts to pick between` }] };
   const others = scope === LAW_SCOPE ? await evidenceScopes(logRoot) : [LAW_SCOPE];
   const more = (await Promise.all(others.filter((s) => s !== scope).map((s) => readScope(logRoot, s)))).flat();
-  return foldStandardReport(sortEvents([...events, ...more]));
+  const all = sortEvents([...events, ...more]);
+  // A sign-off is of the CURRENT text when it is written; the fold accepts an older one on read,
+  // since a later revision does not undo a reading. Sidecar-only, so the door's (one-door rule).
+  if (minted.kind === "spec.operation-signoff-applied") {
+    const prior = foldStandardReport(all.filter((x) => x.id !== minted.id)).value;
+    const op = prior.operations.find((o) => o.id === minted.subject);
+    const spec = op ? prior.specs.find((s) => s.id === op.specId) : undefined;
+    const checked = op && spec ? validateOperationSignoff((minted.data as { capsule?: unknown } | undefined)?.capsule, op, spec, minted.actor) : null;
+    if (checked && "error" in checked) return { refused: [{ id: minted.id, why: checked.error }] };
+  }
+  return foldStandardReport(all);
 };
 const standardReferences: ReferenceCheck = async (_scope, e, _own, read) =>
   e.kind === "spec.operation-signoff-applied" ? signoffReferences(read, e) : [];

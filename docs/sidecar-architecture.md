@@ -147,8 +147,15 @@ context, diff and the analyzer. It must degrade to `status: "blocked"`, never th
   becomes a local conflict, shown on the next open on this machine.
 
 Behind every family's write is one door, registered by its fold (`registerDoor` in
-`eventlog.ts`). Replay goes through it, and so does an inline act's check, so the rule that
-refuses a write is the same rule that would refuse the event on read.
+`eventlog.ts`), and replay goes through it as an inline act's write does. The owner's rule for
+what lives there: *"Some consistency checks require local data such as presence of transcripts or
+analysis nodes. Those checks remain local only for additions to the database. Fold consistency
+checks not dependent on any data outside the sidecar should be applied on sidecar ingest too."*
+So an act's own check keeps only what reads this machine (a transcript receipt, an executed
+closure); everything that reads only the sidecar is the door's (`comparisonActRefusal`, the
+repair-verification fold, a sign-off of the current text). The door also has a no-op outcome: the
+same person's identical act, as the latest thing to happen to its subject, is neither landed twice
+nor refused (`identicalAct`; owner, Q5 and P-identical).
 
 - **One canonical table per entity kind.** A teammate's doc is a row in
   `node_versions` with an explicit `origin` / `source_scope` / `publication_state`,

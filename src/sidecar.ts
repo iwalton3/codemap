@@ -18,7 +18,7 @@ import { gitBin } from "./git.js";
 import { withSidecarLock, touchHeldLocks } from "./lock.js";
 import {
   SHARD_EXT, LINEAR_SHARD, SIDECAR_PROTOCOL, EVENT_SCHEMA, principalKey, splitShard, damageRef, appendLinear, atTip, causalHeads,
-  doorFor, isLegacyShard, isMigrationMarker, maxSeq, SIDECAR_ATTRIBUTES, SIDECAR_ATTRIBUTES_PATH, mintId, readScope, sortEvents, writeDoor, writerFor, type DoorFold, type LogEvent, type ShardDamage, type StagedEvent,
+  doorFor, identicalAct, isLegacyShard, isMigrationMarker, maxSeq, SIDECAR_ATTRIBUTES, SIDECAR_ATTRIBUTES_PATH, mintId, readScope, sortEvents, writeDoor, writerFor, type DoorFold, type LogEvent, type ShardDamage, type StagedEvent,
 } from "./eventlog.js";
 import { withoutOverlay } from "./sync-session.js";
 import { pushGate } from "./validation.js";
@@ -663,6 +663,8 @@ export interface LinearResult {
   warning?: string;
   /** The inline act's event: appended, or the one its check found already there. */
   event?: LogEvent;
+  /** Staged acts not written because the same person's identical act was already there (`identicalAct`). */
+  noop?: string[];
   /**
    * This clone's history was unrelated to the remote's and was replaced by it — a sidecar set
    * up locally, now joining its team. Its root commit changed; the store's record of which
@@ -998,9 +1000,11 @@ async function linearHeld(
     const landedNow: string[] = [];
     const already: string[] = [];
     const refusals: Refusal[] = [];
+    const noop: string[] = [];
     for (const op of ops) {
       const evs = await scopeEvents(op.scope);
       if (evs.some((e) => e.id === op.event.id)) { already.push(op.event.id); continue; }
+      if (identicalAct(evs, op.event)) { noop.push(op.event.id); continue; }
       const e = atTip(evs, writer, top, op.event);
       const why = await refusalOf(doorFor(root, op.scope), evs, e);
       if (why) { refusals.push({ id: e.id, kind: e.kind, scope: op.scope, why }); continue; }
@@ -1033,6 +1037,12 @@ async function linearHeld(
         return { gained: (await countEvents(root)) - before, pushed: false, committed: false, retries: attempt, landed: [],
           event: admission.existing, ...(warning ? { warning } : {}) };
       }
+      const twin = identicalAct(evs, { ...admission, actor: a.actor });
+      if (twin) {
+        forgetInline();
+        return { gained: (await countEvents(root)) - before, pushed: false, committed: false, retries: attempt, landed: [],
+          event: twin, noop: [twin.id], ...(warning ? { warning } : {}) };
+      }
       const staged: StagedEvent = {
         sidecarProtocol: SIDECAR_PROTOCOL, eventSchema: EVENT_SCHEMA, id: mintId(), kind: admission.kind,
         subject: admission.subject, actor: a.actor, at: new Date().toISOString(), after: causalHeads(evs),
@@ -1062,7 +1072,7 @@ async function linearHeld(
         conflicts: refusals, staged: opts.conflictOnRefusal ? [] : stagedIds(),
       };
     }
-    const toLand = [...landedNow, ...already];
+    const toLand = [...landedNow, ...already, ...noop];
 
     const committed = commitLocal(root, message);
     if (typeof committed === "object") {
@@ -1075,7 +1085,7 @@ async function linearHeld(
     const result = async (pushed: boolean, retries: number): Promise<LinearResult> => ({
       gained: Math.max(0, (await countEvents(root)) - before - landedNow.length - bumped), pushed,
       committed: committed === "committed", retries, landed: landedNow,
-      ...(warning ? { warning } : {}), ...(inlineEvent ? { event: inlineEvent } : {}), ...(joined ? { joined } : {}),
+      ...(noop.length ? { noop } : {}), ...(warning ? { warning } : {}), ...(inlineEvent ? { event: inlineEvent } : {}), ...(joined ? { joined } : {}),
     });
     if (!remote) { markLanded(root, toLand); return result(false, attempt); }
     const head = rev(root, "HEAD");

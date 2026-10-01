@@ -1139,6 +1139,18 @@ export function foldFindingsReport(events: LogEvent[]): { value: RepairFindingMa
 }
 
 /**
+ * The findings scope as a READ judges it: the finding fold and the repair folds that share the
+ * scope, so what the door refuses (below) is what a read refuses — one rule at both ends.
+ */
+export function foldFindingsScopeReport(events: LogEvent[]): { value: RepairFindingMap<SharedFinding>; refused: Refusal[] } {
+  const out = foldFindingsReport(events);
+  const byId = new Map(events.map((e) => [e.id, e]));
+  const more = [...foldRepairRecords(events).rejected, ...foldRepairVerification(events).rejected]
+    .map((r) => ({ id: r.eventId, kind: byId.get(r.eventId)?.kind ?? "", why: r.reason, cls: "state" as const }));
+  return { value: out.value, refused: [...out.refused, ...more] };
+}
+
+/**
  * The universe a findings scope belongs to (`findings/<universe>/pr-<n>` or `/b-<hash>`), or
  * null for a bare key, which only tests write.
  */
@@ -1168,13 +1180,21 @@ async function outsideReferences(scope: string, e: LogEvent, _own: LogEvent[], r
   return missing ? [{ id: e.id, kind: e.kind, cls: "reference", why: `no bug ${missing} has been filed in bugs/${universe}` }] : [];
 }
 
-registerReport((scope) => scope.startsWith("findings/"), foldFindingsReport);
-// The findings scope's door: the finding fold, the repair records that share the scope, and
-// what the scope's events name elsewhere.
+registerReport((scope) => scope.startsWith("findings/"), foldFindingsScopeReport);
+
+/** A verification application lands only if it is what closed the finding (claim, epoch, authority). */
+function repairApplicationRefused(events: LogEvent[], minted: LogEvent): { id: string; why: string }[] {
+  if (minted.kind !== "finding.repairApplied") return [];
+  return foldFindingsReport(events).value.get(minted.subject)?.closed?.eventId === minted.id ? []
+    : [{ id: minted.id, why: "canonical finding application refused current claim, epoch or authority" }];
+}
+// The findings scope's door: the finding fold, the repair records and verifications that share the
+// scope, and what the scope's events name elsewhere. Everything here reads only the sidecar, so
+// replay applies it too (owner's one-door rule, docs/sidecar-architecture.md).
 registerDoor((scope) => scope.startsWith("findings/"), (logRoot, scope) => async (events, minted) => ({
   refused: [
-    ...foldRepairRecords(events).rejected.map((r) => ({ id: r.eventId, why: r.reason })),
-    ...foldFindingsReport(events).refused,
+    ...foldFindingsScopeReport(events).refused,
+    ...repairApplicationRefused(events, minted),
     ...await outsideReferences(scope, minted, events, tipReader(logRoot)),
   ],
 }));
@@ -1193,7 +1213,7 @@ const FINDING_KINDS = registerKinds((scope) => scope.startsWith("findings/"), [
 ]);
 /** The fold for a READ: a refused linear event is damage and locks; see `validation.ts`. */
 export function foldFindings(events: LogEvent[]): RepairFindingMap<SharedFinding> {
-  return foldJudged(events, foldFindingsReport, FINDING_KINDS).value;
+  return foldJudged(events, foldFindingsScopeReport, FINDING_KINDS).value;
 }
 
 function foldFindingsWith(events: LogEvent[], refuse: ApplicationReplay["refuse"]): RepairFindingMap<SharedFinding> {

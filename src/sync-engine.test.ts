@@ -363,3 +363,20 @@ test("a sync refuses rather than destroy a clone's own unsynced or hand-edited e
     assert.ok("error" in r2 && /edited by hand/.test(r2.error), JSON.stringify(r2));
   } finally { s.dispose(); }
 });
+
+test("a staged act whose identical twin landed first replays as a no-op: one event, reported", async () => {
+  const s = await scenario(["ana@x.com"]);
+  try {
+    const ana = who(s, "ana@x.com");
+    const staged1 = await withSession("mcp:a", "mcp", async () => {
+      begin(ana.sidecar);
+      return emitEvent(ana.sidecar, "tst/u/dup", ana.actor, "noted", "n1", { x: 1 });
+    });
+    // The same person's same act lands first, from another session.
+    await withSession("mcp:b", "mcp", () => emitEvent(ana.sidecar, "tst/u/dup", ana.actor, "noted", "n1", { x: 1 }));
+    const r = await withSession("mcp:a", "mcp", () => syncSession(ana.sidecar, ana.actor)) as { noop?: string[]; error?: string };
+    assert.equal(r.error, undefined, String(r.error));
+    assert.deepEqual(r.noop, [staged1.id]);
+    assert.equal((await readScope(ana.sidecar, "tst/u/dup")).length, 1, "one event on the log");
+  } finally { s.dispose(); }
+});

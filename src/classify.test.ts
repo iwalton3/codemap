@@ -140,3 +140,11 @@ test("O30: a cross-scope reference is checked on read against the log before it"
     assert.equal(d?.kind, "finding.promotedToBug", "a reference that did not resolve in its prefix is damage");
   } finally { discard(root); }
 });
+
+test("C18: the findings door, which replay uses, refuses a verification run naming no request", async () => {
+  const { doorFor } = await import("./eventlog.js");
+  const run = ev("e1", "repair.verification-recorded", "run1", { id: "run1", requestId: "rv_nope", capsuleHash: "x", slot: 1,
+    identity: { principal: "bob", session: "s", harness: "mcp" }, results: [] }, 1);
+  const door = doorFor(tmpdir(), "findings/u/pr-1")!;
+  assert.ok((await door([run], run)).refused.some((r) => r.id === "e1"));
+});

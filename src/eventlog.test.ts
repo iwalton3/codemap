@@ -430,8 +430,8 @@ test("emitting builds a chain: GENESIS, then each event naming the last", async 
   try {
     mkdirSync(join(root, ".git"), { recursive: true });
     const a = await emitEvent(root, "s", izzie, "noted", "f_1");
-    const b = await emitEvent(root, "s", izzie, "noted", "f_1");
-    const c = await emitEvent(root, "s", dana, "noted", "f_1");
+    const b = await emitEvent(root, "s", izzie, "noted", "f_2");
+    const c = await emitEvent(root, "s", dana, "noted", "f_3");
     assert.equal(a.writerPrev, GENESIS);
     assert.equal(b.writerPrev, a.id);
     // One CLONE, two people: the chain is the clone's, so Dana's event continues it.

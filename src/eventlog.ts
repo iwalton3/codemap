@@ -377,6 +377,25 @@ export function registerReferences(match: (scope: string) => boolean, check: Ref
 }
 export const referencesFor = (scope: string): ReferenceCheck | undefined => references.find((r) => r.match(scope))?.check;
 
+/** JSON with object keys sorted, so two payloads compare by content, not by key order. */
+const stable = (v: unknown): string => JSON.stringify(v, (_k, x) =>
+  x && typeof x === "object" && !Array.isArray(x) ? Object.fromEntries(Object.keys(x).sort().map((k) => [k, (x as Record<string, unknown>)[k]])) : x);
+
+/**
+ * The same person's identical act as the LATEST thing to happen to its subject: the door's no-op
+ * outcome (owner, Q5; P-identical: "Same resulting state is a no-op"). Nothing has touched the
+ * subject since, so applying it again cannot change the state; replayed, it neither lands twice
+ * nor refuses. An identical act with something in between can change the state (a re-pick after
+ * another answer), so it lands. "Person" includes whether an agent acted for them.
+ */
+export function identicalAct(events: LogEvent[], e: Pick<LogEvent, "kind" | "subject" | "actor" | "data">): LogEvent | undefined {
+  const agent = (a: Actor) => !!a.via;   // identity.ts isAgentActor, which imports this module
+  let last: LogEvent | undefined;
+  for (const x of events) if (x.subject === e.subject) last = x;
+  return last && last.kind === e.kind && last.actor.principal === e.actor.principal && agent(last.actor) === agent(e.actor)
+    && stable(last.data ?? null) === stable(e.data ?? null) ? last : undefined;
+}
+
 /** Scopes whose every write is folded at the door before it is appended (plan 1.1). */
 export const FOLDED_AT_THE_DOOR = /^(decisions|standard|law)\//;
 
@@ -452,6 +471,8 @@ export async function appendChecked(
     const admission = await check(events);
     if ("error" in admission) return admission;
     if ("existing" in admission) return admission.existing;
+    const twin = identicalAct(events, { ...admission, actor });
+    if (twin) return twin;
     const writer = await writerFor(logRoot);
     const event = atTip(events, writer, await maxSeq(logRoot), {
       sidecarProtocol: SIDECAR_PROTOCOL, eventSchema: EVENT_SCHEMA,

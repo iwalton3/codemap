@@ -9,6 +9,7 @@
  * be — a copy whose hashes were recomputed must still be refused.
  */
 import { test } from "node:test";
+import { join } from "node:path";
 import assert from "node:assert/strict";
 import { isLogDamage } from "./log-damage.js";
 import { testChain } from "./test-events.js";
@@ -105,4 +106,17 @@ test("D7: a sign-off counts iff the text it signed is the text at ratification, 
   // And it does NOT count for text that differs at ratification.
   const s = foldStandard([...before, signed, toB] as never);
   assert.ok(reviewGap(s.specs[0]!, s.operations, s.witnesses, principal.principal).moved.some((o) => o.id === op.id));
+});
+
+test("C18: the door, which replay uses, refuses a sign-off of text that is not current when it lands", async () => {
+  const { standardDoor, LAW_SCOPE } = await import("./shared-standard.js");
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const rev = { ...op, statement: "Exceed nothing.", revisions: [{ at: "2026-09-26T01:00:00Z", by: executor, reason: "edit", was: {} }] };
+  const toB = { ...before[1]!, id: "to-b", writerPrev: "sibling", after: ["sibling"], kind: "spec.operation.revised", subject: op.specId, data: { operation: rev } };
+  const signed = { ...applied(capsuleFor(answer())), writerPrev: "to-b", after: ["to-b"] };
+  const tip = [...before, toB, signed].map((e, i) => ({ ...e, seq: i + 1 }));
+  const door = standardDoor(mkdtempSync(join(tmpdir(), "codemap-signoff-")), LAW_SCOPE);
+  const why = (await door(tip as never, tip.at(-1) as never)).refused.find((r) => r.id === "application")?.why;
+  assert.match(why ?? "", /differs from the human presentation/, "signed text A, but the operation reads B when it lands");
 });

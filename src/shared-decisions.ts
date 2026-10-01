@@ -2429,9 +2429,50 @@ export function supersededFindings(s: SharedDecisions): Map<string, { decision: 
 /** The decisions fold, as the write door asks it (plan 1.1). */
 export const decisionsDoor: DoorFold = (events, minted) => {
   const wrong = minted.kind === "decision.conflict.resolved"
-    ? "nothing is held for a person to pick a side of: a withdrawal that conflicts is refused" : decisionEventShape(minted);
+    ? "nothing is held for a person to pick a side of: a withdrawal that conflicts is refused" : decisionEventShape(minted)
+    ?? (minted.kind.startsWith("decision.comparison.")
+      ? comparisonActRefusal(foldDecisionsReport(events.filter((x) => x.id !== minted.id)).value, minted) : null);
   return wrong ? { refused: [{ id: minted.id, why: wrong }] } : foldDecisionsReport(events);
 };
+
+/**
+ * A comparison act's preconditions on the decisions log alone, against the log before it. In the
+ * door, so a staged act's replay applies them as an inline act's write does (owner's one-door
+ * rule); the act's own check keeps only what reads local data (executed closures).
+ */
+export function comparisonActRefusal(s: SharedDecisions, e: Pick<LogEvent, "id" | "kind" | "subject" | "at" | "data">): string | null {
+  const data = e.data as Record<string, any> | undefined;
+  if (e.kind === "decision.comparison.requested") {
+    const r = data?.request as ComparisonRequest | undefined;
+    if (!r?.left || !r.right || !Array.isArray(r.issues)) return null;   // the fold refuses the shape
+    const pair = [r.left.answerId, r.right.answerId].sort().join("\0");
+    const candidate = intentCandidates(s).find((x) => [...x.answers].sort().join("\0") === pair);
+    if (!candidate) return "comparison candidate changed before append";
+    const covered = r.issues.every((issue) => issue.kind === "decision"
+      ? candidate.decisionScope?.includes(issue.id)
+      : issue.kind === "finding" && candidate.findings.includes(issue.id)
+        || (candidate.issues ?? []).some((ref) => canonicalIssueKey(ref) === canonicalIssueKey(issue as CanonicalIssueReference)));
+    return covered ? null : "affected issue scope changed before append";
+  }
+  if (e.kind !== "decision.comparison.judged" && e.kind !== "decision.comparison.resolved") return null;
+  const act = e.kind === "decision.comparison.judged" ? data?.judgment : data?.resolution;
+  const current = s.comparisons.find((x) => x.request.id === e.subject);
+  if (!current || !act || current.request.contextHash !== act.contextHash
+    || (e.kind === "decision.comparison.judged" && current.projection.state === "resolved"))
+    return `comparison changed before ${e.kind === "decision.comparison.judged" ? "judgment" : "resolution"} append`;
+  if (!comparisonSourcesCurrent(s, current.request))
+    return `an answer version changed before ${e.kind === "decision.comparison.judged" ? "judgment" : "resolution"} append`;
+  const versions = comparisonCurrentVersions(s, current.request);
+  const trial = { ...act, id: e.id, at: e.at };
+  if (e.kind === "decision.comparison.judged") {
+    const result = deriveComparison(current.request, versions, [...current.judgments, trial as ReaderJudgment], current.resolutions);
+    return result.ok && result.value.acceptedJudgments.some((x) => x.id === e.id) ? null
+      : "judgment is not independent or does not match the current comparison";
+  }
+  const result = deriveComparison(current.request, versions, current.judgments, [...current.resolutions, trial as HumanResolution]);
+  return result.ok && result.value.acceptedResolutions.some((x) => x.id === e.id) ? null
+    : "comparison has no established judgment or this correction does not match the authority frontier";
+}
 
 /**
  * What a decisions event names that the fold does not check (docs/sidecar-references.md, rows
