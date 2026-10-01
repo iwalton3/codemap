@@ -110,14 +110,17 @@ async function judged(events) {
 let defects = [];
 for (let pass = 0; pass < 1000; pass++) {
   const j = await judged(withSeq(kept));
+  defects = j.defects;
+  const bad = new Map([...j.damage, ...j.newer.filter((n) => n.cls === "shape").map((n) => ({ ...n, why: `shape: ${n.why}` }))]
+    .map((d) => [d.id, d]));
+  // Newer only once nothing else drops: one that names or read a dropped event is judged again
+  // without it (round 3, I5).
   const newer = j.newer.filter((n) => n.cls !== "shape");
-  if (newer.length) {
+  if (newer.length && !bad.size) {
     console.error(`refusing: ${newer.length} event(s) are newer than this build, which therefore cannot judge them:\n  `
       + newer.slice(0, 20).map((n) => `${n.kind} ${n.id} in ${n.scope}: ${n.why}`).join("\n  ") + "\nMigrate with a build that reads them.");
     process.exit(1);
   }
-  defects = j.defects;
-  const bad = new Map([...j.damage, ...j.newer.map((n) => ({ ...n, why: `shape: ${n.why}` }))].map((d) => [d.id, d]));
   if (!bad.size) break;
   if (!kept.some((e) => bad.has(e.id))) {
     console.error(`refusing: the read reports damage it cannot attribute to one event: ${j.damage.map((d) => `${d.id}: ${d.why}`).join("; ")}`);

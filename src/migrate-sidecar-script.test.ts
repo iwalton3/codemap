@@ -108,3 +108,24 @@ test("C6: an old build's malformed event is dropped like damage, not refused as 
     discard(report);
   } finally { discard(root); }
 });
+
+test("round 3, I5: an event that depends on a dropped malformed one is judged again, not refused as newer", async () => {
+  const { readFileSync } = await import("node:fs");
+  const line = (id: string, kind: string, data: Record<string, unknown>, after: string[]) =>
+    JSON.stringify({ ...JSON.parse(legacy(id, kind, "F1", data)), after });
+  const root = sidecar({ "findings/u/pr-1/w_legacy.ndjson": [
+    line("e1", "finding.created", { text: "t", targetKind: "anchor", targetId: "a_1" }, []),
+    line("e2", "finding.outcome", {}, ["e1"]),
+    // Refused for naming e2, so the read classes it newer — until e2 is gone.
+    line("e3", "finding.reopened", { state: "created", observedClosure: "e2" }, ["e2"]),
+  ].join("\n") + "\n" });
+  try {
+    const report = join(root, "..", `${root.split("/").pop()}-report.json`);
+    const r = spawnSync(process.execPath, [join(REPO, "scripts", "migrate-sidecar.mjs"), root, "--old-build", DIST, "--new-build", DIST,
+      "--report", report], { encoding: "utf8" });
+    assert.equal(r.status, 0, r.stderr);
+    const dropped = (JSON.parse(readFileSync(report, "utf8")) as { dropped: { id: string; pass: number }[] }).dropped;
+    assert.deepEqual(dropped.map((d) => [d.id, d.pass]), [["e2", 0], ["e3", 1]]);
+    discard(report);
+  } finally { discard(root); }
+});
