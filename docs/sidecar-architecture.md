@@ -206,10 +206,17 @@ Every scope family's fold reports what it does not apply, classed (`validation.t
 | a kind outside its family's vocabulary, an envelope field this build does not read, a newer protocol or schema, or a shape this build does not write | **newer** | never folded; every push blocks until an upgrade; reads carry on without it (`classify`) |
 | an event that names or read one this build holds out as newer | **newer** | the same |
 | a validator failure while a teammate's manifest records a higher `materializerVersion` | **newer** | the same, until this build reaches that version |
-| a known dev-era shape, or `log.repaired` | **skipped** | nothing (owner, Q7) |
+| a known dev-era shape, or `log.repaired` | **skipped** | nothing (owner, Q7); the fold's read graph is re-linked around it, so later acts keep what they read |
+| an event that NAMES a skipped one (what it created, by id) | **skipped** | the same (owner, round 2 C5) — reading past a skipped event excuses nothing, because no upgrade ever re-judges it |
+| an event valid against the log before it that the whole log refuses | **fold defect** | shown beside every read (MCP `foldDefect`, the web banner, the CLI's stderr); no lock, pushes carry on (owner, round 2 C8) |
 
 Each event is judged against the log BEFORE it (owner, C16): a refusal the prefix would not make
-is a fold defect, never a lock on a valid history.
+is a fold defect — a later valid event changed this build's verdict, a bug to fix at the fold's
+arm — never a lock on a valid history.
+
+"Read one held out as newer" reaches every later event under the linear log, since each act
+reads the tip. That is deliberate for newer events only: the upgrade that folds them re-folds the
+scope and re-judges all of it.
 
 At replay every class refuses. A reference to a LOCAL item (an anchor, a path, a commit) is
 never a foreign key: it may be a stale checkout that becomes valid later.

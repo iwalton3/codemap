@@ -11,7 +11,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { scenario, who, settle, type Person } from "./scenario.js";
-import { LINEAR_SHARD, readScope, readScopeChecked, readSets, registerDoor, sortEvents, type LogEvent } from "./eventlog.js";
+import { LINEAR_SHARD, readScope, readScopeChecked, readSets, registerDoor, registerKinds, sortEvents, type LogEvent } from "./eventlog.js";
+// The push gate, live in this file whatever ran before it: a scope no family reads is newer and blocks pushes (C10).
+import "./damage-scan.js";
 import { emitEvent, emitEventChecked, emitEvents } from "./write.js";
 import * as queue from "./sync-queue.js";
 import { attemptGone, begin, discard as discardTx, dropOp, localConflicts, staged, syncSession } from "./sync-engine.js";
@@ -30,6 +32,7 @@ import { discard } from "./test-tmp.js";
  * the tip can stop meeting, so the engine is tested apart from any real fold's rules.
  */
 const CLAIMS = "tst/claims";
+registerKinds((s) => s.startsWith("tst/"), ["noted", "claim"]);
 registerDoor((s) => s.startsWith("tst/"), () => (events) => {
   const held = new Set<string>();
   const refused: { id: string; why: string }[] = [];
@@ -698,4 +701,38 @@ test("C9: a batch write adopts a gone session's conflict into its base session, 
     });
     assert.equal(queue.conflicts(ana.sidecar, "mcp:next").length, 1, "the base session holds it");
   } finally { s.dispose(); }
+});
+
+test("C12: a sidecar that wrote before joining a team brings those writes along at its first sync, each through its door", async () => {
+  const s = await scenario(["ana@x.com"]);
+  const solo = mkdtempSync(join(tmpdir(), "codemap-solo-"));
+  try {
+    const ana = who(s, "ana@x.com");
+    await emitEvent(ana.sidecar, "tst/c12team", ana.actor, "noted", "team");
+    const bob = { principal: "bob@x.com" } as Actor;
+    await ensureSidecar(solo, bob);
+    await emitEvent(solo, "tst/c12a", bob, "noted", "one");
+    await emitEvent(solo, "tst/c12b", bob, "noted", "two");
+    git(solo, "remote", "add", "origin", s.origin);
+    const r = await syncLinear(solo, "cli:1:c12", { actor: bob });
+    assert.ok(!("error" in r), JSON.stringify(r));
+    for (const scope of ["tst/c12team", "tst/c12a", "tst/c12b"])
+      assert.equal(git(s.origin, "show", `main:${scope}/events.ndjson`).status, 0, `${scope} is on the remote`);
+  } finally { discard(solo); s.dispose(); }
+});
+
+test("C12: a write its door refuses on joining is reported and kept, never dropped", async () => {
+  const s = await scenario(["ana@x.com"]);
+  const solo = mkdtempSync(join(tmpdir(), "codemap-solo-"));
+  try {
+    const ana = who(s, "ana@x.com");
+    await claim(ana, "x");
+    const bob = { principal: "bob@x.com" } as Actor;
+    await ensureSidecar(solo, bob);
+    await emitEventChecked(solo, CLAIMS, bob, async () => ({ kind: "claim", subject: "x" }));
+    git(solo, "remote", "add", "origin", s.origin);
+    const r = await syncLinear(solo, "cli:1:c12", { actor: bob }) as { error?: string };
+    assert.match(r.error ?? "", /x is already claimed/);
+    assert.deepEqual(queue.pending(solo, "cli:1:c12").map((o) => o.event.subject), ["x"], "kept for its author to drop or redo");
+  } finally { discard(solo); s.dispose(); }
 });

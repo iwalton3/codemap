@@ -7,7 +7,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { resolveSidecar } from "./sidecar-config.js";
-import { scanOnOpen } from "./damage-scan.js";
+import { foldDefectNotice, scanOnOpen } from "./damage-scan.js";
 import { isLogDamage } from "./log-damage.js";
 import { LockedOut, locate, lockoutOf, recordLockout } from "./lockout.js";
 import { scopesOnDisk } from "./eventlog.js";
@@ -31,6 +31,16 @@ export async function lockoutGate(roots: string[]): Promise<LockedOut | null> {
     if (l) return new LockedOut(l);
   }
   return null;
+}
+
+/**
+ * The fold-defect notice for these universes' sidecars, or null (round 2 C8). Shown beside a
+ * result by every front end, never in place of one: no lock, and pushes carry on.
+ */
+export async function foldDefectGate(roots: string[]): Promise<string | null> {
+  const found: string[] = [];
+  for (const s of sidecarsOf(roots)) { const n = await foldDefectNotice(s); if (n) found.push(n); }
+  return found.length ? found.join("\n") : null;
 }
 
 /**

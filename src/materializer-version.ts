@@ -242,4 +242,8 @@
 // schema is NEWER and never folded; a refusal that depends on one (by `after`, too) is newer;
 // a validator failure while a teammate's manifest records a higher version than this is newer
 // until this build reaches it. Same reason as 18 → 19: the shards do not move.
-export const MATERIALIZER_VERSION = 54;
+// 54 → 55 (review 2026-10-01-online-only-sync-round2): the read re-links the fold's read graph
+// around skipped events and excuses only refusals that name one (C5); a re-draft can no longer
+// reset a spec that is not a draft (O3); and any fold arm the C16 property test finds. One bump
+// for the round: no build ships between its fold changes. Same reason as 18 → 19.
+export const MATERIALIZER_VERSION = 55;

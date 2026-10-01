@@ -54,6 +54,25 @@ export async function apiPost(path, body) {
 }
 
 /**
+ * A fold defect (round 2 C8; owner: "Visible, no lock"): this build's fold left a valid event out.
+ * Every API response carries it while it holds; shown beside the page, never thrown.
+ *
+ * @param {Response} r
+ */
+function foldDefect(r) {
+  const text = r.headers.get('x-codemap-fold-defect');
+  let el = document.getElementById('fold-defect');
+  if (!text) { el?.remove(); return; }
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'fold-defect';
+    el.setAttribute('role', 'status');
+    document.body.appendChild(el);
+  }
+  el.textContent = decodeURIComponent(text);
+}
+
+/**
  * 423 is the lockout: the shared log holds a damaged entry, so every read and act refuses
  * until a person repairs it (plan 1.2, docs/log-repair.md). Shown over the page, once, with
  * the server's one diagnostic — and thrown, so no page renders as though it had data.
@@ -61,6 +80,7 @@ export async function apiPost(path, body) {
  * @param {Response} r
  */
 async function lockedOut(r) {
+  foldDefect(r);
   if (r.status !== 423) return;
   const body = await r.json().catch(() => ({}));
   const message = body.error ?? 'codemap is locked: the shared log holds a damaged entry.';

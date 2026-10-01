@@ -3,8 +3,8 @@
  *
  * Run once per process per sidecar before its first read or op, and after every pull: the
  * folds are lazy, so without this a findings read would never see damage sitting in
- * `decisions/`. Bytes that are not JSON count in EVERY scope; the shapes and the fold's own
- * refusals count in the scopes that have them (decisions and the standard).
+ * `decisions/`. Bytes that are not JSON count in EVERY scope, and so does classification
+ * (newer); the fold's own refusals count in the scopes that have a fold.
  */
 import { createHash } from "node:crypto";
 import { readdir, stat } from "node:fs/promises";
@@ -13,7 +13,7 @@ import {
   EVENT_SCHEMA, kindsFor, prefixReader, readScopeChecked, referencesFor, scopesOnDisk, SHARD_EXT, SIDECAR_PROTOCOL, sortEvents,
   type LogEvent, type ScopeReader, type Vocabulary,
 } from "./eventlog.js";
-import { foldJudged, registerPushGate, reportFor, withPeersAhead, type Report } from "./validation.js";
+import { classify, foldJudged, registerPushGate, reportFor, withPeersAhead, type Report } from "./validation.js";
 import { withoutOverlay } from "./sync-session.js";
 import { foldDecisionsReport } from "./shared-decisions.js";
 import { foldStandardReport, LAW_SCOPE } from "./shared-standard.js";
@@ -24,7 +24,14 @@ import { clearLockout, locate, lockoutOf, recordLockout, type Lockout } from "./
 /** An event this build cannot read as written: pushes block until an upgrade re-folds it. */
 export interface NewerEntry { id: string; kind: string; scope: string; why: string }
 
-export interface SidecarScan { damage: DamagedEntry | null; newer: NewerEntry[] }
+/**
+ * Valid against the log before it, refused over the whole log: a later valid event changed a
+ * fold's verdict on it — a defect in this build's fold, not in the data (owner, round 2 C8:
+ * "Visible, no lock"). Shown; never a lock, never a push block.
+ */
+export type FoldDefect = NewerEntry;
+
+export interface SidecarScan { damage: DamagedEntry | null; newer: NewerEntry[]; defects: FoldDefect[] }
 
 const scans = new Map<string, { key: string; scan: SidecarScan }>();
 
@@ -58,6 +65,7 @@ async function scanTip(logRoot: string): Promise<SidecarScan> {
   if (hit?.key === key) return hit.scan;
   const ahead = await peersAhead(logRoot);
   const newer: NewerEntry[] = [];
+  const defects: FoldDefect[] = [];
   let damage: DamagedEntry | null = null;
   const reads = new Map<string, Awaited<ReturnType<typeof readScopeChecked>>>();
   for (const scope of scopes) reads.set(scope, await readScopeChecked(logRoot, scope));
@@ -69,60 +77,12 @@ async function scanTip(logRoot: string): Promise<SidecarScan> {
       why: "the line is not JSON, so no build can read the event it held" };
     break;
   }
-  // A line that parses but fails the envelope check: a newer protocol or schema wrote it, or an
-  // existing validator is failing — damage, unless a teammate's build is ahead (owner, C17).
-  for (const [scope, read] of reads) {
-    for (const m of read.malformed) {
-      const p = (m.parsed ?? {}) as Partial<LogEvent>;
-      const id = typeof p.id === "string" ? p.id : "(malformed)", kind = typeof p.kind === "string" ? p.kind : "(malformed)";
-      if ((Number(p.sidecarProtocol) || 0) > SIDECAR_PROTOCOL || (Number(p.eventSchema) || 0) > EVENT_SCHEMA || ahead) {
-        newer.push({ id, kind, scope, why: `its envelope is not one this build reads (${m.shard}:${m.line})` });
-      } else damage ??= { id, kind, scope, shard: m.shard, line: m.line, why: "its envelope is missing a field every event carries" };
-    }
-  }
-  // Every family's fold, classified first: one judge for newer and for damage.
-  const judged = (group: string[], report: Report<unknown>, kinds: Vocabulary | undefined) => {
-    const events = sortEvents(group.flatMap((s) => reads.get(s)!.events));
-    const scopeOf = new Map<string, string>();
-    for (const s of group) for (const e of reads.get(s)!.events) scopeOf.set(e.id, s);
-    try {
-      for (const r of withPeersAhead(ahead, () => foldJudged(events, report, kinds)).newer)
-        newer.push({ id: r.id, kind: r.kind, scope: scopeOf.get(r.id) ?? group[0]!, why: r.why });
-    } catch (e) {
-      if (!isLogDamage(e)) throw e;
-      damage ??= locate(logRoot, group, e.entry);
-    }
-  };
-  for (const scope of scopes) {
-    if (scope.startsWith("decisions/")) judged([scope], foldDecisionsReport, kindsFor(scope));
-    else if (scope.startsWith("standard/") || scope === LAW_SCOPE) continue;
-    else { const report = reportFor(scope); if (report) judged([scope], report, kindsFor(scope)); }
-  }
-  const evidence = scopes.filter((s) => s.startsWith("standard/"));
-  const law = scopes.includes(LAW_SCOPE) ? [LAW_SCOPE] : [];
-  for (const group of evidence.length ? evidence.map((s) => [...law, s]) : [law]) {
-    if (group.length) judged(group, foldStandardReport, kindsFor(group[group.length - 1]!));
-  }
-  // What each event names in other scopes, against the log before it (owner, O30): a reference
-  // that did not resolve there is a failed foreign key — damage — and nothing later re-judges it.
-  if (!damage) {
-    const all: ScopeReader = { read: async (s) => reads.get(s)?.events ?? [], scopes: async () => scopes };
-    const held = new Set(newer.map((n) => n.id));
-    outer: for (const scope of scopes) {
-      const check = referencesFor(scope);
-      if (!check) continue;
-      const own = reads.get(scope)!.events;
-      for (const [i, e] of own.entries()) {
-        if (typeof e.seq !== "number" || held.has(e.id) || !kindsFor(scope)?.kinds.has(e.kind)) continue;
-        const [bad] = await check(scope, e, own.slice(0, i), prefixReader(all, e.seq));
-        if (!bad) continue;
-        if (ahead) { newer.push({ id: e.id, kind: e.kind, scope, why: `${bad.why} — a teammate's codemap folds a newer version` }); continue; }
-        damage = locate(logRoot, [scope], { id: e.id, kind: e.kind, why: bad.why });
-        break outer;
-      }
-    }
-  }
-  const scan = { damage, newer: dedupe(newer) };
+  const judged = await judgeReads(reads, ahead);
+  newer.push(...judged.newer);
+  defects.push(...judged.defects);
+  const first = judged.damage[0];
+  damage ??= first ? (first.shard ? first : locate(logRoot, [first.scope ?? ""], first)) : null;
+  const scan = { damage, newer: dedupe(newer), defects: dedupe(defects) };
   scans.set(logRoot, { key, scan });
   return scan;
 }
@@ -139,6 +99,14 @@ export async function newerIn(logRoot: string): Promise<string | null> {
     + `${first.id} in ${first.scope}: ${first.why}). Pushes are blocked until codemap is upgraded; reads carry on without them.`;
 }
 registerPushGate(newerIn);
+
+/** What the front ends show while this build's folds leave a valid event out (C8), or null. */
+export async function foldDefectNotice(logRoot: string): Promise<string | null> {
+  const { defects } = await scanSidecar(logRoot);
+  if (!defects.length) return null;
+  return defects.map((d) => `a codemap fold defect left out event ${d.id} (${d.kind}, ${d.scope}): ${d.why} — your data is `
+    + `intact; upgrade codemap when a fix ships`).join("\n");
+}
 
 /** Every damaged entry's first sighting, or null when the sidecar reads clean. */
 export async function findDamage(logRoot: string): Promise<DamagedEntry | null> {
@@ -172,4 +140,85 @@ export async function scanOnOpen(logRoot: string): Promise<void> {
   if (scanned.has(logRoot)) return;
   await scanForDamage(logRoot);
   scanned.add(logRoot);
+}
+
+/** What a scope reads as, for `judgeReads`: its events and any line that parsed but failed the envelope. */
+export interface ScopeRead { events: LogEvent[]; malformed: { shard: string; line: number; parsed?: unknown }[] }
+
+/**
+ * The read's judgment over a set of scopes: classification, every family's fold judged against
+ * each event's prefix, and cross-scope references against the log before each event (O30).
+ * `scanSidecar` runs it over what is on disk; the migration runs it over the log it is about to
+ * write (round 2 C6), so a migrated log reads exactly as it was judged. Damage entries carry
+ * their scope, and their shard and line only where the read knows them. `every`: keep judging
+ * after the first damage, for a caller that drops what is damaged and judges again.
+ */
+export async function judgeReads(reads: Map<string, ScopeRead>, ahead: boolean, every = false): Promise<{ damage: DamagedEntry[]; newer: NewerEntry[]; defects: FoldDefect[] }> {
+  const scopes = [...reads.keys()];
+  const newer: NewerEntry[] = [], defects: FoldDefect[] = [], damage: DamagedEntry[] = [];
+  const hit = (d: DamagedEntry) => { if (every || !damage.length) damage.push(d); };
+  // A line that parses but fails the envelope check: a newer protocol or schema wrote it, or an
+  // existing validator is failing — damage, unless a teammate's build is ahead (owner, C17).
+  for (const [scope, read] of reads) {
+    for (const m of read.malformed) {
+      const p = (m.parsed ?? {}) as Partial<LogEvent>;
+      const id = typeof p.id === "string" ? p.id : "(malformed)", kind = typeof p.kind === "string" ? p.kind : "(malformed)";
+      if ((Number(p.sidecarProtocol) || 0) > SIDECAR_PROTOCOL || (Number(p.eventSchema) || 0) > EVENT_SCHEMA || ahead) {
+        newer.push({ id, kind, scope, why: `its envelope is not one this build reads (${m.shard}:${m.line})` });
+      } else hit({ id, kind, scope, shard: m.shard, line: m.line, why: "its envelope is missing a field every event carries" });
+    }
+  }
+  // Every family's fold, classified first: one judge for newer and for damage.
+  const judged = (group: string[], report: Report<unknown>, kinds: Vocabulary | undefined) => {
+    const events = sortEvents(group.flatMap((s) => reads.get(s)!.events));
+    const scopeOf = new Map<string, string>();
+    for (const s of group) for (const e of reads.get(s)!.events) scopeOf.set(e.id, s);
+    try {
+      const out = withPeersAhead(ahead, () => foldJudged(events, report, kinds));
+      for (const r of out.newer) newer.push({ id: r.id, kind: r.kind, scope: scopeOf.get(r.id) ?? group[0]!, why: r.why });
+      for (const r of out.defects) defects.push({ id: r.id, kind: r.kind, scope: scopeOf.get(r.id) ?? group[0]!, why: r.why });
+    } catch (e) {
+      if (!isLogDamage(e)) throw e;
+      hit({ ...e.entry, scope: scopeOf.get(e.entry.id) ?? group[group.length - 1]! });
+    }
+  };
+  // A scope with no fold is still classified (round 2, C10): one no family of this build
+  // registers holds only kinds it does not know — newer (owner, C17) — and `materializer/` has a
+  // vocabulary and no fold.
+  const unfolded = (scope: string) => {
+    const vocab = kindsFor(scope), events = reads.get(scope)!.events;
+    const found = vocab ? classify(events, vocab).newer
+      : events.map((e) => ({ id: e.id, kind: e.kind, why: `no family of this build reads ${scope}` }));
+    for (const r of found) newer.push({ id: r.id, kind: r.kind, scope, why: r.why });
+  };
+  for (const scope of scopes) {
+    if (scope.startsWith("decisions/")) judged([scope], foldDecisionsReport, kindsFor(scope));
+    else if (scope.startsWith("standard/") || scope === LAW_SCOPE) continue;
+    else { const report = reportFor(scope); if (report) judged([scope], report, kindsFor(scope)); else unfolded(scope); }
+  }
+  const evidence = scopes.filter((s) => s.startsWith("standard/"));
+  const law = scopes.includes(LAW_SCOPE) ? [LAW_SCOPE] : [];
+  for (const group of evidence.length ? evidence.map((s) => [...law, s]) : [law]) {
+    if (group.length) judged(group, foldStandardReport, kindsFor(group[group.length - 1]!));
+  }
+  // What each event names in other scopes, against the log before it (owner, O30): a reference
+  // that did not resolve there is a failed foreign key — damage — and nothing later re-judges it.
+  if (!damage.length || every) {
+    const all: ScopeReader = { read: async (s) => reads.get(s)?.events ?? [], scopes: async () => scopes };
+    const held = new Set([...newer.map((n) => n.id), ...damage.map((d) => d.id)]);
+    outer: for (const scope of scopes) {
+      const check = referencesFor(scope);
+      if (!check) continue;
+      const own = reads.get(scope)!.events;
+      for (const [i, e] of own.entries()) {
+        if (typeof e.seq !== "number" || held.has(e.id) || !kindsFor(scope)?.kinds.has(e.kind)) continue;
+        const [bad] = await check(scope, e, own.slice(0, i), prefixReader(all, e.seq));
+        if (!bad) continue;
+        if (ahead) { newer.push({ id: e.id, kind: e.kind, scope, why: `${bad.why} — a teammate's codemap folds a newer version` }); continue; }
+        hit({ id: e.id, kind: e.kind, scope, why: bad.why });
+        if (!every) break outer;
+      }
+    }
+  }
+  return { damage, newer, defects };
 }

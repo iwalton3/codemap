@@ -256,6 +256,10 @@
     #lockout > div { max-width: min(760px, 94vw); background: var(--panel); color: var(--text);
       border: 1px solid var(--bad); border-left: 4px solid var(--bad); border-radius: 10px;
       padding: 18px 22px; font-size: 13.5px; line-height: 1.55; white-space: pre-wrap; }
+    /* A fold defect (round 2 C8): beside the page, not over it — nothing is locked. */
+    #fold-defect { position: fixed; left: 12px; right: 12px; bottom: 12px; z-index: 80; background: var(--panel);
+      color: var(--text); border: 1px solid var(--warn, var(--bad)); border-left: 4px solid var(--warn, var(--bad));
+      border-radius: 8px; padding: 10px 14px; font-size: 12.5px; line-height: 1.5; white-space: pre-wrap; }
     /* A tab's refused staged writes (plan 4.2), and its sync status. Outside the render tree too. */
     #conflicts { position: fixed; inset: 0; z-index: 90; display: flex; align-items: center; justify-content: center;
       background: rgba(0,0,0,0.6); padding: 16px; }

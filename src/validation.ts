@@ -24,6 +24,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { isLogDamage, LogDamage, type DamagedEntry } from "./log-damage.js";
 import { lockoutMessage, lockoutOf } from "./lockout.js";
 import { ENVELOPE_FIELDS, EVENT_SCHEMA, readSets, SIDECAR_PROTOCOL, SKIPPED_KINDS, type LogEvent, type Vocabulary } from "./eventlog.js";
+import { splice } from "./migration-splice.js";
 
 export type RefusalClass = "shape" | "older" | "newer" | "state" | "reference";
 
@@ -80,28 +81,34 @@ export const withPeersAhead = <T>(flag: boolean, fn: () => T): T => ahead.run(fl
 /**
  * The read-side verdict on what the fold refused: throws on damage, returns what is newer than
  * this build. `excluded` is what `classify` kept out of the fold. A refusal that depends on an
- * excluded or skipped event — names it, or read it (`after`) — takes that event's class:
- * newer, or skipped with it (owner, batch 2).
+ * excluded event — names it, or read it (`after`) — is newer with it (owner, batch 2): under the
+ * linear log that is everything after it, deliberately, because the upgrade that folds it
+ * re-folds the scope (the cache keys on MATERIALIZER_VERSION) and re-judges all of it. A
+ * SKIPPED event no build ever folds, so nothing re-judges it: only a refusal that NAMES it is
+ * skipped with it (owner, round 2 C5: "Re-link, excuse namers"); the fold's read graph was
+ * re-linked around it (`foldJudged`), so a seen-rule cannot refuse for want of it.
  */
 export function judge(
   events: LogEvent[], refused: Refusal[], excluded: LogEvent[] = [], skipped: LogEvent[] = [],
   /** Whether the fold accepts `e` over the log BEFORE it; see the last check below. */
   validWhenWritten: (e: LogEvent) => boolean = () => false,
+  /** Collects the fold defects: valid when written, refused over the whole log. */
+  defects: Refusal[] = [],
 ): Refusal[] {
   if (!refused.length) return [];
   const all = [...events, ...excluded, ...skipped];
   const byId = new Map(all.map((e) => [e.id, e]));
   const reads = readSets(all);
   const skippedNewer = [...excluded], skippedOlder = [...skipped];
-  const on = (e: LogEvent, set: LogEvent[]) => namesAny(e, set, all) || set.some((s) => reads.saw(e.id, s.id));
+  const onNewer = (e: LogEvent) => namesAny(e, skippedNewer, all) || skippedNewer.some((s) => reads.saw(e.id, s.id));
   const newer: Refusal[] = [];
   for (const r of refused) {
     const e = byId.get(r.id);
     if (!e) continue;
     if (typeof e.seq !== "number" || r.cls === "older") { skippedOlder.push(e); continue; }
     if (r.cls === "shape" || r.cls === "newer") { newer.push(r); skippedNewer.push(e); continue; }
-    if (on(e, skippedNewer)) { newer.push({ ...r, cls: "newer" }); skippedNewer.push(e); continue; }
-    if (on(e, skippedOlder)) { skippedOlder.push(e); continue; }
+    if (onNewer(e)) { newer.push({ ...r, cls: "newer" }); skippedNewer.push(e); continue; }
+    if (namesAny(e, skippedOlder, all)) { skippedOlder.push(e); continue; }
     if (ahead.getStore()) {
       newer.push({ ...r, cls: "newer", why: `${r.why} — a teammate's codemap folds a newer version, which may accept it` });
       continue;
@@ -109,9 +116,10 @@ export function judge(
     // Judged as the door judged it, against the log before it (owner, C16: "Validations are for
     // the database at the time the item was created not the future"). Refused only over the
     // whole log means a later valid event changed an earlier verdict: a fold defect to fix at
-    // its arm (classify.test.ts holds the property), never a lock on a valid history. Paid only
-    // by a refusal, so a healthy log costs nothing.
-    if (validWhenWritten(e)) continue;
+    // its arm (classify.test.ts holds the property), never a lock on a valid history — and
+    // never silent: the front ends name it (owner, round 2 C8: "Visible, no lock"), and pushes
+    // carry on. Paid only by a refusal, so a healthy log costs nothing.
+    if (validWhenWritten(e)) { defects.push(r); continue; }
     throw new LogDamage({ id: r.id, kind: r.kind, why: r.why });
   }
   return newer;
@@ -119,8 +127,8 @@ export function judge(
 
 /**
  * Whether `e` names one of `skipped` anywhere in its payload: by event id, an `id` the skipped
- * event carries in its own payload (a request names itself `request.id`), or a subject the
- * skipped event CREATED — the first event of that subject in `all`. A skipped event that merely
+ * event carries in its own payload (a request names itself `request.id`, a round each of its
+ * `decisions[].id`), or a subject the skipped event CREATED — the first event of that subject in `all`. A skipped event that merely
  * shares a subject (another answer to one decision) excuses nothing.
  */
 export function namesAny(e: LogEvent | undefined, skipped: LogEvent[], all: LogEvent[]): boolean {
@@ -128,7 +136,8 @@ export function namesAny(e: LogEvent | undefined, skipped: LogEvent[], all: LogE
   const text = JSON.stringify({ subject: e.subject, data: e.data });
   const created = (s: LogEvent): boolean => all.find((x) => x.subject === s.subject)?.id === s.id;
   const ids = (s: LogEvent): string[] => [s.id, ...(s.subject !== e.subject || created(s) ? [s.subject] : []),
-    ...Object.values(s.data ?? {}).map((v) => (v as { id?: unknown } | null)?.id).filter((v): v is string => typeof v === "string")];
+    ...Object.values(s.data ?? {}).flatMap((v) => Array.isArray(v) ? v : [v])
+      .map((v) => (v as { id?: unknown } | null)?.id).filter((v): v is string => typeof v === "string")];
   return skipped.some((s) => ids(s).some((id) => id === s.id ? text.includes(id) : text.includes(`"${id}"`)));
 }
 
@@ -170,8 +179,12 @@ function culprit(events: LogEvent[], report: (events: LogEvent[]) => unknown, er
 }
 
 /** Fold for a READ: classified first, then the value, having judged the refusals. */
-export function foldJudged<T>(events: LogEvent[], report: Report<T>, vocab: Vocabulary | undefined): { value: T; newer: Refusal[] } {
-  const { fold, newer, skipped } = classify(events, vocab);
+export function foldJudged<T>(events: LogEvent[], report: Report<T>, vocab: Vocabulary | undefined): { value: T; newer: Refusal[]; defects: Refusal[] } {
+  const classified = classify(events, vocab);
+  const { newer, skipped } = classified;
+  // Re-linked around what is skipped, so every kept event's read set is what it was minus the
+  // skipped events (round 2 C5): left out, a tombstone cut each later act off from what it read.
+  const fold = skipped.length ? splice(events, classified.fold, new Set(skipped.map((s) => s.id))) : classified.fold;
   const out = report(fold);
   const ids = new Set(newer.map((n) => n.id));
   const excluded = events.filter((e) => ids.has(e.id));
@@ -179,7 +192,8 @@ export function foldJudged<T>(events: LogEvent[], report: Report<T>, vocab: Voca
     const at = fold.indexOf(e);
     try { return at >= 0 && !report(fold.slice(0, at + 1)).refused.some((r) => r.id === e.id); } catch { return false; }
   };
-  return { value: out.value, newer: [...newer, ...judge(fold, out.refused, excluded, skipped, validWhenWritten)] };
+  const defects: Refusal[] = [];
+  return { value: out.value, newer: [...newer, ...judge(fold, out.refused, excluded, skipped, validWhenWritten, defects)], defects };
 }
 
 /**

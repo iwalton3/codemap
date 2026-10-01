@@ -5,7 +5,7 @@
 import { parseArgs } from "node:util";
 import { join, resolve } from "node:path";
 import { existsSync } from "node:fs";
-import { lockoutGate } from "./lockout-gate.js";
+import { foldDefectGate, lockoutGate } from "./lockout-gate.js";
 import { findDamage } from "./damage-scan.js";
 import { analyzeMarten } from "./analyzers/marten.js";
 import { enableAnalyzer } from "./analyzers/run.js";
@@ -666,6 +666,8 @@ if (!["sync", "pull"].includes(positionals[0] ?? "") && !(positionals[0] === "si
   const roots = [values.repo, ...positionals.slice(1), "."].filter((p): p is string => !!p && existsSync(join(p, ".codemap")));
   const lockout = await lockoutGate(roots.map((p) => resolve(p)));
   if (lockout) { console.error(lockout.message); process.exit(1); }
+  const defect = await foldDefectGate(roots.map((p) => resolve(p)));
+  if (defect) console.error(defect);
 }
 
 if (positionals[0] === "analyze") {

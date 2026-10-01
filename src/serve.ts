@@ -24,7 +24,7 @@ import { markReviewed, unmarkReviewed } from "./reviews.js";
 import { withLock } from "./lock.js";
 import { resolveActor } from "./identity.js";
 import { comparisonDetail, comparisonResolutionBrief, resolveComparison } from "./ops/comparisons.js";
-import { asLockout, lockoutGate } from "./lockout-gate.js";
+import { asLockout, foldDefectGate, lockoutGate } from "./lockout-gate.js";
 import type { LockedOut } from "./lockout.js";
 
 /** The routes a locked store still answers: sync and pull fetch, re-check, and clear a lock. */
@@ -400,6 +400,8 @@ async function serveRequest(req: IncomingMessage, res: ServerResponse): Promise<
     if (url.pathname.startsWith("/api/") && !RUNS_WHILE_LOCKED.has(url.pathname)) {
       const lockout = await lockoutGate(ws.universes.map((u) => u.path));
       if (lockout) { sendLockout(res, lockout); return; }
+      const defect = await foldDefectGate(ws.universes.map((u) => u.path));
+      if (defect) res.setHeader("x-codemap-fold-defect", encodeURIComponent(defect));
     }
 
     // The one write path from the UI: mark/unmark a review (under the write lock).

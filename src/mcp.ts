@@ -28,7 +28,7 @@ import { applicationReaderBrief, submitApplicationVerdict, recordApplicationVerd
 import { questionnaireStatus, waitQuestionnaireStatus } from "./ops/questionnaire-status.js";
 import { comparisonDetail, requestComparison, comparisonBrief, submitComparisonJudgment, recordComparisonJudgment, comparisonResolutionBrief, resolveComparison } from "./ops/comparisons.js";
 import { RepairConnection } from "./verifier-boundary.js";
-import { asLockout, lockoutGate } from "./lockout-gate.js";
+import { asLockout, foldDefectGate, lockoutGate } from "./lockout-gate.js";
 import { setProcessSessionKind } from "./sync-session.js";
 
 /** The tools a locked store still runs: they fetch, re-check, and are how a lock clears. */
@@ -2388,8 +2388,11 @@ async function handle(msg: any): Promise<void> {
         const out = locked ? await withLock(universe.path, run) : await run();
         // Every call from a session holding staged writes says so (plan 4.1): "sync and push often".
         const held = shared.stagedCount(ws.universes.map((u) => u.path));
-        const reminder = held ? { reminder: `${held} shared write(s) staged by this session and not yet synced — \`sync\` to push them (all or none), \`staged\` to see them, \`discard\` to drop them.` } : {};
-        const shown = held && out && typeof out === "object" && !Array.isArray(out) ? { ...out, ...reminder } : held ? { result: out, ...reminder } : out;
+        const defect = await foldDefectGate(ws.universes.map((u) => u.path));
+        const notes = { ...(held ? { reminder: `${held} shared write(s) staged by this session and not yet synced — \`sync\` to push them (all or none), \`staged\` to see them, \`discard\` to drop them.` } : {}),
+          ...(defect ? { foldDefect: defect } : {}) };
+        const noted = Object.keys(notes).length > 0;
+        const shown = noted && out && typeof out === "object" && !Array.isArray(out) ? { ...out, ...notes } : noted ? { result: out, ...notes } : out;
         send({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(shown, null, 2) }] } });
       } catch (e: any) {
         const lockout = await asLockout(e, ws.universes.map((u) => u.path)).catch(() => null);

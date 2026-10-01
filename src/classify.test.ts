@@ -8,10 +8,10 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { kindsFor, type LogEvent } from "./eventlog.js";
-import { foldJudged, reportFor } from "./validation.js";
-import { scanSidecar } from "./damage-scan.js";
-import { foldDecisionsReport } from "./shared-decisions.js";
+import { kindsFor, registerKinds, type LogEvent } from "./eventlog.js";
+import { foldJudged, registerReport, reportFor } from "./validation.js";
+import { foldDefectNotice, newerIn, scanSidecar } from "./damage-scan.js";
+import { decisionHash, foldDecisions, foldDecisionsReport } from "./shared-decisions.js";
 import "./shared-findings.js";
 import "./shared-bugs.js";
 import "./shared-notes.js";
@@ -101,6 +101,67 @@ test("a validator failure is newer while a teammate's build is ahead, and damage
   } finally { roots.forEach(discard); }
 });
 
+test("C10: a scope no family of this build reads is newer, and a scope with no fold is still classified", async () => {
+  const roots: string[] = [];
+  try {
+    const future = sidecarWith("future/u", [ev("f1", "future.created", "x", {}, 1)]);
+    roots.push(future);
+    const a = await scanSidecar(future);
+    assert.equal(a.damage, null);
+    assert.deepEqual(a.newer.map((n) => n.id), ["f1"]);
+    // `materializer/` has a vocabulary and no fold: an envelope field this build does not read is newer there too.
+    const m = sidecarWith("materializer", [{ ...ev("m1", "materializer.bumped", "v1", { version: 1 }, 1), extra: 1 }]);
+    roots.push(m);
+    assert.deepEqual((await scanSidecar(m)).newer.map((n) => n.id), ["m1"]);
+  } finally { roots.forEach(discard); }
+});
+
+/** A question, a person's answer to it, then a repair's tombstone — which every later act's `after` names. */
+function answeredThenRepaired() {
+  const agent = { principal: "alice@x.com", via: { kind: "agent" as const, model: "m" } }, alice = { principal: "alice@x.com" };
+  const decision = { id: "d1", round: "R1", ref: "D1", kind: "options",
+    payload: { question: "D1: settle F1?", options: [{ label: "Settle" }, { label: "Keep open" }] },
+    options: [{ label: "Settle", effects: [{ findings: ["F1"], on: "settle", as: "refuted" }] }, { label: "Keep open", effects: [] }] };
+  const round = testEvent({ id: "r1", kind: "decision.round.posted", subject: "R1", actor: agent, seq: 1,
+    data: { publication: 2, round: { id: "R1", source: "test", universe: "u" }, decisions: [decision] } });
+  const posted = foldDecisions([round]).decisions[0]!;
+  const answer = testEvent({ id: "a1", kind: "decision.answer.recorded", subject: posted.id, actor: alice, seq: 2, after: ["r1"],
+    data: { decision: posted.id, hash: decisionHash(posted), via: { kind: "direct", option: "Settle" } } });
+  const repaired = testEvent({ id: "x1", kind: "log.repaired", subject: posted.id, seq: 3, after: ["a1"],
+    data: { kind: "decision.answer.recorded", reason: "r", approvedBy: "p" } });
+  const answers = foldDecisions([round, answer]).decisions[0]!.answers;
+  assert.equal(answers.length, 1, "the answer folds");
+  return { alice, decisionId: posted.id, events: [round, answer, repaired], answerId: answers[0]!.id };
+}
+
+test("C5: after a repair, an act that read the log THROUGH the tombstone is credited with what it read", () => {
+  const { alice, decisionId, events, answerId } = answeredThenRepaired();
+  const withdrawal = testEvent({ id: "w1", kind: "decision.withdrawn", subject: decisionId, actor: alice, seq: 4, after: ["x1"],
+    data: { decision: decisionId, answer: answerId, reason: "changed my mind", knownAnswers: [answerId] } });
+  const all = [...events, withdrawal];
+  assert.deepEqual(verdict("decisions/u", all, foldDecisionsReport), { newer: [] });
+  assert.equal(foldDecisions(all).decisions[0]!.withdrawals?.length, 1, "applied, not silently dropped");
+});
+
+test("C5: after a repair, damage that does not name the tombstone still locks", () => {
+  const { alice, events } = answeredThenRepaired();
+  const stray = testEvent({ id: "b1", kind: "decision.answer.recorded", subject: "d9", actor: alice, seq: 4, after: ["x1"],
+    data: { decision: "d9", hash: "h", via: { kind: "direct", option: "Settle" } } });
+  assert.deepEqual(verdict("decisions/u", [...events, stray], foldDecisionsReport), { lock: "b1" });
+});
+
+test("C5: an answer to a decision a dev-era round posted names it, so it is skipped with the round, never a lock", () => {
+  const round = ev("r1", "decision.round.posted", "R1", { round: { id: "R1", source: "s" }, decisions: [{ id: "d1", ref: "D1" }] }, 1);
+  const answer = ev("a1", "decision.answer.recorded", "d1", { decision: "d1", hash: "h", via: { kind: "direct", option: "x" } }, 2, ["r1"]);
+  assert.deepEqual(verdict("decisions/u", [round, answer], foldDecisionsReport), { newer: [] });
+});
+
+test("C5: after a dev-era round, damage that does not name it still locks", () => {
+  const round = ev("r1", "decision.round.posted", "R1", { round: { id: "R1", source: "s" }, decisions: [{ id: "d1", ref: "D1" }] }, 1);
+  const stray = ev("b1", "decision.answer.recorded", "d9", { decision: "d9", hash: "h", via: { kind: "direct", option: "x" } }, 2, ["r1"]);
+  assert.deepEqual(verdict("decisions/u", [round, stray], foldDecisionsReport), { lock: "b1" });
+});
+
 test("a dev-era decisions posting is skipped as older: no lock, and pushes are not blocked", () => {
   const round = ev("r1", "decision.round.posted", "R1", { round: { id: "R1", source: "s" }, decisions: [] }, 1);
   assert.deepEqual(verdict("decisions/u", [round], foldDecisionsReport), { newer: [] });
@@ -119,6 +180,23 @@ test("C16: a refusal the log before it would not make is never damage; one it wo
   assert.deepEqual(foldJudged([e1, e2], flips, vocab).newer, []);
   const always = (evs: LogEvent[]) => ({ value: null, refused: evs.some((e) => e.id === "e1") ? [{ id: "e1", kind: "note.created", why: "bad", cls: "state" as const }] : [] });
   assert.throws(() => foldJudged([e1, e2], always, vocab), /damaged log entry e1/);
+});
+
+// A family whose fold changes its verdict on e1 once e2 exists — the defect class, planted for C8.
+registerKinds((s) => s.startsWith("tstflip/"), ["note.created"]);
+registerReport((s) => s.startsWith("tstflip/"), (evs) => ({ value: null,
+  refused: evs.some((e) => e.id === "e2") ? [{ id: "e1", kind: "note.created", why: "later", cls: "state" as const }] : [] }));
+
+test("C8: an event valid when written that the whole log refuses is a visible fold defect — no lock, no push block", async () => {
+  const root = sidecarWith("tstflip/u", [ev("e1", "note.created", "N1", { text: "x" }, 1), ev("e2", "note.created", "N2", { text: "y" }, 2)]);
+  try {
+    const scan = await scanSidecar(root);
+    assert.equal(scan.damage, null);
+    assert.deepEqual(scan.newer, []);
+    assert.deepEqual(scan.defects.map((d) => d.id), ["e1"]);
+    assert.equal(await newerIn(root), null, "pushes carry on");
+    assert.match(await foldDefectNotice(root) ?? "", /fold defect left out event e1 .*your data is intact/);
+  } finally { discard(root); }
 });
 
 test("O30: a cross-scope reference is checked on read against the log before it", async () => {

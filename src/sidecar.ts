@@ -20,7 +20,7 @@ import {
   SHARD_EXT, LINEAR_SHARD, SIDECAR_PROTOCOL, EVENT_SCHEMA, principalKey, splitShard, damageRef, appendLinear, atTip, causalHeads,
   doorFor, identicalAct, isLegacyShard, isMigrationMarker, maxSeq, SIDECAR_ATTRIBUTES, SIDECAR_ATTRIBUTES_PATH, mintId, readScope, sortEvents, writeDoor, writerFor, type DoorFold, type LogEvent, type ShardDamage, type StagedEvent,
 } from "./eventlog.js";
-import { baseOf, sessionGone, withoutOverlay } from "./sync-session.js";
+import { baseOf, currentSession, sessionGone, withoutOverlay } from "./sync-session.js";
 import { pushGate } from "./validation.js";
 import {
   allQueuedIds, conflicts, drop, getMeta, pruneLanded, markConflict, markInflight, markLanded, markStaged, markUnknown, noteRefusal, pending, reassign,
@@ -767,7 +767,8 @@ async function editedShards(root: string): Promise<string[]> {
  * instead. The ordinary case (a clean tree at, or behind, the tip) costs two git calls.
  * Per-writer shards are `unmigrated`'s to judge, by id: their lines never match the remote's.
  */
-async function unqueuedLocalEvents(root: string, remoteSha: string): Promise<{ path: string; id: string }[]> {
+type LocalOnly = { path: string; id: string; event: LogEvent; absent: boolean };
+async function unqueuedLocalEvents(root: string, remoteSha: string): Promise<LocalOnly[]> {
   const head = rev(root, "HEAD");
   // `gRaw` and `-z`: see `damagedWorkingShards` for what trimming porcelain output costs.
   const dirty = gRaw(root, ["status", "--porcelain", "-z", "--untracked-files=all", "--", `*${SHARD_EXT}`]).out
@@ -781,7 +782,7 @@ async function unqueuedLocalEvents(root: string, remoteSha: string): Promise<{ p
   const paths = [...changed];
   const remote = linesAtCommit(root, remoteSha, paths);
   const queued = queuedIds(root);
-  const lost: { path: string; id: string }[] = [];
+  const lost: LocalOnly[] = [];
   for (const p of paths) {
     let text = "";
     try { text = await readFile(join(root, p), "utf8"); } catch { /* deleted locally */ }
@@ -789,10 +790,31 @@ async function unqueuedLocalEvents(root: string, remoteSha: string): Promise<{ p
       const there = remote.get(event.id);
       // Not on the remote and not ours to replay — or on it with different BYTES: a pushed
       // event edited here. Either way the reset would destroy it without a word.
-      if (there === undefined ? !queued.has(event.id) : there !== line) lost.push({ path: p, id: event.id });
+      if (there === undefined ? !queued.has(event.id) : there !== line) lost.push({ path: p, id: event.id, event, absent: there === undefined });
     }
   }
   return lost;
+}
+
+/**
+ * A clone joining a team remote — no history yet, or one unrelated to the remote's — imports what it wrote
+ * alone (owner, C12: "Import on join"): each event absent from the remote is staged in `session`,
+ * in the order it was written, and replayed through its door like any staged write; one the door
+ * refuses is reported and kept. A materializer event is not imported: the bump is re-derived.
+ * Answers what it could not import — an event the remote holds with other bytes — for the caller
+ * to refuse on, and the ids it staged.
+ */
+function importOnJoin(root: string, session: string, local: LocalOnly[]): { rest: LocalOnly[]; staged: string[] } {
+  const rest: LocalOnly[] = [], staged: string[] = [];
+  for (const l of [...local].sort((a, b) => (a.event.seq ?? 0) - (b.event.seq ?? 0))) {
+    if (!l.absent) { rest.push(l); continue; }
+    const scope = dirname(l.path);
+    if (scope === MATERIALIZER_SCOPE) continue;
+    const { writer: _w, writerPrev: _p, seq: _s, ...event } = l.event;
+    stage(root, session, scope, event as StagedEvent);
+    staged.push(l.id);
+  }
+  return { rest, staged };
 }
 
 /**
@@ -936,6 +958,8 @@ async function linearHeld(
   let inlineId: string | null = null;
   let warning: string | undefined;
   let joined = false;
+  /** Staged by `importOnJoin`: replayed by this sync even when it is an inline one. */
+  const imported = new Set<string>();
   const forgetInline = () => { if (inlineId) { markStaged(root, [inlineId]); drop(root, session, inlineId); inlineId = null; } };
 
   for (let attempt = 0; attempt < PUSH_ATTEMPTS; attempt++) {
@@ -973,7 +997,14 @@ async function linearHeld(
         + `committed and pushed with git — see docs/log-repair.md — and anything else is restored with \`git checkout\`.` };
     }
     if (remoteSha) {
-      const lost = await unqueuedLocalEvents(root, remoteSha);
+      let lost = await unqueuedLocalEvents(root, remoteSha);
+      const here = rev(root, "HEAD");
+      // Joining: no history of its own yet (writes made with no remote stay uncommitted), or none shared with the remote's.
+      if (lost.length && (!here || !g(root, ["merge-base", here, remoteSha]).ok)) {
+        const imp = importOnJoin(root, session, lost);
+        lost = imp.rest;
+        for (const id of imp.staged) imported.add(id);
+      }
       if (lost.length) {
         forgetInline();
         return { error: `refusing to sync: ${lost.length} event(s) in this sidecar clone differ from the remote and were not `
@@ -1028,7 +1059,7 @@ async function linearHeld(
         + `each, then sync — ${held.map((o) => `${o.event.kind} ${o.event.id}: ${o.why}`).join("; ")}`,
         conflicts: held.map((o) => ({ id: o.event.id, kind: o.event.kind, scope: o.scope, why: o.why ?? "refused" })), staged: stagedIds() };
     }
-    const ops = opts.inline ? [] : pending(root, session);
+    const ops = opts.inline ? pending(root, session).filter((o) => imported.has(o.event.id)) : pending(root, session);
     if (ops.length || opts.inline) {
       const blocked = await pushGate(root);
       if (blocked) { forgetInline(); return { error: blocked, staged: stagedIds() }; }
@@ -1268,7 +1299,8 @@ export async function pullLinear(root: string, actor?: Actor): Promise<PullResul
         + `A pull would discard the edit; commit and push a repair with git (docs/log-repair.md), or restore it with \`git checkout\`.` };
     }
     if (head === remoteSha) return { gained: 0 };
-    const lost = await unqueuedLocalEvents(root, remoteSha);
+    let lost = await unqueuedLocalEvents(root, remoteSha);
+    if (lost.length && (!head || !g(root, ["merge-base", head, remoteSha]).ok)) lost = importOnJoin(root, currentSession().session, lost).rest;
     if (lost.length) {
       return { error: `refusing to pull: ${lost.length} event(s) in this sidecar clone are not on the remote and were not `
         + `staged through a sync (first: ${lost[0]!.path} ${lost[0]!.id}). If this sidecar predates the linear log it must be migrated first.` };

@@ -429,6 +429,10 @@ function foldStandardWithRefusals(events: LogEvent[]): { value: SharedStandard; 
         // and `draftSpec` refuses a spec without a title. See `bindable` in
         // `shared-projections.ts` for what an unbindable row used to cost.
         if (!spec?.id || !spec.title?.trim() || !spec.createdAt) { refuse(e, "a spec needs an id, a title and a creation time"); break; }
+        // Immutability attaches at ratification (docs/requirements-architecture.md): a re-draft
+        // reset a ratified or withdrawn spec to draft, rules and all.
+        const prior = specs.get(spec.id);
+        if (prior && prior.status !== "draft") { refuse(e, `spec ${spec.id} is ${prior.status}; it cannot be drafted again`); break; }
         specs.set(spec.id, { ...spec, status: "draft", origin: "sync" });
         break;
       }

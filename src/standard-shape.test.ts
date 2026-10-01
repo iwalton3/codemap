@@ -6,7 +6,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { foldStandard, standardDoor } from "./shared-standard.js";
+import { foldStandard, foldStandardReport, standardDoor } from "./shared-standard.js";
 import { standardEventShape } from "./log-shape.js";
 import type { LogEvent } from "./eventlog.js";
 
@@ -41,3 +41,13 @@ for (const [name, events] of cases) {
     assert.ok(door.refused.some((r) => r.id === bad.id));
   });
 }
+
+test("O3: a re-draft cannot reset a spec that is no longer a draft (immutability attaches at ratification)", async () => {
+  const withdrawn = ev("e2", "spec.withdrawn", "S", { reason: "superseded" }, ["e1"]);
+  const redraft = ev("e3", "spec.drafted", "S", { spec: { ...spec, title: "again" } }, ["e2"]);
+  const events = [drafted, withdrawn, redraft];
+  assert.deepEqual(foldStandardReport(events).refused.map((r) => r.id), ["e3"]);
+  assert.equal(foldStandardReport(events).value.specs.find((s) => s.id === "S")?.status, "withdrawn");
+  const door = await standardDoor("/nonexistent", "standard/u")(events, redraft);   // replay hands the door the log WITH the act
+  assert.ok(door.refused.some((r) => r.id === "e3"), "and the door refuses it");
+});
