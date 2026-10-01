@@ -13,13 +13,18 @@
 //    algorithm its merged folds used for law + evidence).
 // 3. Applies the owner's gate rulings: `graph.published` events whose source node is an analyzer
 //    node are dropped (owner, Q2: "Drop them").
-// 4. Validates the result with THIS build's folds, in that order, with `seq` assigned, and drops
-//    whatever they refuse — so the migrated log reads clean and never locks — repeating until
-//    nothing more drops (a dropped event can orphan a later one).
+// 4. Judges the result with THIS build's READ — `judgeReads`, what `scanSidecar` runs: classification,
+//    each event against the log before it, cross-scope references (round 2 C6) — with `seq`
+//    assigned, and drops what it reports as damage, repeating until nothing more drops (a dropped
+//    event can orphan a later one). Anything it reports as NEWER fails the migration: this build
+//    cannot judge it. A fold defect (valid when written, refused over the whole log) is kept.
+//
+// It refuses outright a shard holding a line that does not parse, a torn last line included
+// (round 2 C7): the old build's read skips such lines, and step 5 deletes the shard.
 // 5. Writes each scope as one `events.ndjson`, removes the per-writer shards, writes the tripwire and
 //    the sentinel manifest (a fresh clone's tripwire; eventlog.ts).
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -50,6 +55,24 @@ if (existsSync(join(root, ".git"))) {
 // --- 2. e40e9e3's order -------------------------------------------------------------------------
 const old = await load(oldBuild, "eventlog.js");
 const scopes = (await old.scopesOnDisk(root)).filter((s) => s !== "linear-log");
+// Every line must parse before anything is read through a reader that skips what does not: the
+// shards are deleted at the end, and an event that is not read is an event destroyed.
+const unreadable = [];
+for (const s of scopes) {
+  for (const f of readdirSync(join(root, s)).filter((n) => n.endsWith(".ndjson")).sort()) {
+    readFileSync(join(root, s, f), "utf8").split("\n").forEach((line, i) => {
+      if (!line.trim()) return;
+      let e;
+      try { e = JSON.parse(line); } catch { unreadable.push(`${s}/${f}:${i + 1} is not JSON`); return; }
+      if (!e || typeof e.id !== "string" || typeof e.kind !== "string") unreadable.push(`${s}/${f}:${i + 1} is not an event`);
+    });
+  }
+}
+if (unreadable.length) {
+  console.error(`refusing: ${unreadable.length} line(s) in this sidecar cannot be read, and migrating would delete them:\n  `
+    + unreadable.slice(0, 20).join("\n  ") + "\nRepair them first: see docs/log-repair.md.");
+  process.exit(1);
+}
 const byScope = new Map();
 for (const s of scopes) byScope.set(s, await old.readScope(root, s));
 const scopeOf = new Map();
@@ -70,41 +93,34 @@ let kept = global.filter((e) => {
 // --- 4. validate with this build, until nothing more drops ---------------------------------------
 for (const m of ["shared-findings.js", "shared-bugs.js", "shared-notes.js", "shared-docs.js", "shared-triage.js",
   "shared-graph.js", "shared-reviews.js", "shared-walkthrough.js"]) await load(newBuild, m);
-const { reportFor } = await load(newBuild, "validation.js");
-const { foldDecisionsReport } = await load(newBuild, "shared-decisions.js");
-const { foldStandardReport, LAW_SCOPE } = await load(newBuild, "shared-standard.js");
-const { isLogDamage } = await load(newBuild, "log-damage.js");
+await load(newBuild, "materializer-log.js");
+const { judgeReads } = await load(newBuild, "damage-scan.js");
 const newLog = await load(newBuild, "eventlog.js");
 const { splice } = await load(newBuild, "migration-splice.js");
 
 const withSeq = (events) => splice(global, events, new Set(dropped.map((d) => d.id))).map((e, i) => ({ ...e, seq: i + 1 }));
-/** Every event this build refuses in the order given, with why: one pass. */
-function refusals(events) {
-  const out = new Map();
-  const groups = new Map();
-  for (const e of events) {
-    const s = scopeOf.get(e.id);
-    if (!groups.has(s)) groups.set(s, []);
-    groups.get(s).push(e);
-  }
-  const halting = (evs, fold) => {
-    try { for (const r of fold(evs).refused) out.set(r.id, r.why); }
-    catch (err) { if (isLogDamage(err)) out.set(err.entry.id, err.entry.why); else throw err; }
-  };
-  for (const [s, evs] of groups) {
-    if (s.startsWith("decisions/")) { halting(evs, foldDecisionsReport); continue; }
-    if (s.startsWith("standard/")) { halting(newLog.sortEvents([...(groups.get(LAW_SCOPE) ?? []), ...evs]), foldStandardReport); continue; }
-    if (s === LAW_SCOPE) continue;
-    const report = reportFor(s);
-    if (report) for (const r of report(evs).refused) out.set(r.id, `${r.cls}: ${r.why}`);
-  }
-  if (groups.has(LAW_SCOPE) && ![...groups.keys()].some((s) => s.startsWith("standard/"))) halting(groups.get(LAW_SCOPE), foldStandardReport);
-  return out;
+/** The read's judgment of the log as it would be written: every damaged entry, newer and fold defect. */
+async function judged(events) {
+  const reads = new Map(scopes.map((s) => [s, { events: [], malformed: [] }]));
+  for (const e of events) reads.get(scopeOf.get(e.id)).events.push(e);
+  return judgeReads(reads, false, true);
 }
+let defects = [];
 for (let pass = 0; pass < 1000; pass++) {
-  const bad = refusals(withSeq(kept));
-  if (!bad.size) break;
-  for (const [id, why] of bad) dropped.push({ id, kind: kept.find((e) => e.id === id)?.kind, scope: scopeOf.get(id), why, pass });
+  const j = await judged(withSeq(kept));
+  if (j.newer.length) {
+    console.error(`refusing: ${j.newer.length} event(s) are newer than this build, which therefore cannot judge them:\n  `
+      + j.newer.slice(0, 20).map((n) => `${n.kind} ${n.id} in ${n.scope}: ${n.why}`).join("\n  ") + "\nMigrate with a build that reads them.");
+    process.exit(1);
+  }
+  defects = j.defects;
+  if (!j.damage.length) break;
+  const bad = new Map(j.damage.map((d) => [d.id, d]));
+  if (!kept.some((e) => bad.has(e.id))) {
+    console.error(`refusing: the read reports damage it cannot attribute to one event: ${j.damage.map((d) => `${d.id}: ${d.why}`).join("; ")}`);
+    process.exit(1);
+  }
+  for (const [id, d] of bad) dropped.push({ id, kind: kept.find((e) => e.id === id)?.kind ?? d.kind, scope: scopeOf.get(id) ?? d.scope, why: d.why, pass });
   kept = kept.filter((e) => !bad.has(e.id));
 }
 const migrated = withSeq(kept);
@@ -113,7 +129,7 @@ const migrated = withSeq(kept);
 const report = {
   sidecar: resolve(root), oldBuild: resolve(oldBuild), newBuild, applied: apply, tripwire,
   scopes: scopes.length, eventsBefore: global.length, eventsAfter: migrated.length,
-  dropped, perScope: scopes.map((s) => ({ scope: s, before: byScope.get(s).length, after: migrated.filter((e) => scopeOf.get(e.id) === s).length })),
+  dropped, foldDefects: defects, perScope: scopes.map((s) => ({ scope: s, before: byScope.get(s).length, after: migrated.filter((e) => scopeOf.get(e.id) === s).length })),
 };
 if (apply) {
   for (const s of scopes) {
