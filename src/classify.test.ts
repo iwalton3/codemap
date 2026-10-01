@@ -148,3 +148,48 @@ test("C18: the findings door, which replay uses, refuses a verification run nami
   const door = doorFor(tmpdir(), "findings/u/pr-1")!;
   assert.ok((await door([run], run)).refused.some((r) => r.id === "e1"));
 });
+
+test("P-identical: a second person resolving a resolved finding lands as their agreement; the state is unchanged", async () => {
+  const { foldFindingsReport } = await import("./shared-findings.js");
+  const bob = { principal: "bob@x.com" };
+  const events = [
+    ev("e1", "finding.created", "F1", { text: "t", targetKind: "anchor", targetId: "a_1" }, 1),
+    ev("e2", "finding.stateChanged", "F1", { state: "resolved", from: "created", reason: "fixed" }, 2, ["e1"]),
+    { ...ev("e3", "finding.stateChanged", "F1", { state: "resolved", from: "created", reason: "saw it too" }, 3, ["e1"]), actor: bob },
+  ];
+  const out = foldFindingsReport(events);
+  assert.deepEqual(out.refused, []);
+  const f = out.value.get("F1")!;
+  assert.equal(f.state, "resolved");
+  assert.equal(f.closed?.eventId, "e2", "the first resolution stands");
+  assert.deepEqual(f.agreements?.map((a) => [a.by.principal, a.eventId]), [["bob@x.com", "e3"]]);
+  // The same person again changes nothing and records nothing.
+  const again = foldFindingsReport([...events, ev("e4", "finding.stateChanged", "F1", { state: "resolved", from: "created" }, 4, ["e1"])]);
+  assert.deepEqual(again.refused, []);
+  assert.equal(again.value.get("F1")!.agreements?.length, 1);
+});
+
+test("P-identical: notes, adjudications and identical-witness restatements record agreement too", async () => {
+  const { foldNotesReport } = await import("./shared-notes.js");
+  const bob = { principal: "bob@x.com" };
+  const notes = foldNotesReport([
+    ev("n1", "note.created", "N1", { targetKind: "anchor", targetId: "a_1", kind: "question", text: "q" }, 1),
+    ev("n2", "note.resolved", "N1", { from: "open" }, 2, ["n1"]),
+    { ...ev("n3", "note.resolved", "N1", { from: "open" }, 3, ["n1"]), actor: bob },
+  ]);
+  assert.deepEqual(notes.refused, []);
+  assert.equal(notes.value.get("N1")!.resolved?.by.principal, "alice@x.com");
+  assert.deepEqual(notes.value.get("N1")!.agreements?.map((a) => a.by.principal), ["bob@x.com"]);
+});
+
+test("O29: a second filing of one bug id that says something else is refused; another person's same filing is agreement", async () => {
+  const { foldBugsReport } = await import("./shared-bugs.js");
+  const bob = { principal: "bob@x.com" };
+  const filed = (id: string, seq: number, data: Record<string, unknown>) => ev(id, "bug.filed", "B1", { anchors: [], ...data }, seq);
+  const differs = foldBugsReport([filed("b1", 1, { title: "t", text: "x" }), filed("b2", 2, { title: "other", text: "y" })]);
+  assert.deepEqual(differs.refused.map((r) => r.id), ["b2"]);
+  assert.equal(differs.value.get("B1")!.title, "t");
+  const same = foldBugsReport([filed("b1", 1, { title: "t", text: "x" }), { ...filed("b2", 2, { title: "t", text: "x" }), actor: bob }]);
+  assert.deepEqual(same.refused, []);
+  assert.deepEqual(same.value.get("B1")!.agreements?.map((a) => a.by.principal), ["bob@x.com"]);
+});

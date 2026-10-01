@@ -46,7 +46,7 @@ async function team(fn: (s: Scenario) => Promise<void>) {
 }
 
 test("a restatement replayed after one its writer never read is refused, and the one that landed stands", async () => {
-  for (const mine of ["izzie", "dana"]) {  // different from dana's, then identical to it
+  for (const mine of ["izzie"]) {  // different from dana's; identical to it is agreement (next test)
     await team(async (s) => {
       const izzie = who(s, "izzie@x.com"), dana = who(s, "dana@x.com");
       begin(izzie.sidecar);
@@ -82,6 +82,23 @@ test("a restatement made after reading the previous one supersedes it", async ()
       const pt = await pointerOf(s, p);
       assert.deepEqual(pt.witnesses, W("dana"));
       assert.equal(pt.restatedBy?.principal, "dana@x.com");
+    }
+  });
+});
+
+test("a restatement with the witnesses that landed meanwhile is the restater's agreement, not a refusal (O9)", async () => {
+  await team(async (s) => {
+    const izzie = who(s, "izzie@x.com"), dana = who(s, "dana@x.com");
+    begin(izzie.sidecar);
+    await publishPointerRestated(izzie.sidecar, SCOPE, izzie.actor, "pt_1", "2026-08-12T00:00:00.000Z", W("dana"));
+    await publishPointerRestated(dana.sidecar, SCOPE, dana.actor, "pt_1", "2026-08-12T00:00:01.000Z", W("dana"));
+    const r = await syncSession(izzie.sidecar, izzie.actor);
+    assert.ok(!("error" in r), JSON.stringify(r));
+    await settle(s);
+    for (const p of ["izzie@x.com", "dana@x.com"]) {
+      const pt = await pointerOf(s, p);
+      assert.equal(pt.restatedBy?.principal, "dana@x.com", "the state is dana's restatement");
+      assert.deepEqual(pt.agreements?.map((a) => a.by.principal), ["izzie@x.com"]);
     }
   });
 });

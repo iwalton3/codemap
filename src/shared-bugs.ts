@@ -29,7 +29,7 @@
 import { registerKinds, registerReferences, tipReader, type ScopeReader } from "./eventlog.js";
 import { createHash } from "node:crypto";
 import { collector, foldJudged, registerReport, staleRevision, wasOf, type RefusalClass, type Refusal } from "./validation.js";
-import { ISO_DATE, type Actor, type BugSeverity, type BugWitness } from "./schema.js";
+import { ISO_DATE, type Actor, type Agreement, type BugSeverity, type BugWitness } from "./schema.js";
 import { isAgentActor, isIndependent, isErrorIndependent, reviewerKey } from "./identity.js";
 import { mintId, readScope, readSets, registerDoor, type LogEvent, type ReadSets } from "./eventlog.js";
 import { emitEvent } from "./write.js";
@@ -77,6 +77,8 @@ export interface BugAnchor {
 }
 
 export interface SharedBug {
+  /** Another person's filing of this same bug (P-identical, O29): their agreement. */
+  agreements?: Agreement[];
   id: string;
   title: string;
   /** Prose: what is wrong, repro, expected vs actual. `Bug.description` locally. */
@@ -260,6 +262,9 @@ interface ApplicationReplay {
 
 function foldBugsInternal(events: LogEvent[], replay: ApplicationReplay): Map<string, SharedBug> {
   const out = new Map<string, SharedBug>();
+  // Each bug's first filing, by what makes it this bug rather than another (O29).
+  const filedAs = new Map<string, string>();
+  const substance = (d: Data | undefined) => JSON.stringify([str(d, "title"), str(d, "text"), severity(d) ?? "medium", str(d, "category") ?? null, str(d, "fromFinding") ?? null]);
   const spent = new Set<string>();
   const refuse = replay.refuse ?? (() => {});
   const atAct = (e: LogEvent): SharedBug | undefined => {
@@ -281,6 +286,12 @@ function foldBugsInternal(events: LogEvent[], replay: ApplicationReplay): Map<st
       if (malformedAnchors(d)) { refuse(e, "shape", "every anchor needs an id and a witness hash"); continue; }
       const existing = out.get(e.subject);
       if (existing) {
+        // From the same finding it is K7's re-filing (approved as built: it merges and refreshes).
+        // From anywhere else, a filing that says something else is a claim on an id already taken.
+        const sameSource = !!str(d, "fromFinding") && str(d, "fromFinding") === existing.from?.finding;
+        if (!sameSource && filedAs.get(e.subject) !== substance(d)) { refuse(e, "state", `bug ${e.subject} is already filed as another bug`); continue; }
+        if (e.actor.principal !== existing.author.principal && !existing.agreements?.some((a) => a.by.principal === e.actor.principal))
+          (existing.agreements ??= []).push({ by: e.actor, at: e.at, eventId: e.id });
         // A second filing of one id is not a second bug — `bugIdFor` makes two people
         // accepting one finding land here on purpose. Their citations MERGE (the
         // grow-only rule, applied to the create event too) and the first filing is
@@ -304,6 +315,7 @@ function foldBugsInternal(events: LogEvent[], replay: ApplicationReplay): Map<st
       const author = inherits?.author ?? e.actor;
       const inherited: Corroboration[] = (inherits?.corroboration ?? []).map((c) => ({ ...c,
         independent: isIndependent(c.actor, author), errorIndependent: isErrorIndependent(c.actor, author) }));
+      filedAs.set(e.subject, substance(d));
       out.set(e.subject, {
         id: e.subject,
         title,

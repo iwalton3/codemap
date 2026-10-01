@@ -26,7 +26,7 @@
 
 import { registerKinds, registerReferences, tipReader, type ScopeReader } from "./eventlog.js";
 import { createHash } from "node:crypto";
-import type { Actor, BugSeverity } from "./schema.js";
+import type { Actor, Agreement, BugSeverity } from "./schema.js";
 import { isAgentActor } from "./identity.js";
 import { mintId, readScope, registerDoor, type LogEvent } from "./eventlog.js";
 import { emitEvent } from "./write.js";
@@ -54,6 +54,8 @@ export interface SharedNote {
   /** Answers to a question, or follow-ups on anything else. Append-only. */
   answers: NoteAnswer[];
   resolved?: { at: string; by: Actor; reason?: string };
+  /** A resolve or reopen that found the note already so, from another person. */
+  agreements?: Agreement[];
   revisions: { at: string; by: Actor; was: Record<string, unknown> }[];
 }
 
@@ -173,6 +175,13 @@ function foldNotesWith(events: LogEvent[], refuse: (e: LogEvent, cls: RefusalCla
         // `from`: what its author decided against. Absent on events written before it.
         const from = str(d, "from");
         const now = n.resolved ? "resolved" : "open";
+        const want = d?.resolved === false ? "open" : "resolved";
+        // Already so (P-identical): the same person's act changes nothing, another's is agreement.
+        if (want === now) {
+          if (n.resolved?.by.principal !== e.actor.principal && !n.agreements?.some((a) => a.by.principal === e.actor.principal))
+            (n.agreements ??= []).push({ by: e.actor, at: e.at, eventId: e.id, ...(str(d, "reason") ? { reason: str(d, "reason") } : {}) });
+          break;
+        }
         if (from && from !== now) { refuse(e, "state", `the note is ${now}; this was decided when it was ${from}`); break; }
         n.resolved = d?.resolved === false ? undefined : { at: e.at, by: e.actor, reason: str(d, "reason") };
         break;

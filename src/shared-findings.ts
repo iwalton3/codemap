@@ -35,7 +35,7 @@ import { foldRepairVerification, type RepairVerificationApplication } from "./re
  * only to produce a good error instead of a silently dropped event.
  */
 
-import { ISO_DATE, type Actor, type BugSeverity, type BugWitness } from "./schema.js";
+import { ISO_DATE, type Actor, type Agreement, type BugSeverity, type BugWitness } from "./schema.js";
 import { isAgentActor, isIndependent, isErrorIndependent, reviewerKey } from "./identity.js";
 import { mintId, readScope, readSets, registerDoor, type LogEvent, type ReadSets } from "./eventlog.js";
 import { emitEvent } from "./write.js";
@@ -213,6 +213,8 @@ export interface ExternalRef {
 }
 
 export interface SharedFinding {
+  /** A state change that found the finding already in that state, from another person. */
+  agreements?: Agreement[];
   id: string;
   target: { kind: "anchor" | "node"; id: string };
   text: string;
@@ -980,6 +982,15 @@ function foldFindingsInternal(events: LogEvent[], replay: ApplicationReplay): Ma
         // separate event with the closure it observed.
         // Legacy human reopens remain valid; agents use an observed-closure act.
         if (isClosed(f.state) && !isClosed(next) && isAgentActor(e.actor)) { refuse(e, "state", "an agent reopens only through the closure it observed"); break; }
+        // Already in that state (P-identical): the same person's act changes nothing, another's is
+        // their agreement — if they could have made the change from the state they read.
+        if (next === f.state) {
+          const read = (str(d, "from") ?? f.state) as FindingState;
+          if (!mayTransitionFinding({ ...f, state: read }, e.actor, next)) { refuse(e, "state", `the finding is ${f.state}; it may not become ${next} by this actor`); break; }
+          if (f.closed?.by.principal !== e.actor.principal && !f.agreements?.some((a) => a.by.principal === e.actor.principal))
+            (f.agreements ??= []).push({ by: e.actor, at: e.at, eventId: e.id, ...(str(d, "reason") ? { reason: str(d, "reason") } : {}) });
+          break;
+        }
         if (!mayTransitionFinding(f, e.actor, next)) { refuse(e, "state", `the finding is ${f.state}; it may not become ${next} by this actor`); break; }
         const from = str(d, "from");
         if (from && from !== f.state) { refuse(e, "state", `the finding is ${f.state}; it may not become ${next} — this was decided when it was ${from}`); break; }

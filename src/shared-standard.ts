@@ -998,6 +998,14 @@ function foldStandardWithRefusals(events: LogEvent[]): { value: SharedStandard; 
         if (!p || p.state !== "active") { refuse(e, "no such active pointer"); break; }
         const witnesses = obj(e.data, "witnesses") as BugWitness[] | undefined;
         if (!Array.isArray(witnesses)) { refuse(e, "a restatement carries witnesses"); break; }
+        // The witnesses it already has (P-identical, O9): changes nothing, so it replaces no
+        // observation — another person's is their agreement, whatever they had seen.
+        if (JSON.stringify(witnesses) === JSON.stringify(p.witnesses ?? [])) {
+          const by = p.restatedBy ?? p.declaredBy;
+          if (by.principal !== e.actor.principal && !p.agreements?.some((a) => a.by.principal === e.actor.principal))
+            pointers.set(p.id, { ...p, agreements: [...p.agreements ?? [], { by: e.actor, at: e.at, eventId: e.id }] });
+          break;
+        }
         // A re-baseline REWRITES a value, so one written without having seen the previous
         // re-baseline would silently replace an observation its writer never read.
         const prior = restatedBy.get(p.id);
@@ -1099,7 +1107,13 @@ function foldStandardWithRefusals(events: LogEvent[]): { value: SharedStandard; 
         // A second adjudication: the same verdict is a no-op, a different one is refused
         // (owner, Q5: "no-op when identical, refusal when it differs"). The first stands.
         if (p.disposition) {
-          if (p.disposition !== str(e.data, "disposition")) refuse(e, `already adjudicated as ${p.disposition}`);
+          if (p.disposition !== str(e.data, "disposition")) { refuse(e, `already adjudicated as ${p.disposition}`); break; }
+          // The same verdict from another person, or for another reason, is their agreement (P-identical, O8).
+          const reason = str(e.data, "reason") ?? "";
+          const said = (by: string, why: string) => (p.adjudicatedBy?.principal === by && p.adjudicationReason === why)
+            || !!p.agreements?.some((a) => a.by.principal === by && (a.reason ?? "") === why);
+          if (!said(e.actor.principal, reason))
+            problems.set(p.id, { ...p, agreements: [...p.agreements ?? [], { by: e.actor, at: e.at, eventId: e.id, ...(reason ? { reason } : {}) }] });
           break;
         }
         const disposition = str(e.data, "disposition");

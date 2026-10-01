@@ -23,7 +23,7 @@ import { discard } from "./test-tmp.js";
 const U = "acme/api";
 const NOTE = { targetKind: "anchor" as const, targetId: "a_1", kind: "question" as const, text: "why does this round twice?" };
 
-test("closing a note a teammate closed first is refused at replay, and its author is told", async () => {
+test("closing a note a teammate closed first lands as agreement at replay; the first close stands (P-identical)", async () => {
   const s = await scenario(["ana@x.com", "ben@x.com"]);
   try {
     const ana = who(s, "ana@x.com"), ben = who(s, "ben@x.com");
@@ -33,17 +33,14 @@ test("closing a note a teammate closed first is refused at replay, and its autho
     await resolveNote(ana.sidecar, U, "a_1", ana.actor, id, true, "answered in the doc");
     await resolveNote(ben.sidecar, U, "a_1", ben.actor, id, true, "not a real question");
     const r = await syncSession(ana.sidecar, ana.actor);
-    assert.ok("error" in r, "ana's close replays against ben's");
-    assert.deepEqual(r.conflicts?.map((c) => c.kind), ["note.resolved"]);
-    assert.match(r.conflicts![0]!.why, /the note is resolved; this was decided when it was open/);
-    assert.equal(staged(ana.sidecar).length, 1, "and it stays staged for her");
-    await settle(s).catch(() => {});
+    assert.ok(!("error" in r), `the same resulting state is not a conflict: ${JSON.stringify(r)}`);
+    await settle(s);
     for (const p of [ana, ben]) {
-      assert.equal((await notesForTarget(p.sidecar, U, "a_1"))[0]!.resolved?.reason, "not a real question", "one close, ben's");
+      const n = (await notesForTarget(p.sidecar, U, "a_1"))[0]!;
+      assert.equal(n.resolved?.reason, "not a real question", "one close, ben's");
+      assert.deepEqual(n.agreements?.map((a) => a.by.principal), ["ana@x.com"], "ana's is her agreement");
       assert.equal(lockoutOf(p.sidecar), null);
     }
-    const onRemote = await readScope(ben.sidecar, noteScope(U, bucketFor("a_1")));
-    assert.equal(onRemote.filter((e) => e.kind === "note.resolved").length, 1, "the refused close never reached the remote");
   } finally { s.dispose(); }
 });
 

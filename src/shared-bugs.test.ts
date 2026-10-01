@@ -339,7 +339,9 @@ test("K7: re-filing a bug from its finding refreshes the inherited verdicts, nev
     await fileBug(root, U, opus, { ...NEW, id: "bug_site", from: from([
       { actor: dana, verdict: "confirm", at: "2026-09-28T00:00:00Z", rationale: "reproduced" },
       { actor: bob, verdict: "confirm", at: "2000-01-01T00:00:00Z", rationale: "old" }]) });
-    await fileBug(root, U, opus, { ...NEW, id: "bug_site", from: { ...from([{ actor: izzie, verdict: "confirm", at: "2026-09-29T00:00:00Z", rationale: "x" }]), finding: "f_other" } });
+    // Another finding's filing into this id is a different claim on it: refused (O29).
+    await assert.rejects(fileBug(root, U, opus, { ...NEW, id: "bug_site", from: { ...from([{ actor: izzie, verdict: "confirm", at: "2026-09-29T00:00:00Z", rationale: "x" }]), finding: "f_other" } }),
+      /already filed as another bug/);
     const b = await one(root);
     const by = (a: Actor) => b.corroboration.filter((c) => c.actor.principal === a.principal).map((c) => c.verdict);
     assert.deepEqual(by(dana), ["confirm"], "the finding's confirmation since filing is carried");

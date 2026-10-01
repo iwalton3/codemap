@@ -336,6 +336,8 @@ test("opposing verdicts written apart: the later sync is refused, and the earlie
       for (const m of [izzie, ben]) {
         const p = (await listProblems(m.repo)).find((x) => x.id === problem)!;
         assert.deepEqual([p.disposition, p.adjudicatedBy?.principal], [theirs, MATE], `${m.actor.principal}: the first verdict stands`);
+        // The same verdict from izzie is her agreement, recorded (P-identical, O8).
+        if (mine === theirs) assert.deepEqual(p.agreements?.map((a) => a.by.principal), [izzie.actor.principal]);
       }
     }
     await checkSettled(t, ledger);

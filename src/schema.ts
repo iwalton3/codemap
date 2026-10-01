@@ -1659,6 +1659,13 @@ export const PROBLEM_DISPOSITIONS: ProblemDisposition[] = [
   "requirement-misstated", "code-wrong", "requirement-changed", "accepted",
 ];
 
+/**
+ * Another person's act that reached the state a record already had: recorded, and it changes
+ * nothing (owner, P-identical: "Same resulting state is a no-op, but a different person's act is
+ * recorded as their agreement").
+ */
+export interface Agreement { by: Actor; at: string; eventId: string; reason?: string }
+
 export interface Problem {
   id: string;
   requirementId: string;
@@ -1684,6 +1691,8 @@ export interface Problem {
   adjudicatedBy?: Actor;
   adjudicatedAt?: string;
   adjudicationReason?: string;
+  /** The same verdict again, from another person or for another reason. */
+  agreements?: Agreement[];
   origin?: string;
 }
 
@@ -2196,6 +2205,8 @@ export interface Pointer {
   /** Re-baselined by `restatePointer` — somebody looked, so this is the new quiet. */
   restatedBy?: Actor;
   restatedAt?: string;
+  /** A restatement with the witnesses the pointer already had. */
+  agreements?: Agreement[];
   retiredBy?: Actor;
   retiredAt?: string;
   retiredReason?: string;
