@@ -73,8 +73,9 @@ the event was:
 ```
 
 It is replaced in place rather than deleted because later events may name it in `after`, and
-`seq` orders the log. No fold knows the kind `log.repaired`, so every fold skips it: it is neither
-damage nor "newer" data, so it neither locks nor blocks a push.
+`seq` orders the log. `log.repaired` is a kind every build knows and every fold skips
+(`eventlog.ts SKIPPED_KINDS`): it is neither damage nor "newer" data, so it neither locks nor
+blocks a push.
 
 If the entry was a real act written wrongly (the writer meant a field that is missing), the person
 may approve a corrected event under the same envelope instead. The reason says which.

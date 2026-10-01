@@ -150,19 +150,14 @@ test("hostile history: each shape is refused in its own scope, and nowhere else"
     });
 
     await step("a blocked scope answers, and says it is not authoritative", async () => {
-      // It serves everything it can PARSE — the future event included, because a
-      // protocol-1 reader can read a protocol-2 envelope's fields, it just cannot know
-      // which ones it is missing. What it must never do is serve that silently, and
-      // the diagnostic riding along is what makes it honest: `web/shared.js` renders it
+      // It serves everything this build can fold, and holds the future event out: a newer
+      // build's event is never folded by an older one (owner, C17), only reported. The
+      // diagnostic riding along is what makes the answer honest: `web/shared.js` renders it
       // as a "not authoritative" banner on all three shared pages.
-      //
-      // Both halves are asserted because both can rot independently. Serving nothing
-      // would turn one bad line into a data-loss event; serving the content without the
-      // diagnostic would be a partial answer presented as a whole one.
       const f = await sharedFindings(ana.repo, 21) as any;
       assert.deepEqual(
-        f.findings.map((x: any) => x.text).sort(), ["hand-written", "honest finding on 21"],
-        "the readable events are all served, this build's and the newer one's alike",
+        f.findings.map((x: any) => x.text).sort(), ["honest finding on 21"],
+        "this build's events are served, and the newer one is not folded",
       );
       assert.equal(f.scope.status, "blocked");
       assert.equal(f.scope.diagnostic.reason, "protocol");
@@ -172,24 +167,22 @@ test("hostile history: each shape is refused in its own scope, and nowhere else"
     // (A writerPrev cycle was shape 3 here. The log is linear: `writerPrev` orders nothing and
     // blocks nothing, so a loop in it is not a diagnosis.)
 
-    // 4 — an event this build cannot INTERPRET is dropped and must not block. That is
-    //     what keeps a version skew from wedging a scope for the whole team, which
-    //     would be a denial of service built out of a safety check.
-    await step("a malformed event is dropped, and does not wedge the scope", async () => {
+    // 4 — an envelope a NEWER protocol wrote, missing a field this build requires, is held
+    //     out as newer and must not block the scope. That is what keeps a version skew from
+    //     wedging a scope for the whole team. (The same envelope from this protocol is an
+    //     existing validator failing — damage, owner C17 — which `classify.test.ts` holds.)
+    await step("a newer protocol's malformed envelope is held out, and does not wedge the scope", async () => {
       const scope = await scopeFor(ana, "pr-23");
       const before = (await readScope(ana.sidecar, scope)).length;
       appendRaw(ana, join(scope, "events.ndjson"), envelope({
-        id: "7777777777-junk", writer: "w_junk", sidecarProtocol: undefined, eventSchema: undefined,
+        id: "7777777777-junk", writer: undefined, sidecarProtocol: SIDECAR_PROTOCOL + 1,
       }) as any);
-      appendRaw(ana, join(scope, "events.ndjson"), {} as any);
-      pushRaw(ana, "a malformed line and a meaningless one");
+      pushRaw(ana, "a newer protocol's envelope");
 
       const r = await syncOne(ana) as any;
-      assert.equal(r.error, undefined, `a junk line must not fail a sync: ${r.error}`);
+      assert.equal(r.error, undefined, `a newer envelope must not fail a sync: ${r.error}`);
       assert.equal((await radius(ana))[scope], "complete", "nor block the scope");
-      assert.equal((await readScope(ana.sidecar, scope)).length, before,
-        "the unreadable lines are skipped rather than folded — an envelope missing its "
-        + "protocol numbers is not an event, and neither is a meaningless object");
+      assert.equal((await readScope(ana.sidecar, scope)).length, before, "it is not folded");
     });
 
     // 4b — a line that is not JSON at all is a DIFFERENT thing, and the distinction is

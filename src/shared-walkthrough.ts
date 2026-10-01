@@ -12,6 +12,7 @@
  * the order; this supplies the meaning.
  */
 
+import { registerKinds } from "./eventlog.js";
 import type { Actor } from "./schema.js";
 import type { PrWalkthrough } from "./walkthrough.js";
 import { mintId, readScope, registerDoor, type LogEvent } from "./eventlog.js";
@@ -103,9 +104,12 @@ export function foldWalkthroughsReport(events: LogEvent[]): { value: SharedWalkt
 registerReport((scope) => scope.startsWith("walkthrough/"), foldWalkthroughsReport);
 registerDoor((scope) => scope.startsWith("walkthrough/"), () => (events) => foldWalkthroughsReport(events));
 
+
+/** Every kind this family folds or knows to skip: anything else here is newer (`eventlog.ts registerKinds`). */
+const WALKTHROUGH_KINDS = registerKinds((scope) => scope.startsWith("walkthrough/"), ["walkthrough.published"]);
 /** The fold for a READ: a refused linear event is damage or newer; see `validation.ts`. */
 export function foldWalkthroughs(events: LogEvent[]): SharedWalkthrough[] {
-  return foldJudged(events, foldWalkthroughsReport).value;
+  return foldJudged(events, foldWalkthroughsReport, WALKTHROUGH_KINDS).value;
 }
 
 /** Read and fold in one step — what a front-end wants. */

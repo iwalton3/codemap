@@ -27,6 +27,7 @@
  * wrong, so a write-time check protects the honest writer and nobody else.
  */
 
+import { registerKinds } from "./eventlog.js";
 import type { Actor, BugWitness, Complexity, Importance, TriageSource, Triage } from "./schema.js";
 import { isAgentActor } from "./identity.js";
 import { type DoorFold, type LogEvent, registerDoor } from "./eventlog.js";
@@ -307,9 +308,12 @@ export const triageDoor: DoorFold = (events, minted) => {
 };
 registerDoor((scope) => scope.startsWith("triage/"), () => triageDoor);
 
+
+/** Every kind this family folds or knows to skip: anything else here is newer (`eventlog.ts registerKinds`). */
+const TRIAGE_KINDS = registerKinds((scope) => scope.startsWith("triage/"), ["triage.asserted", "triage.cleared"]);
 /** The fold for a READ: a refused linear event is damage or newer; see `validation.ts`. */
 export function foldTriage(events: LogEvent[]): Map<string, TriageEntry> {
-  return foldJudged(events, foldTriageReport).value;
+  return foldJudged(events, foldTriageReport, TRIAGE_KINDS).value;
 }
 
 const receiptOf = <V>(en: Entry, value: V): AxisReceipt<V> => ({

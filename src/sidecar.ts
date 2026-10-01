@@ -12,6 +12,8 @@ import { existsSync, mkdirSync, realpathSync, readFileSync, writeFileSync } from
 import { join, dirname } from "node:path";
 import { ANCHOR_SCHEME, HASH_SCHEME } from "./schema.js";
 import { GRAMMAR_VERSIONS } from "./grammar-versions.js";
+import { MATERIALIZER_VERSION } from "./materializer-version.js";
+import { bumpEvent, MATERIALIZER_SCOPE } from "./materializer-log.js";
 import { gitBin } from "./git.js";
 import { withSidecarLock, touchHeldLocks } from "./lock.js";
 import {
@@ -297,6 +299,8 @@ export interface SidecarManifest {
   anchorScheme: number;
   hashScheme: number;
   grammars: Record<string, string>;
+  /** The fold version this person's build runs; see `peersAhead`. Absent from older builds. */
+  materializerVersion?: number;
 }
 
 export const currentManifest = (principal: string): SidecarManifest => ({
@@ -304,7 +308,16 @@ export const currentManifest = (principal: string): SidecarManifest => ({
   anchorScheme: ANCHOR_SCHEME,
   hashScheme: HASH_SCHEME,
   grammars: { ...GRAMMAR_VERSIONS },
+  materializerVersion: MATERIALIZER_VERSION,
 });
+
+/**
+ * Whether a teammate's build folds a newer materializer version than this one (owner, C17): a
+ * validator failure is then read as newer, not damage, until this build catches up.
+ */
+export async function peersAhead(root: string): Promise<boolean> {
+  return (await readManifests(root)).some((m) => typeof m.materializerVersion === "number" && m.materializerVersion > MATERIALIZER_VERSION);
+}
 
 export interface Incompat {
   fatal: boolean;
@@ -994,6 +1007,21 @@ async function linearHeld(
       await append(op.scope, e);
       evs.push(e); top++; landedNow.push(e.id);
     }
+    // The first sync on this version logs it (materializer-log.ts) — never against a log this
+    // build cannot read, so a sync that only pulls is not turned into a refusal by it.
+    const by = opts.actor ?? opts.inline?.actor;
+    let bumped = 0;
+    if (by && remote && !refusals.length) {
+      const evs = await scopeEvents(MATERIALIZER_SCOPE);
+      const bump = bumpEvent(evs, by);
+      if (bump && !(await pushGate(root))) {
+        const e = atTip(evs, writer, top, bump);
+        if (!(await refusalOf(doorFor(root, MATERIALIZER_SCOPE), evs, e))) {
+          await append(MATERIALIZER_SCOPE, e);
+          evs.push(e); top++; bumped = 1;
+        }
+      }
+    }
     let inlineEvent: LogEvent | undefined;
     if (opts.inline) {
       const a = opts.inline;
@@ -1045,7 +1073,7 @@ async function linearHeld(
     }
     // What arrived from others: everything on disk now, less what this sync appended.
     const result = async (pushed: boolean, retries: number): Promise<LinearResult> => ({
-      gained: Math.max(0, (await countEvents(root)) - before - landedNow.length), pushed,
+      gained: Math.max(0, (await countEvents(root)) - before - landedNow.length - bumped), pushed,
       committed: committed === "committed", retries, landed: landedNow,
       ...(warning ? { warning } : {}), ...(inlineEvent ? { event: inlineEvent } : {}), ...(joined ? { joined } : {}),
     });

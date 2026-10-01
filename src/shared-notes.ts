@@ -24,6 +24,7 @@
  * while a single target's notes stay in exactly one file per person.
  */
 
+import { registerKinds } from "./eventlog.js";
 import { createHash } from "node:crypto";
 import type { Actor, BugSeverity } from "./schema.js";
 import { isAgentActor } from "./identity.js";
@@ -95,9 +96,12 @@ export function foldNotesReport(events: LogEvent[]): { value: Map<string, Shared
   return { value: foldNotesWith(events, refuse), refused };
 }
 
+
+/** Every kind this family folds or knows to skip: anything else here is newer (`eventlog.ts registerKinds`). */
+const NOTE_KINDS = registerKinds((scope) => scope.startsWith("notes/"), ["note.created", "note.revised", "note.answered", "note.resolved"]);
 /** The fold for a READ: a refused linear event is damage and locks; see `validation.ts`. */
 export function foldNotes(events: LogEvent[]): Map<string, SharedNote> {
-  return foldJudged(events, foldNotesReport).value;
+  return foldJudged(events, foldNotesReport, NOTE_KINDS).value;
 }
 
 function foldNotesWith(events: LogEvent[], refuse: (e: LogEvent, cls: RefusalClass, why: string) => void): Map<string, SharedNote> {

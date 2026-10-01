@@ -15,6 +15,7 @@
  * (`docs/review-target-identity.md`, the "unrelated branch" row). Callers enforce that,
  * since only they hold `isCrossRepository`.
  */
+import { registerKinds } from "./eventlog.js";
 import { readScope, registerDoor, type LogEvent } from "./eventlog.js";
 import { collector, foldJudged, registerReport, type Refusal } from "./validation.js";
 import { emitEvent } from "./write.js";
@@ -48,9 +49,12 @@ export function foldReviewLinksReport(events: LogEvent[]): { value: ReviewLink[]
 registerReport((scope) => scope.startsWith("reviews/"), foldReviewLinksReport);
 registerDoor((scope) => scope.startsWith("reviews/"), () => (events) => foldReviewLinksReport(events));
 
+
+/** Every kind this family folds or knows to skip: anything else here is newer (`eventlog.ts registerKinds`). */
+const REVIEW_KINDS = registerKinds((scope) => scope.startsWith("reviews/"), ["review.linked"]);
 /** The fold for a READ: a refused linear event is damage or newer; see `validation.ts`. */
 export function foldReviewLinks(events: LogEvent[]): ReviewLink[] {
-  return foldJudged(events, foldReviewLinksReport).value;
+  return foldJudged(events, foldReviewLinksReport, REVIEW_KINDS).value;
 }
 
 export const linkReview = (logRoot: string, universe: string, actor: Actor, pr: string, branch: string) =>

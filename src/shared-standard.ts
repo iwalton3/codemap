@@ -1,3 +1,4 @@
+import { registerKinds } from "./eventlog.js";
 import { validateOperationSignoff } from "./operation-signoff.js";
 /**
  * The standard as shared state: what enters the log, and how it folds back.
@@ -361,9 +362,17 @@ export function reviewGap(
   return gap;
 }
 
+
+/** Every kind this family folds or knows to skip: anything else here is newer (`eventlog.ts registerKinds`). */
+const STANDARD_KINDS = registerKinds((scope) => scope.startsWith("standard/") || scope.startsWith("law/"), [
+  "spec.drafted", "spec.operation", "spec.revised", "spec.operation.revised", "spec.operation.removed",
+  "spec.operation-signoff-applied", "spec.reviewed", "spec.ratified", "spec.withdrawn", "ack.granted", "ack.released",
+  "audit.recorded", "vacuity.checked", "pointer.declared", "pointer.restated", "pointer.retired", "population.pinned",
+  "scrub.policy", "problem.raised", "problem.adjudicated", ...RETIRED_KINDS,
+]);
 /** The standard's fold for a READ: HALTS on damage (`LogDamage`), judged by `validation.ts judge`. */
 export function foldStandard(events: LogEvent[]): SharedStandard {
-  return foldJudged(events, foldStandardReport).value;
+  return foldJudged(events, foldStandardReport, STANDARD_KINDS).value;
 }
 
 /** The fold and every refusal, unjudged: what the write door asks of a new event (plan 1.1). */

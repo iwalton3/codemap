@@ -26,6 +26,7 @@
  * reach.
  */
 
+import { registerKinds } from "./eventlog.js";
 import type { Actor } from "./schema.js";
 import type { NodeVersion, NodeCitation, LogicalNodeType } from "./schema.js";
 import { winningVersionAt } from "./doc-version.js";
@@ -68,6 +69,12 @@ export interface UnmatchedAcceptance {
 
 type Data = Record<string, unknown>;
 
+
+/** Every kind this family folds or knows to skip: anything else here is newer (`eventlog.ts registerKinds`). */
+const DOC_KINDS = registerKinds((scope) => scope.startsWith("docs/"), ["doc.version", "doc.accepted"],
+  // Analyzer output is never published, and the door refuses it (the fold arm below); one already
+  // on the log is skipped on read, never damage (owner, O25: "Skip it (never locks)").
+  (e) => e.kind === "doc.version" && !!(e.data as { version?: { generatedBy?: unknown } } | undefined)?.version?.generatedBy);
 /**
  * Fold the log into each node's version set.
  *
@@ -77,7 +84,7 @@ type Data = Record<string, unknown>;
  * the same shape as a review's accepted set, and merge-free for the same reason.
  */
 export function foldDocs(events: LogEvent[]): Map<string, SharedDoc> {
-  return foldJudged(events, foldDocsReport).value;
+  return foldJudged(events, foldDocsReport, DOC_KINDS).value;
 }
 
 /** The fold and every event it did not apply, classed (plan 3.1). The door and the scans read this. */

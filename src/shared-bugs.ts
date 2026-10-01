@@ -26,6 +26,7 @@
  * from a rename from a deletion that ignored the defect.
  */
 
+import { registerKinds } from "./eventlog.js";
 import { createHash } from "node:crypto";
 import { collector, foldJudged, registerReport, staleRevision, wasOf, type RefusalClass, type Refusal } from "./validation.js";
 import { ISO_DATE, type Actor, type BugSeverity, type BugWitness } from "./schema.js";
@@ -594,9 +595,16 @@ export function foldBugsReport(events: LogEvent[]): { value: Map<string, SharedB
   return { value, refused };
 }
 
+
+/** Every kind this family folds or knows to skip: anything else here is newer (`eventlog.ts registerKinds`). */
+const BUG_KINDS = registerKinds((scope) => scope.startsWith("bugs/"), [
+  "bug.filed", "bug.anchored", "bug.unanchored", "bug.assigned", "bug.backlogged", "bug.backlogReleased", "bug.commented",
+  "bug.corroborated", "bug.outcome", "bug.promoted", "bug.reopened", "bug.requested", "bug.revised", "bug.rulingApplied",
+  "bug.stateChanged", "bug.tracked",
+]);
 /** The fold for a READ: a refused linear event is damage and locks; see `validation.ts`. */
 export function foldBugs(events: LogEvent[]): Map<string, SharedBug> {
-  return foldJudged(events, foldBugsReport).value;
+  return foldJudged(events, foldBugsReport, BUG_KINDS).value;
 }
 
 /**

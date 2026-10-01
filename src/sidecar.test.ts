@@ -233,7 +233,8 @@ test("a sync gained-count reports what actually arrived", async () => {
     await corroborate(t.a, 264, izzie, id, "confirm", "n/a");
     await sync(t.a, izzie);
     const r = await sync(t.b, dana) as { gained: number };
-    assert.equal(r.gained, 2);
+    // The two acts, and the materializer version izzie's first sync logged (materializer-log.ts).
+    assert.equal(r.gained, 3);
   } finally { t.cleanup(); }
 });
 

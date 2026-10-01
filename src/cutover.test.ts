@@ -45,7 +45,7 @@ test("a sidecar still holding per-writer shards: sync refuses and a read does no
 });
 
 test("the tripwire reads as nothing to this build, and anything else at its path is damage", async () => {
-  assert.deepEqual(splitShard(TRIPWIRE_BYTES, TRIPWIRE_PATH), { events: [], damage: [] });
+  assert.deepEqual(splitShard(TRIPWIRE_BYTES, TRIPWIRE_PATH), { events: [], damage: [], malformed: [] });
   assert.equal(splitShard(TRIPWIRE_BYTES + "more\n", TRIPWIRE_PATH).damage.length, 2, "other bytes there are damage");
   assert.equal(splitShard(TRIPWIRE_BYTES, "notes/x/events.ndjson").damage.length, 1, "and so are those bytes anywhere else");
   const s = await scenario(["ana@x.com"]);

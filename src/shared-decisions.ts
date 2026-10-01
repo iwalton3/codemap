@@ -22,12 +22,13 @@
  * against the transcript on the machine that asked; a clone cannot re-read that transcript and
  * trusts the logger for it. Everything that travels is checked here.
  */
+import { registerKinds } from "./eventlog.js";
 import { createHash } from "node:crypto";
 import { comparisonContextHash, deriveComparison, validateComparisonRequest, type AnswerSource, type CanonicalIssue, type ComparisonProjection, type ComparisonRequest, type ReaderJudgment, type HumanResolution } from "./decision-comparison.js";
 import { readSets, readScope, registerDoor, scopesOnDisk, type DoorFold, type LogEvent, type ReadSets } from "./eventlog.js";
 import { emitEventChecked } from "./write.js";
 import { foldJudged, shaped, type Refusal } from "./validation.js";
-import { decisionEventShape } from "./log-shape.js";
+import { decisionDevEra, decisionEventShape } from "./log-shape.js";
 import { isAgentActor } from "./identity.js";
 import { questionnaireAnswerId } from "./ruling-application.js";
 import { canonicalIssueKey, type CanonicalIssueReference } from "./decision-issues.js";
@@ -768,6 +769,16 @@ function listRevisionMatchesAnswer(d: FoldedDecision, list: ListRevision | undef
   return canonical(via.checked) === canonical(checked);
 }
 
+
+/** Every kind this family folds or knows to skip: anything else here is newer (`eventlog.ts registerKinds`). */
+const DECISION_KINDS = registerKinds((scope) => scope.startsWith("decisions/"), [
+  "decision.round.posted", "decision.confirm.posted", "decision.question.logged", "decision.answer.recorded",
+  "decision.answer.revised", "decision.questionnaire.submitted", "decision.comparison.nominated",
+  "decision.comparison.requested", "decision.comparison.judged", "decision.comparison.resolved", "decision.withdrawn",
+  "decision.reading.recorded",
+  // Retired with the merge transport; folded by nothing.
+  "decision.conflict.resolved",
+]);
 /**
  * The decisions fold for a READ. HALTS on damage (`LogDamage`), naming the entry (owner, node 18:
  * "Halt on any bad entry"): a linear event the fold refuses, judged by `validation.ts judge` as
@@ -775,11 +786,11 @@ function listRevisionMatchesAnswer(d: FoldedDecision, list: ListRevision | undef
  * answer and blame it.
  */
 export function foldDecisions(events: LogEvent[]): SharedDecisions {
-  return foldJudged(events, foldDecisionsReport).value;
+  return foldJudged(events, foldDecisionsReport, DECISION_KINDS).value;
 }
 
 /** The fold and every refusal, unjudged: what the write door asks of a new event (plan 1.1). */
-export const foldDecisionsReport = shaped(foldDecisionsWithRefusals, decisionEventShape);
+export const foldDecisionsReport = shaped(foldDecisionsWithRefusals, decisionEventShape, decisionDevEra);
 
 /**
  * The fold, and every event it did not apply as written. One output for every way the fold

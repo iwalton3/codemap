@@ -3,9 +3,10 @@
  * and by the sidecar transport before a commit or a pull (plan 1.2).
  *
  * A wrong shape is NEWER (owner, batch 1): skipped on read, refused by the door, and it blocks
- * pushes until an upgrade. This checks types and the fields a conforming build always writes —
- * never that a field is absent — so a teammate one version ahead, whose events carry a field
- * this build does not know, still reads. An unknown kind is skipped, not checked.
+ * pushes until an upgrade — except a known dev-era shape, which is OLDER: skipped, and never
+ * blocks a push (owner, Q7: "fold or skip"). This checks types and the fields a conforming build
+ * always writes — never that a field is absent; a newer build adding a field bumps
+ * `EVENT_SCHEMA`. An unknown kind never gets here: `validation.ts classify` holds it out as newer.
  *
  * What depends on other events (an answer to a question that does not exist) is not a shape;
  * the fold refuses it and `validation.ts judge` decides what the refusal means.
@@ -127,6 +128,15 @@ const check = (shapes: Record<string, Check>, e: LogEvent): string | null => {
   if (typeof e.subject !== "string") return "its subject is not text";
   return shape(e.data) ? null : `its data is not the shape a ${e.kind} is written in`;
 };
+
+/**
+ * A decisions posting from before round ids became event ids (`publication: 2`): a dev-era shape
+ * this build knows and skips. Phase 7 gave every migrated event a `seq`, so classed `shape` it
+ * would block every push for ever.
+ */
+export const decisionDevEra = (e: LogEvent): boolean =>
+  (e.kind === "decision.round.posted" || e.kind === "decision.confirm.posted")
+  && obj(e.data) && (e.data as { publication?: unknown }).publication !== 2;
 
 /** Why a decisions event is wrong-shaped, or null. Unknown kinds are not checked. */
 export const decisionEventShape = (e: LogEvent): string | null => check(DECISION_SHAPES, e);

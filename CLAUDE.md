@@ -266,10 +266,16 @@ people cannot review by eye. A dozen lines of `foldStandard([...])` in a scratch
 found more than any amount of careful reading, on the codebase whose whole thesis is that
 careful reading of this shape does not work.
 
-**What a fold refuses on READ is classed** (`validation.ts`): bytes that are not JSON, or an
-event with a `seq` its fold refuses, is **damage** and LOCKS the application; a shape this build
-does not write is **newer** — reads skip it and every push blocks until an upgrade; a known
-dev-era shape is skipped. At replay every class refuses. Damage sets
+**What a read sees is classed BEFORE any fold** (`validation.ts classify`, owner C17): a kind
+outside the family's vocabulary (`registerKinds`), an envelope field this build does not read, or
+a protocol/schema above its own is **newer** — never folded, reads carry on, every push blocks
+until an upgrade. A newer build that adds a DATA field bumps `EVENT_SCHEMA`; there is no per-kind
+field table (owner, 2026-10-01). Bytes that are not JSON, an envelope failing `wellFormed`, or an
+event with a `seq` its fold refuses is **damage** and LOCKS the application — unless a teammate's
+manifest records a higher `materializerVersion`, when it is newer until this build catches up. A
+refusal that depends on a newer event (names it, or read it via `after`) is newer; a known
+dev-era shape, and `log.repaired`, are skipped. The door refuses to mint a kind outside the
+vocabulary, which is what keeps the vocabulary complete. At replay every class refuses. Damage sets
 `<sidecar>/.git/codemap-lockout.json`; every read and op answers one diagnostic (MCP error, HTTP
 423, CLI exit 1), and a locked sync only fetches, moves to a clean tip and re-checks. **A repair is
 one commit pushed with git** (`docs/log-repair.md`), never a history rewrite — and `codemap sync`

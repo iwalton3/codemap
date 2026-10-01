@@ -330,6 +330,32 @@ export async function writerFor(logRoot: string): Promise<string> {
 export type DoorFold = (events: LogEvent[], minted: LogEvent) =>
   Promise<{ refused: { id: string; why: string }[] }> | { refused: { id: string; why: string }[] };
 
+/**
+ * Each family's vocabulary: every kind this build folds or knows to skip (a retired kind).
+ * Anything else in the family's scopes is NEWER (owner, C17: "Newer build is obviously new
+ * event types"), and the door refuses to mint it. Registered by the families, like the doors.
+ */
+export interface Vocabulary {
+  kinds: ReadonlySet<string>;
+  /** An event of a known kind this build skips on read, never folding it and never locking on it. */
+  skip?: (e: LogEvent) => boolean;
+}
+const vocabularies: { match: (scope: string) => boolean; vocab: Vocabulary }[] = [];
+export function registerKinds(match: (scope: string) => boolean, kinds: readonly string[], skip?: (e: LogEvent) => boolean): Vocabulary {
+  const vocab = { kinds: new Set([...kinds, ...SKIPPED_KINDS]), ...(skip ? { skip } : {}) };
+  vocabularies.push({ match, vocab });
+  return vocab;
+}
+export const kindsFor = (scope: string): Vocabulary | undefined => vocabularies.find((v) => v.match(scope))?.vocab;
+
+/** Known to every family and folded by none: a repair's tombstone (docs/log-repair.md). */
+export const SKIPPED_KINDS: readonly string[] = ["log.repaired"];
+
+/** The envelope this build reads. A field outside it is a newer writer's (owner, C17). */
+export const ENVELOPE_FIELDS: ReadonlySet<string> = new Set([
+  "id", "kind", "subject", "actor", "at", "after", "writer", "writerPrev", "sidecarProtocol", "eventSchema", "data", "seq",
+]);
+
 /** Scopes whose every write is folded at the door before it is appended (plan 1.1). */
 export const FOLDED_AT_THE_DOOR = /^(decisions|standard|law)\//;
 
@@ -363,7 +389,13 @@ export function writeDoor(logRoot: string, scope: string, fold?: DoorFold): Door
 
 export function doorFor(logRoot: string, scope: string): DoorFold | undefined {
   const d = doors.find((x) => x.match(scope));
-  if (d) return d.make(logRoot, scope);
+  if (d) {
+    const fold = d.make(logRoot, scope), kinds = kindsFor(scope)?.kinds;
+    // The read classes a kind outside the vocabulary as newer, so this build writing one would
+    // block every push on the team; refusing it here is what keeps the vocabulary complete.
+    return kinds ? (events, minted) => kinds.has(minted.kind) ? fold(events, minted)
+      : { refused: [{ id: minted.id, why: `${minted.kind} is not a kind this build writes to ${scope}` }] } : fold;
+  }
   if (FOLDED_AT_THE_DOOR.test(scope)) throw new Error(`no fold is registered for ${scope} in this process, so a write to it cannot be validated`);
   return undefined;
 }
@@ -610,15 +642,16 @@ export const damageRef = (d: ShardDamage): string => `${d.shard}:${d.line}`;
  * the other error is a scope that blocks over a crash, which is loud, honest (an
  * event WAS lost) and healed by the next append.
  *
- * A line that parses but fails `wellFormed` is NOT damage: that is an event from a
- * client this build does not understand, which the envelope check drops on purpose.
+ * A line that parses but fails `wellFormed` is not folded and not counted here either: it
+ * is `malformed`, and the damage scan decides what it is (owner, C17) — newer when a newer
+ * protocol or schema wrote it, otherwise an existing validator failing, which is damage.
  * Only bytes that are not JSON at all count here.
  */
 async function readShardLines(
   file: string, as = file,
-): Promise<{ events: { event: LogEvent; line: string }[]; damage: ShardDamage[] }> {
+): Promise<ShardLines> {
   let text: string;
-  try { text = await readFile(file, "utf8"); } catch { return { events: [], damage: [] }; }
+  try { text = await readFile(file, "utf8"); } catch { return { events: [], damage: [], malformed: [] }; }
   return splitShard(text, as);
 }
 
@@ -630,10 +663,18 @@ async function readShardLines(
  * to read. One implementation, or the gate and the reader disagree about what a
  * damaged shard is, which is the whole class of defect this fixes.
  */
-export function splitShard(text: string, as: string): { events: { event: LogEvent; line: string }[]; damage: ShardDamage[] } {
-  if (isMigrationMarker(as, text)) return { events: [], damage: [] };
+export interface ShardLines {
+  events: { event: LogEvent; line: string }[];
+  damage: ShardDamage[];
+  /** Lines that parse but fail `wellFormed`, with what parsed. */
+  malformed: (ShardDamage & { parsed: unknown })[];
+}
+
+export function splitShard(text: string, as: string): ShardLines {
+  if (isMigrationMarker(as, text)) return { events: [], damage: [], malformed: [] };
   const events: { event: LogEvent; line: string }[] = [];
   const damage: ShardDamage[] = [];
+  const malformed: ShardLines["malformed"] = [];
   const lines = text.split("\n");
   // The index of the one line a torn write could have left, or -1. Two conditions in
   // one expression: `split` puts the text after the final newline in the last element,
@@ -648,12 +689,13 @@ export function splitShard(text: string, as: string): { events: { event: LogEven
     try {
       const e = JSON.parse(line) as LogEvent;
       if (wellFormed(e)) events.push({ event: e, line: line.trim() });
+      else malformed.push({ shard: as, line: i + 1, sample: line.trim().slice(0, 80), parsed: e });
     } catch {
       if (i === torn) continue; // a crash mid-append — see above
       damage.push({ shard: as, line: i + 1, sample: line.trim().slice(0, 80) });
     }
   }
-  return { events, damage };
+  return { events, damage, malformed };
 }
 
 /**
@@ -665,7 +707,7 @@ export async function readScope(logRoot: string, scope: string): Promise<LogEven
 }
 
 /** A scope's events, plus whether they can be answered from authoritatively. */
-export interface ScopeRead extends ScopeStatus { events: LogEvent[] }
+export interface ScopeRead extends ScopeStatus { events: LogEvent[]; malformed: ShardLines["malformed"] }
 
 /**
  * The same read, saying whether the result may be presented as the truth.
@@ -677,8 +719,8 @@ export interface ScopeRead extends ScopeStatus { events: LogEvent[] }
  * What `blocked` forbids is presenting it as settled.
  */
 export async function readScopeChecked(logRoot: string, scope: string): Promise<ScopeRead> {
-  const { events, damage } = await collect(logRoot, scope);
-  return { events, ...scopeStatus(events, damage) };
+  const { events, damage, malformed } = await collect(logRoot, scope);
+  return { events, malformed, ...scopeStatus(events, damage) };
 }
 
 /**
@@ -726,7 +768,7 @@ export function registerOverlay(h: OverlayHook): void { overlay = h; }
 /** Whether a read of `scope` includes staged acts — and so must not be cached as the log's. */
 export const overlayActive = (logRoot: string, scope: string): boolean => !!overlay?.active(logRoot, scope);
 
-async function collect(logRoot: string, scope: string): Promise<{ events: LogEvent[]; damage: ShardDamage[] }> {
+async function collect(logRoot: string, scope: string): Promise<{ events: LogEvent[]; damage: ShardDamage[]; malformed: ShardLines["malformed"] }> {
   const read = await collectTip(logRoot, scope);
   if (!overlay?.active(logRoot, scope)) return read;
   const seen = new Set(read.events.map((e) => e.id));
@@ -734,12 +776,13 @@ async function collect(logRoot: string, scope: string): Promise<{ events: LogEve
   return { ...read, events: [...read.events, ...extra] };
 }
 
-async function collectTip(logRoot: string, scope: string): Promise<{ events: LogEvent[]; damage: ShardDamage[] }> {
+async function collectTip(logRoot: string, scope: string): Promise<{ events: LogEvent[]; damage: ShardDamage[]; malformed: ShardLines["malformed"] }> {
   const dir = join(logRoot, scope);
   let names: string[];
-  try { names = await readdir(dir); } catch { return { events: [], damage: [] }; }
+  try { names = await readdir(dir); } catch { return { events: [], damage: [], malformed: [] }; }
   const seen = new Set<string>();
   const damage: ShardDamage[] = [];
+  const malformed: ShardLines["malformed"] = [];
   const all: LogEvent[] = [];
   for (const n of names.filter((n) => n.endsWith(SHARD_EXT)).sort()) {
     // Named `<scope>/<shard>`, not by absolute path: the evidence goes into a stored
@@ -747,13 +790,14 @@ async function collectTip(logRoot: string, scope: string): Promise<{ events: Log
     // absolute path differs between two clones of one sidecar.
     const shard = await readShardLines(join(dir, n), `${scope}/${n}`);
     damage.push(...shard.damage);
+    malformed.push(...shard.malformed);
     for (const { event } of shard.events) {
       if (seen.has(event.id)) continue;
       seen.add(event.id);
       all.push(event);
     }
   }
-  return { events: sortEvents(all), damage };
+  return { events: sortEvents(all), damage, malformed };
 }
 
 /** Why a scope may not be answered from. One diagnostic, not a taxonomy. */

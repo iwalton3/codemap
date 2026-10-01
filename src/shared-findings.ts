@@ -1,3 +1,5 @@
+import { registerKinds } from "./eventlog.js";
+import { RETIRED_REPAIR_KINDS } from "./repair-records.js";
 import { collector, foldJudged, registerReport, staleRevision, wasOf, type RefusalClass, type Refusal } from "./validation.js";
 import { rulingReferences } from "./ruling-references.js";
 import { foldRepairRecords, type RepairFindingMap } from "./repair-records.js";
@@ -1177,9 +1179,20 @@ registerDoor((scope) => scope.startsWith("findings/"), (logRoot, scope) => async
   ],
 }));
 
+
+/** Every kind this family folds or knows to skip: anything else here is newer (`eventlog.ts registerKinds`). */
+const FINDING_KINDS = registerKinds((scope) => scope.startsWith("findings/"), [
+  "finding.created", "finding.revised", "finding.corroborated", "finding.remediated", "finding.backlogged",
+  "finding.backlogReleased", "finding.rewitnessed", "finding.commented", "finding.promoted", "finding.posted",
+  "finding.upstreamed", "finding.assigned", "finding.outcome", "finding.requested", "finding.askDeclined",
+  "finding.stateChanged", "finding.reopened", "finding.repairApplied", "finding.rulingApplied", "finding.relocation",
+  "finding.promotedToBug",
+  "repair.claims-recorded", "repair.evidence-recorded", "repair.sort-recorded", "repair.verification-requested",
+  "repair.verification-recorded", "repair.verification-arbitrated", ...RETIRED_REPAIR_KINDS,
+]);
 /** The fold for a READ: a refused linear event is damage and locks; see `validation.ts`. */
 export function foldFindings(events: LogEvent[]): RepairFindingMap<SharedFinding> {
-  return foldJudged(events, foldFindingsReport).value;
+  return foldJudged(events, foldFindingsReport, FINDING_KINDS).value;
 }
 
 function foldFindingsWith(events: LogEvent[], refuse: ApplicationReplay["refuse"]): RepairFindingMap<SharedFinding> {

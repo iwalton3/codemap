@@ -4,10 +4,11 @@
  * corrupt data is damage").
  *
  * At replay every refusal refuses: a conforming build mints nothing its own fold would refuse.
- * On read, a refused event already on the remote is one of three things:
+ * On read, `classify` first holds out what a newer build wrote (an unknown kind, envelope field,
+ * protocol or schema). Then a refused event already on the remote is one of three things:
  *
- * - **newer** — it parses but is not a shape this build expects (`shape`, `newer`). Pushes
- *   block until an upgrade re-folds it; reads carry on without it.
+ * - **newer** — it parses but is not a shape this build expects (`shape`, `newer`), or it
+ *   depends on a newer event. Pushes block until an upgrade re-folds it; reads carry on.
  * - **damage** — a LINEAR event (it has a `seq`: validated at replay by whoever pushed it)
  *   that fails its own precondition or a reference check (`state`, `reference`). The
  *   application locks.
@@ -19,8 +20,9 @@
  * There is no "race" outcome: every event on the remote was validated against the exact log
  * before it, so a linear refusal on read is never two people writing at once.
  */
+import { AsyncLocalStorage } from "node:async_hooks";
 import { isLogDamage, LogDamage, type DamagedEntry } from "./log-damage.js";
-import type { LogEvent } from "./eventlog.js";
+import { ENVELOPE_FIELDS, EVENT_SCHEMA, readSets, SIDECAR_PROTOCOL, SKIPPED_KINDS, type LogEvent, type Vocabulary } from "./eventlog.js";
 
 export type RefusalClass = "shape" | "older" | "newer" | "state" | "reference";
 
@@ -34,19 +36,71 @@ export function collector(): { refused: Refusal[]; refuse: (e: LogEvent, cls: Re
   return { refused, refuse: (e, cls, why) => { refused.push({ id: e.id, kind: e.kind, why, cls }); } };
 }
 
-/** The read-side verdict: throws on damage, returns what is newer than this build. */
-export function judge(events: LogEvent[], refused: Refusal[]): Refusal[] {
+/**
+ * The classification step before any fold (owner, C17): what this build must not fold because
+ * a newer build wrote it — a protocol or schema above this build's, an envelope field it does
+ * not read, or a kind outside the family's vocabulary. Those are NEWER: excluded from the fold,
+ * reads carry on, pushes block. A known skip (`SKIPPED_KINDS`) is excluded silently. An event
+ * from before the linear log (no `seq`) is passed through as the merge-era folds always took it.
+ */
+export function classify(events: LogEvent[], vocab: Vocabulary | undefined): { fold: LogEvent[]; newer: Refusal[]; skipped: LogEvent[] } {
+  const fold: LogEvent[] = [], skipped: LogEvent[] = [];
+  const newer: Refusal[] = [];
+  for (const e of events) {
+    const why = newerWhy(e, vocab);
+    if (why === null) fold.push(e);
+    else if (why) newer.push({ id: e.id, kind: e.kind, why, cls: "newer" });
+    else skipped.push(e);
+  }
+  return { fold, newer, skipped };
+}
+
+/** Why `e` is newer than this build; `""` for a known skip; null to fold it. */
+function newerWhy(e: LogEvent, vocab: Vocabulary | undefined): string | null {
+  if ((e.sidecarProtocol ?? SIDECAR_PROTOCOL) > SIDECAR_PROTOCOL || (e.eventSchema ?? EVENT_SCHEMA) > EVENT_SCHEMA)
+    return `written by a newer codemap (protocol ${e.sidecarProtocol}, schema ${e.eventSchema})`;
+  if (SKIPPED_KINDS.includes(e.kind) || vocab?.skip?.(e)) return "";
+  if (typeof e.seq !== "number") return null;
+  const extra = Object.keys(e).find((k) => !ENVELOPE_FIELDS.has(k));
+  if (extra) return `its envelope carries "${extra}", which this build does not read`;
+  if (vocab && !vocab.kinds.has(e.kind)) return `${e.kind} is not a kind this build knows`;
+  return null;
+}
+
+/**
+ * Whether a teammate's manifest records a materializer version above this build's (owner,
+ * C17): a validator failure is then NEWER — the newer build may accept what this one refuses —
+ * until this build reaches that version, when it is damage. Set by the readers that know the
+ * sidecar (`materialize.ts`, `damage-scan.ts`); a fold alone does not.
+ */
+const ahead = new AsyncLocalStorage<boolean>();
+export const withPeersAhead = <T>(flag: boolean, fn: () => T): T => ahead.run(flag, fn);
+
+/**
+ * The read-side verdict on what the fold refused: throws on damage, returns what is newer than
+ * this build. `excluded` is what `classify` kept out of the fold. A refusal that depends on an
+ * excluded or skipped event — names it, or read it (`after`) — takes that event's class:
+ * newer, or skipped with it (owner, batch 2).
+ */
+export function judge(events: LogEvent[], refused: Refusal[], excluded: LogEvent[] = [], skipped: LogEvent[] = []): Refusal[] {
   if (!refused.length) return [];
-  const byId = new Map(events.map((e) => [e.id, e]));
-  const skipped = refused.filter((r) => r.cls === "shape" || r.cls === "newer" || r.cls === "older")
-    .map((r) => byId.get(r.id)).filter((e): e is LogEvent => !!e);
+  const all = [...events, ...excluded, ...skipped];
+  const byId = new Map(all.map((e) => [e.id, e]));
+  const reads = readSets(all);
+  const skippedNewer = [...excluded], skippedOlder = [...skipped];
+  const on = (e: LogEvent, set: LogEvent[]) => namesAny(e, set, all) || set.some((s) => reads.saw(e.id, s.id));
   const newer: Refusal[] = [];
   for (const r of refused) {
     const e = byId.get(r.id);
-    if (!e || typeof e.seq !== "number" || r.cls === "older") continue;
-    if (r.cls === "shape" || r.cls === "newer") { newer.push(r); continue; }
-    // Refused for naming an event this build skipped: newer too (owner, batch 2).
-    if (namesAny(e, skipped, events)) { newer.push({ ...r, cls: "newer" }); continue; }
+    if (!e) continue;
+    if (typeof e.seq !== "number" || r.cls === "older") { skippedOlder.push(e); continue; }
+    if (r.cls === "shape" || r.cls === "newer") { newer.push(r); skippedNewer.push(e); continue; }
+    if (on(e, skippedNewer)) { newer.push({ ...r, cls: "newer" }); skippedNewer.push(e); continue; }
+    if (on(e, skippedOlder)) { skippedOlder.push(e); continue; }
+    if (ahead.getStore()) {
+      newer.push({ ...r, cls: "newer", why: `${r.why} — a teammate's codemap folds a newer version, which may accept it` });
+      continue;
+    }
     throw new LogDamage({ id: r.id, kind: r.kind, why: r.why });
   }
   return newer;
@@ -72,12 +126,12 @@ export function namesAny(e: LogEvent | undefined, skipped: LogEvent[], all: LogE
  * `log-shape.ts`): a wrong-shaped event is refused as `shape` and never reaches the fold, and
  * a throw nothing anticipated is damage naming its entry (`culprit`).
  */
-export function shaped<T>(report: Report<T>, shape: (e: LogEvent) => string | null): Report<T> {
+export function shaped<T>(report: Report<T>, shape: (e: LogEvent) => string | null, devEra: (e: LogEvent) => boolean = () => false): Report<T> {
   return (events) => {
     const wrong: Refusal[] = [];
     const kept = events.filter((e) => {
       const why = shape(e);
-      if (why) wrong.push({ id: e.id, kind: e.kind, why, cls: "shape" });
+      if (why) wrong.push({ id: e.id, kind: e.kind, why, cls: devEra(e) ? "older" : "shape" });
       return !why;
     });
     let out: ReturnType<Report<T>>;
@@ -104,10 +158,13 @@ function culprit(events: LogEvent[], report: (events: LogEvent[]) => unknown, er
   return { id: "(unknown)", kind: "(unknown)", why: `the fold cannot read this log, and no single entry explains it: ${message}` };
 }
 
-/** Fold for a READ: the value, having judged the refusals. */
-export function foldJudged<T>(events: LogEvent[], report: Report<T>): { value: T; newer: Refusal[] } {
-  const out = report(events);
-  return { value: out.value, newer: judge(events, out.refused) };
+/** Fold for a READ: classified first, then the value, having judged the refusals. */
+export function foldJudged<T>(events: LogEvent[], report: Report<T>, vocab: Vocabulary | undefined): { value: T; newer: Refusal[] } {
+  const { fold, newer, skipped } = classify(events, vocab);
+  const out = report(fold);
+  const ids = new Set(newer.map((n) => n.id));
+  const excluded = events.filter((e) => ids.has(e.id));
+  return { value: out.value, newer: [...newer, ...judge(fold, out.refused, excluded, skipped)] };
 }
 
 /**

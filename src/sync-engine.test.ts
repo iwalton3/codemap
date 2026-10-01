@@ -60,18 +60,18 @@ test("two writers append to ONE file per scope, and line order is push order, no
   try {
     const ana = who(s, "ana@x.com"), ben = who(s, "ben@x.com");
     begin(ana.sidecar);
-    const early = await emitEvent(ana.sidecar, "notes/u/b", ana.actor, "noted", "n1");   // minted FIRST, staged
-    const late = await emitEvent(ben.sidecar, "notes/u/b", ben.actor, "noted", "n2");    // lands first
+    const early = await emitEvent(ana.sidecar, "tst/u/b", ana.actor, "noted", "n1");   // minted FIRST, staged
+    const late = await emitEvent(ben.sidecar, "tst/u/b", ben.actor, "noted", "n2");    // lands first
     assert.ok(early.id < late.id, "precondition: the staged event has the smaller id");
     const r = await syncSession(ana.sidecar, ana.actor);
     assert.ok(!("error" in r), JSON.stringify(r));
     await settle(s);
     for (const p of [ana, ben]) {
-      assert.deepEqual(readdirSync(join(p.sidecar, "notes/u/b")), [LINEAR_SHARD], "one file, whoever wrote");
-      assert.deepEqual(linesOf(p, "notes/u/b").map((e) => e.id), [late.id, early.id], "lines in push order");
-      assert.deepEqual((await readScope(p.sidecar, "notes/u/b")).map((e) => e.id), [late.id, early.id], "and so is fold order");
+      assert.deepEqual(readdirSync(join(p.sidecar, "tst/u/b")), [LINEAR_SHARD], "one file, whoever wrote");
+      assert.deepEqual(linesOf(p, "tst/u/b").map((e) => e.id), [late.id, early.id], "lines in push order");
+      assert.deepEqual((await readScope(p.sidecar, "tst/u/b")).map((e) => e.id), [late.id, early.id], "and so is fold order");
     }
-    const [a, b] = linesOf(ana, "notes/u/b");
+    const [a, b] = linesOf(ana, "tst/u/b");
     assert.ok(a!.seq! < b!.seq!, "seq follows the push");
     assert.deepEqual(b!.after, [], "and the staged act records what its author had SEEN: not ben's");
   } finally { s.dispose(); }
@@ -101,11 +101,11 @@ test("a batch's later acts read the earlier ones, synced inline or staged in a t
       const reads = readSets(await readScope(ana.sidecar, scope));
       assert.ok(reads.saw(batch[2]!.id, batch[0]!.id) && reads.saw(batch[1]!.id, batch[0]!.id), scope);
     };
-    await check("notes/u/inline", await emitEvents(ana.sidecar, "notes/u/inline", ana.actor, items));
+    await check("tst/u/inline", await emitEvents(ana.sidecar, "tst/u/inline", ana.actor, items));
     begin(ana.sidecar);
-    const staged = await emitEvents(ana.sidecar, "notes/u/tx", ana.actor, items);
+    const staged = await emitEvents(ana.sidecar, "tst/u/tx", ana.actor, items);
     assert.ok(!("error" in await syncSession(ana.sidecar, ana.actor)));
-    await check("notes/u/tx", staged);
+    await check("tst/u/tx", staged);
   } finally { s.dispose(); }
 });
 

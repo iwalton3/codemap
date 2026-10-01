@@ -9,12 +9,12 @@
 import { createHash } from "node:crypto";
 import { readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { EVENT_SCHEMA, readScope, readScopeChecked, scopesOnDisk, SHARD_EXT, SIDECAR_PROTOCOL, sortEvents, type LogEvent } from "./eventlog.js";
-import { shapeCheckFor } from "./log-shape.js";
-import { foldJudged, registerPushGate, reportFor } from "./validation.js";
+import { EVENT_SCHEMA, kindsFor, readScopeChecked, scopesOnDisk, SHARD_EXT, SIDECAR_PROTOCOL, sortEvents, type LogEvent, type Vocabulary } from "./eventlog.js";
+import { foldJudged, registerPushGate, reportFor, withPeersAhead, type Report } from "./validation.js";
 import { withoutOverlay } from "./sync-session.js";
-import { foldDecisions } from "./shared-decisions.js";
-import { foldStandard, LAW_SCOPE } from "./shared-standard.js";
+import { foldDecisionsReport } from "./shared-decisions.js";
+import { foldStandardReport, LAW_SCOPE } from "./shared-standard.js";
+import { peersAhead } from "./sidecar.js";
 import { isLogDamage, type DamagedEntry } from "./log-damage.js";
 import { clearLockout, locate, lockoutOf, recordLockout, type Lockout } from "./lockout.js";
 
@@ -53,34 +53,60 @@ async function scanTip(logRoot: string): Promise<SidecarScan> {
   const key = await sidecarKey(logRoot, scopes);
   const hit = scans.get(logRoot);
   if (hit?.key === key) return hit.scan;
+  const ahead = await peersAhead(logRoot);
   const newer: NewerEntry[] = [];
   let damage: DamagedEntry | null = null;
-  for (const scope of scopes) {
-    const events = await readScope(logRoot, scope);
-    for (const e of events) {
-      if ((e.sidecarProtocol ?? SIDECAR_PROTOCOL) > SIDECAR_PROTOCOL || (e.eventSchema ?? EVENT_SCHEMA) > EVENT_SCHEMA)
-        newer.push({ id: e.id, kind: e.kind, scope, why: `written by a newer codemap (protocol ${e.sidecarProtocol}, schema ${e.eventSchema})` });
-    }
-    const shape = shapeCheckFor(scope);
-    if (shape) for (const e of events) {
-      const why = typeof e.seq === "number" ? shape(e) : null;
-      if (why) newer.push({ id: e.id, kind: e.kind, scope, why });
-    }
-    const report = reportFor(scope);
-    if (report && !damage) {
-      try {
-        for (const r of foldJudged(events, report).newer) newer.push({ id: r.id, kind: r.kind, scope, why: r.why });
-      } catch (e) {
-        if (!isLogDamage(e)) throw e;
-        damage = locate(logRoot, [scope], e.entry);
-      }
+  const reads = new Map<string, Awaited<ReturnType<typeof readScopeChecked>>>();
+  for (const scope of scopes) reads.set(scope, await readScopeChecked(logRoot, scope));
+  // Bytes first: a line that is not JSON is damage in every scope, whatever folds it.
+  for (const [scope, read] of reads) {
+    if (read.diagnostic?.reason !== "corrupt-shard") continue;
+    const [shard, line] = read.diagnostic.evidence[0]!.split(/:(?=\d+$)/);
+    damage = { id: "(unreadable bytes)", kind: "(unreadable bytes)", scope, shard, line: Number(line),
+      why: "the line is not JSON, so no build can read the event it held" };
+    break;
+  }
+  // A line that parses but fails the envelope check: a newer protocol or schema wrote it, or an
+  // existing validator is failing — damage, unless a teammate's build is ahead (owner, C17).
+  for (const [scope, read] of reads) {
+    for (const m of read.malformed) {
+      const p = (m.parsed ?? {}) as Partial<LogEvent>;
+      const id = typeof p.id === "string" ? p.id : "(malformed)", kind = typeof p.kind === "string" ? p.kind : "(malformed)";
+      if ((Number(p.sidecarProtocol) || 0) > SIDECAR_PROTOCOL || (Number(p.eventSchema) || 0) > EVENT_SCHEMA || ahead) {
+        newer.push({ id, kind, scope, why: `its envelope is not one this build reads (${m.shard}:${m.line})` });
+      } else damage ??= { id, kind, scope, shard: m.shard, line: m.line, why: "its envelope is missing a field every event carries" };
     }
   }
-  damage ??= await foldedDamage(logRoot, scopes);
-  const scan = { damage, newer };
+  // Every family's fold, classified first: one judge for newer and for damage.
+  const judged = (group: string[], report: Report<unknown>, kinds: Vocabulary | undefined) => {
+    const events = sortEvents(group.flatMap((s) => reads.get(s)!.events));
+    const scopeOf = new Map<string, string>();
+    for (const s of group) for (const e of reads.get(s)!.events) scopeOf.set(e.id, s);
+    try {
+      for (const r of withPeersAhead(ahead, () => foldJudged(events, report, kinds)).newer)
+        newer.push({ id: r.id, kind: r.kind, scope: scopeOf.get(r.id) ?? group[0]!, why: r.why });
+    } catch (e) {
+      if (!isLogDamage(e)) throw e;
+      damage ??= locate(logRoot, group, e.entry);
+    }
+  };
+  for (const scope of scopes) {
+    if (scope.startsWith("decisions/")) judged([scope], foldDecisionsReport, kindsFor(scope));
+    else if (scope.startsWith("standard/") || scope === LAW_SCOPE) continue;
+    else { const report = reportFor(scope); if (report) judged([scope], report, kindsFor(scope)); }
+  }
+  const evidence = scopes.filter((s) => s.startsWith("standard/"));
+  const law = scopes.includes(LAW_SCOPE) ? [LAW_SCOPE] : [];
+  for (const group of evidence.length ? evidence.map((s) => [...law, s]) : [law]) {
+    if (group.length) judged(group, foldStandardReport, kindsFor(group[group.length - 1]!));
+  }
+  const scan = { damage, newer: dedupe(newer) };
   scans.set(logRoot, { key, scan });
   return scan;
 }
+
+/** The law scope is folded once per evidence scope; report each newer law event once. */
+const dedupe = (list: NewerEntry[]): NewerEntry[] => [...new Map(list.map((n) => [n.id, n])).values()];
 
 /** The first thing this sidecar holds that is newer than this build, as a refusal to push. */
 export async function newerIn(logRoot: string): Promise<string | null> {
@@ -95,36 +121,6 @@ registerPushGate(newerIn);
 /** Every damaged entry's first sighting, or null when the sidecar reads clean. */
 export async function findDamage(logRoot: string): Promise<DamagedEntry | null> {
   return (await scanSidecar(logRoot)).damage;
-}
-
-async function foldedDamage(logRoot: string, scopes: string[]): Promise<DamagedEntry | null> {
-  for (const scope of scopes) {
-    const read = await readScopeChecked(logRoot, scope);
-    if (read.diagnostic?.reason === "corrupt-shard") {
-      const [shard, line] = read.diagnostic.evidence[0]!.split(/:(?=\d+$)/);
-      return { id: "(unreadable bytes)", kind: "(unreadable bytes)", scope, shard, line: Number(line),
-        why: "the line is not JSON, so no build can read the event it held" };
-    }
-  }
-  const folded = async (list: string[], fold: (events: LogEvent[]) => unknown): Promise<DamagedEntry | null> => {
-    const events = sortEvents((await Promise.all(list.map((s) => readScope(logRoot, s)))).flat());
-    try { fold(events); return null; } catch (e) {
-      if (!isLogDamage(e)) throw e;
-      return locate(logRoot, list, e.entry);
-    }
-  };
-  for (const scope of scopes.filter((s) => s.startsWith("decisions/"))) {
-    const d = await folded([scope], foldDecisions);
-    if (d) return d;
-  }
-  const evidence = scopes.filter((s) => s.startsWith("standard/"));
-  const law = scopes.includes(LAW_SCOPE) ? [LAW_SCOPE] : [];
-  for (const group of evidence.length ? evidence.map((s) => [...law, s]) : [law]) {
-    if (!group.length) continue;
-    const d = await folded(group, foldStandard);
-    if (d) return d;
-  }
-  return null;
 }
 
 /** Scan, and lock this sidecar if anything is damaged. */

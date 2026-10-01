@@ -24,6 +24,7 @@
  *    served (owner, Q6: "Correct push order is what matters").
  */
 
+import { registerKinds } from "./eventlog.js";
 import type { Actor, Edge, EdgeType } from "./schema.js";
 import { type LogEvent, registerDoor, sortEvents } from "./eventlog.js";
 import { emitEvent } from "./write.js";
@@ -101,9 +102,12 @@ export function foldGraphReport(events: LogEvent[]): { value: Map<string, Shared
 registerReport((scope) => scope.startsWith("graph/"), foldGraphReport);
 registerDoor((scope) => scope.startsWith("graph/"), () => (events) => foldGraphReport(events));
 
+
+/** Every kind this family folds or knows to skip: anything else here is newer (`eventlog.ts registerKinds`). */
+const GRAPH_KINDS = registerKinds((scope) => scope.startsWith("graph/"), ["graph.published"]);
 /** The fold for a READ: a refused linear event is damage or newer; see `validation.ts`. */
 export function foldGraph(events: LogEvent[]): Map<string, SharedWiring> {
-  return foldJudged(events, foldGraphReport).value;
+  return foldJudged(events, foldGraphReport, GRAPH_KINDS).value;
 }
 
 /**
