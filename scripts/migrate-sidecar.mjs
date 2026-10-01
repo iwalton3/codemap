@@ -144,6 +144,7 @@ if (apply) {
     mkdirSync(join(root, "manifests"), { recursive: true });
     writeFileSync(join(root, newLog.SENTINEL_MANIFEST_PATH), newLog.SENTINEL_MANIFEST_BYTES);
   }
+  writeFileSync(join(root, newLog.SIDECAR_ATTRIBUTES_PATH), newLog.SIDECAR_ATTRIBUTES);
   if (existsSync(join(root, ".git"))) {
     git("add", "-A");
     const c = git("-c", "user.name=codemap", "-c", "user.email=codemap@localhost", "commit", "-q", "-m",

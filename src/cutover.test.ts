@@ -16,6 +16,8 @@ import { readCached } from "./materialize.js";
 import { findingScope, foldFindings, createFinding } from "./shared-findings.js";
 import { findingsProjection } from "./shared-projections.js";
 import { lockoutOf } from "./lockout.js";
+import { scanForDamage } from "./damage-scan.js";
+import { spawnSync } from "node:child_process";
 import { testEvent } from "./test-events.js";
 
 const PR = "acme/api/pr-3";
@@ -86,4 +88,24 @@ test("an upgraded clone whose old events all reached the migrated remote moves t
     assert.ok(!("error" in r), JSON.stringify(r));
     assert.ok(!existsSync(legacy), "the per-writer shard is gone with the move to the tip");
   } finally { s.dispose(); }
+});
+
+test("a clone checked out with core.autocrlf=true reads the markers as markers, not damage", async () => {
+  const s = await scenario(["ana@x.com"]);
+  const clone = mkdtempSync(join(tmpdir(), "codemap-crlf-"));
+  try {
+    const ana = who(s, "ana@x.com");
+    mkdirSync(join(ana.sidecar, "linear-log"), { recursive: true });
+    writeFileSync(join(ana.sidecar, TRIPWIRE_PATH), TRIPWIRE_BYTES);
+    writeFileSync(join(ana.sidecar, SENTINEL_MANIFEST_PATH), SENTINEL_MANIFEST_BYTES);
+    await createFinding(ana.sidecar, PR, ana.actor, { targetKind: "anchor", targetId: "a_1", text: "one" });
+    const win = join(clone, "w");
+    spawnSync("git", ["-c", "core.autocrlf=true", "clone", "-q", s.origin, win]);
+    spawnSync("git", ["config", "core.autocrlf", "true"], { cwd: win });
+    const r = await sync(win, { principal: "win@x.com" });
+    assert.ok(!("error" in r), JSON.stringify(r));
+    await scanForDamage(win);
+    assert.equal(lockoutOf(win), null);
+    assert.ok(!(await readManifests(win)).some((m) => m.anchorScheme === 0), "the sentinel is still the sentinel");
+  } finally { s.dispose(); discard(clone); }
 });

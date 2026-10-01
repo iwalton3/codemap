@@ -80,6 +80,14 @@ export const SENTINEL_MANIFEST_BYTES = JSON.stringify({
   anchorScheme: 0, hashScheme: 0, grammars: {},
 }, null, 2) + "\n";
 
+/**
+ * The sidecar's `.gitattributes`: no line-ending conversion, anywhere. Under `core.autocrlf=true`
+ * (Git for Windows' default) a checkout writes CRLF, and the markers above then fail their exact
+ * byte match and read as damage — a lockout no repair can clear, since the remote is clean.
+ */
+export const SIDECAR_ATTRIBUTES_PATH = ".gitattributes";
+export const SIDECAR_ATTRIBUTES = "* -text\n";
+
 /** The migration's markers, by sidecar-relative path. The one exemption list for both. */
 const MIGRATION_MARKERS: ReadonlyMap<string, string> = new Map([
   [TRIPWIRE_PATH, TRIPWIRE_BYTES], [SENTINEL_MANIFEST_PATH, SENTINEL_MANIFEST_BYTES],

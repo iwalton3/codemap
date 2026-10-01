@@ -16,7 +16,7 @@ import { gitBin } from "./git.js";
 import { withSidecarLock, touchHeldLocks } from "./lock.js";
 import {
   SHARD_EXT, LINEAR_SHARD, SIDECAR_PROTOCOL, EVENT_SCHEMA, principalKey, splitShard, damageRef, appendLinear, atTip, causalHeads,
-  doorFor, isLegacyShard, isMigrationMarker, maxSeq, mintId, readScope, sortEvents, writeDoor, writerFor, type DoorFold, type LogEvent, type ShardDamage, type StagedEvent,
+  doorFor, isLegacyShard, isMigrationMarker, maxSeq, SIDECAR_ATTRIBUTES, SIDECAR_ATTRIBUTES_PATH, mintId, readScope, sortEvents, writeDoor, writerFor, type DoorFold, type LogEvent, type ShardDamage, type StagedEvent,
 } from "./eventlog.js";
 import { withoutOverlay } from "./sync-session.js";
 import { pushGate } from "./validation.js";
@@ -382,8 +382,7 @@ export function checkPeers(all: SidecarManifest[], mine: SidecarManifest): Incom
  * Being wrong is cheap in the safe direction: a false negative just writes the same
  * values again, and the write is idempotent. Never treat this as the source of truth.
  */
-async function gitConfigLooksSet(root: string, identity: string): Promise<boolean> {
-  const cfg = await readFile(join(root, ".git", "config"), "utf8").catch(() => "");
+function gitConfigLooksSet(cfg: string, identity: string): boolean {
   return new RegExp(`^\\s*email\\s*=\\s*${identity.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*$`, "m").test(cfg)
     && /^\s*gpgsign\s*=\s*false\s*$/m.test(cfg);
 }
@@ -419,11 +418,18 @@ export async function ensureSidecar(root: string, actor?: Actor): Promise<{ crea
   // a sidecar cloned from a teammate never goes through `init` and would otherwise
   // never be configured at all — which is precisely the clone R1 bites.
   const identity = actor?.principal?.trim() || "codemap@localhost";
-  if (!(await gitConfigLooksSet(root, identity))) {
+  const cfg = await readFile(join(root, ".git", "config"), "utf8").catch(() => "");
+  if (!gitConfigLooksSet(cfg, identity)) {
     g(root, ["config", "user.email", identity]);
     g(root, ["config", "user.name", "codemap"]);
     g(root, ["config", "commit.gpgsign", "false"]);
   }
+  // Its own check, not inside the identity's: a clone configured before this existed already
+  // has the identity and would never get it. With `.gitattributes`, see SIDECAR_ATTRIBUTES.
+  if (!/^\s*autocrlf\s*=\s*false\s*$/m.test(cfg)) {
+    g(root, ["config", "core.autocrlf", "false"]);
+  }
+  await writeFile(join(root, SIDECAR_ATTRIBUTES_PATH), SIDECAR_ATTRIBUTES, "utf8");
   if (actor) {
     await mkdir(join(root, MANIFEST_DIR), { recursive: true });
     await writeFile(
