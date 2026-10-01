@@ -216,10 +216,13 @@ function commitLocal(root: string, message: string, appended: string[] = []): Co
       + `The store is locked until they are repaired: see docs/log-repair.md. Until then this clone does `
       + `not sync in either direction.` };
   }
-  g(root, ["add", "-A"]);
+  // A failed add is a failed commit: unchecked, a locked index left the append unstaged, the commit
+  // read "nothing", and the sync reported an act landed that never left the machine (round 2, C11).
+  const added = g(root, ["add", "-A"]);
   // Forced: the shards this sync appended are always codemap's, and an ignore rule (a global
   // `*.ndjson`, say) left them out of the commit while the push reported success (review C8b).
-  if (appended.length) g(root, ["add", "-f", "--", ...appended]);
+  const forced = added.ok && appended.length ? g(root, ["add", "-f", "--", ...appended]) : added;
+  if (!forced.ok) return { error: `the sidecar commit failed, so nothing can be pushed: ${forced.err.slice(0, 300)}` };
   if (g(root, ["diff", "--cached", "--quiet"]).ok) return "nothing";
   const c = g(root, ["commit", "-q", "-m", message]);
   if (!c.ok) return { error: `the sidecar commit failed, so nothing can be pushed: ${(c.err || c.out).slice(0, 300)}` };

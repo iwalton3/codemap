@@ -552,3 +552,17 @@ test("C15: a sync prunes landed rows past their retention", async () => {
     assert.ok(!queue.allQueuedIds(ana.sidecar).includes(landed.id));
   } finally { s.dispose(); }
 });
+
+test("C11: a sync whose `git add` fails is not reported landed", async () => {
+  const s = await scenario(["ana@x.com"]);
+  const lock = join(s.all[0]!.sidecar, ".git", "index.lock");
+  try {
+    const ana = who(s, "ana@x.com");
+    const r = await emitEventChecked(ana.sidecar, "tst/c11add", ana.actor, async () => {
+      writeFileSync(lock, "");   // the index is locked by something else when the commit runs
+      return { kind: "noted", subject: "n1" };
+    });
+    assert.ok("error" in r, `told it failed, not that it landed: ${JSON.stringify(r)}`);
+    assert.equal(git(s.origin, "show", "main:tst/c11add/events.ndjson").status, 128, "and it is not on the remote");
+  } finally { rmSync(lock, { force: true }); s.dispose(); }
+});
