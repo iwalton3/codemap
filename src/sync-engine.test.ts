@@ -514,3 +514,25 @@ test("O10: the refused writes read back with why and what they said, so they can
     assert.deepEqual(op!.event.data, { note: "mine" });
   } finally { s.dispose(); }
 });
+
+test("C11: an act that waited on the lock while a sync closed its transaction writes inline, not into a closed one", async () => {
+  const s = await scenario(["ana@x.com"]);
+  try {
+    const ana = who(s, "ana@x.com");
+    const { withSidecarLock } = await import("./lock.js");
+    const { currentSession } = await import("./sync-session.js");
+    const me = currentSession();
+    begin(ana.sidecar);
+    let first: Promise<LogEvent | { error: string }> | undefined;
+    await withSidecarLock(ana.sidecar, async () => {
+      // The act passes the transaction check, then waits for the lock a sync holds…
+      first = emitEventChecked(ana.sidecar, "tst/c11", ana.actor, async () => ({ kind: "noted", subject: "i1" }));
+      // …and the sync closes the transaction while it still holds it.
+      queue.setTx(ana.sidecar, me.session, me.kind, false);
+    });
+    const r1 = await first!;
+    assert.ok(!("error" in r1), JSON.stringify(r1));
+    assert.equal(queue.pending(ana.sidecar, me.session).length, 0, "nothing staged under a closed transaction");
+    assert.equal(git(s.origin, "show", "main:tst/c11/events.ndjson").status, 0, "it landed inline");
+  } finally { s.dispose(); }
+});

@@ -35,7 +35,10 @@ export async function emitEventChecked(
     return admission;
   };
   const { session } = currentSession();
-  if (sessionRow(logRoot, session)?.tx) return stageChecked(logRoot, session, scope, actor, guarded, fold);
+  if (sessionRow(logRoot, session)?.tx) {
+    const staged = await stageChecked(logRoot, session, scope, actor, guarded, fold);
+    if (!("closed" in staged)) return staged;
+  }
   if (!transportsRemotely(logRoot)) return appendChecked(logRoot, scope, actor, guarded, fold);
   const r = await syncLinear(logRoot, session, { actor, inline: { scope, actor, check: guarded, fold } });
   if ("error" in r) return { error: r.error };
@@ -60,7 +63,10 @@ export async function emitEvents(
 ): Promise<LogEvent[]> {
   if (!items.length) return [];
   const { session } = currentSession();
-  if (sessionRow(logRoot, session)?.tx) return stageBatch(logRoot, session, scope, actor, items);
+  if (sessionRow(logRoot, session)?.tx) {
+    const staged = await stageBatch(logRoot, session, scope, actor, items);
+    if (!("closed" in staged)) return staged;
+  }
   if (transportsRemotely(logRoot)) return syncBatch(logRoot, scope, actor, items);
   return appendBatch(logRoot, scope, actor, items);
 }

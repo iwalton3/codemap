@@ -24,7 +24,7 @@ import { sessionGone, withoutOverlay } from "./sync-session.js";
 import { pushGate } from "./validation.js";
 import {
   allQueuedIds, conflicts, drop, getMeta, markConflict, markInflight, markLanded, markStaged, markUnknown, noteRefusal, pending, reassign,
-  sessionRow, sessionsWithConflicts, setMeta, setTx, stage,
+  sessionRow, sessionsWithConflicts, setMeta, setTx, stage, type SessionKind,
 } from "./sync-queue.js";
 import { recordLockout } from "./lockout.js";
 import type { Actor } from "./schema.js";
@@ -627,10 +627,9 @@ export interface SyncResult { gained: number; pushed: boolean; committed: boolea
 export async function sync(root: string, actor?: Actor, message = "codemap: review state"): Promise<SyncResult | { error: string }> {
   const { currentSession } = await import("./sync-session.js");
   const s = currentSession();
-  const r = await syncLinear(root, s.session, { actor, message });
+  const r = await syncLinear(root, s.session, { actor, message, closeTx: s.kind });
   // A refusal keeps what it refused and what is still staged: the caller repairs from those.
   if ("error" in r) return r as { error: string };
-  setTx(root, s.session, s.kind, false);
   return { gained: r.gained, pushed: r.pushed, committed: r.committed, retries: r.retries, ...(r.warning ? { warning: r.warning } : {}), ...(r.joined ? { joined: true } : {}) };
 }
 
@@ -896,10 +895,15 @@ function recordPush(root: string, latencyMs: number): string | undefined {
  */
 export async function syncLinear(
   root: string, session: string,
-  opts: { actor?: Actor; message?: string; inline?: InlineAct; conflictOnRefusal?: boolean } = {},
+  opts: { actor?: Actor; message?: string; inline?: InlineAct; conflictOnRefusal?: boolean; closeTx?: SessionKind } = {},
 ): Promise<LinearOutcome> {
   const pre = await fetchRemote(root);
-  return withSidecarLock(root, () => withoutOverlay(() => linearHeld(root, session, opts, "error" in pre ? pre : pre.fetched)));
+  return withSidecarLock(root, async () => {
+    const r = await withoutOverlay(() => linearHeld(root, session, opts, "error" in pre ? pre : pre.fetched));
+    // Closed under the lock its writers check it under (review C11), never after releasing it.
+    if (opts.closeTx && !("error" in r)) setTx(root, session, opts.closeTx, false);
+    return r;
+  });
 }
 
 async function linearHeld(

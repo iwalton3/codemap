@@ -73,8 +73,11 @@ async function refused(fold: DoorFold | undefined, events: LogEvent[], e: LogEve
  */
 export async function stageChecked(
   logRoot: string, session: string, scope: string, actor: Actor, check: Check, fold?: DoorFold,
-): Promise<LogEvent | { error: string }> {
+): Promise<LogEvent | { error: string } | { closed: true }> {
   return withSidecarLock(logRoot, async () => {
+    // Read under the lock a sync closes it under (review C11): a transaction that closed while
+    // this waited is not one to stage into — the caller writes inline instead.
+    if (!sessionRow(logRoot, session)?.tx) return { closed: true as const };
     // Tip plus this session's staged acts: `readScope` carries the overlay.
     const events = await readScope(logRoot, scope);
     const admission = await check(events);
@@ -115,8 +118,9 @@ function stagedFrom(actor: Actor, it: Item, after: string[]): StagedEvent {
 }
 
 /** Stage a batch inside an open transaction. */
-export async function stageBatch(logRoot: string, session: string, scope: string, actor: Actor, items: Item[]): Promise<LogEvent[]> {
+export async function stageBatch(logRoot: string, session: string, scope: string, actor: Actor, items: Item[]): Promise<LogEvent[] | { closed: true }> {
   return withSidecarLock(logRoot, async () => {
+    if (!sessionRow(logRoot, session)?.tx) return { closed: true as const };   // see `stageChecked`
     const events = await readScope(logRoot, scope);
     const writer = await writerFor(logRoot);
     let top = Math.max(await maxSeq(logRoot), ...events.map((e) => e.seq ?? 0));
@@ -168,9 +172,7 @@ export function begin(logRoot: string, s = currentSession()): { ok: true; sessio
 
 /** Push the session's staged ops, all or none, and close its transaction if they landed. */
 export async function syncSession(logRoot: string, actor?: Actor, s = currentSession()): Promise<LinearOutcome> {
-  const r = await syncLinear(logRoot, s.session, { actor });
-  if (!("error" in r)) setTx(logRoot, s.session, s.kind, false);
-  return r;
+  return syncLinear(logRoot, s.session, { actor, closeTx: s.kind });
 }
 
 /**
