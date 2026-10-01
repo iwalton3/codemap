@@ -1343,12 +1343,16 @@ function foldOnce(events: LogEvent[], excludedPicks: ReadonlySet<string>): { val
     if (!same) applyWithdrawal(e, pos, d, named, data.reason);
   }
 
-  // Anything given on a question after its ruling was withdrawn needs a fresh question.
+  // Anything given on a question after its ruling was withdrawn needs a fresh question — except
+  // from a colleague whose answer stood through the withdrawal, who may still revise or re-answer
+  // it (owner, O2).
   for (const d of decisions.values()) {
     const at = retiredAt.get(d.id);
     const retired = d.answers.find((a) => a.withdrawn)?.withdrawn;
     if (at === undefined || !retired) continue;
-    for (const a of d.answers) if (!a.withdrawn && !a.cancelled && a.seq > at)
+    const stood = new Set(d.answers.filter((a) => a.seq < at && !a.withdrawn && !a.cancelled && a.verified && !a.sourceAnswer)
+      .map((a) => rulerOf(a).principal));
+    for (const a of d.answers) if (!a.withdrawn && !a.cancelled && a.seq > at && !stood.has(rulerOf(a).principal))
       a.cancelled = { by: retired.by, reason: `this question has a withdrawn ruling; ask a fresh question` };
   }
 

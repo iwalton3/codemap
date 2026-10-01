@@ -1436,9 +1436,9 @@ test("Q4: withdrawing your own ruling while a colleague's answer stands withdraw
   assert.ok(!heldFindings(out, () => true).get("F3")?.some((x) => x.why === "comparison"), "nothing left to compare");
   const later: any = { ...bob, id: "c-bob-later", at: at(26), after: [own.id], data: { ...bob.data, via: { kind: "direct", option: "Settle" } } };
   const after = d1Of(foldDecisions([base, alice, bob, own, later]));
-  assert.match(String(after.answers.find((a) => a.id === later.id)!.cancelled?.reason), /ask a fresh question/,
-    "an answer given after the withdrawal still needs a fresh question");
-  assert.equal(standing(after)?.id, bob.id);
+  // His answer stood through the withdrawal, so he may still re-answer (owner, O2).
+  assert.equal(after.answers.find((a) => a.id === later.id)!.cancelled, undefined, "the colleague's re-answer stands");
+  assert.equal(standing(after)?.id, later.id);
 });
 
 test("F28: a relayed withdrawal counts only on the exact withdrawal question, options included", () => {

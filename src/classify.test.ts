@@ -193,3 +193,21 @@ test("O29: a second filing of one bug id that says something else is refused; an
   assert.deepEqual(same.refused, []);
   assert.deepEqual(same.value.get("B1")!.agreements?.map((a) => a.by.principal), ["bob@x.com"]);
 });
+
+test("O2: a colleague whose answer stood through the ruler's withdrawal may re-answer; a newcomer may not", async () => {
+  const { decisionHash, foldDecisions } = await import("./shared-decisions.js");
+  const agent = { principal: "alice@x.com", via: { kind: "agent" as const, model: "m" } };
+  const alice = { principal: "alice@x.com" }, bob = { principal: "bob@x.com" }, carol = { principal: "carol@x.com" };
+  const d = { id: "d1", round: "R1", ref: "D1", kind: "options", payload: { question: "D1: settle F1?", options: [{ label: "Settle" }, { label: "Keep open" }] },
+    options: [{ label: "Settle", effects: [] }, { label: "Keep open", effects: [] }] };
+  const post = { ...ev("p1", "decision.round.posted", "R1", { publication: 2, round: { id: "R1", source: "t", universe: "u" }, decisions: [d] }, 1), actor: agent };
+  const fd = foldDecisions([post]).decisions[0]!;
+  const answer = (id: string, seq: number, who: typeof alice, option: string) =>
+    ({ ...ev(id, "decision.answer.recorded", fd.id, { decision: fd.id, hash: decisionHash(fd), via: { kind: "direct", option } }, seq, ["p1"]), actor: who });
+  const events = [post, answer("a1", 2, alice, "Settle"), answer("b1", 3, bob, "Keep open"),
+    { ...ev("w1", "decision.withdrawn", fd.id, { decision: fd.id, answer: "a1", reason: "changed my mind", knownAnswers: ["a1", "b1"] }, 4, ["a1", "b1"]), actor: alice },
+    answer("b2", 5, bob, "Settle"), answer("c1", 6, carol, "Settle")];
+  const answers = foldDecisions(events).decisions[0]!.answers;
+  assert.equal(answers.find((a) => a.id === "b2")?.cancelled, undefined, "bob's re-answer stands");
+  assert.match(answers.find((a) => a.id === "c1")?.cancelled?.reason ?? "", /withdrawn ruling/, "carol needs a fresh question");
+});

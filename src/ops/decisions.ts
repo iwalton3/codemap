@@ -968,7 +968,9 @@ export async function answerDirect(root: string, input: { decision: string; opti
   if (!d) return { error: `no decision ${input.decision}` };
   if (d.cancellation) return { error: d.cancellation.reason, cancelledBy: d.cancellation.by };
   if (d.withdrawn) return { error: `question ${d.ref} was withdrawn: ${d.withdrawn.reason}`, withdrawnBy: d.withdrawn.id };
-  if (d.answers.some((a) => a.withdrawn)) return { error: `${d.ref} has a withdrawn ruling; ask a fresh question` };
+  // A colleague whose answer stood through the withdrawal may still re-answer (owner, O2).
+  const stood = d.answers.some((a) => !a.withdrawn && !a.cancelled && a.verified && !a.sourceAnswer && rulerOf(a).principal === b.actor.principal);
+  if (d.answers.some((a) => a.withdrawn) && !stood) return { error: `${d.ref} has a withdrawn ruling; ask a fresh question` };
   const { decision: _d, ...rest } = input;
   return { ok: true, ...(await record(root, b, d, { kind: "direct", ...rest })) };
 }
