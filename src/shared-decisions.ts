@@ -1838,6 +1838,10 @@ function foldComparisons(s: SharedDecisions, events: LogEvent[], refuse: (e: Log
       const h = data?.resolution ? { ...data.resolution, id: e.id, at: e.at } as HumanResolution : undefined;
       const r = byId.get(h?.requestId ?? "");
       const proof = data?.proof;
+      // A judgment earlier in the log that the person never saw: refused, not resolved against
+      // what they saw (owner, O4 — one of the four seen rules kept because it guards a lost update).
+      const unseen = r?.judgments.find((j) => !reads.saw(e.id, j.id));
+      if (unseen) { refuse(e, `a judgment (${unseen.id}) landed that this resolution did not see: review the comparison again`); continue; }
       const prior = r ? deriveComparison(r.request,
         { [r.request.left.answerId]: r.request.left.version,
           [r.request.right.answerId]: r.request.right.version },

@@ -300,3 +300,50 @@ test("a judgment staged against a comparison resolved meanwhile is refused at th
     assert.match(refused?.why ?? "", /comparison changed before judgment append/);
   } finally { u.cleanup(); }
 });
+
+test("O4: a resolution that did not see a judgment earlier in the log is refused, not resolved against what it saw", async () => {
+  const u = await fixture();
+  try {
+    const id = await requestAndJudge(u, "incompatible");
+    const old = await comparisonResolutionBrief(u.root, id) as any;
+    const request = old.shown.request;
+    const scope = decisionScope(universeKey(u.root));
+    const seen = (await readScope(u.side, scope)).at(-1)!.id;
+    const second = await appendUnfolded(u.side, scope, { principal: "another-reader" }, "decision.comparison.judged", id, {
+      judgment: { requestId: id, contextHash: request.contextHash, issues: request.issues,
+        answerVersions: [`${request.left.answerId}\0${request.left.version}`, `${request.right.answerId}\0${request.right.version}`],
+        verdict: "incompatible", rationale: "I also found incompatible intent.",
+        reader: { principal: "another-reader", agent: "other-reader", session: "other-session", request: "other-launch", receipt: "other-receipt" } },
+      proof: { purpose: "pair-comparison", requestId: id, contextHash: request.contextHash,
+        brief: comparisonBriefText(request), receipt: "other-receipt", agent: "other-reader",
+        session: "other-session", launch: "other-launch", toolUseId: "other-launch", call: "other-call" },
+    });
+    // Staged before the second judgment landed: its proof is exactly what it saw.
+    const staged = await appendUnfolded(u.side, scope, { principal: "resolver" }, "decision.comparison.resolved", id, {
+      resolution: { requestId: id, contextHash: request.contextHash, issues: request.issues,
+        answerVersions: [`${request.left.answerId}\0${request.left.version}`, `${request.right.answerId}\0${request.right.version}`],
+        preserve: u.alice, rationale: "Preserve Alice", human: { principal: "resolver", session: "web", request: id,
+          receipt: "staged-receipt", shownHash: old.shownHash } },
+      proof: { purpose: "human-comparison", source: "web", principal: "resolver", contextHash: request.contextHash,
+        shownHash: old.shownHash, receipt: "staged-receipt", session: "web", shown: old.shown, executionsHash: old.executionsHash },
+    }, { after: [seen], writer: "w_staged" });
+    const { foldDecisionsReport } = await import("./shared-decisions.js");
+    const all = foldDecisionsReport(await readScope(u.side, scope)).refused;
+    const refused = all.find((r) => r.id === staged.id);
+    assert.match(refused?.why ?? "", /did not see/, JSON.stringify(all));
+    // Control: the same act having seen everything, with the brief it would then be shown, lands —
+    // so the refusal above is about what it saw, not how the event was built.
+    const fresh = await comparisonResolutionBrief(u.root, id) as any;
+    const resolution = (receipt: string, b: any) => ({
+      resolution: { requestId: id, contextHash: request.contextHash, issues: request.issues,
+        answerVersions: [`${request.left.answerId}\0${request.left.version}`, `${request.right.answerId}\0${request.right.version}`],
+        preserve: u.alice, rationale: "Preserve Alice", human: { principal: "resolver", session: "web", request: id, receipt, shownHash: b.shownHash } },
+      proof: { purpose: "human-comparison", source: "web", principal: "resolver", contextHash: request.contextHash,
+        shownHash: b.shownHash, receipt, session: "web", shown: b.shown, executionsHash: b.executionsHash },
+    });
+    const informed = await appendUnfolded(u.side, scope, { principal: "resolver" }, "decision.comparison.resolved", id,
+      resolution("informed-receipt", fresh), { after: [second.id, staged.id], writer: "w_informed" });
+    const again = foldDecisionsReport(await readScope(u.side, scope)).refused;
+    assert.ok(!again.some((r) => r.id === informed.id), JSON.stringify(again));
+  } finally { u.cleanup(); }
+});
