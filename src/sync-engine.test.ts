@@ -5,7 +5,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync, appendFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, appendFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -431,4 +431,19 @@ test("C7: a failed push with the remote unreachable leaves the ops unknown, and 
     const d = discardTx(ana.sidecar);
     assert.deepEqual(d.mayHaveLanded, [op.id], "never a bare ok");
   } finally { rmSync(hook, { force: true }); s.dispose(); }
+});
+
+test("C8a: a push that exited 0 while another process held the tracking ref's lock is settled, not reported unsent", async () => {
+  const s = await scenario(["ana@x.com"]);
+  const hook = join(s.all[0]!.sidecar, ".git", "hooks", "pre-push");
+  const lock = join(s.all[0]!.sidecar, ".git", "refs", "remotes", "origin", "main.lock");
+  // The other process lets go a moment later, as a concurrent fetch does.
+  const release = setInterval(() => { try { if (Date.now() - statSync(lock).mtimeMs > 120) rmSync(lock); } catch { /* not held */ } }, 40);
+  try {
+    const ana = who(s, "ana@x.com");
+    writeFileSync(hook, `#!/bin/sh\ntouch ${JSON.stringify(lock)}\nexit 0\n`); chmodSync(hook, 0o755);
+    const r = await emitEventChecked(ana.sidecar, "tst/c8a", ana.actor, async () => ({ kind: "noted", subject: "n1" }));
+    assert.ok(!("error" in r), `it reached the remote, and the caller is told so: ${JSON.stringify(r)}`);
+    assert.equal(git(s.origin, "show", "main:tst/c8a/events.ndjson").status, 0);
+  } finally { clearInterval(release); rmSync(hook, { force: true }); rmSync(lock, { force: true }); s.dispose(); }
 });

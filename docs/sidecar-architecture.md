@@ -259,6 +259,10 @@ Fixed in `44badc3`, and the rule still binds the linear sync. `pushed: true` is 
 ancestor check against `origin/<branch>` after the push (`remoteHasHead`), never inferred from
 git's exit code: a push of a tip the remote already has exits 0, and a failed commit left
 exactly that state, so a finding never left the machine while every sync reported success.
+What the code guarantees is narrower than "the remote has my commit": the check reads the LOCAL
+tracking ref, which another process holding its lock can leave behind a push that did land. So
+a failed check is not "nothing was sent" — it is settled like any failed push (review C8a):
+fetch, with the ref-lock retry, and look for the ids at the tip.
 `commitLocal` distinguishes "nothing to commit" from "the commit failed", and the sidecar sets
 its own `user.email`, `user.name` and `commit.gpgsign=false`: it is a machine artifact, not
 authored history.

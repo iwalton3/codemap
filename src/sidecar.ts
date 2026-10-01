@@ -1108,9 +1108,13 @@ async function linearHeld(
     const rate = recordPush(root, Date.now() - t0);
     warning = rate ?? warning;
     if (p.ok) {
+      // Exit 0 with the tracking ref behind is not "nothing was sent": another process may hold
+      // the ref's lock (review C8a). Settled like any failed push — fetch, with the ref-lock retry,
+      // and look for the ids at the tip.
       if (!remoteHasHead(root, branch)) {
-        return { error: `git push reported success but origin/${branch} does not contain this commit — nothing was sent. `
-          + `The writes stay staged; retry, and check the remote's refusal (a hook, or a protected branch).`, staged: stagedIds() };
+        return settleFailedPush(root, branch, `git push exited 0 but origin/${branch} did not move to this commit`, toLand,
+          [...new Set([...ops.map((o) => o.scope), ...(opts.inline ? [opts.inline.scope] : []), ...(bumped ? [MATERIALIZER_SCOPE] : [])])],
+          inlineId, forgetInline, stagedIds, () => result(true, attempt));
       }
       markLanded(root, toLand);
       inlineId = null;
