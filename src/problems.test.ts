@@ -137,7 +137,10 @@ test("adjudicating again: the same verdict is a no-op, a different one is refuse
     const { problem } = await disagreement(root, anchors);
     ok(await adjudicate(root, problem.id, "code-wrong", "the rule stands"));
     const again = ok(await adjudicate(root, problem.id, "code-wrong", "still stands"));
-    assert.equal(again.problem.adjudicationReason, "the rule stands", "nothing new was written; the first stands");
+    assert.equal(again.problem.adjudicationReason, "the rule stands", "the first stands");
+    assert.deepEqual(again.problem.agreements?.map((a) => a.reason), ["still stands"], "the same verdict for another reason is recorded (P-identical)");
+    const twice = ok(await adjudicate(root, problem.id, "code-wrong", "still stands"));
+    assert.equal(twice.problem.agreements?.length, 1, "and saying the same thing again records nothing");
     const other = await adjudicate(root, problem.id, "accepted", "live with it");
     assert.match((other as { error: string }).error, /already adjudicated as `code-wrong`/);
     assert.equal((await listProblems(root))[0]!.disposition, "code-wrong");

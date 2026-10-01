@@ -161,8 +161,20 @@ export async function adjudicate(
   if (isErr(who)) return who;
   const p = await readProblem(root, problemId);
   if (!p) return { error: `no problem "${problemId}"` };
-  // Owner, Q5: "no-op when identical, refusal when it differs". The fold says the same.
-  if (p.disposition === disposition) return { ok: true, problem: p };
+  // Owner, Q5: "no-op when identical, refusal when it differs"; P-identical: the same verdict
+  // from another person, or for another reason, is recorded as their agreement. The fold says the same.
+  if (p.disposition === disposition) {
+    const why = reason.trim();
+    const said = (p.adjudicatedBy?.principal === who.principal && p.adjudicationReason === why)
+      || !!p.agreements?.some((a) => a.by.principal === who.principal && (a.reason ?? "") === why);
+    if (said) return { ok: true, problem: p };
+    const at = now();
+    const d = shareDisposition(await shareAdjudication(root, p, disposition, why, at));
+    if ("error" in d) return d;
+    const agreed: Problem = { ...p, agreements: [...p.agreements ?? [], { by: who, at, eventId: "local", reason: why }] };
+    if (d.local) await writeLocalProblem(root, agreed);
+    return { ok: true, problem: (await readProblem(root, problemId)) ?? agreed };
+  }
   if (p.disposition) return { error: `${problemId} was already adjudicated as \`${p.disposition}\`` };
 
   const at = now();
