@@ -792,10 +792,6 @@ export function foldDecisions(events: LogEvent[]): SharedDecisions {
 /** The fold and every refusal, unjudged: what the write door asks of a new event (plan 1.1). */
 export const foldDecisionsReport = shaped(foldDecisionsWithRefusals, decisionEventShape, decisionDevEra);
 
-/**
- * The fold, and every event it did not apply as written. One output for every way the fold
- * refuses, so the write door can ask whether it would refuse a new event (plan 1.1).
- */
 type ConfirmPick = { a: FoldedAnswer; c: FoldedDecision };
 /**
  * What the person's picks on confirms of words `a` say, counting only the picks `counts` admits.
@@ -836,6 +832,10 @@ function confirmVerdict(a: FoldedAnswer, picks: ConfirmPick[], counts: (p: Confi
   return { ...(dispute ? { dispute } : decided ? { decided } : {}), rejected };
 }
 
+/**
+ * The fold, and every event it did not apply as written. One output for every way the fold
+ * refuses, so the write door can ask whether it would refuse a new event (plan 1.1).
+ */
 function foldDecisionsWithRefusals(events: LogEvent[]): { value: SharedDecisions; refused: Refusal[] } {
   // Withdrawals apply after binds, so a withdrawn pick on a confirm had already counted. Fold
   // again without every withdrawn pick until nothing more is excluded: a withdrawn Yes returns
