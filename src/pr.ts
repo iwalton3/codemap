@@ -775,7 +775,7 @@ export interface PacketItem {
 }
 
 export interface PrPacket {
-  pr: { number: number; title: string; url: string; author: string; headRef: string; baseRef: string };
+  pr: { number: number; title: string; url: string; author: string; headRef: string; baseRef: string; state?: string };
   refs: { mergeBase: string; head: string };
   /** Spec/doc files the PR itself changed — the author's own account of the change. */
   specs: { path: string; text: string }[];
@@ -951,7 +951,7 @@ export async function prStory(
   const story = buildStory(sections, steps, { known });
   return {
     ...story,
-    pr: { number: t.pr.number, title: t.pr.title, url: t.pr.url, author: t.pr.author, headRef: t.pr.headRef, baseRef: t.pr.baseRef },
+    pr: { number: t.pr.number, title: t.pr.title, url: t.pr.url, author: t.pr.author, headRef: t.pr.headRef, baseRef: t.pr.baseRef, state: t.pr.state },
     refs: { mergeBase: t.refs.mergeBase, head: t.refs.head, baseAheadOfMergeBase: t.refs.baseAheadOfMergeBase },
     // Carried so a walkthrough with nothing in it can say *why* — a PR that is all
     // tests or all generated code has an empty queue by design, and an unexplained

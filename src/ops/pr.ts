@@ -10,7 +10,8 @@ onPrResolved((root, meta) => import("../ops-shared.js").then((m) => m.observePrB
 import { promotionOwns } from "../pr-promote.js";
 import { resolveSidecar } from "../sidecar-config.js";
 import { resolveActor } from "../identity.js";
-import { validateWalkthrough, buildWalkthrough, walkCoverage, staleChapters, type WalkInput } from "../walkthrough.js";
+import { validateWalkthrough, buildWalkthrough, walkCoverage, staleChapters, movedSince, type WalkInput, type WalkFeature } from "../walkthrough.js";
+import { trunkRef, isAncestor } from "../git.js";
 import { LANE_POLICY } from "../lanes.js";
 import { parseAgentLines, ingestAgentReview } from "../pr-ingest.js";
 import { planPrPush, executePrPush, pullViewedFromGitHub, fetchReviewThreads, planResolveSync, pushResolvedToGitHub, pullResolvedFromGitHub, ghViewer, type PushPlan, type ReviewEvent, type ResolveSyncPlan } from "../pr-push.js";
@@ -239,6 +240,19 @@ export async function prWalkthroughChapter(
 }
 
 /**
+ * What main's tip has changed since a MERGED pull request's walkthrough witnessed it (review
+ * topics F26). `stale` cannot say: it judges against the PR's head, which never moves once
+ * merged. Null for a pull request that has not landed — its code is not main's yet, so every
+ * symbol it changes would read as moved.
+ */
+async function trunkMoved(root: string, w: { features: WalkFeature[] }, pr: { headSha: string; state?: string }) {
+  const trunk = trunkRef(root);
+  if (!trunk) return null;
+  if (pr.state !== "MERGED" && !isAncestor(root, pr.headSha, trunk.sha)) return null;
+  return { trunk: trunk.sha, ...movedSince(w, await snapshotHashes(root, trunk.sha)) };
+}
+
+/**
  * The walkthrough for a pull request, with the chapters whose code has since moved.
  *
  * One read verb over one table. `all` returns EVERY reading with its body instead of
@@ -275,6 +289,8 @@ export async function prWalkthroughGet(root: string, input: string, opts: { all?
     /** Written against another commit entirely — every chapter is suspect. */
     headMoved: w.head !== t.refs.head,
     stale: staleChapters(w, live),
+    /** Merged only: chapters and symbols main's tip has changed since. */
+    movedOnMain: await trunkMoved(root, w, t.pr),
   };
 }
 
@@ -307,6 +323,7 @@ export async function prStoryFor(root: string, input: string, opts: { fetch?: bo
       ...(pick.others.length ? { otherReadings: pick.others } : {}),
       headMoved: stored.head !== story.refs.head,
       stale: staleChapters(stored, live),
+      movedOnMain: await trunkMoved(root, stored, { headSha: story.refs.head, state: story.pr.state }),
       coverage: walkCoverage(stored.features, queue, []),
     },
   };

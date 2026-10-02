@@ -3744,7 +3744,7 @@ class PrStoryPage extends Component {
     return this.stepEl(u, step);
   }
 
-  walkChapterEl(u, ch, steps, stale) {
+  walkChapterEl(u, ch, steps, stale, movedOnMain) {
     const ids = ch.blocks.filter(b => b.kind === 'symbol').map(b => b.anchorId);
     const mine = ids.map(id => steps.get(id)).filter(Boolean);
     const signed = mine.filter(s => this.stepSigned(s)).length;
@@ -3757,6 +3757,7 @@ class PrStoryPage extends Component {
         <b>${ch.title}</b>
         <span class="dim">${signed}/${mine.length} signed${viewed ? ` · ${viewed} viewed` : ''}</span>
         ${when(stale, () => html`<span class="warn" title="the code this chapter walks has changed since it was written — it needs re-walking">stale</span>`)}
+        ${when(movedOnMain, () => html`<span class="warn" title="this pull request is merged, and main has since changed code this chapter walks — what was signed here is no longer what main runs">code moved on main</span>`)}
         <span class="wkacts" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); }}">
           <button disabled="${busy}" title="mark every symbol in this chapter viewed — a shortcut, the same per-symbol marks underneath" on-click="${() => this.markChapter(ch.id, 'viewed', viewed === mine.length)}">${viewed === mine.length && mine.length ? 'unview all' : 'view all'}</button>
           <button class="on" disabled="${busy}" title="sign off every symbol in this chapter" on-click="${() => this.markChapter(ch.id, 'signed', signed === mine.length)}">${signed === mine.length && mine.length ? 'unsign all' : 'sign all'}</button>
@@ -3770,6 +3771,7 @@ class PrStoryPage extends Component {
     const w = st.walkthrough;
     const steps = this.stepsByAnchor();
     const stale = new Set(w.stale || []);
+    const moved = new Set((w.movedOnMain && w.movedOnMain.chapters) || []);
     const uncovered = (w.coverage && w.coverage.uncovered) || [];
     return html`
       ${when(!!w.sharedBy, () => html`<div class="wkbanner wkteam">Read from <b>${w.sharedBy}</b>'s walkthrough of this pull request, from the team's sidecar — not one written here.${when((w.otherReadings || []).length > 0, () => html` <span class="dim">${(w.otherReadings || []).length} other reading(s): ${(w.otherReadings || []).map(o => o.mine ? 'yours' : o.by).join(', ')}.</span>`)}</div>`)}
@@ -3782,7 +3784,7 @@ class PrStoryPage extends Component {
           <span class="dim">${f.chapters.length} chapter(s)</span>
         </div>
         <div class="wkfsummary"><md-content text="${f.summary}" untrusted="${true}"></md-content></div>
-        ${each(f.chapters, c => this.walkChapterEl(u, c, steps, stale.has(c.id)), c => c.id)}
+        ${each(f.chapters, c => this.walkChapterEl(u, c, steps, stale.has(c.id), moved.has(c.id)), c => c.id)}
       </section>`, f => f.id)}
       ${when(uncovered.length, () => html`<section class="prchapter wkuncovered">
         <div class="prchead" on-click="${() => this.toggleChapter(UNCOVERED_ID)}">
