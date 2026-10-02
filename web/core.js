@@ -690,7 +690,7 @@ function showConflicts(conflicts) {
   document.body.append(el);
 }
 
-/** @type {{ staged?: unknown[], conflicts?: { id: string, kind: string, why: string, u?: string|null }[], lastPull?: { at: string, ok: boolean, error?: string } | null } | null} */
+/** @type {{ staged?: unknown[], conflicts?: { id: string, kind: string, why: string, u?: string|null }[], lastPull?: { at: string, ok: boolean, error?: string, pushBlocked?: string } | null } | null} */
 let status = null;
 let shownLeftover = false;
 
@@ -728,12 +728,15 @@ function paintStatus() {
   // Why, not "unreachable": a refused pull (joining a team, a lock, a hand-edited shard) means
   // the remote answered (round 4, owner: "showing the refusal text makes sense").
   const why = last && !last.ok ? (last.error ?? 'unknown error') : '';
+  // A pull that worked can still have armed the push gate (data newer than this build).
+  const gate = last && last.ok ? (last.pushBlocked ?? '') : '';
   const span = /** @type {HTMLElement} */ (el.firstChild);
   span.textContent = [
     unsaved ? `${unsaved} unsaved` : 'saved',
     last ? (last.ok ? `pulled ${ago}s ago` : `pull failed ${ago}s ago: ${why.split(/ — |\n/)[0]}`) : '',
+    gate ? `pushes blocked: ${gate.split(/ — |\n/)[0]}` : '',
   ].filter(Boolean).join(' · ');
-  span.title = why;
+  span.title = why || gate;
 }
 
 if (typeof document !== 'undefined') {

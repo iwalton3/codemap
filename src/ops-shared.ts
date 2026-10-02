@@ -70,7 +70,7 @@ import {
   type NewDocVersion,
 } from "./shared-docs.js";
 import type { PrWalkthrough } from "./walkthrough.js";
-import { wasOf } from "./validation.js";
+import { wasOf, pushGate } from "./validation.js";
 
 const NO_SIDECAR =
   "no sidecar configured for this universe. Point one at a shared repo with "
@@ -184,7 +184,7 @@ export async function dropStagedWrite(root: string, eventId: string) {
 }
 
 /** The pull loop's last word per sidecar: when, whether it pulled, and if not, why. */
-const lastPulls = new Map<string, { at: string; ok: boolean; error?: string }>();
+const lastPulls = new Map<string, { at: string; ok: boolean; error?: string; pushBlocked?: string }>();
 
 /**
  * Pull on a timer (plan 4.3): every 30s while in use — any call or request in the last five
@@ -200,7 +200,10 @@ export function startPullLoop(roots: string[], lastUse: () => number): () => voi
       const cfg = resolveSidecar(root);
       if (!cfg || !transportsRemotely(cfg.path)) continue;
       const r = await withLock(root, () => sharedPull(root)).catch((e: unknown) => ({ error: String((e as Error)?.message ?? e) }));
-      lastPulls.set(cfg.path, { at: new Date().toISOString(), ok: !("error" in r), ...("error" in r ? { error: String(r.error).slice(0, 300) } : {}) });
+      lastPulls.set(cfg.path, {
+        at: new Date().toISOString(), ok: !("error" in r),
+        ...("error" in r ? { error: String(r.error).slice(0, 300) } : r.pushBlocked ? { pushBlocked: r.pushBlocked.slice(0, 300) } : {}),
+      });
     }
     delay = Date.now() - lastUse() < IN_USE ? FAST : Math.min(delay * 2, CEILING);
     if (!stopped) timer = setTimeout(() => void tick(), delay);
@@ -331,7 +334,12 @@ async function settleArrivals(root: string, cfg: SidecarConfig) {
   // AFTER the transport, and only here: `sidecar.ts` is transport and knows nothing
   // about folds or entity kinds. This is also the one moment a person is watching,
   // which is why blocked scopes are reported rather than discovered later.
-  return { materialized: await materializeUniverse(root, cfg) };
+  //
+  // `pushBlocked` because a pull can ARM the gate without any scope being blocked: an event
+  // of a family this build does not read is in no scope `materializeUniverse` folds, so the
+  // summary said `blocked: []` while the next write was refused as newer. The gate is the one
+  // place that knows, so it is asked rather than reconstructed per scope.
+  return { materialized: await materializeUniverse(root, cfg), pushBlocked: await pushGate(cfg.path) };
 }
 
 /**
