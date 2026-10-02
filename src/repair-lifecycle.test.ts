@@ -129,7 +129,8 @@ test("negative ancestry in shallow history is unknown, and deepening supplies th
   } finally { discard(clone); discard(f.root); }
 });
 
-test("linked PR fallback proves the exact repair and default ancestry, never an older or stacked merge", async () => {
+// Skipped on Windows: the fake `gh` is a shebang script on a `:`-joined PATH.
+test("linked PR fallback proves the exact repair and default ancestry, never an older or stacked merge", { skip: process.platform === "win32" }, async () => {
   const f = fixture(); const bin = mkdtempSync(join(tmpdir(), "codemap-repair-gh-")); const oldPath = process.env.PATH;
   try {
     f.git("remote", "add", "origin", "https://github.com/test/repair-lifecycle.git");

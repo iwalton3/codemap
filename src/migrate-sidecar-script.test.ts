@@ -7,7 +7,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { discard } from "./test-tmp.js";
@@ -98,7 +98,7 @@ test("C6: an old build's malformed event is dropped like damage, not refused as 
   const created = legacy("e1", "finding.created", "F1", { text: "t", targetKind: "anchor", targetId: "a_1" });
   const root = sidecar({ "findings/u/pr-1/w_legacy.ndjson": `${created}\n${legacy("e2", "finding.outcome", "F1", {})}\n` });
   try {
-    const report = join(root, "..", `${root.split("/").pop()}-report.json`);
+    const report = join(root, "..", `${basename(root)}-report.json`);
     const r = spawnSync(process.execPath, [join(REPO, "scripts", "migrate-sidecar.mjs"), root, "--old-build", DIST, "--new-build", DIST,
       "--report", report], { encoding: "utf8" });
     assert.equal(r.status, 0, r.stderr);
@@ -120,7 +120,7 @@ test("round 3, I5: an event that depends on a dropped malformed one is judged ag
     line("e3", "finding.reopened", { state: "created", observedClosure: "e2" }, ["e2"]),
   ].join("\n") + "\n" });
   try {
-    const report = join(root, "..", `${root.split("/").pop()}-report.json`);
+    const report = join(root, "..", `${basename(root)}-report.json`);
     const r = spawnSync(process.execPath, [join(REPO, "scripts", "migrate-sidecar.mjs"), root, "--old-build", DIST, "--new-build", DIST,
       "--report", report], { encoding: "utf8" });
     assert.equal(r.status, 0, r.stderr);

@@ -14,7 +14,7 @@
  */
 import { DatabaseSync } from "node:sqlite";
 import { readFileSync, statSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, resolve, sep } from "node:path";
 import type { StagedEvent } from "./eventlog.js";
 
 /**
@@ -129,6 +129,16 @@ function open(logRoot: string): DatabaseSync {
 export function closeQueues(): void {
   for (const { d } of handles.values()) { try { d.close(); } catch { /* already */ } }
   handles.clear();
+}
+
+/** Close the handles at or beneath `root` — `discard`'s half, since Windows will not delete an open file. */
+export function closeQueuesUnder(root: string): void {
+  const prefix = root.endsWith(sep) ? root : root + sep;
+  for (const [k, { d }] of [...handles]) {
+    if (k !== root && !k.startsWith(prefix)) continue;
+    try { d.close(); } catch { /* already */ }
+    handles.delete(k);
+  }
 }
 
 type Row = { pos: number; session: string; scope: string; event: string; state: QueueState; why: string | null; staged_at: string };

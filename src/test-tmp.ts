@@ -22,6 +22,7 @@
 
 import { rmSync } from "node:fs";
 import { closeDbUnder } from "./db.js";
+import { closeQueuesUnder } from "./sync-queue.js";
 
 /**
  * Close every store at or beneath this root, then remove the directory.
@@ -32,6 +33,7 @@ import { closeDbUnder } from "./db.js";
  */
 export function discard(root: string): void {
   closeDbUnder(root);
+  closeQueuesUnder(root);
   rmSync(root, { recursive: true, force: true });
 }
 

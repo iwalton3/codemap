@@ -120,7 +120,7 @@ test("the queue is append, drop, and re-assign a dead session's items: nothing e
     await ensureSidecar(root, { principal: "q@x.com" });
     // Every exported function, named. A new one that edits or reorders fails here first.
     assert.deepEqual(Object.keys(queue).sort(), [
-      "allQueuedIds", "closeQueues", "conflicts", "drop", "forgetSession", "getMeta", "markConflict", "markInflight",
+      "allQueuedIds", "closeQueues", "closeQueuesUnder", "conflicts", "drop", "forgetSession", "getMeta", "markConflict", "markInflight",
       "markLanded", "markStaged", "markUnknown", "noteRefusal", "onOverlay", "pending", "pruneLanded", "reassign", "sessionRow",
       "sessionsWithConflicts", "sessionsWithPending", "setMeta", "setTx", "stage", "touchSession",
     ]);
