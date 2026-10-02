@@ -1290,7 +1290,7 @@ function settleUnknown(root: string, session: string, tip: string): void {
 }
 
 /** Bring the tree to the remote tip without pushing anything. */
-export async function pullLinear(root: string, actor?: Actor): Promise<PullResult | { error: string }> {
+export async function pullLinear(root: string, actor?: Actor): Promise<PullResult | { error: string; joining?: true }> {
   const pre = await fetchRemote(root);
   if ("error" in pre) return pre;
   return withSidecarLock(root, async () => {
@@ -1315,7 +1315,7 @@ export async function pullLinear(root: string, actor?: Actor): Promise<PullResul
     // Only once the tree holds the tip: a row settled as landed leaves the overlay.
     if (head === remoteSha) { settleUnknown(root, currentSession().session, remoteSha); return { gained: 0 }; }
     let lost = await unqueuedLocalEvents(root, remoteSha);
-    if (lost.length && joiningRemote(root, head, remoteSha)) return { error: JOINING };
+    if (lost.length && joiningRemote(root, head, remoteSha)) return { error: JOINING, joining: true };
     if (lost.length) {
       return { error: `refusing to pull: ${lost.length} event(s) in this sidecar clone are not on the remote and were not `
         + `staged through a sync (first: ${lost[0]!.path} ${lost[0]!.id}). If this sidecar predates the linear log it must be migrated first.` };

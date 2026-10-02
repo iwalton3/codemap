@@ -384,7 +384,9 @@ function rememberSidecar(root: string, cfg: { path: string }, joined = false): v
 async function releaseLockout(logRoot: string): Promise<{ error: string } | null> {
   if (!lockoutOf(logRoot)) return null;
   const moved = await pullLinear(logRoot);
-  if ("error" in moved) return moved;
+  // A joining clone pulls nothing until the explicit sync this runs inside imports its writes
+  // (owner, round 3): only its own lines can have locked it, and the re-check judges those.
+  if ("error" in moved && !moved.joining) return moved;
   const still = await recheckLockout(logRoot, null);
   return still ? { error: lockoutMessage(still) } : null;
 }

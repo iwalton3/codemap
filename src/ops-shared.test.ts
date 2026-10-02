@@ -1107,3 +1107,28 @@ test("wiring that changed is published again", async () => {
     assert.equal(after.wouldPublish, 0, "connect already sent it; the backfill has nothing left to do");
   } finally { u.cleanup(); }
 });
+
+test("round 4, I1: a locked clone joining a team gets through its sync — the lock release's pull does not stop it", async () => {
+  const u = universe();
+  const remote = tmp("remote"), team = tmp("team");
+  try {
+    await withEnv({ CODEMAP_SIDECAR: undefined, CODEMAP_AGENT_MODEL: undefined }, async () => {
+      const { ensureSidecar } = await import("./sidecar.js");
+      const { recordLockout, lockoutOf } = await import("./lockout.js");
+      const { id } = await shared.shareFinding(u.root, 264, NEW) as { id: string };
+      git(remote, "init", "-q", "--bare", "-b", "main");
+      await ensureSidecar(team, { principal: "ana@x.com" });
+      git(team, "remote", "add", "origin", remote);
+      git(team, "add", "-A"); git(team, "-c", "user.email=ana@x.com", "-c", "user.name=ana", "commit", "-qm", "seed");
+      git(team, "push", "-q", "origin", "HEAD:main");
+      git(u.side, "remote", "add", "origin", remote);
+      // Locked by an entry nothing here still holds: the release re-checks and clears it.
+      recordLockout(u.side, { id: "e_gone", kind: "finding.created", why: "repaired since", scope: "findings/x", shard: "findings/x/events.ndjson", line: 1 });
+      const r = await shared.sharedSync(u.root) as any;
+      assert.ok(!r.error, JSON.stringify(r));
+      assert.equal(lockoutOf(u.side), null, "the lock cleared");
+      const shards = git(remote, "ls-tree", "-r", "--name-only", "main").stdout;
+      assert.match(shards, /findings\//, `the finding this clone wrote alone reached the team: ${id}`);
+    });
+  } finally { u.cleanup(); discard(remote); discard(team); }
+});
