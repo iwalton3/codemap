@@ -1231,8 +1231,7 @@ function foldOnce(events: LogEvent[], excludedPicks: ReadonlySet<string>): { val
     }
   }
 
-  // The presentation is an immutable human-visible snapshot. Recording-time causality
-  // alone cannot prove a second principal saw the predecessor when deciding.
+  // The presentation is an immutable human-visible snapshot.
   for (const d of decisions.values()) for (const a of d.answers) if (a.revision) {
     const rev = a.revision;
     const targets = Array.isArray(rev.of) ? rev.of.map((id) => d.answers.find((x) => x.id === id)) : [];
@@ -1268,7 +1267,7 @@ function foldOnce(events: LogEvent[], excludedPicks: ReadonlySet<string>): { val
       // Not whether the reviser SAW it: that refused only hand-built events (round 3, O1).
       && targets.every((x) => x!.seq < a.seq);
     if (!valid) {
-      a.revisionInvalid = "revision needs exact source, scope and verified human act-time context";
+      a.revisionInvalid = "revision needs exact sources logged before it, a named scope and a verified human answer";
       refuseId(answerEvent?.id, a.revisionInvalid);
       a.cancelled = { by: a.id, reason: a.revisionInvalid };
       continue;

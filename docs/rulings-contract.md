@@ -257,6 +257,10 @@ branch. This section does not assert that every operation or surface now passes.
   named predecessor and verified context shown to that person at the act; an
   independently given answer remains a possible conflict. Same-principal
   corrections retain given-time ranking and deterministic log order for ties.
+  **Superseded in part, 2026-10-01** (online-only-sync round 3, owner: "I don't
+  see a reason to protect against hand written writes"): a direct revision is no
+  longer checked for what its author saw — only that its named predecessors are
+  logged before it; a relay still carries its verified human source context.
 - **Authority and comparison.** Preserve source answers separately from current
   authority. Compare independently authoritative answer versions with complete
   question and response context. An independent reader records equivalent,
