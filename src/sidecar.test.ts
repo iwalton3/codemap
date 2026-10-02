@@ -136,7 +136,8 @@ test("a fetch that meets another process's ref lock waits for it, and is not an 
     await sync(t.a, izzie);
     const lock = join(t.b, ".git", "refs", "remotes", "origin", "main.lock");
     writeFileSync(lock, "");
-    spawn("sh", ["-c", `sleep 0.3; rm -f '${lock}'`], { stdio: "ignore" });
+    // Node, not sh: windows-latest has no sh on PATH.
+    spawn(process.execPath, ["-e", `setTimeout(() => require("fs").rmSync(${JSON.stringify(lock)}, { force: true }), 300)`], { stdio: "ignore" });
     const r = await sync(t.b, dana);
     assert.ok(!("error" in r), JSON.stringify(r));
     assert.equal(r.gained, 1, "and the pull it was part of arrived");
