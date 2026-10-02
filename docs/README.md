@@ -55,6 +55,7 @@ Decided, not yet built. This is the work queue.
 | [`docs/PROPOSAL-close-evidence.md`](PROPOSAL-close-evidence.md) | 500 | **PROPOSED, not approved.** An `evidence` slot on `close_finding`, from a measurement of 183 agent fix-vouches. §8 is the audit loop's shape — discussed, NOT ratified; §7 the constraints it must satisfy; §8.6 the run where two auditors agreed 16/16 and missed together. |
 | [`docs/PROPOSAL-decision-rounds.md`](PROPOSAL-decision-rounds.md) | 264 | **PROPOSED, not approved.** People answer decision rounds; agents sort, fix and verify-close findings. Supersedes `plan-decision-log.md`; §8 maps the downstream team's IZ-1…IZ-10 onto it. |
 | [`docs/PROPOSAL-close-pipeline.md`](PROPOSAL-close-pipeline.md) | 212 | **PROPOSED.** Store the sort's closing condition instead of re-deriving it. §3(a) and §4–§6 are components of the decision-rounds proposal. |
+| [`docs/PROPOSAL-review-topics.md`](PROPOSAL-review-topics.md) | 209 | **PROPOSED, not approved.** Review topics: a walkthrough of any selector-defined set of code, including code already on main. §7 is the old-build measurement, §8 what is still open. |
 | [`docs/close-audit-2026-09-21.jsonl`](close-audit-2026-09-21.jsonl) | 16 | the per-item scores behind §8.6. Data, not prose. |
 | [`docs/close-audit-2026-09-21-asym.jsonl`](close-audit-2026-09-21-asym.jsonl) | 16 | the same items under §8.7's asymmetric roles. Data, not prose. |
 | [`docs/close-audit-2026-09-22-paired.jsonl`](close-audit-2026-09-22-paired.jsonl) | 24 | §8.8's paired pre/post-repair run. Data, not prose. |
