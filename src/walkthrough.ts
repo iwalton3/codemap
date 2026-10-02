@@ -149,8 +149,15 @@ export function walkCoverage(
    * to be guessed is worse than the same number with its members attached.
    */
   outside: readonly { id: string; lane: string }[],
+  /**
+   * What each cited container contains. Topics pass it — a cited class covers its members
+   * (owner, review topics Round 2.1) — and pull requests do not, so a PR's members still
+   * have to be walked one by one.
+   */
+  containment?: ReadonlyMap<string, readonly string[]>,
 ): WalkCoverage {
   const cited = new Set(citedAnchors(features).map((c) => c.anchorId));
+  if (containment) for (const id of [...cited]) for (const m of containment.get(id) ?? []) cited.add(m);
   const uncovered = [...queue].filter((id) => !cited.has(id));
   return {
     uncovered, covered: queue.size - uncovered.length, total: queue.size,
@@ -197,26 +204,46 @@ export function buildWalkthrough(
 }
 
 /** Chapters whose cited code has moved since the walkthrough was written. */
-export function staleChapters(w: PrWalkthrough, live: AnchorIndex): string[] {
+export function staleChapters(w: { features: WalkFeature[] }, live: AnchorIndex): string[] {
   return w.features.flatMap((f) => f.chapters)
     // A chapter with no witnesses cannot be judged, and used to THROW here — which is
     // how one malformed sidecar event took the whole pull-request page down. The fold
     // and the publish boundary both refuse that shape now; this is the third guard,
     // because a LOCAL row reaches this without passing either.
-    .filter((c) => Array.isArray(c.witnesses) && c.witnesses.some((wit) => {
-      const r = resolveAnchor(wit.anchorId, [wit.bodyHash], live);
-      // An id this index could not have minted says nothing about whether the
-      // chapter's code moved, and a chapter flagged stale for that reason is work
-      // nobody can do. `headMoved` already covers "the whole thing is suspect".
-      if (r.at === "incomparable") return false;
-      // The same rule one level down, and `resolveAnchor` does not reach it: it
-      // classifies an ABSENT id, so a FOUND one hands back a hash unexamined. Two
-      // hashes from different derivations differ because the tokenizer changed, not
-      // because the chapter did — which after a grammar re-vendor is every chapter
-      // at once. This is what `witnessDrift` does for reviews and bugs.
-      const now = r.at === "found" ? r.hash : ABSENT_HASH;
-      if (!comparableHashes(now, wit.bodyHash)) return false;
-      return !sameBody(now, wit.bodyHash);
-    }))
+    .filter((c) => Array.isArray(c.witnesses) && c.witnesses.some((wit) => witnessMoved(wit, live)))
     .map((c) => c.id);
+}
+
+/**
+ * What has moved on another commit — main's tip — since the walkthrough witnessed it:
+ * per chapter and per symbol. `staleChapters` asks the same question of the walkthrough's
+ * own head; a merged pull request's head never moves, so only this can say trunk has
+ * since changed the code (review topics §3.3, F26).
+ */
+export function movedSince(w: { features: WalkFeature[] }, trunk: AnchorIndex): { chapters: string[]; symbols: string[] } {
+  const chapters: string[] = [];
+  const symbols = new Set<string>();
+  for (const c of w.features.flatMap((f) => f.chapters)) {
+    if (!Array.isArray(c.witnesses)) continue;
+    const moved = c.witnesses.filter((wit) => witnessMoved(wit, trunk));
+    if (moved.length) chapters.push(c.id);
+    for (const m of moved) symbols.add(m.anchorId);
+  }
+  return { chapters, symbols: [...symbols] };
+}
+
+function witnessMoved(wit: BugWitness, live: AnchorIndex): boolean {
+  const r = resolveAnchor(wit.anchorId, [wit.bodyHash], live);
+  // An id this index could not have minted says nothing about whether the
+  // chapter's code moved, and a chapter flagged stale for that reason is work
+  // nobody can do. `headMoved` already covers "the whole thing is suspect".
+  if (r.at === "incomparable") return false;
+  // The same rule one level down, and `resolveAnchor` does not reach it: it
+  // classifies an ABSENT id, so a FOUND one hands back a hash unexamined. Two
+  // hashes from different derivations differ because the tokenizer changed, not
+  // because the chapter did — which after a grammar re-vendor is every chapter
+  // at once. This is what `witnessDrift` does for reviews and bugs.
+  const now = r.at === "found" ? r.hash : ABSENT_HASH;
+  if (!comparableHashes(now, wit.bodyHash)) return false;
+  return !sameBody(now, wit.bodyHash);
 }
