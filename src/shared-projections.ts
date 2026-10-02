@@ -35,6 +35,7 @@ import { foldDecisions, type SharedDecisions } from "./shared-decisions.js";
 import { foldTriage, triageSubject, isTombstone, ABSENT_FIELD, type TriageEntry, type Axis, type TriageField } from "./shared-triage.js";
 import { foldGraph, type SharedWiring } from "./shared-graph.js";
 import { foldBugs, needsHumanAck as bugNeedsAck, type SharedBug } from "./shared-bugs.js";
+import { foldTopics, foldTopicWalkthroughs, type Topic, type SharedTopicWalkthrough } from "./shared-topics.js";
 import type { Actor, NodeVersion } from "./schema.js";
 
 /**
@@ -418,6 +419,32 @@ export const reviewLinksProjection: Projection<ReviewLink[]> = {
   },
   read(d: DatabaseSync, scope: string): ReviewLink[] {
     return d.prepare("SELECT pr, branch FROM review_link WHERE scope = ? ORDER BY rowid").all(scope) as unknown as ReviewLink[];
+  },
+};
+
+/** Review topics (`topics/<universe>`), retired ones included. See shared-topics.ts. */
+export const topicsProjection: Projection<Topic[]> = {
+  write(d: DatabaseSync, scope: string, value: Topic[]): void {
+    d.prepare("DELETE FROM topics WHERE scope = ?").run(scope);
+    const ins = d.prepare("INSERT INTO topics(scope,slug,status,body) VALUES(?,?,?,?)");
+    for (const t of value) ins.run(scope, t.slug, t.status, JSON.stringify(t));
+  },
+  read(d: DatabaseSync, scope: string): Topic[] {
+    return (d.prepare("SELECT slug, body FROM topics WHERE scope = ? ORDER BY rowid").all(scope) as unknown as { slug: string; body: string }[])
+      .map((r) => { try { return JSON.parse(r.body) as Topic; } catch { throw new CorruptProjection(`topics ${scope}/${r.slug} is unreadable`); } });
+  },
+};
+
+/** Topic walkthroughs (`topic-walkthrough/<universe>/t-<hex>`): every snapshot, each its own row. */
+export const topicWalkthroughsProjection: Projection<SharedTopicWalkthrough[]> = {
+  write(d: DatabaseSync, scope: string, value: SharedTopicWalkthrough[]): void {
+    d.prepare("DELETE FROM topic_walkthroughs WHERE scope = ?").run(scope);
+    const ins = d.prepare("INSERT INTO topic_walkthroughs(scope,id,topic,head,author,at,body) VALUES(?,?,?,?,?,?,?)");
+    for (const w of value) ins.run(scope, w.id, w.walkthrough.topic, w.walkthrough.head, w.actor.principal, w.at, JSON.stringify(w));
+  },
+  read(d: DatabaseSync, scope: string): SharedTopicWalkthrough[] {
+    return (d.prepare("SELECT id, body FROM topic_walkthroughs WHERE scope = ? ORDER BY rowid").all(scope) as unknown as { id: string; body: string }[])
+      .map((r) => { try { return JSON.parse(r.body) as SharedTopicWalkthrough; } catch { throw new CorruptProjection(`topic_walkthroughs ${scope}/${r.id} is unreadable`); } });
   },
 };
 
@@ -826,6 +853,8 @@ export function projectionFor(scope: string): { fold: (e: LogEvent[]) => any; pr
   if (scope.startsWith("graph/")) return { fold: foldGraph, proj: graphProjection };
   if (scope.startsWith("reviews/")) return { fold: foldReviewLinks, proj: reviewLinksProjection };
   if (scope.startsWith("decisions/")) return { fold: foldDecisions, proj: decisionsProjection };
+  if (scope.startsWith("topics/")) return { fold: foldTopics, proj: topicsProjection };
+  if (scope.startsWith("topic-walkthrough/")) return { fold: foldTopicWalkthroughs, proj: topicWalkthroughsProjection };
   // NOT `standard/`, and not `law/`. The standard is the one entity folded from TWO
   // scopes — law (workspace) and evidence (universe) — because `spec.withdrawn` consults
   // evidence to decide a law act. Folding either half ALONE here would write a partial

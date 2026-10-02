@@ -13,5 +13,6 @@ import "./shared-graph.js";
 import "./shared-notes.js";
 import "./shared-reviews.js";
 import "./shared-standard.js";
+import "./shared-topics.js";
 import "./shared-triage.js";
 import "./shared-walkthrough.js";

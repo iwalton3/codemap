@@ -881,6 +881,19 @@ function migrate(d: DatabaseSync): void {
       PRIMARY KEY (scope, pr, branch)
     );
 
+    -- Review topics and their walkthroughs, folded from topics/<universe> and
+    -- topic-walkthrough/<universe>/t-<hex>. See shared-topics.ts. A topic walkthrough is
+    -- never replaced, so its key is the publishing event's id, not (topic, author).
+    CREATE TABLE IF NOT EXISTS topics (
+      scope TEXT NOT NULL, slug TEXT NOT NULL, status TEXT NOT NULL, body TEXT NOT NULL,
+      PRIMARY KEY (scope, slug)
+    );
+    CREATE TABLE IF NOT EXISTS topic_walkthroughs (
+      scope TEXT NOT NULL, id TEXT NOT NULL, topic TEXT NOT NULL, head TEXT NOT NULL,
+      author TEXT NOT NULL, at TEXT NOT NULL, body TEXT NOT NULL,
+      PRIMARY KEY (scope, id)
+    );
+
     -- Decision rounds, folded from decisions/<universe>. See shared-decisions.ts.
     CREATE TABLE IF NOT EXISTS decision_rounds (
       scope TEXT NOT NULL, id TEXT NOT NULL, body TEXT NOT NULL,

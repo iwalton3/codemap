@@ -143,7 +143,7 @@ test("the standard projection's table set is pinned to a materializer version", 
   // 53: the linear log (online-only sync, phase 6). The standard lost its held-spec and
   // held-problem arms and `lateActs`; `*.conflict.resolved` is skipped, never applied. The
   // fold orders by `seq` and every refusal is classed. Fold-mind, invisible to the pins.
-  assert.equal(MATERIALIZER_VERSION, 55, "and record the new number here");
+  assert.equal(MATERIALIZER_VERSION, 56, "and record the new number here");
 });
 
 /**
@@ -183,7 +183,7 @@ test("the findings fold's event vocabulary is pinned to a materializer version",
   const wo = src.slice(src.indexOf("const witnessOf"), src.indexOf("};", src.indexOf("const witnessOf")));
   assert.deepEqual([...new Set([...wo.matchAll(/str\(w, "(\w+)"\)|w!\.(\w+)/g)].map((m) => m[1] ?? m[2]!))].sort(),
     ["anchorId", "bodyHash", "deleted"], "the fold reads a new witness field — bump MATERIALIZER_VERSION with it");
-  assert.equal(MATERIALIZER_VERSION, 55, "and record the new number here");
+  assert.equal(MATERIALIZER_VERSION, 56, "and record the new number here");
 });
 
 /**
@@ -204,7 +204,7 @@ test("the decisions fold's event vocabulary is pinned to a materializer version"
   const block = proj.slice(proj.indexOf("export const decisionsProjection"), proj.indexOf("/** Shared notes"));
   assert.deepEqual([...new Set([...block.matchAll(/INSERT INTO (\w+)/g)].map((m) => m[1]!))].sort(),
     ["decision_comparisons", "decision_records", "decision_rounds", "logged_questions"], "the decisions projection's tables changed — bump MATERIALIZER_VERSION with them");
-  assert.equal(MATERIALIZER_VERSION, 55, "and record the new number here");
+  assert.equal(MATERIALIZER_VERSION, 56, "and record the new number here");
 });
 
 /**
@@ -231,7 +231,7 @@ test("the bugs fold's event vocabulary is pinned to a materializer version", asy
     "bug.corroborated", "bug.filed", "bug.outcome", "bug.promoted", "bug.reopened", "bug.requested", "bug.revised",
     "bug.rulingApplied", "bug.stateChanged", "bug.tracked", "bug.unanchored",
   ], "the bugs fold learned or forgot an event — bump MATERIALIZER_VERSION with it");
-  assert.equal(MATERIALIZER_VERSION, 55, "and record the new number here");
+  assert.equal(MATERIALIZER_VERSION, 56, "and record the new number here");
 });
 
 /**
@@ -285,7 +285,7 @@ test("repair fold event vocabulary and projection are pinned to the materializer
   const kinds = [...new Set([...src.matchAll(/kind === "(repair\.[a-z-]+)"/g)].map(m => m[1]))].sort();
   assert.deepEqual(kinds, ["repair.claims-recorded", "repair.evidence-recorded", "repair.sort-recorded"]);
   assert.match(readFileSync("src/shared-projections.ts", "utf8"), /INSERT OR REPLACE INTO repair_records/);
-  assert.equal(MATERIALIZER_VERSION, 55);
+  assert.equal(MATERIALIZER_VERSION, 56);
 });
 
 test("repair verification event vocabulary and projection are pinned to the materializer", async () => {
@@ -295,7 +295,7 @@ test("repair verification event vocabulary and projection are pinned to the mate
   assert.deepEqual(kinds, ["repair.verification-arbitrated", "repair.verification-recorded", "repair.verification-requested"]);
   assert.match(readFileSync("src/shared-projections.ts", "utf8"), /INSERT OR REPLACE INTO repair_verifications/);
   assert.match(readFileSync("src/db.ts", "utf8"), /CREATE TABLE IF NOT EXISTS repair_verifications/);
-  assert.equal(MATERIALIZER_VERSION, 55);
+  assert.equal(MATERIALIZER_VERSION, 56);
 });
 
 test("the upgrade drops the merge era's contest and divergence questions, and only those", async () => {
@@ -316,4 +316,21 @@ test("the upgrade drops the merge era's contest and divergence questions, and on
     const { readAnnotations } = await import("./store.js");
     assert.deepEqual((await readAnnotations(root)).annotations.map((a) => a.id), ["q3", "n4"]);
   } finally { discard(root); }
+});
+
+/**
+ * The review-topic families' vocabularies (docs/PROPOSAL-review-topics.md §4), pinned the same
+ * way. Registered by kind rather than parsed from source: both families are new, so the lists
+ * here are the whole vocabulary, and a kind added later changes what a folded scope says.
+ */
+test("the topic families' event vocabularies are pinned to a materializer version", async () => {
+  const { MATERIALIZER_VERSION } = await import("./materialize.js");
+  const { kindsFor, SKIPPED_KINDS } = await import("./eventlog.js");
+  await import("./shared-topics.js");
+  const own = (scope: string) => [...(kindsFor(scope)?.kinds ?? [])].filter((k) => !SKIPPED_KINDS.includes(k)).sort();
+  assert.deepEqual(own("topics/acme-api"), ["topic.defined", "topic.retired", "topic.revised"],
+    "the topics fold learned or forgot an event — bump MATERIALIZER_VERSION with it");
+  assert.deepEqual(own("topic-walkthrough/acme-api/t-ab"), ["topic.walkthrough.published"],
+    "the topic walkthrough fold learned or forgot an event — bump MATERIALIZER_VERSION with it");
+  assert.equal(MATERIALIZER_VERSION, 56, "and record the new number here");
 });

@@ -43,8 +43,14 @@ import { readFileSync } from "node:fs";
  * question they were asked and reads free text. A logged question is a copy of what
  * the person was shown and said, not anything derived from code. See
  * `src/shared-decisions.ts`.
+ *
+ * `topics/` is authored: a person or agent defines a topic's selector. `topic-walkthrough/`
+ * carries the set the selector resolved to at ONE commit, which is a function of the code —
+ * but of an immutable commit, copied as the record of what was walked, exactly as a
+ * walkthrough's witnesses are. Nothing re-derives it; the live comparison is local.
+ * See `src/shared-topics.ts`.
  */
-const SHARED_KINDS = ["findings/", "bugs/", "docs/", "notes/", "walkthrough/", "triage/", "graph/", "reviews/", "decisions/"];
+const SHARED_KINDS = ["findings/", "bugs/", "docs/", "notes/", "walkthrough/", "triage/", "graph/", "reviews/", "decisions/", "topics/", "topic-walkthrough/"];
 
 /**
  * `standard/` and `law/` travel and are deliberately NOT here.
@@ -61,7 +67,7 @@ const MERGED_KINDS = ["standard/", "law/"];
 
 test("exactly the authored entity kinds travel", () => {
   const src = readFileSync("src/shared-projections.ts", "utf8");
-  const registered = [...src.matchAll(/scope\.startsWith\("([a-z]+\/)"\)/g)].map((m) => m[1]!);
+  const registered = [...src.matchAll(/scope\.startsWith\("([a-z-]+\/)"\)/g)].map((m) => m[1]!);
   assert.deepEqual(
     registered.sort(), [...SHARED_KINDS].sort(),
     "a scope kind was added or removed from `projectionFor`. Every kind here must be "

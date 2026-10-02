@@ -246,4 +246,6 @@
 // around skipped events and excuses only refusals that name one (C5); a re-draft can no longer
 // reset a spec that is not a draft (O3); and any fold arm the C16 property test finds. One bump
 // for the round: no build ships between its fold changes. Same reason as 18 → 19.
-export const MATERIALIZER_VERSION = 55;
+// 55 → 56 (plan 2026-10-02-review-topics): two new families, `topics/` and
+// `topic-walkthrough/`, with their tables; and findings learn a topic key. Same reason as 18 → 19.
+export const MATERIALIZER_VERSION = 56;
