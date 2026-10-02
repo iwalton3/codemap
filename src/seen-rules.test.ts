@@ -5,7 +5,7 @@
 // would refuse the event on read").
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { findingScope, foldFindingsReport, foldFindingsScopeReport } from "./shared-findings.js";
+import { findingScope, foldFindingsReport } from "./shared-findings.js";
 import { bugScope, foldBugsReport } from "./shared-bugs.js";
 import { decisionHash, decisionsDoor, foldDecisions, standingForFinding } from "./shared-decisions.js";
 import { applicationDisplayHash, applicationKey, issueClaimHash } from "./ruling-application.js";
@@ -13,7 +13,7 @@ import { canonicalIssueKey } from "./decision-issues.js";
 import { foldRepairRecords } from "./repair-records.js";
 import { repairVerificationHash } from "./repair-verification.js";
 import { testEvent } from "./test-events.js";
-import { sortEvents, type LogEvent } from "./eventlog.js";
+import { doorFor, sortEvents, type LogEvent } from "./eventlog.js";
 
 const agent = { principal: "alice@x", via: { kind: "agent", model: "reader" } } as any;
 const human = { principal: "bob@x" };
@@ -95,35 +95,33 @@ function repair() {
   const tip = events.at(-1)!.id;
   const data = { id: "application", requestId: "request", capsuleHash: repairVerificationHash(c), findingId: "f", openEpoch: finding.openEpoch, claimHash: issueClaimHash("finding", finding), outcome: "fixed", contextHash: repairVerificationHash(c.rulingContext), reason: "independent inspection covers exact whole claim", identity: identity("orchestrator") };
   const apply = (after: string[]) => add("A", "finding.repairApplied", "f", data, verifier, after);
-  /** The read's state, and whether the door (the scope fold, as replay asks it) refuses the act. */
-  const judge = () => {
+  /** The read's state, and whether the registered findings door — what replay asks — refuses the act. */
+  const judge = async () => {
     const sorted = sortEvents(events);
-    const arm = foldFindingsReport(sorted).value.get("f") as any;
-    const door = foldFindingsScopeReport(sorted).refused.some((x) => x.id === "A") || arm.closed?.eventId !== "A";
-    return { state: arm.state, doorRefuses: door };
+    const door = (await doorFor("/no-root", "findings/acme/1")!(sorted, sorted.find((e) => e.id === "A")!)).refused;
+    return { state: (foldFindingsReport(sorted).value.get("f") as any).state, doorRefuses: door.some((x) => x.id === "A") };
   };
   return { add, apply, tip, sort, judge };
 }
 
-test("rule 1 gone (repair): an application whose after stops short is judged on the whole log", () => {
+test("rule 1 gone (repair): an application whose after stops short is judged on the whole log", async () => {
   const f = repair();
   f.apply([]);
-  assert.deepEqual(f.judge(), { state: "resolved", doorRefuses: false });
+  assert.deepEqual(await f.judge(), { state: "resolved", doorRefuses: false });
 });
 
-test("O2: a teammate superseding the sort before a staged repair application — the read and the door agree", () => {
+test("O2: a teammate superseding the sort before a staged repair application — the read and the door agree", async () => {
   const f = repair();
   f.add("sort-2", "repair.sort-recorded", "sort-2", { ...f.sort, id: "sort-2", prior: "sort", reason: "new assessment" });
   f.apply([f.tip]);
-  // Before: the read closed the finding (judged on what the applier read) while the door refused it.
-  assert.deepEqual(f.judge(), { state: "created", doorRefuses: true });
+  assert.deepEqual(await f.judge(), { state: "created", doorRefuses: true });
 });
 
-test("O2: a teammate decomposing the claim before a staged repair application — the read and the door agree", () => {
+test("O2: a teammate decomposing the claim before a staged repair application — the read and the door agree", async () => {
   const f = repair();
   f.add("claims-2", "repair.claims-recorded", "f", { findingId: "f", parentId: "f:original", reason: "split", claims: [{ id: "f:second", text: "second guard" }] });
   f.apply([f.tip]);
-  assert.deepEqual(f.judge(), { state: "created", doorRefuses: true });
+  assert.deepEqual(await f.judge(), { state: "created", doorRefuses: true });
 });
 
 /** A decision question, alice's answer A, and a revision R of it. */
@@ -161,8 +159,6 @@ test("rule 2 gone: another person's revision is not refused for an after that om
 });
 
 test("a revision placed before the answer it revises: the read refuses what the door refuses", async () => {
-  // Rule 2 was the only ordering check the read had; with it simply dropped the door refused
-  // this and the read let it stand.
   const w = revision();
   assert.deepEqual(await w.judge([w.round, w.revise(w.bob, ["round"]), w.answer(["round"])]), { door: true, read: "locks" });
 });
