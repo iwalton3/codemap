@@ -1,7 +1,8 @@
 # Proposal: review topics — walkthroughs of any set of code, not only a pull request
 
-> **Kind: proposal — not approved.** Filed 2026-10-02 against `main` at `6859b46`. §2 and §6
-> are settled by the owner in that session (answers quoted); §7 is what is still open.
+> **Kind: proposal — approved for building.** Filed 2026-10-02 against `main` at `6859b46`. §2,
+> §6 and §8 are settled by the owner (answers quoted); §7 is a measurement. The build plan is
+> `.git/plan/2026-10-02-review-topics/`.
 
 ## 1. Why
 
@@ -64,11 +65,12 @@ as a union then filtered:
 |---|---|
 | `paths: [glob…]` | every anchor in a matching file |
 | `symbols: [anchorId…]` | those anchors and every anchor contained in them (byte span, as `prContainment`) |
-| `base: <ref>` (optional) | intersect with what changed between `base` and the head — the "merged range" form |
+| `nodes: [nodeId…]` | the anchors a doc or flow node cites |
+| `base: <ref>` (optional) | intersect with what changed between `base` and the head — the "merged range" form, deleted symbols included |
 
 Then the existing lane policy: `[tests]`, excluded and generated paths are counted apart
-(`WalkCoverage.outsideQueue`), never in the denominator. Node/flow selectors (a flow's
-cited anchors) are an obvious fourth form and are deferred — nothing needs them yet.
+(`WalkCoverage.outsideQueue`), never in the denominator. A `symbols` entry the head no longer
+has is reported as `unresolved`, never dropped.
 
 A snapshot **copies** the selector it resolved and the resolved id set, so revising a
 topic's selector never rewrites what an old walkthrough was about.
@@ -83,13 +85,15 @@ method of every class. PRs keep today's rule.
 
 ### 3.3 Signing
 
-**Each walkthrough keeps its own sign-off history** (§6.5). A sign-off is recorded against
-the walkthrough — the record with a concrete commit; a topic has none — as an append-only
-event: who, which symbol or chapter, which attestation, signed or withdrawn, and the body hash
-at that walkthrough's head. March's page keeps showing what was signed in March after May's
-walk re-signs the same code. The ordinary per-anchor mark (`markReviewedBatch`, `ref` = the
-head, `base` = the base when there is one) is still written as the local projection, so the
-map's review state and staleness work as today. The cover (`coveredBy`) is bounded by the topic's resolved set where the PR path bounds it
+**Each walkthrough keeps its own sign-off history** (§6.5), in a LOCAL append-only table
+(§8): who, which symbol or chapter, which attestation, signed or withdrawn, and the body hash
+at that walkthrough's head. Nothing about sign-off travels; the rows hold everything an event
+would, so exporting them later loses nothing. March's page keeps showing what was signed in
+March after May's walk re-signs the same code. The ordinary per-anchor mark
+(`markReviewedBatch`, `ref` = the head, `base` = the base when there is one) is re-projected
+from that history — the latest walk whose latest act on the symbol is a sign-off — so the
+map's review state and staleness work as today, and withdrawing in May leaves March's
+sign-off standing on the map. The cover (`coveredBy`) is bounded by the topic's resolved set where the PR path bounds it
 by what the PR touches — same reason: one click must not become a claim over code the
 reviewer was never shown as part of this review.
 
@@ -103,23 +107,27 @@ honest — it says what was read — and the indicator says the code read is no 
 A snapshot is judged against the live trunk, not only its own head: re-resolving the
 selector at the tip shows chapters whose code moved (`staleChapters` against trunk hashes)
 and symbols the selector matches now that the snapshot never saw. Both are the prompt to
-re-walk. A re-walk is a NEW snapshot; the old one stays readable as history.
+re-walk. A re-walk is a NEW snapshot; the old one stays readable as history. Its `base`
+defaults to the head of the latest walkthrough of the topic in which THIS MACHINE'S PERSON
+signed anything — an agent writes, the person signs — with the whole selector on request.
 
 ### 3.5 Findings
 
 - New key kind `topic:<slug>` beside `"<n>"` and `branch:<name>` (`src/review-target.ts`),
   normalized the same way. Sidecar scope `<universe>/t-<hex>`, hex of `universe \0 topic \0
   slug` as the branch scope does — a slug can be renamed in the title, never in the key.
-- `landed` needs no new rule: it is decided by the code first, and a topic's cited code is
-  on trunk's tip, so its findings are landed from filing. Their exits are the existing ones —
+- `landed` needs no new rule: it is decided by the code first. A finding filed from a walk at
+  trunk's tip is landed from filing; one from a walk at an off-trunk head falls to ancestry like
+  any other. Their exits are the existing ones —
   fixed, Escalate, File Bug, Backlog with a deadline.
 - Agents can file against a topic with the existing finding verbs, since they take a key.
   That is not a coverage bucket; it is just a finding.
 - Not linked back to PRs: a range topic covering merged #N does not show its findings on #N.
 
-**The sweep this costs.** Eleven non-test files branch on the key kind today
+**The sweep this costs.** Many non-test files branch on the key kind today
 (`isBranchKey` / `branchOf` / `findingKeyScope` / `normalizeFindingKey`, plus `/^\d+$/`
-checks such as `repair-lifecycle.ts:91`). Most fall through to "not a PR, not a branch",
+checks such as `repair-lifecycle.ts:91`); no count is given, because two greps disagreed and
+the sweep test below is the authority. Most fall through to "not a PR, not a branch",
 which for a topic is usually right — `repairSourceBranch` returning no branch means "compare
 against the default branch", which is exactly a topic's case. Usually is not always, so the
 build includes a test that sweeps the key-kind switches the way `standard-reach.test.ts`
@@ -130,16 +138,20 @@ sweeps front ends, rather than an audit by reading.
 - **Topic definitions travel.** Scope `topics/<universe>`, events `topic.defined`,
   `topic.revised` (selector or title), `topic.retired` — a tombstone, never a delete,
   because findings cite the key (the `withdraw_spec` lesson in `requirements-architecture.md`).
-- **Snapshots travel.** `walkthrough/<topic scope>`, kind `walkthrough.published`, carrying
-  the topic key, head, base, copied selector and resolved set. The PR fold keeps one per
-  author; a topic fold keeps one per (author, head), so history survives.
+- **Snapshots travel.** Their own family, `topic-walkthrough/<universe>/t-<hex>`, kind
+  `topic.walkthrough.published` — not `walkthrough/`, whose door and fold are registered by
+  prefix and would claim them. Each carries the topic key, head, base, copied selector and
+  resolved set. A topic walkthrough is an immutable record whose id is its publishing event's,
+  never replaced: its sign-off history (§3.3) hangs off that id, so replacing one would orphan
+  it. The PR fold keeps its one-per-author rule.
 - New families register kinds and doors (`registerKinds`, `registerDoor`). Teaching folds new
   events costs a **`MATERIALIZER_VERSION` bump (55 → 56)** for the reason `finding-backlog.md`
   gives: a teammate a day behind folds the new kind into nothing, upgrades, and is served the
-  cached nothing for ever. Whether an OLD build reading a `t-` findings scope classes it as
-  newer or folds it under a key it does not understand is not yet checked — to verify by
-  running an old fold on the new events before building, not by reading (`CLAUDE.md`, "to
-  review a fold, RUN it").
+  cached nothing for ever. A topic finding also bumps `EVENT_SCHEMA` (§7 measured why).
+- **Rollout: the team upgrades together.** `EVENT_SCHEMA` is stamped on EVERY event, so the
+  first write of anything by an upgraded build — topic or not — blocks every older build's
+  shared writes until it upgrades, as do the new `topics/` and `topic-walkthrough/` families.
+  Reads carry on. That is the existing upgrade gate, not a new mechanism, but it is team-wide.
 
 ## 5. Surfaces
 
@@ -156,8 +168,8 @@ Both front ends, per `standard-reach.test.ts`.
 
 1. **A cited container covers what it contains, for topics.** "Yes." PRs unchanged.
 2. **Re-walk defaults to the delta, whole on request.** "The default you proposed plus the
-   whole-selector option makes sense": a re-walk's `base` defaults to the previous
-   snapshot's head; the whole selector is one option away.
+   whole-selector option makes sense": a re-walk's `base` defaults to the head of the latest
+   walkthrough you signed in (§8.2); the whole selector is one option away.
 3. **Signing is pinned to the walkthrough's commit.** "The specific walkthrough should
    probably be pinned to a commit for signing with an indicator if the code moved." See §3.3.
 4. **Anyone may define or revise a topic; old walkthroughs show the change.** "Anyone can
@@ -181,7 +193,6 @@ finding.
 | same, without `data.topic` | same as above | no | goes through |
 | same, schema **2** | scope blocked as newer; finding invisible | no | **refused**: "Pushes are blocked until codemap is upgraded" |
 | `topics/<u>`, `topic.defined` (unknown family) | carry on, nothing folded | no | **refused**: "no family of this build reads topics/acme-api" |
-| `walkthrough/…`, `walkthrough.signed` (unknown kind) | carry on | no | **refused**: "walkthrough.signed is not a kind this build knows" |
 
 What follows:
 
@@ -190,20 +201,18 @@ What follows:
   rows are what forgetting the bump looks like: a finding under a key that is no PR, no
   branch and no topic, live in the backlog. So the topic finding bumps `EVENT_SCHEMA`.
 - **In practice the gate fires before any topic finding exists.** Defining a topic writes a
-  `topics/` event, and walkthrough sign-offs a new kind; either one stops every older build
+  `topics/` event; that stops every older build
   from pushing ANY shared write until it upgrades, while its reads carry on. Rollout order:
   the whole team upgrades before the first topic is defined. That is the existing upgrade
   gate, not a new cost, but it is a team-wide one.
-- **Aside, existing behaviour:** in the last two rows the pull's report said `blocked: []`
+- **Aside, existing behaviour:** in the last row the pull's report said `blocked: []`
   and the very next write was refused as newer. The pull summary does not mention the gate it
   just armed.
 
-## 8. Open
+## 8. Settled in the third round (owner, 2026-10-02)
 
-1. **Is a walkthrough's sign-off history shared with the team, or local?** Review marks today
-   never leave the machine (`reviews/` carries only PR-branch links). Walkthroughs are
-   already shared, and a team-visible record of who signed which part of a business-critical
-   topic is most of the value of keeping history at all. Leaning shared: sign-offs as events
-   in the walkthrough's sidecar scope, each person's own, with the local mark as projection.
-   The cost: it is the first time a sign-off travels, so a teammate's ✓ appears on your page —
-   rendered as theirs, never as yours (the `via` / `coveredBy` rule).
+1. **Sign-off history is local-only.** "I lean towards the walkthrough sign-off state being
+   local-only, since we aren't updating PRs to have shared sign-off state." The rows store
+   enough to be shared later.
+2. **A re-walk defaults to the delta since the latest walkthrough you signed in**, the whole
+   selector on request (§3.4).
