@@ -180,13 +180,13 @@ export async function dropStagedWrite(root: string, eventId: string) {
   return r.ok ? { ok: true, dropped: eventId } : { error: `no staged write or local conflict ${eventId} of this session` };
 }
 
-/** The pull loop's last word per sidecar: when, and whether the remote answered. */
+/** The pull loop's last word per sidecar: when, whether it pulled, and if not, why. */
 const lastPulls = new Map<string, { at: string; ok: boolean; error?: string }>();
 
 /**
  * Pull on a timer (plan 4.3): every 30s while in use — any call or request in the last five
  * minutes — doubling while idle up to ten minutes, and back to 30s on the next use. Reads are
- * at most one interval stale, and the page can say when the last one was and whether it reached.
+ * at most one interval stale, and the page can say when the last one was and why it did not pull.
  */
 export function startPullLoop(roots: string[], lastUse: () => number): () => void {
   const FAST = 30_000, CEILING = 600_000, IN_USE = 300_000;

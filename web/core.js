@@ -721,10 +721,15 @@ function paintStatus() {
   }
   const last = status?.lastPull;
   const ago = last ? Math.round((Date.now() - Date.parse(last.at)) / 1000) : null;
-  /** @type {HTMLElement} */ (el.firstChild).textContent = [
+  // Why, not "unreachable": a refused pull (joining a team, a lock, a hand-edited shard) means
+  // the remote answered (round 4, owner: "showing the refusal text makes sense").
+  const why = last && !last.ok ? (last.error ?? 'unknown error') : '';
+  const span = /** @type {HTMLElement} */ (el.firstChild);
+  span.textContent = [
     unsaved ? `${unsaved} unsaved` : 'saved',
-    last ? (last.ok ? `pulled ${ago}s ago` : `remote unreachable (${ago}s ago)`) : '',
+    last ? (last.ok ? `pulled ${ago}s ago` : `pull failed ${ago}s ago: ${why.split(/ — |\n/)[0]}`) : '',
   ].filter(Boolean).join(' · ');
+  span.title = why;
 }
 
 if (typeof document !== 'undefined') {

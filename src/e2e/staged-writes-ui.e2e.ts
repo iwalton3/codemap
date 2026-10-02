@@ -120,3 +120,23 @@ test("a tab closed with a write queued: the server lands it — or keeps the con
     assert.equal(await state(refused), "invalid", "and the refused one did not");
   } finally { await browser?.close(); server?.stop(); t.dispose(); }
 });
+
+test("round 4, I2: a refused background pull says why, not 'remote unreachable'", { skip }, async () => {
+  const t = await team(["ana@acme.test"]);
+  let server: Server | undefined, browser: any;
+  try {
+    const [ana] = t.all as [Member];
+    server = await startServer(ana.repo);
+    browser = await launchPlaywright(pw);
+    const page = await browser.newPage();
+    const error = "joining a team: run sync first — `codemap sync` brings along the writes this clone made on its own";
+    await page.route("**/api/shared/staged*", (route: any) => route.fulfill({ contentType: "application/json",
+      body: JSON.stringify({ staged: [], conflicts: [], lastPull: { at: new Date().toISOString(), ok: false, error } }) }));
+    await page.goto(`${server.url}/#/u/acme-api/shared/264/`, { waitUntil: "networkidle" });
+    await page.waitForSelector("#sync-status");
+    const text = await page.textContent("#sync-status span");
+    assert.match(text, /pull failed \d+s ago: joining a team: run sync first/);
+    assert.doesNotMatch(text, /unreachable/);
+    assert.equal(await page.getAttribute("#sync-status span", "title"), error, "the whole refusal on hover");
+  } finally { await browser?.close(); server?.stop(); t.dispose(); }
+});
