@@ -1,8 +1,9 @@
-# Proposal: review topics — walkthroughs of any set of code, not only a pull request
+# Review topics — walkthroughs of any set of code, not only a pull request
 
-> **Kind: proposal — approved for building.** Filed 2026-10-02 against `main` at `6859b46`. §2,
-> §6 and §8 are settled by the owner (answers quoted); §7 is a measurement. The build plan is
-> `.git/plan/2026-10-02-review-topics/`.
+> **Kind: current reference — NORMATIVE for review topics.** Proposed 2026-10-02 against
+> `main` at `6859b46` and built the same day (plan `2026-10-02-review-topics`). §2, §6 and §8
+> are the owner's rulings, quoted; §7 is a measurement; §9 is what the build added beyond the
+> proposal and what it deliberately did not do.
 
 ## 1. Why
 
@@ -127,11 +128,12 @@ signed anything — an agent writes, the person signs — with the whole selecto
 **The sweep this costs.** Many non-test files branch on the key kind today
 (`isBranchKey` / `branchOf` / `findingKeyScope` / `normalizeFindingKey`, plus `/^\d+$/`
 checks such as `repair-lifecycle.ts:91`); no count is given, because two greps disagreed and
-the sweep test below is the authority. Most fall through to "not a PR, not a branch",
+the sweep test is the authority. Most fall through to "not a PR, not a branch",
 which for a topic is usually right — `repairSourceBranch` returning no branch means "compare
-against the default branch", which is exactly a topic's case. Usually is not always, so the
-build includes a test that sweeps the key-kind switches the way `standard-reach.test.ts`
-sweeps front ends, rather than an audit by reading.
+against the default branch", which is exactly a topic's case. Usually is not always, so
+`src/key-kind-sweep.test.ts` finds the switches (src and web, counted per file) and each one
+either handles `topic:<slug>` or carries the reason falling through is right. A new switch,
+or a new file with one, fails it.
 
 ## 4. Storage and the sidecar
 
@@ -155,14 +157,19 @@ sweeps front ends, rather than an audit by reading.
 
 ## 5. Surfaces
 
-Both front ends, per `standard-reach.test.ts`.
+All logic is in `src/ops/topics.ts`; `src/topic-reach.test.ts` pins which surface reaches
+each op, and why one is absent.
 
 | surface | what |
 |---|---|
-| ops | generalize the walkthrough ops over a target (`pr` \| `topic`) internally; `src/walkthrough.ts` is already pure and needs only the denominator passed in |
-| MCP | `topic` (define / revise / retire / list), `topic_packet` (resolved set + source, as `pr_packet`), `topic_walkthrough` (write), `topic_walkthrough_get` |
-| web | topics list; `/#/u/:u/topic/:slug` reusing the PR walkthrough renderer; selector and who defined it shown above the walkthrough; snapshot picker |
-| CLI | `codemap topic …` |
+| ops | `src/ops/topics.ts` over the pure `src/topic-selector.ts` and `src/walkthrough.ts` (`walkCoverage` takes an optional containment map; `movedSince`) |
+| MCP | `topic` (define / revise / retire / list), `topic_packet` (resolved set + source, as `pr_packet`), `topic_walkthrough` (write, carrying the walking contract), `topic_walkthrough_get`; `report_defect` takes `context: {kind:"topic", topic, walk?}` |
+| web | `/#/u/:u/topics/` and `/#/u/:u/topic/:slug/?walk=<id>` (`web/topics.js`): selector and definer, snapshot picker, the three indicators, per-symbol and per-chapter sign-off, the topic's findings. Its own page, not the PR renderer: that one is built around the PR story's steps and diffs |
+| CLI | `codemap topic list\|define\|revise\|retire\|walk\|show` |
+
+**Signing is web-only**, as PR sign-off is: there is no MCP tool for it, which keeps "hand
+review only" (§2) structural rather than a convention. Defining, revising and walking are an
+agent's or the CLI's; the page reads and signs.
 
 ## 6. Settled in the second round (owner, 2026-10-02)
 
@@ -216,3 +223,34 @@ What follows:
    enough to be shared later.
 2. **A re-walk defaults to the delta since the latest walkthrough you signed in**, the whole
    selector on request (§3.4).
+
+## 9. As built (2026-10-02)
+
+- **Where the walk is resolved.** At main's tip by default (`trunkRef`: `origin/<trunk>`,
+  else the local trunk), or a named `head`, through the snapshot cache — ~2.7 s for an uncached
+  commit on jellyfin, cached after. A snapshot copies the selector and the resolved set
+  (`ids`, `outside`, `unresolved`), so it never changes meaning when the topic is revised.
+- **The re-walk delta.** `base` defaults to the head of the latest walkthrough of the topic in
+  which this machine's person (`resolveActor().principal`) has a sign-off row — never "the
+  caller": an agent writes and never signs. For a RANGE topic the selector's own `base` still
+  bounds the set; the delta narrows it. `whole: true` drops the default.
+- **Sign-off history** is the local `walk_signoffs` table, append-only: walk, target (symbol or
+  chapter), attestation, signed or withdrawn, the body hash at the walk's head, the walk's head
+  and base, the actor, `covered_by`. The per-anchor review mark is RE-PROJECTED from it after
+  every act: the standing sign-off is the latest walk whose latest act on the symbol is a
+  sign-off, written at that walk's head. **Known limit, not fixed:** the mark is one row per
+  reviewer and shared with PR sign-off, so a topic withdrawal can clear a mark a PR walkthrough
+  wrote for the same symbol.
+- **New findings on a retired or undefined topic are refused at the door** (a cross-scope
+  reference, checked against the log before the event); a retired topic's existing findings
+  keep resolving under its key. The same holds for new walkthroughs.
+- **Two changes reached the PR side** (owner took both into scope): a merged pull request's
+  walkthrough reports `movedOnMain` — `movedSince` against main's tip, null for an unlanded PR,
+  whose every changed symbol differs from main by definition — and the PR page marks the
+  chapter; and a sync or pull reports `pushBlocked` from `pushGate`, which the status bar shows,
+  closing the §7 aside.
+- **Checks:** `topic-selector.test.ts` (the pure model), `shared-topics.test.ts` (the folds, run
+  on hand-built events and through the door), `topics-ops.test.ts` (ops end to end, sign-off
+  history, the delta default, topic findings), `key-kind-sweep.test.ts`, `topic-reach.test.ts`,
+  `sync-push-gate.test.ts`, and `e2e/topic.e2e.ts` / `e2e/topic-ui.e2e.ts` (a range topic over
+  the merged jellyfin fixture PR equals its code lane; the page signs and reads back per walk).

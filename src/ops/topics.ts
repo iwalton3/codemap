@@ -1,5 +1,5 @@
 /**
- * Review topics: walkthroughs of any selector-defined set of code (docs/PROPOSAL-review-topics.md).
+ * Review topics: walkthroughs of any selector-defined set of code (docs/review-topics.md).
  *
  * Definitions and walkthroughs travel (`shared-topics.ts`); sign-off history is LOCAL
  * (`walk_signoffs`), and the per-anchor review mark is re-projected from it.

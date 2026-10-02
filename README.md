@@ -342,11 +342,13 @@ configured.
 ## Setting up an agent
 
 The MCP server (`src/mcp.ts`) is hand-rolled newline-delimited JSON-RPC 2.0 over
-stdio — no SDK — and exposes **124 tools** over the `ops` layer: the map
+stdio — no SDK — and exposes **185 tools** over the `ops` layer: the map
 (`outline`, `search`, `get_node`, `get_anchor`, `find_gaps`, `document`,
 `connect`, `annotate`), staleness and git (`check_stale`, `reindex`, `snapshot`,
 `diff`, `where_was`), findings and review (`report_defect`, `findings`, `triage`,
-`review`, `pr_packet`, `pr_walkthrough`), the sidecar (`sync`,
+`review`, `pr_packet`, `pr_walkthrough`), review topics — walkthroughs of any
+selector-defined code, merged or not (`topic`, `topic_packet`, `topic_walkthrough`,
+`topic_walkthrough_get`; `docs/review-topics.md`), the sidecar (`sync`,
 `shared_findings`, `shared_docs`, `shared_triage`, `shared_notes`), and the
 standard (`draft_spec`, `add_operation`, `sign_off_operation`, `ratify_spec`,
 `declare_pointer`, `record_audit`, `raise_problem`, `standard_queue`,

@@ -71,6 +71,8 @@ describe("every registered route", { skip: pw ? false : "playwright not resolvab
         // A round the fixture does not hold (it has no sidecar either): the page must say so
         // cleanly, which is the shape a stale link to a round takes.
         case "round": return "R1";
+        // A topic the fixture does not hold (nor a sidecar to hold one): said cleanly.
+        case "slug": return "no-such-topic";
         default: throw new Error(`route "${route}" has parameter ":${name}" with no fixture value — add one to fill()`);
       }
     });

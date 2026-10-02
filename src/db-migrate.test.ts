@@ -319,7 +319,7 @@ test("the upgrade drops the merge era's contest and divergence questions, and on
 });
 
 /**
- * The review-topic families' vocabularies (docs/PROPOSAL-review-topics.md §4), pinned the same
+ * The review-topic families' vocabularies (docs/review-topics.md §4), pinned the same
  * way. Registered by kind rather than parsed from source: both families are new, so the lists
  * here are the whole vocabulary, and a kind added later changes what a folded scope says.
  */

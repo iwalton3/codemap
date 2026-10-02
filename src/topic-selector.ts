@@ -1,7 +1,7 @@
 /**
  * A review topic's selector, and what it resolves to at a commit.
  *
- * The selector is the DENOMINATOR of a topic walkthrough (docs/PROPOSAL-review-topics.md
+ * The selector is the DENOMINATOR of a topic walkthrough (docs/review-topics.md
  * §3.1): it is resolved from saved data, not chosen by the agent as it writes, so
  * `unaccounted for` keeps meaning something. Pure — the caller supplies the anchors of
  * the head (and base) commit, the node citations, and the lane rule.

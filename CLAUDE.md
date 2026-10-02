@@ -419,6 +419,25 @@ Nothing runs at merge and nothing should, because it is derived on every read. B
 the trunk's resolved SHA — one `git merge-base` per FINDING was 211ms against 21ms for
 the distinct commits behind them.
 
+## Review topics — read `docs/review-topics.md` before touching them
+
+A **topic** is a named selector over the code (paths, symbols with what they contain, nodes,
+optionally a `base` range), walked by an agent into point-in-time walkthroughs a person signs
+by hand — for business-critical subsets and code already merged to main. Four things that are
+easy to get wrong:
+
+- **Topic walkthroughs are their own family, `topic-walkthrough/`, never `walkthrough/`**: that
+  family's door and fold are registered by prefix and would claim them. Each walk is an
+  immutable record keyed by its event id; nothing replaces one.
+- **Sign-off history is LOCAL (`walk_signoffs`) and the per-anchor mark is RE-PROJECTED from
+  it**, never written beside it — that is what keeps an earlier walk's sign-off standing when a
+  later walk withdraws. Signing is web-only; there is no MCP tool, on purpose.
+- **A third finding-key kind, `topic:<slug>`.** Every switch on the key kind handles it or says
+  why it falls through, and `src/key-kind-sweep.test.ts` finds those switches — add a switch,
+  update the sweep.
+- **`EVENT_SCHEMA` is 2** because a topic finding carries a data field an older build would fold
+  under a garbled key; schema is stamped on every event, so the team upgrades together.
+
 ## Requirements — read `docs/requirements-architecture.md` before touching them
 
 Also short, also normative, and it outranks COD-29 and the *Requirement Kernel* draft

@@ -1,7 +1,7 @@
 /**
  * A pull that arms the push gate says so (plan 2026-10-02-review-topics, F25).
  *
- * Measured in docs/PROPOSAL-review-topics.md §7: an event of a family this build does not
+ * Measured in docs/review-topics.md §7: an event of a family this build does not
  * read is folded by no scope, so the sync summary said `blocked: []` and the very next
  * write was refused as newer. The gate is one place, so the summary asks it.
  */

@@ -1,6 +1,6 @@
 /**
  * Review topics on the sidecar: the topic definitions, and the walkthroughs walked from them.
- * See docs/PROPOSAL-review-topics.md.
+ * See docs/review-topics.md.
  *
  * Two families, two prefixes:
  *

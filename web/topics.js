@@ -1,5 +1,5 @@
 /**
- * Review topics: the list, and one topic's walkthroughs (docs/PROPOSAL-review-topics.md).
+ * Review topics: the list, and one topic's walkthroughs (docs/review-topics.md).
  *
  * A snapshot is read and signed at ITS commit; what main has moved since, how the selector
  * changed and what it now matches that no walk has seen are indicators, never edits.

@@ -1,6 +1,6 @@
 /**
  * Review topics end to end through ops, on a real git repo with a local sidecar
- * (docs/PROPOSAL-review-topics.md; plan 2026-10-02-review-topics, phases 3-4).
+ * (docs/review-topics.md; plan 2026-10-02-review-topics, phases 3-4).
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";

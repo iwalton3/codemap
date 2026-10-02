@@ -2,7 +2,7 @@
  * What a review is OF: a pull request, or a branch whose pull request does not exist yet.
  *
  * A finding's key is `"<n>"` for pull request n, as it always was, `"branch:<name>"` for
- * a branch, or `"topic:<slug>"` for a review topic (docs/PROPOSAL-review-topics.md §3.5). The key is what the local `findings.pr` column holds and what every
+ * a branch, or `"topic:<slug>"` for a review topic (docs/review-topics.md §3.5). The key is what the local `findings.pr` column holds and what every
  * finding verb passes around, so one function turns it into a sidecar scope for all of
  * them.
  *
