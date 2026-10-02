@@ -20,7 +20,7 @@
  * this is safe for every temp directory the suite makes.
  */
 
-import { rmSync } from "node:fs";
+import { renameSync, rmSync } from "node:fs";
 import { closeDbUnder } from "./db.js";
 import { closeQueuesUnder } from "./sync-queue.js";
 
@@ -35,6 +35,12 @@ export function discard(root: string): void {
   closeDbUnder(root);
   closeQueuesUnder(root);
   rmSync(root, { recursive: true, force: true });
+}
+
+/** Rename a sidecar out from under codemap. Windows refuses while its queue file is open. */
+export function moveAside(from: string, to: string): void {
+  closeQueuesUnder(from);
+  renameSync(from, to);
 }
 
 /** Several at once — for helpers that hand out a whole team of universes. */

@@ -19,14 +19,14 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, mkdirSync, renameSync, cpSync, existsSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, cpSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import * as ops from "./ops.js";
 import { sharedSync, sharedPull, sharedStatus, adoptSidecar } from "./ops-shared.js";
 import { readBugs } from "./store.js";
-import { discard } from "./test-tmp.js";
+import { discard, moveAside } from "./test-tmp.js";
 
 const git = (root: string, ...args: string[]) =>
   spawnSync("git", ["-c", "user.email=izzie@x.com", "-c", "user.name=izzie", ...args], { cwd: root, encoding: "utf8" });
@@ -154,7 +154,7 @@ test("a sidecar that MOVED is the same sidecar, and is not refused", async () =>
   const moved = r.side + "-moved";
   try {
     assert.equal((await sharedSync(r.root) as { error?: string }).error, undefined);
-    renameSync(r.side, moved);
+    moveAside(r.side, moved);
     r.point(moved);
     assert.equal((await sharedSync(r.root) as { error?: string }).error, undefined,
       "a directory rename is not a change of team");

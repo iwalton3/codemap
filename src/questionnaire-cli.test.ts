@@ -4,6 +4,7 @@ import { renameSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { team, settle } from "./oracle.js";
+import { moveAside } from "./test-tmp.js";
 import { sharedSync } from "./ops-shared.js";
 import { postRound, submitQuestionnaire, withdrawDecision } from "./ops/decisions.js";
 import { questionnaireVersion, type Questionnaire } from "./questionnaire.js";
@@ -98,7 +99,7 @@ test("questionnaire CLI retrieves JSON after explicit sync, resumes by content c
     assert.equal(invalid.status, 1);
     assert.match(invalid.stderr, /60000/);
 
-    renameSync(b!.sidecar, `${b!.sidecar}-missing`); moved = true;
+    moveAside(b!.sidecar, `${b!.sidecar}-missing`); moved = true;
     const blocked = await questionnaireStatus(b!.repo, questionnaireId, revised.cursor) as any;
     assert.equal(blocked.status.status, "blocked");
     assert.equal((await waitQuestionnaireStatus(b!.repo, questionnaireId, blocked.cursor, 0) as any).status.status, "blocked");

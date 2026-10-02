@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import {
   team, who, syncOne, settle, rewriteHistory, appendRaw, shardsIn, type Team, type Member,
 } from "./oracle.js";
@@ -197,7 +197,7 @@ test("hostile history: each shape is refused in its own scope, and nowhere else"
       const before = (await readScope(ana.sidecar, scope)).length;
       rewriteHistory(ana, "a truncated line", (_p, sidecar) => {
         const path = join(sidecar, scope, "events.ndjson");
-        spawnSync("sh", ["-c", `printf '{"id":"nope"\\n' >> ${JSON.stringify(path)}`]);
+        appendFileSync(path, '{"id":"nope"\n');
       });
 
       const seen = await radius(ana);

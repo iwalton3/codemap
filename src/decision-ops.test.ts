@@ -22,7 +22,7 @@ import type { State } from "./schema.js";
 import { shareFinding, closeFinding, bindDecisions, reassignFinding, sharedFindings, sharedSync } from "./ops-shared.js";
 import { reviewQueue } from "./ops/annotations.js";
 import { postRound, logQuestion, relayAnswer, answerDirect, decisionRounds, decisionRound, nominateComparison, readerBrief, recordReading, submitVerdict as submitVerdictOp, confirmReading, parseVerdict, confirmId, withdrawDecision, reportRuling, withdrawalReaderBrief, submitWithdrawalVerdict, reviseDecision, revisionRelayBrief, reviseDecisionRelayed, interpretationRequestId } from "./ops/decisions.js";
-import { discard } from "./test-tmp.js";
+import { discard, moveAside } from "./test-tmp.js";
 import { decisionsView, holdBuilds } from "./ops/decision-holds.js";
 import { confirmPayload, CONFIRM_YES, decisionScope, foldDecisions, foldDecisionsReport, postRoundEvent, logQuestionEvent, postConfirmEvent, recordReadingEvent } from "./shared-decisions.js";
 import { causalHeads, readScope, sortEvents, type LogEvent } from "./eventlog.js";
@@ -944,7 +944,7 @@ test("D1 (P3.2 (7)): with the sidecar gone, the decision reads serve the stored 
     await asAgent(async () => {
       await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f)] });
       assert.equal((await decisionRounds(u.root) as any).status, "complete");
-      renameSync(u.side, u.side + ".away");
+      moveAside(u.side, u.side + ".away");
       try {
         const view = await decisionRounds(u.root) as any;
         assert.equal(view.status, "blocked", JSON.stringify(view).slice(0, 300));
