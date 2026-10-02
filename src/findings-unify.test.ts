@@ -206,7 +206,7 @@ test("an unscopeable key is refused with the batch, and the rest still publishes
     const r = await unifyFindings(u.root) as { published: string[]; refused: { id: string; reason: string }[] };
     assert.deepEqual(r.published, ["finding_ok"], "the good one goes");
     assert.deepEqual(r.refused.map((x) => x.id), ["finding_junk"]);
-    assert.match(r.refused[0]!.reason, /not a pull request number or a branch/);
+    assert.match(r.refused[0]!.reason, /not a pull request number, a branch or a topic/);
     assert.ok(await splitState(u.root), "and the gate stays on — the split is not gone");
   } finally { u.cleanup(); }
 });

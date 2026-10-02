@@ -1,8 +1,8 @@
 /**
  * What a review is OF: a pull request, or a branch whose pull request does not exist yet.
  *
- * A finding's key is `"<n>"` for pull request n, as it always was, or `"branch:<name>"` for
- * a branch. The key is what the local `findings.pr` column holds and what every
+ * A finding's key is `"<n>"` for pull request n, as it always was, `"branch:<name>"` for
+ * a branch, or `"topic:<slug>"` for a review topic (docs/PROPOSAL-review-topics.md §3.5). The key is what the local `findings.pr` column holds and what every
  * finding verb passes around, so one function turns it into a sidecar scope for all of
  * them.
  *
@@ -16,10 +16,13 @@
 import { createHash } from "node:crypto";
 import { scopeFor, type SidecarConfig } from "./sidecar-config.js";
 import { revParse } from "./git.js";
+import { TOPIC_SLUG, topicHex } from "./shared-topics.js";
 
 const BRANCH = "branch:";
+const TOPIC = "topic:";
 
 export const branchKey = (name: string): string => BRANCH + name;
+export const topicKey = (slug: string): string => TOPIC + slug;
 
 /** Malformed as a branch-review name: revision syntax, `HEAD`, or a full sha. */
 const notABranchName = (name: string): boolean =>
@@ -80,6 +83,11 @@ export function normalizeFindingKey(key: number | string): string {
     if (notABranchName(branch)) throw new Error(`"${branch}" is not a branch name`);
     return k;
   }
+  const topic = topicOf(k);
+  if (topic !== null) {
+    if (!TOPIC_SLUG.test(topic)) throw new Error(`"${topic}" is not a topic slug`);
+    return k;
+  }
   if (!/^\d+$/.test(k)) throw new Error(NOT_A_KEY(key));
   return k;
 }
@@ -88,11 +96,13 @@ export function normalizeFindingKey(key: number | string): string {
 export const assertFindingKey = (key: string): void => void normalizeFindingKey(key);
 
 const NOT_A_KEY = (key: number | string) =>
-  `"${key}" is not a pull request number or a branch — findings scope by number (pass 5, not a url or owner/repo#5), or by \`branch:<name>\``;
+  `"${key}" is not a pull request number, a branch or a topic — findings scope by number (pass 5, not a url or owner/repo#5), by \`branch:<name>\`, or by \`topic:<slug>\``;
 export const isBranchKey = (key: string): boolean => key.startsWith(BRANCH);
 export const branchOf = (key: string): string | null => (isBranchKey(key) ? key.slice(BRANCH.length) : null);
+export const isTopicKey = (key: string): boolean => key.startsWith(TOPIC);
+export const topicOf = (key: string): string | null => (isTopicKey(key) ? key.slice(TOPIC.length) : null);
 
-/** The scope a finding key lives in: `<universe>/pr-<n>` or `<universe>/b-<hex>`. */
+/** The scope a finding key lives in: `<universe>/pr-<n>`, `<universe>/b-<hex>` or `<universe>/t-<hex>`. */
 export function findingKeyScope(cfg: SidecarConfig, key: number | string): string {
   const k = normalizeFindingKey(key);
   const branch = branchOf(k);
@@ -100,6 +110,8 @@ export function findingKeyScope(cfg: SidecarConfig, key: number | string): strin
     const hex = createHash("sha256").update(`${cfg.universe}\0branch\0${branch}`).digest("hex").slice(0, 40);
     return scopeFor(cfg, "b", hex);
   }
+  const topic = topicOf(k);
+  if (topic !== null) return scopeFor(cfg, "t", topicHex(cfg.universe, topic));
   // VALIDATED, because the scope IS the association: an unnormalized key makes two
   // scopes for one pull request, and every reader then sees half the findings.
   // `pr_walkthrough` advertises "number, url, or owner/repo#N", so a url arriving here is
@@ -108,7 +120,7 @@ export function findingKeyScope(cfg: SidecarConfig, key: number | string): strin
   // Throws: both front ends surface the message, and this is malformed input, not a state.
   if (!/^\d+$/.test(k)) {
     throw new Error(
-      `"${key}" is not a pull request number or a branch — findings scope by number (pass 5, not a url or owner/repo#5), or by \`branch:<name>\``,
+      NOT_A_KEY(key),
     );
   }
   return scopeFor(cfg, "pr", k);

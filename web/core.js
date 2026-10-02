@@ -401,7 +401,7 @@ export async function postSeen(path, body) {
  * @returns {{ path: string, query: Record<string,string> } | null}
  */
 /**
- * A shared review's page. The key is a pull request number or `branch:<name>`, and a branch
+ * A shared review's page. The key is a pull request number, `branch:<name>` or `topic:<slug>`, and a branch
  * name may hold a `/`, which would split the hash route, so it is encoded (the router
  * decodes route params).
  * @param {string} u
@@ -410,11 +410,12 @@ export async function postSeen(path, body) {
 export const sharedUrl = (u, key) => `/u/${u}/shared/${encodeURIComponent(String(key))}/`;
 
 /**
- * How a review key reads: `PR 41`, or `branch feature/x` for one filed before its pull
- * request existed.
+ * How a review key reads: `PR 41`, `branch feature/x` for one filed before its pull
+ * request existed, or `topic fees` for a review topic.
  * @param {string | number} key
  */
-export const reviewLabel = (key) => (String(key).startsWith('branch:') ? `branch ${String(key).slice(7)}` : `PR ${key}`);
+export const reviewLabel = (key) => (String(key).startsWith('branch:') ? `branch ${String(key).slice(7)}`
+  : String(key).startsWith('topic:') ? `topic ${String(key).slice(6)}` : `PR ${key}`);
 
 export function entityRoute(r) {
   const u = r.universe;

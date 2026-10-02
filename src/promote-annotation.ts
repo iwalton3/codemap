@@ -56,7 +56,7 @@ export async function promoteAnnotation(
     // `filedBy`/`filedAt` carry the original attribution: this is a republication of
     // something already said, not a new claim by whoever ran the promotion.
     const { createFinding } = await import("./shared-findings.js");
-    const { findingKeyScope, branchOf } = await import("./review-target.js");
+    const { findingKeyScope, branchOf, topicOf } = await import("./review-target.js");
     const { requireActor } = await import("./identity.js");
     const { ensureSidecar } = await import("./sidecar.js");
     const actor = requireActor(root);
@@ -73,6 +73,7 @@ export async function promoteAnnotation(
       ...(finding.witness ? { witness: finding.witness } : {}),
       ...(finding.sourceRef ? { sourceRef: finding.sourceRef } : {}),
       ...(branchOf(prKey) ? { branch: branchOf(prKey)! } : {}),
+      ...(topicOf(prKey) ? { topic: topicOf(prKey)! } : {}),
       filedBy: finding.author.principal || "(unrecorded)",
       filedAt: finding.createdAt,
     });

@@ -20,7 +20,7 @@ import { emptyRepairVerificationState, isRepairVerificationState, type RepairVer
 
 import type { DatabaseSync } from "node:sqlite";
 import { db } from "./db.js";
-import { branchKey } from "./review-target.js";
+import { branchKey, topicKey } from "./review-target.js";
 import { SCRUB_POLICY_ID } from "./store.js";
 import type { ScrubPolicy } from "./schema.js";
 import { CorruptProjection, type Projection } from "./materialize.js";
@@ -116,7 +116,7 @@ export const findingsProjection: Projection<Map<string, SharedFinding>> = {
     for (const f of value.values()) {
       const i = ord++;
       // A branch finding's key is on the finding, not in its scope, which is a hash.
-      const pr = f.branch ? branchKey(f.branch) : scopePr;
+      const pr = f.branch ? branchKey(f.branch) : f.topic ? topicKey(f.topic) : scopePr;
       // `origin` and `pr` are STORE facts, not fold output — they must not ride in the
       // JSON, or the round trip returns a value the fold never produced.
       const body = JSON.stringify({ ...f, origin: undefined, pr: undefined });

@@ -601,12 +601,13 @@ export function foldBugs(events: LogEvent[]): Map<string, SharedBug> {
 }
 
 /**
- * The findings scope a bug's `fromPr` names: `findings/<u>/pr-<n>` or `findings/<u>/b-<hex>`.
+ * The findings scope a bug's `fromPr` names: `findings/<u>/pr-<n>`, `b-<hex>` or `t-<hex>`.
  * A copy of `findingKeyScope`'s layout, which cannot be imported here (review-target ->
  * sidecar-config -> store -> this module); `bugs-validation.test.ts` pins the two together.
  */
 export function findingScopeOfBugKey(universe: string, key: string): string | null {
   if (/^\d+$/.test(key)) return `findings/${universe}/pr-${key}`;
+  if (key.startsWith("topic:") && key.length > "topic:".length) return `findings/${universe}/t-${createHash("sha256").update(`${universe}\0topic\0${key.slice("topic:".length)}`).digest("hex").slice(0, 40)}`;
   if (!key.startsWith("branch:") || key.length === "branch:".length) return null;
   const hex = createHash("sha256").update(`${universe}\0branch\0${key.slice("branch:".length)}`).digest("hex").slice(0, 40);
   return `findings/${universe}/b-${hex}`;
@@ -625,7 +626,7 @@ async function outsideReferences(scope: string, e: LogEvent, _own: LogEvent[], r
     const pr = str(d, "fromPr"), finding = str(d, "fromFinding");
     if (!pr || !finding) return [];
     const at = findingScopeOfBugKey(universe, pr);
-    if (!at) return [{ id: e.id, kind: e.kind, cls: "shape", why: `"${pr}" is not a pull request number or a branch key` }];
+    if (!at) return [{ id: e.id, kind: e.kind, cls: "shape", why: `"${pr}" is not a pull request number, a branch or a topic key` }];
     const findings = await read.read(at);
     return findings.some((f) => f.kind === "finding.created" && f.subject === finding) ? [] : refused(`no finding ${finding} in ${at}`);
   }

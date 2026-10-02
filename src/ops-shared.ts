@@ -20,7 +20,7 @@ import type { ScopeStatus, ScopeDiagnostic, LogEvent } from "./eventlog.js";
 import { scopesOnDisk } from "./eventlog.js";
 import { reviewLinksProjection, findingsProjection, docsProjection, notesProjection, walkthroughsProjection, triageProjection, docsByNode, projectionFor } from "./shared-projections.js";
 import { anchorIndex, derivationsOf, type AnchorIndex, resolveAnchor} from "./anchor-resolve.js";
-import { findingKeyScope, branchKey, branchOf, isBranchKey, normalizeBranch } from "./review-target.js";
+import { findingKeyScope, branchKey, branchOf, isBranchKey, isTopicKey, topicOf, normalizeBranch } from "./review-target.js";
 import { reviewScope, foldReviewLinks, linkReview } from "./shared-reviews.js";
 import { resolveSidecar, scopeFor, sidecarIdentity, inUniverse, checkSidecarBinding, universeKey, type SidecarConfig } from "./sidecar-config.js";
 import { onArrivals } from "./arrivals.js";
@@ -530,6 +530,12 @@ export async function shareFinding(root: string, pr: number | string, f: NewFind
     if (f.branch !== undefined && f.branch !== keyed) return { error: `the key names branch "${keyed}" but \`branch\` says "${f.branch}"` };
     f = { ...f, branch: keyed };
   }
+  // Likewise a topic finding's `topic`, which the door checks names a live topic.
+  const topic = topicOf(String(pr));
+  if (topic !== null) {
+    if (f.topic !== undefined && f.topic !== topic) return { error: `the key names topic "${topic}" but \`topic\` says "${f.topic}"` };
+    f = { ...f, topic };
+  }
   const b = bind(root, via);
   if ("error" in b) return b;
   await ensureSidecar(b.cfg.path, b.actor);
@@ -567,6 +573,8 @@ function verdictGround(root: string, f: SharedFinding, at?: string): { state: "o
   // A branch finding is about the BRANCH, which the checkout answering is usually not on
   // (an agent in a worktree reads through the main checkout). Its code is at the branch head.
   // `at` is the caller naming the commit it read, which outranks both.
+  // A topic finding has no branch: its code is on the trunk, which the checkout answers for
+  // as it does for a pull request's.
   const branch = f.branch ?? branchOf(String(f.pr ?? ""));
   const head = at ?? (branch ? branchHead(root, branch, f.namedRef) : headCommit(root));
   if (!ref || ref === "@work" || !head) return { state: "unknown", ref, head: head ?? undefined };
@@ -753,6 +761,7 @@ async function findingJudge(root: string, all: SharedFinding[]) {
   const landedAt = async (f: SharedFinding) => {
     if (await onTip(f)) return "landed" as const;
     const ref = f.sourceRef;
+    // A topic key has no pull request and no branch to ask about, so ancestry's answer stands.
     const branch = f.branch ?? branchOf(String(f.pr ?? ""));
     return landingOf(
       !ref || ref === "@work" || !trunk ? null : landedIn(root, ref, trunk.sha),
@@ -795,6 +804,8 @@ async function findingJudge(root: string, all: SharedFinding[]) {
   const headOf = (f: SharedFinding): string | null => {
     const branch = f.branch ?? branchOf(String(f.pr ?? ""));
     if (branch) return branchHead(root, branch, f.namedRef);
+    // A topic's change is the trunk itself: its code now is the trunk's tip.
+    if (f.topic ?? topicOf(String(f.pr ?? ""))) return trunk?.sha ?? null;
     for (const linked of linkedBranches(root, String(f.pr ?? ""))) {
       const sha = revParse(root, `refs/remotes/origin/${linked}`);
       if (sha) return sha;
@@ -1898,7 +1909,7 @@ export async function sharedFindings(
     // The rows include the linked branches' findings, which this read does not fold
     // (`ensurePrFindings`) — so it must not report `complete` over a branch scope that is
     // blocked or behind its log. Worst status wins; blocked outranks behind.
-    if (!isBranchKey(String(pr))) {
+    if (!isBranchKey(String(pr)) && !isTopicKey(String(pr))) {
       for (const branch of linkedBranches(root, pr)) {
         const s = await scopeCurrency(root, cfg.path, findingScope(prKey(cfg, branchKey(branch))), sidecarIdentity(cfg));
         if (s.status === "blocked" && scope.status !== "blocked") scope = s;
@@ -2956,6 +2967,8 @@ export async function sharedHub(root: string) {
     // A branch key is a review whose pull request may not exist yet; say which branch, and
     // which pull requests it has been linked to, so the hub can tell the two apart.
     .map((p) => {
+      const topic = topicOf(p.pr);
+      if (topic !== null) return { ...p, topic };
       const branch = branchOf(p.pr);
       return branch === null ? p : { ...p, branch, linkedPrs: prsLinkedTo(root, branch) };
     });

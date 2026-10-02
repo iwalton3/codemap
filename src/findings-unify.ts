@@ -36,7 +36,7 @@
 
 import type { Actor } from "./schema.js";
 import { requireActor, reviewerKey } from "./identity.js";
-import { findingKeyScope, branchOf } from "./review-target.js";
+import { findingKeyScope, branchOf, topicOf } from "./review-target.js";
 import { resolveSidecar, sidecarForWrite, sidecarWriteDoor, scopeFor, sidecarIdentity, type SidecarConfig } from "./sidecar-config.js";
 import { ensureMaterialized } from "./materialize.js";
 import { findingsProjection } from "./shared-projections.js";
@@ -111,6 +111,7 @@ async function replay(logRoot: string, scope: string, actor: Actor, f: SharedFin
     ...(f.witness ? { witness: f.witness } : {}),
     ...(f.sourceRef ? { sourceRef: f.sourceRef } : {}),
     ...(branchOf(String(f.pr ?? "")) ? { branch: branchOf(String(f.pr))! } : {}),
+    ...(topicOf(String(f.pr ?? "")) ? { topic: topicOf(String(f.pr))! } : {}),
     filedBy: f.author.principal || "(unrecorded)",
     filedAt: f.createdAt,
   });

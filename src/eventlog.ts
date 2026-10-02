@@ -49,7 +49,10 @@ export const SHARD_EXT = ".ndjson";
  * added here has been optional for exactly that reason.
  */
 export const SIDECAR_PROTOCOL = 2;
-export const EVENT_SCHEMA = 1;
+// 1 → 2: `finding.created` carries `topic` (review topics). An older build folds an unknown
+// data field silently, which mis-keyed a topic finding as a pull request — measured, §7 of
+// docs/PROPOSAL-review-topics.md — so it must class these as newer instead.
+export const EVENT_SCHEMA = 2;
 
 /**
  * The one file per scope that every write since the linear log goes to

@@ -438,7 +438,9 @@ class SharedPage extends Component {
         <b>${u}</b> <span class="sep">·</span>
         ${String(pr).startsWith('branch:')
           ? html`<b>${reviewLabel(pr)}</b>`
-          : html`<a href="#/u/${u}/pr/${pr}/">PR ${pr}</a>`} <span class="sep">·</span> shared
+          : String(pr).startsWith('topic:')
+            ? html`<a href="#/u/${u}/topic/${String(pr).slice(6)}/">${reviewLabel(pr)}</a>`
+            : html`<a href="#/u/${u}/pr/${pr}/">PR ${pr}</a>`} <span class="sep">·</span> shared
         <span class="dim">· ${d.total} finding(s) · ${d.waitingOnYou} waiting on a person</span>
       </div>
       <div class="sharedbar">

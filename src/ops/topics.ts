@@ -420,3 +420,20 @@ export async function topicChapterMark(
   if (!ids.length) return { error: "that chapter walks no symbols" };
   return signIn(root, slug, walkId, { ids, chapter: chapterId }, opts);
 }
+
+/**
+ * Where a finding filed against a topic is witnessed: the named walk's head (and base, for a
+ * symbol the walk's range deletes), else the topic's latest walk, else main's tip. Refused for
+ * an undefined or retired topic — the door refuses it too, but this says so before witnessing.
+ */
+export async function topicFindingContext(root: string, slug: string, walkId?: string): Promise<{ head: string; base?: string } | Err> {
+  const t = await topicOr(root, slug);
+  if ("error" in t) return t;
+  if (t.topic.status === "retired") return { error: `topic ${slug} is retired, so it takes no new findings` };
+  const walks = await walksOf(root, t.cfg, slug);
+  const w = walkId ? walks.find((x) => x.id === walkId) : walks.at(-1);
+  if (walkId && !w) return { error: `no walkthrough ${walkId} of topic ${slug}` };
+  if (w) return { head: w.walkthrough.head, ...(w.walkthrough.base ? { base: w.walkthrough.base } : {}) };
+  const head = defaultHead(root);
+  return head ? { head } : { error: "no commit to witness the finding at: this is not a git repository" };
+}

@@ -2,6 +2,7 @@
 import { createHash } from "node:crypto";
 import type { Actor } from "./schema.js";
 import { codeUnitOrder } from "./canonical.js";
+import { topicHex } from "./shared-topics.js";
 
 export type ApplicationIssueRef =
   | { kind: "finding"; universe: string; id: string; scope: string; review: string }
@@ -105,6 +106,7 @@ export function issueClaimHash(kind: "finding" | "bug", issue: Record<string, an
 
 const expectedFindingScope = (ref: Extract<ApplicationIssueRef, { kind: "finding" }>): string | null => {
   if (/^\d+$/.test(ref.review)) return `findings/${ref.universe}/pr-${ref.review}`;
+  if (ref.review.startsWith("topic:") && ref.review.length > 6) return `findings/${ref.universe}/t-${topicHex(ref.universe, ref.review.slice(6))}`;
   if (!ref.review.startsWith("branch:") || !ref.review.slice(7)) return null;
   const branch = ref.review.slice(7);
   const digest = createHash("sha256").update(`${ref.universe}\0branch\0${branch}`).digest("hex").slice(0, 40);

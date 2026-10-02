@@ -77,7 +77,7 @@ test("the door refuses a bug filed from a finding its scope never created", asyn
 
 test("a bug's finding key resolves to the scope the finding lives in, for a number and a branch", () => {
   const cfg = { universe: U } as SidecarConfig;
-  for (const key of ["7", "branch:feat/x"]) assert.equal(findingScopeOfBugKey(U, key), `findings/${findingKeyScope(cfg, key)}`);
+  for (const key of ["7", "branch:feat/x", "topic:fees"]) assert.equal(findingScopeOfBugKey(U, key), `findings/${findingKeyScope(cfg, key)}`);
   assert.equal(findingScopeOfBugKey(U, "https://example/pull/7"), null);
 });
 

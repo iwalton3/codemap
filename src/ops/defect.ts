@@ -31,7 +31,7 @@ import { requireActor, isAgentActor } from "../identity.js";
 import { resolveSidecar } from "../sidecar-config.js";
 import { mintId } from "../eventlog.js";
 import { headCommit, revParse, worktreeForBranch, uncommittedPaths, branchHead, ORIGIN_SPELLING, isGitRepo } from "../git.js";
-import { assertFindingKey, branchKey, normalizeBranch, normalizeFindingKey } from "../review-target.js";
+import { assertFindingKey, branchKey, normalizeBranch, normalizeFindingKey, topicKey } from "../review-target.js";
 import { prBaseForFinding, prHeadForFinding } from "../pr.js";
 import { writeLocalFinding } from "../store.js";
 import { trunkBase } from "./at.js";
@@ -46,6 +46,8 @@ export type DefectContext =
   | { kind: "pull_request"; pr: string | number }
   /** Reviewing a branch whose pull request does not exist yet. */
   | { kind: "branch"; branch: string }
+  /** Walking a review topic; `walk` names the walkthrough it was found in (default: the latest). */
+  | { kind: "topic"; topic: string; walk?: string }
   | { kind: "drive_by"; rationale: string };
 
 export interface DefectInput {
@@ -78,14 +80,15 @@ export interface DefectInput {
 const NEEDS_CONTEXT =
   'say what you were doing: `context: {kind:"pull_request", pr:"270"}` for something '
   + 'found while reviewing that pull request, `context: {kind:"branch", branch:"feature/x"}` for a '
-  + 'branch whose pull request is not open yet, or `context: {kind:"drive_by", rationale:"..."}` '
+  + 'branch whose pull request is not open yet, `context: {kind:"topic", topic:"fees"}` while walking '
+  + 'a review topic, or `context: {kind:"drive_by", rationale:"..."}` '
   + "for a defect noticed during unrelated work. A pull-request finding belongs on the pull "
   + "request, where the person who wrote the code will see it; a drive-by outlives the branch "
   + "and becomes a bug.";
 
 export async function reportDefect(root: string, input: DefectInput) {
   const ctx = input.context;
-  if (!ctx || (ctx.kind !== "pull_request" && ctx.kind !== "branch" && ctx.kind !== "drive_by")) return { error: NEEDS_CONTEXT };
+  if (!ctx || (ctx.kind !== "pull_request" && ctx.kind !== "branch" && ctx.kind !== "topic" && ctx.kind !== "drive_by")) return { error: NEEDS_CONTEXT };
   if (!input.text?.trim()) return { error: "a defect needs `text`: what you checked and what it proves" };
 
   if (ctx.kind === "drive_by") {
@@ -108,6 +111,8 @@ export async function reportDefect(root: string, input: DefectInput) {
   let ref = input.ref;
   let branch: string | undefined;
   let named: string | undefined;
+  let topic: string | undefined;
+  let topicBase: string | undefined;
   if (ctx.kind === "branch") {
     if (!String(ctx.branch ?? "").trim()) return { error: "which branch? `context.branch` is what scopes the finding" };
     const n = normalizeBranch(root, String(ctx.branch));
@@ -122,6 +127,17 @@ export async function reportDefect(root: string, input: DefectInput) {
     if (!sha) return { error: `no branch "${branch}" in this repository` };
     key = branchKey(branch);
     ref = sha;
+  } else if (ctx.kind === "topic") {
+    const slug = String(ctx.topic ?? "").trim();
+    if (!slug) return { error: "which topic? `context.topic` is what scopes the finding" };
+    // Topics live on the sidecar, so there is no local-only topic finding to fall back to.
+    if (!resolveSidecar(root)) return { error: "topics live on the sidecar, and this universe has none configured" };
+    const at = await import("./topics.js").then((m) => m.topicFindingContext(root, slug, ctx.walk));
+    if ("error" in at) return at;
+    key = topicKey(slug);
+    topic = slug;
+    ref ??= at.head;
+    topicBase = at.base;
   } else {
     if (!String(ctx.pr ?? "").trim()) return { error: "which pull request? `context.pr` is what scopes the finding" };
     // NORMALIZED HERE, before anything stores or returns it — the same call
@@ -158,8 +174,8 @@ export async function reportDefect(root: string, input: DefectInput) {
     }
     // A PR is measured from its OWN base, a branch from where it left the trunk (owner,
     // triage 2026-09-19-deletion-fixes-review Q2; a branch declares no parent).
-    const base = input.base ?? (branch ? undefined : await prBaseForFinding(root, key) ?? undefined);
-    const r = await changeTarget(root, branch ?? `pull request ${key}`, branch, ref, targetId, base);
+    const base = input.base ?? (branch ? undefined : topic ? topicBase : await prBaseForFinding(root, key) ?? undefined);
+    const r = await changeTarget(root, branch ?? (topic ? `topic ${topic}` : `pull request ${key}`), branch, ref, targetId, base);
     if ("error" in r) return r;
     ({ targetId, witness, sourceRef } = r);
   }
@@ -173,6 +189,7 @@ export async function reportDefect(root: string, input: DefectInput) {
     ...(witness ? { witness } : {}),
     ...(sourceRef ? { sourceRef } : {}),
     ...(branch ? { branch } : {}),
+    ...(topic ? { topic } : {}),
   };
 
   // With a sidecar the finding enters the LOG and is materialized by the write; without
@@ -181,7 +198,7 @@ export async function reportDefect(root: string, input: DefectInput) {
   if (resolveSidecar(root)) {
     const shared = await import("../ops-shared.js");
     const r = await shared.shareFinding(root, key, shape as never, { model: input.model, harness: input.harness }) as Record<string, unknown>;
-    return r.error ? r : { ...r, filedAs: "finding", ...(branch ? { branch } : { pr: key }) };
+    return r.error ? r : { ...r, filedAs: "finding", ...(branch ? { branch } : topic ? { topic } : { pr: key }) };
   }
 
   const actor = requireActor(root, { model: input.model, harness: input.harness });

@@ -231,7 +231,7 @@ test("and a key no scope could be formed from is REFUSED rather than stored", as
     // scoped to `pr-5`.
     for (const junk of ["https://github.com/o/r/pull/5", "o/r#5", "main"]) {
       const out = await fileOn(r.root, r.anchor, junk);
-      assert.match(String(out.error), /not a pull request number or a branch/, junk);
+      assert.match(String(out.error), /not a pull request number, a branch or a topic/, junk);
     }
     assert.deepEqual((await readFindings(r.root, {})).findings, [], "and nothing was written");
   } finally { r.cleanup(); }

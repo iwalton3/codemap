@@ -168,3 +168,49 @@ test("a retired topic is still listed with --all and refuses a new walk", async 
     assert.match((await topicDefine(r.root, { slug: "fees", title: "again", selector: { symbols: [id.calc] } }) as { error: string }).error, /never reused/);
   } finally { r.cleanup(); }
 });
+
+test("topic findings: landed from a walk at main's tip, ancestry from an off-trunk one, searchable, on no PR, kept after retiring", async () => {
+  const r = await repo();
+  try {
+    const { reportDefect } = await import("./ops/defect.js");
+    const { findingBacklog } = await import("./ops-shared.js");
+    const { search } = await import("./ops/read.js");
+    const { readFindings } = await import("./store.js");
+    const id = await r.ids();
+    ok(await topicDefine(r.root, { slug: "fees", title: "Fees", selector: { paths: ["src/fees.ts"] } }));
+    const onMain = ok(await topicWalkthroughSet(r.root, "fees", feat(ch("all", id.fees))));
+    const file = (walk: string | undefined, comment: string) => reportDefect(r.root, {
+      context: { kind: "topic", topic: "fees", ...(walk ? { walk } : {}) }, targetKind: "anchor", targetId: id.calc,
+      text: "calc doubles where it should add the fee", comment, severity: "high",
+    }) as Promise<Record<string, unknown>>;
+    const f1 = await file(onMain.walk!, "calc doubles the amount");
+    assert.equal(f1.error, undefined, String(f1.error));
+    assert.equal(f1.topic, "fees");
+
+    // An off-trunk head: a side branch that edits calc, walked there.
+    spawnSync("git", ["checkout", "-q", "-b", "side"], { cwd: r.root });
+    const side = r.commit("src/fees.ts", FEES.replace("c * 2", "c * 2 + 0"));
+    spawnSync("git", ["checkout", "-q", "main"], { cwd: r.root });
+    const offTrunk = ok(await topicWalkthroughSet(r.root, "fees", feat(ch("all", id.fees)), { head: side, whole: true }));
+    const f2 = await file(offTrunk.walk!, "calc still doubles on the side branch");
+    assert.equal(f2.error, undefined, String(f2.error));
+
+    const b = await findingBacklog(r.root);
+    const rows = [...b.due, ...b.woken, ...b.sleeping, ...b.live, ...b.moved, ...b.unjudgeable, ...b.unfetched, ...b.inReview];
+    assert.equal(rows.find((x) => x.id === f1.id)?.landed, "landed", "its code is main's tip");
+    assert.equal(rows.find((x) => x.id === f2.id)?.landed, "open", "off-trunk: ancestry says no, and a topic has no PR to ask");
+
+    const hits = (await search(r.root, "doubles") as { findings: { id: string; pr?: string; state: string }[] }).findings;
+    assert.deepEqual(hits.map((h) => h.pr).sort(), ["topic:fees", "topic:fees"]);
+    assert.ok(hits.every((h) => typeof h.state === "string"));
+    assert.equal((await readFindings(r.root, { pr: "1" })).findings.length, 0, "never on a pull request");
+
+    ok(await topicRetire(r.root, "fees"));
+    assert.equal((await readFindings(r.root, { pr: "topic:fees" })).findings.length, 2, "a retired topic's findings still list under its key");
+    assert.match(String((await file(undefined, "another")).error), /retired/);
+    // The door, not just the op: a write that skips `topicFindingContext` is refused too.
+    const { shareFinding } = await import("./ops-shared.js");
+    const direct = await shareFinding(r.root, "topic:fees", { targetKind: "anchor", targetId: id.calc, text: "x" } as never).catch((e: Error) => ({ error: e.message }));
+    assert.match(String((direct as { error?: string }).error), /topic fees is retired/);
+  } finally { r.cleanup(); }
+});

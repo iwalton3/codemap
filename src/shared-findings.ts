@@ -40,6 +40,7 @@ import { isAgentActor, isIndependent, isErrorIndependent, reviewerKey } from "./
 import { mintId, readScope, registerDoor, type LogEvent } from "./eventlog.js";
 import { emitEvent } from "./write.js";
 import { issueClaimHash, validateApplicationCapsule, type ApplicationAttempt } from "./ruling-application.js";
+import { foldTopicsReport, topicsScope, topicHex } from "./shared-topics.js";
 
 /**
  * Lifecycle. `issued` is an agent's proposal; `created` is a claim somebody stands
@@ -229,6 +230,8 @@ export interface SharedFinding {
    * the `created` event because a branch scope is a hash of the name (see review-target.ts).
    */
   branch?: string;
+  /** The review topic this finding is scoped to — its scope is a hash too (`shared-topics.ts`). */
+  topic?: string;
   /**
    * The ref the filer actually NAMED, when it was an explicit `origin/` spelling.
    *
@@ -708,6 +711,7 @@ function foldFindingsInternal(events: LogEvent[], replay: ApplicationReplay): Ma
         witness: witnessOf(obj(d, "witness")),
         sourceRef: str(d, "sourceRef"),
         ...(str(d, "branch") ? { branch: str(d, "branch") } : {}),
+        ...(str(d, "topic") ? { topic: str(d, "topic") } : {}),
         ...(str(d, "namedRef") ? { namedRef: str(d, "namedRef") } : {}),
         author: e.actor,
         createdAt: e.at,
@@ -1140,7 +1144,7 @@ export function foldFindingsScopeReport(events: LogEvent[]): { value: RepairFind
  * null for a bare key, which only tests write.
  */
 function universeOfFindingScope(scope: string): string | null {
-  const m = /^findings\/(.+)\/(?:pr|b)-[^/]+$/.exec(scope);
+  const m = /^findings\/(.+)\/(?:pr|b|t)-[^/]+$/.exec(scope);
   return m ? m[1]! : null;
 }
 
@@ -1153,6 +1157,7 @@ async function outsideReferences(scope: string, e: LogEvent, _own: LogEvent[], r
   const universe = universeOfFindingScope(scope);
   if (!universe) return [];
   if (e.kind === "finding.rulingApplied") return rulingReferences(read, universe, e);
+  if (e.kind === "finding.created" && /\/t-[0-9a-f]+$/.test(scope)) return topicReferences(scope, universe, e, read);
   const named = e.kind === "finding.promotedToBug" ? [str(e.data as Data | undefined, "bug")]
     : e.kind === "repair.verification-recorded"
       ? (((e.data as Data | undefined)?.results as { sites?: { bug?: unknown }[] }[] | undefined) ?? [])
@@ -1163,6 +1168,22 @@ async function outsideReferences(scope: string, e: LogEvent, _own: LogEvent[], r
   const filed = new Set((await read.read(`bugs/${universe}`)).filter((b) => b.kind === "bug.filed").map((b) => b.subject));
   const missing = wanted.find((b) => !filed.has(b));
   return missing ? [{ id: e.id, kind: e.kind, cls: "reference", why: `no bug ${missing} has been filed in bugs/${universe}` }] : [];
+}
+
+/**
+ * A topic finding names its topic: defined in `topics/<universe>` and not retired as the log
+ * stood before it (a retired topic is out of force — the tombstone rule), and filed in that
+ * topic's own scope. Existing findings of a topic retired after them keep resolving.
+ */
+async function topicReferences(scope: string, universe: string, e: LogEvent, read: ScopeReader): Promise<Refusal[]> {
+  const refuse = (why: string): Refusal[] => [{ id: e.id, kind: e.kind, cls: "reference", why }];
+  const slug = str(e.data as Data | undefined, "topic");
+  if (!slug) return refuse("a finding in a topic scope names its topic");
+  if (!scope.endsWith(`/t-${topicHex(universe, slug)}`)) return refuse(`a finding on topic ${slug} belongs in its own scope, not ${scope}`);
+  const topic = foldTopicsReport(await read.read(topicsScope(universe))).value.find((t) => t.slug === slug);
+  if (!topic) return refuse(`no topic ${slug} has been defined`);
+  if (topic.status === "retired") return refuse(`topic ${slug} is retired`);
+  return [];
 }
 
 registerReport((scope) => scope.startsWith("findings/"), foldFindingsScopeReport);
@@ -1238,6 +1259,7 @@ export interface NewFinding {
   witness?: BugWitness;
   sourceRef?: string;
   branch?: string;
+  topic?: string;
   /** The ref the filer named, when explicitly origin's. See `SharedFinding.namedRef`. */
   namedRef?: string;
 }
