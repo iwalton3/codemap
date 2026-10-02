@@ -4,7 +4,7 @@
 
 import { parseArgs } from "node:util";
 import { join, resolve } from "node:path";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { foldDefectGate, lockoutGate } from "./lockout-gate.js";
 import { findDamage } from "./damage-scan.js";
 import { analyzeMarten } from "./analyzers/marten.js";
@@ -243,7 +243,7 @@ async function cmdPrIngest(root: string, prInput: string, files: string[], dryRu
 }
 
 function usage(): never {
-  console.error("Usage:\n  codemap init     [repo]\n  codemap reindex  [repo]              full re-baseline at HEAD (alias of init)\n  codemap check    [repo]\n  codemap snapshot [repo] [--ref sha]  cache a commit for branch-diff, from git\n                                       objects; --ref rebuilds that commit's snapshot\n  codemap diff <base> [head] [--repo path]   base = branch/tag/sha; omit head = working tree\n  codemap pr <url|owner/repo#N|#N> [--repo path] [--no-fetch] [--json]\n  codemap prs <owner/repo>             open pull requests\n  codemap orphans  [repo]              findings/reviews pointing at code the tree no longer has\n  codemap pr-resolve <pr> [--repo path] [--confirm] [--pull] [--anyone]\n                                              sync which review conversations are settled\n  codemap pr-packet <pr> [--repo path] [--limit N] [--offset N]   agent work packet (JSON)\n  codemap pr-ingest <pr> [--repo path] [--dry-run] <findings.jsonl...>\n  codemap pr-push <pr> [--repo path] [--confirm] [--viewed] [--all] [--min-severity s]\n                     [--only id,id,…]  publish exactly these, whatever their disposition\n                     [--summary TEXT] [--approve | --request-changes]\n  codemap pr-triage <pr> [--repo path]        derive stakes+complexity for the PR's symbols\n  codemap pr-pull-viewed <pr|--all> [--repo path] [--dry-run] [--force] [--limit N] [--max-prs N]\n                                              import GitHub's viewed ticks as `viewed`\n  codemap analyze marten [repo] [--verbose] [--emit]\n\n  Shared review (a sidecar repo; set CODEMAP_SIDECAR or .codemap/sidecar):\n  codemap questionnaires list [--repo path] [--principal email]       projected questionnaires (JSON)\n  codemap questionnaires detail <id> [--repo path] [--principal email]\n                                             whole questionnaire, answers, progress and history (JSON)\n  codemap questionnaires status <id> [--repo path] [--cursor hash] [--principal email]\n                                             local projected content and change cursor (JSON)\n  codemap questionnaires wait <id> --cursor hash [--wait-ms 30000] [--repo path]\n                                             bounded local wait; sync explicitly for remote answers\n  codemap decisions list [--repo path]     projected question rounds (JSON)\n  codemap decisions read <id> [--repo path]    exact round and answers (JSON)\n  codemap sync     [repo]              send and receive shared review state\n  codemap sidecar adopt [repo]         move this store to a DIFFERENT sidecar, on purpose.\n                     Repointing .codemap/sidecar at another team's repo is refused without\n                     it: nothing migrates, and the rows already folded stay as read-only history.\n  codemap shared   <pr> [repo] [--queue] [--tier t] [--json]   findings on the sidecar\n                     --tier unconfirmed   the untriaged pile; --queue never shows it\n  codemap peers    [repo]              who else is on this sidecar, and scheme drift\n  codemap replies  <pr> [repo]         what the PR submitter said back about published findings\n  codemap notes    <anchor|node id> [repo]   what the TEAM knows about a symbol\n  codemap publish-notes [repo] [--dry-run]   put this store's existing annotations on the sidecar\n  codemap shared-docs [repo] [--json]  the team's docs, resolved against THIS checkout\n  codemap publish-docs [repo] [--dry-run]    put this store's docs on the sidecar\n  codemap publish-walkthroughs [repo] [--dry-run]   backfill walkthroughs written\n                     before this store had a sidecar (pr_walkthrough publishes as it writes)\n  codemap shared-triage [anchor|node id] [repo] [--json]   the team's stakes, with receipts\n  codemap publish-triage [repo] [--dry-run]  put this store's own triage marks on the sidecar\n  codemap unify-findings [repo] [--dry-run]   ONE-TIME: publish this store's local\n                     findings to the sidecar, ids and history preserved. Required once a\n                     sidecar exists — two kinds of finding is what every split-store bug was.\n  codemap migrate-findings [--repo path] [--apply] [--assign id=PR ...]\n                                              move local findings into the canonical findings table");
+  console.error("Usage:\n  codemap init     [repo]\n  codemap reindex  [repo]              full re-baseline at HEAD (alias of init)\n  codemap check    [repo]\n  codemap snapshot [repo] [--ref sha]  cache a commit for branch-diff, from git\n                                       objects; --ref rebuilds that commit's snapshot\n  codemap diff <base> [head] [--repo path]   base = branch/tag/sha; omit head = working tree\n  codemap pr <url|owner/repo#N|#N> [--repo path] [--no-fetch] [--json]\n  codemap prs <owner/repo>             open pull requests\n  codemap orphans  [repo]              findings/reviews pointing at code the tree no longer has\n  codemap pr-resolve <pr> [--repo path] [--confirm] [--pull] [--anyone]\n                                              sync which review conversations are settled\n  codemap pr-packet <pr> [--repo path] [--limit N] [--offset N]   agent work packet (JSON)\n  codemap pr-ingest <pr> [--repo path] [--dry-run] <findings.jsonl...>\n  codemap pr-push <pr> [--repo path] [--confirm] [--viewed] [--all] [--min-severity s]\n                     [--only id,id,…]  publish exactly these, whatever their disposition\n                     [--summary TEXT] [--approve | --request-changes]\n  codemap pr-triage <pr> [--repo path]        derive stakes+complexity for the PR's symbols\n  codemap pr-pull-viewed <pr|--all> [--repo path] [--dry-run] [--force] [--limit N] [--max-prs N]\n                                              import GitHub's viewed ticks as `viewed`\n  codemap analyze marten [repo] [--verbose] [--emit]\n\n  Shared review (a sidecar repo; set CODEMAP_SIDECAR or .codemap/sidecar):\n  codemap questionnaires list [--repo path] [--principal email]       projected questionnaires (JSON)\n  codemap questionnaires detail <id> [--repo path] [--principal email]\n                                             whole questionnaire, answers, progress and history (JSON)\n  codemap questionnaires status <id> [--repo path] [--cursor hash] [--principal email]\n                                             local projected content and change cursor (JSON)\n  codemap questionnaires wait <id> --cursor hash [--wait-ms 30000] [--repo path]\n                                             bounded local wait; sync explicitly for remote answers\n  codemap decisions list [--repo path]     projected question rounds (JSON)\n  codemap decisions read <id> [--repo path]    exact round and answers (JSON)\n  codemap sync     [repo]              send and receive shared review state\n  codemap sidecar adopt [repo]         move this store to a DIFFERENT sidecar, on purpose.\n                     Repointing .codemap/sidecar at another team's repo is refused without\n                     it: nothing migrates, and the rows already folded stay as read-only history.\n  codemap shared   <pr> [repo] [--queue] [--tier t] [--json]   findings on the sidecar\n                     --tier unconfirmed   the untriaged pile; --queue never shows it\n  codemap peers    [repo]              who else is on this sidecar, and scheme drift\n  codemap replies  <pr> [repo]         what the PR submitter said back about published findings\n  codemap notes    <anchor|node id> [repo]   what the TEAM knows about a symbol\n  codemap publish-notes [repo] [--dry-run]   put this store's existing annotations on the sidecar\n  codemap shared-docs [repo] [--json]  the team's docs, resolved against THIS checkout\n  codemap publish-docs [repo] [--dry-run]    put this store's docs on the sidecar\n  codemap publish-walkthroughs [repo] [--dry-run]   backfill walkthroughs written\n                     before this store had a sidecar (pr_walkthrough publishes as it writes)\n  codemap shared-triage [anchor|node id] [repo] [--json]   the team's stakes, with receipts\n  codemap publish-triage [repo] [--dry-run]  put this store's own triage marks on the sidecar\n  codemap unify-findings [repo] [--dry-run]   ONE-TIME: publish this store's local\n                     findings to the sidecar, ids and history preserved. Required once a\n                     sidecar exists — two kinds of finding is what every split-store bug was.\n  codemap topic list|define|revise|retire|walk|show   review topics (docs/PROPOSAL-review-topics.md):\n                     list [--all] · define <slug> --title T [--path glob]… [--symbol id]… [--node id]… [--base sha]\n                     revise <slug> [--title T] [selector flags, replacing the selector] · retire <slug>\n                     walk <slug> <features.json> [--head sha] [--base sha] [--whole] [--dry-run]\n                     show <slug> [--walk id]          all take [--repo path] [--json]\n  codemap migrate-findings [--repo path] [--apply] [--assign id=PR ...]\n                                              move local findings into the canonical findings table");
   process.exit(2);
 }
 
@@ -612,6 +612,45 @@ async function cmdDiff(root: string, base: string, head?: string): Promise<void>
   }
 }
 
+/** `codemap topic …` — a front end over ops/topics.ts; prints JSON with --json, else a summary. */
+async function cmdTopic(root: string, args: string[]): Promise<void> {
+  const [verb, slug = "", file] = args;
+  const selector = () => {
+    const s = {
+      ...(values.path?.length ? { paths: values.path } : {}), ...(values.symbol?.length ? { symbols: values.symbol } : {}),
+      ...(values.node?.length ? { nodes: values.node } : {}), ...(values.base ? { base: values.base } : {}),
+    };
+    return Object.keys(s).length ? s : undefined;
+  };
+  let r: unknown;
+  switch (verb) {
+    case "list": r = await ops.topicList(root, { all: !!values.all }); break;
+    case "define": r = await ops.topicDefine(root, { slug, title: String(values.title ?? ""), selector: selector() ?? {} }); break;
+    case "revise": r = await ops.topicRevise(root, slug, { ...(values.title ? { title: values.title } : {}), ...(selector() ? { selector: selector() } : {}) }); break;
+    case "retire": r = await ops.topicRetire(root, slug); break;
+    case "show": r = await ops.topicWalkthroughGet(root, slug, values.walk); break;
+    case "walk": {
+      if (!file) { console.error("codemap topic walk <slug> <features.json>"); process.exit(2); }
+      const features = JSON.parse(readFileSync(file, "utf8"));
+      r = await ops.topicWalkthroughSet(root, slug, Array.isArray(features) ? features : features.features ?? [], {
+        head: values.head, base: values.base, whole: !!values.whole, by: "cli", dryRun: !!values["dry-run"],
+      });
+      break;
+    }
+    default: usage(); return;
+  }
+  const out = r as Record<string, unknown>;
+  if (out?.error) { console.error(String(out.error)); process.exit(1); }
+  if (values.json || verb === "show" || verb === "walk") { console.log(JSON.stringify(r, null, 2)); return; }
+  if (verb === "list") {
+    for (const t of (out.topics as { slug: string; title: string; status: string; walks: number }[])) {
+      console.log(`${t.slug.padEnd(24)} ${t.status === "retired" ? "(retired) " : ""}${t.title} — ${t.walks} walkthrough(s)`);
+    }
+    return;
+  }
+  console.log(`ok: topic ${slug} ${verb === "retire" ? "retired" : verb === "define" ? "defined" : "revised"}`);
+}
+
 /**
  * `codemap check`, which is FORMATTING ONLY.
  *
@@ -657,7 +696,7 @@ async function cmdCheck(root: string): Promise<void> {
 }
 
 
-const { positionals, values } = parseArgs({ allowPositionals: true, options: { verbose: { type: "boolean" }, emit: { type: "boolean" }, repo: { type: "string" }, "no-fetch": { type: "boolean" }, json: { type: "boolean" }, limit: { type: "string" }, offset: { type: "string" }, "dry-run": { type: "boolean" }, confirm: { type: "boolean" }, viewed: { type: "boolean" }, all: { type: "boolean" }, "min-severity": { type: "string" }, force: { type: "boolean" }, "max-prs": { type: "string" }, summary: { type: "string" }, approve: { type: "boolean" }, "request-changes": { type: "boolean" }, pull: { type: "boolean" }, anyone: { type: "boolean" }, only: { type: "string" }, queue: { type: "boolean" }, tier: { type: "string" }, locate: { type: "boolean" }, "show-elsewhere": { type: "boolean" }, principal: { type: "string" }, cursor: { type: "string" }, "wait-ms": { type: "string" }, apply: { type: "boolean" }, assign: { type: "string", multiple: true }, ref: { type: "string" } } });
+const { positionals, values } = parseArgs({ allowPositionals: true, options: { verbose: { type: "boolean" }, emit: { type: "boolean" }, repo: { type: "string" }, "no-fetch": { type: "boolean" }, json: { type: "boolean" }, limit: { type: "string" }, offset: { type: "string" }, "dry-run": { type: "boolean" }, confirm: { type: "boolean" }, viewed: { type: "boolean" }, all: { type: "boolean" }, "min-severity": { type: "string" }, force: { type: "boolean" }, "max-prs": { type: "string" }, summary: { type: "string" }, approve: { type: "boolean" }, "request-changes": { type: "boolean" }, pull: { type: "boolean" }, anyone: { type: "boolean" }, only: { type: "string" }, queue: { type: "boolean" }, tier: { type: "string" }, locate: { type: "boolean" }, "show-elsewhere": { type: "boolean" }, principal: { type: "string" }, cursor: { type: "string" }, "wait-ms": { type: "string" }, apply: { type: "boolean" }, assign: { type: "string", multiple: true }, ref: { type: "string" }, title: { type: "string" }, path: { type: "string", multiple: true }, symbol: { type: "string", multiple: true }, node: { type: "string", multiple: true }, base: { type: "string" }, head: { type: "string" }, whole: { type: "boolean" }, walk: { type: "string" } } });
 
 // Damage in the shared log locks every command but the ones that fetch and re-check, and the
 // read-only check itself (plan 1.2). Which store a command is about varies, so every store named
@@ -838,6 +877,9 @@ if (positionals[0] === "analyze") {
     await cmdPublishDocs(resolve((values.repo as string | undefined) ?? positionals[1] ?? "."), Boolean(values["dry-run"]));
   } else if (positionals[0] === "unify-findings") {
     await cmdUnifyFindings(resolve((values.repo as string | undefined) ?? positionals[1] ?? "."), Boolean(values["dry-run"]));
+  } else if (positionals[0] === "topic") {
+    const root = resolve((values.repo as string | undefined) ?? ".");
+    await withLock(root, () => cmdTopic(root, positionals.slice(1)));
   } else if (positionals[0] === "publish-walkthroughs") {
     await cmdPublishWalkthroughs(resolve((values.repo as string | undefined) ?? positionals[1] ?? "."), Boolean(values["dry-run"]));
   } else if (positionals[0] === "orphans") {

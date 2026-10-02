@@ -30,6 +30,7 @@ import './shared.js';
 import { standardUrl, rulesUrl, branchUrl, auditUrl, conformanceUrl, servedNote } from './standard.js';
 import { decisionsUrl } from './decisions.js';
 import { repairsUrl } from './repairs.js';
+import { topicsUrl } from './topics.js';
 
 import {
   errText, hitTarget, apiPost, api, loaded, taskError, isErr, pageShell, nav, go, href, setRouter, postSeen,
@@ -738,7 +739,7 @@ defineComponent('md-content', MdContent);
  */
 const VIEW_LINKS = [
   ['nodes', u => nodesUrl(u)], ['bugs', u => bugsUrl(u)], ['orphans', u => orphansUrl(u)],
-  ['diff', u => diffUrl(u)], ['shared', u => sharedHubUrl(u)], ['backlog', u => backlogUrl(u)], ['decisions', u => decisionsUrl(u)], ['PRs', u => prsUrl(u), 'prs'],
+  ['diff', u => diffUrl(u)], ['shared', u => sharedHubUrl(u)], ['backlog', u => backlogUrl(u)], ['decisions', u => decisionsUrl(u)], ['topics', u => topicsUrl(u)], ['PRs', u => prsUrl(u), 'prs'],
 ];
 
 /**
@@ -4958,6 +4959,8 @@ setRouter(enableRouting(document.querySelector('router-outlet'), {
   '/u/:universe/decisions/:round/': { component: 'decisions-page' },
   '/u/:universe/repairs/:review/': { component: 'repairs-page' },
   '/u/:universe/pr/:pr/': { component: 'pr-story-page' },
+  '/u/:universe/topics/': { component: 'topics-page' },
+  '/u/:universe/topic/:slug/': { component: 'topic-page' },
   '/u/:universe/search/': { component: 'search-page' },
   '/u/:universe/shared/:pr/': { component: 'shared-page' },
   '/u/:universe/shared/:pr/peers/': { component: 'shared-peers-page' },

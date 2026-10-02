@@ -21,8 +21,32 @@ import { emitEvent } from "./write.js";
 import { canonical } from "./canonical.js";
 import { walkthroughShaped } from "./shared-walkthrough.js";
 import type { Actor } from "./schema.js";
-import type { TopicSelector, ResolvedTopic } from "./topic-selector.js";
 import type { WalkFeature } from "./walkthrough.js";
+
+/** A topic's selector and what it resolves to; the resolver is `topic-selector.ts`, above this. */
+export interface TopicSelector {
+  /** Gitignore-style globs: every anchor in a matching file. */
+  paths?: string[];
+  /** Anchor ids: each, and every anchor it contains (byte span, as `prContainment`). */
+  symbols?: string[];
+  /** Doc or flow node ids: the anchors each cites, as if listed in `symbols`. */
+  nodes?: string[];
+  /** Intersect with what changed between this commit and the head — the merged-range form. */
+  base?: string;
+}
+
+export interface ResolvedTopic {
+  /** The review queue: what a walkthrough must account for. */
+  ids: string[];
+  /** In the selector, outside the queue lane — counted apart, as `WalkCoverage.outsideQueue`. */
+  outside: { id: string; lane: string }[];
+  /**
+   * Entries that name nothing at the head (nor, for a range, at the base). Reported, never
+   * dropped: a renamed symbol silently leaving a topic is the floating claim this exists
+   * to prevent. `via` is the node whose citation it was.
+   */
+  unresolved: { kind: "symbol" | "node"; id: string; via?: string }[];
+}
 
 export const TOPIC_SLUG = /^[a-z0-9-]{1,64}$/;
 

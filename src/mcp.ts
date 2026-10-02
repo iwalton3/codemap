@@ -1012,6 +1012,107 @@ const tools: Tool[] = [
     handler: (a, c) => ops.prWalkthroughGet(c.universe.path, String(a.pr ?? ""), { all: !!a.all }),
   },
   {
+    name: "topic",
+    description:
+      "Define, revise, retire or list REVIEW TOPICS — named selectors over the code that a person walks and signs by hand: a business-critical subset, or code already merged to main that still deserves a manual walkthrough.\n\n"
+      + "A selector is the topic's DENOMINATOR, resolved at a commit: `paths` (gitignore-style globs: every symbol in a matching file), `symbols` (anchor ids, each with every symbol it contains), `nodes` (the anchors a doc or flow node cites), and optionally `base` (keep only what changed between that commit and the walked head — the merged-range form, deletions included). Tests, generated and data files are counted apart, never in the set.\n\n"
+      + "You may PROPOSE a topic; anyone may revise or retire one. The slug is its key for ever (findings cite it): lowercase letters, digits and dashes. Retiring is a tombstone — the slug is never reused, and its walkthroughs and findings stay readable.\n\n"
+      + "Shared through the team's sidecar.",
+    mutates: true,
+    inputSchema: obj({
+      action: { type: "string", enum: ["define", "revise", "retire", "list"] },
+      slug: { type: "string", description: "The topic's key. Required except for `list`." },
+      title: { type: "string", description: "For define (required) and revise." },
+      selector: obj({
+        paths: { type: "array", items: { type: "string" } },
+        symbols: { type: "array", items: { type: "string" } },
+        nodes: { type: "array", items: { type: "string" } },
+        base: { type: "string", description: "A commit: the range form." },
+      }, [], false),
+      all: { type: "boolean", description: "For list: include retired topics." },
+    }, ["action"]),
+    handler: async (a, c) => {
+      const root = c.universe.path, slug = String(a.slug ?? "");
+      switch (a.action) {
+        case "define": return ops.topicDefine(root, { slug, title: String(a.title ?? ""), selector: a.selector as never });
+        case "revise": return ops.topicRevise(root, slug, { ...(a.title !== undefined ? { title: String(a.title) } : {}), ...(a.selector !== undefined ? { selector: a.selector as never } : {}) });
+        case "retire": return ops.topicRetire(root, slug);
+        case "list": return ops.topicList(root, { all: !!a.all });
+        default: return { error: "action is one of define, revise, retire, list" };
+      }
+    },
+  },
+  {
+    name: "topic_packet",
+    description:
+      "A review topic's resolved set WITH SOURCE, for writing its walkthrough — the topic's `pr_packet`.\n\n"
+      + "Resolved at main's tip by default (`head` to walk another commit). A RE-WALK defaults to the delta: only what changed since the latest walkthrough of this topic that this machine's person signed anything in (`since` says which); pass `whole: true` for the whole selector, or `base` to pick the delta yourself. `unresolved` lists selector entries that name nothing at this commit — a renamed symbol, a node that is gone — so say so rather than walking around them. Paged by `limit` (default 40) and `offset`.",
+    // Resolving can build a commit's snapshot: a read that writes.
+    mutates: true,
+    inputSchema: obj({
+      slug: { type: "string" },
+      head: { type: "string", description: "The commit to walk. Default: main's tip." },
+      base: { type: "string", description: "Walk only what changed since this commit." },
+      whole: { type: "boolean", description: "The whole selector, not the re-walk delta." },
+      limit: { type: "number" },
+      offset: { type: "number" },
+    }, ["slug"]),
+    handler: (a, c) => ops.topicPacket(c.universe.path, String(a.slug ?? ""), {
+      head: a.head as string | undefined, base: a.base as string | undefined, whole: !!a.whole,
+      limit: a.limit as number | undefined, offset: a.offset as number | undefined,
+    }),
+  },
+  {
+    name: "topic_walkthrough",
+    description:
+      "Write a walkthrough of a review topic: a point-in-time reading guide a person reviews FROM and signs by hand. Same contract as `pr_walkthrough`:\n\n"
+      + "FEATURES (a coherent capability) contain CHAPTERS (a unit someone can hold in their head and sign in one go), and a chapter body is an ORDERED list of blocks that INTERLEAVE prose and symbols — `{kind:'prose',text}` and `{kind:'symbol',anchorId}`. Prose goes BETWEEN symbols and says what to look at next and why. DESCRIBE WHAT THE CODE DOES; read it with `topic_packet`.\n\n"
+      + "ACCOUNT FOR EVERYTHING in the set: every symbol belongs in exactly one chapter, and `coverage.uncovered` is what the person would have to read with no guide. One difference from a pull request: a cited container COVERS what it contains, so a whole-file topic does not need every method of every class cited — cite the class and walk its interesting members in prose.\n\n"
+      + "REJECTED if a chapter cites a symbol outside the set, two chapters claim one symbol, or a chapter has none. `dryRun: true` checks coverage first.\n\n"
+      + "Every walkthrough is its OWN immutable record — a re-walk never replaces an earlier one, and each keeps its own sign-off history. It is witnessed at the walked commit, and published to the team's sidecar as it is written. Signing is a person's act, on the web page; there is no tool for it.",
+    mutates: true,
+    inputSchema: obj({
+      slug: { type: "string" },
+      head: { type: "string", description: "As `topic_packet` — pass the same, or the set will differ." },
+      base: { type: "string" },
+      whole: { type: "boolean" },
+      dryRun: { type: "boolean" },
+      features: {
+        type: "array",
+        items: obj({
+          title: { type: "string" },
+          summary: { type: "string" },
+          unstated: { type: "boolean" },
+          id: { type: "string", description: "Ignored — derived from the title." },
+          chapters: {
+            type: "array",
+            items: obj({
+              title: { type: "string" },
+              id: { type: "string", description: "Ignored." },
+              witnesses: { type: "array", items: { type: "object" }, description: "Ignored." },
+              blocks: { type: "array", items: { type: "object" }, description: "Interleaved: {kind:'prose',text} or {kind:'symbol',anchorId}." },
+            }, ["title", "blocks"], false),
+          },
+        }, ["title", "summary", "chapters"], false),
+      },
+    }, ["slug", "features"]),
+    handler: (a, c) => ops.topicWalkthroughSet(c.universe.path, String(a.slug ?? ""), a.features ?? [], {
+      head: a.head as string | undefined, base: a.base as string | undefined, whole: !!a.whole, by: "agent", dryRun: !!a.dryRun,
+    }),
+  },
+  {
+    name: "topic_walkthrough_get",
+    description:
+      "A review topic's walkthrough — the latest, or the one `walk` names — with every snapshot listed in `walkthroughs`.\n\n"
+      + "Three indicators, none of them an edit: `moved` (chapters and symbols whose code main's tip has changed since this walk's commit), `selectorChanged` (how the topic's selector moved since this walk copied it, form by form), and `newlyMatched` (symbols the selector matches now that no walk so far has seen). Any of them is the prompt to re-walk. `signoffs` is THIS walk's own sign-off history for this machine's person, and `findings` are the topic's — they stay with the topic across walks.",
+    inputSchema: obj({
+      slug: { type: "string" },
+      walk: { type: "string", description: "A walkthrough id. Default: the latest." },
+    }, ["slug"]),
+    mutates: true,
+    handler: (a, c) => ops.topicWalkthroughGet(c.universe.path, String(a.slug ?? ""), a.walk as string | undefined),
+  },
+  {
     name: "pr_packet",
     description: "The pull request's changed symbols, ranked, WITH THEIR SOURCE AT THE PR's HEAD — and the base version of each, so you read the change rather than guessing it.\n\nThis is the tool for reviewing a PR. `get_anchor` returns the WORKING TREE's source, which during a review is a third version: not the PR's head and not the base. Quoting it as evidence for a finding is how a review cites code the pull request does not contain.\n\nPaged: `limit` (default 40) and `offset` walk the ranked worklist, so a large PR is read in passes rather than in one unusable response.",
     inputSchema: obj({
@@ -1586,6 +1687,7 @@ const tools: Tool[] = [
     description: "Report a defect. ONE verb — you say what you were DOING, and that decides what the record becomes.\n\n"
       + "  • `context: {kind:\"pull_request\", pr:\"270\"}` — found while reviewing that pull request. Becomes a FINDING on it, resolved at or before merge, visible to the team and to their agents. Needs `targetKind`/`targetId` (the one symbol or node) and `comment`.\n"
       + "  • `context: {kind:\"branch\", branch:\"feature/x\"}` — reviewing a branch whose pull request is not open yet (typically your worktree's). Becomes a FINDING on that branch, witnessed at its last commit, and it appears under the pull request once one is opened from the branch. A symbol that exists only in uncommitted edits is refused: commit first.\n"
+      + "  • `context: {kind:\"topic\", topic:\"fees\", walk?}` — found while walking a review topic. Becomes a FINDING on the TOPIC (it stays with the topic across re-walks), witnessed at that walkthrough's head — the latest one when `walk` is omitted. A retired topic takes none.\n"
       + "  • `context: {kind:\"drive_by\", rationale:\"noticed while changing X\"}` — spotted during unrelated work. Becomes a BUG, which outlives the branch. Needs `title` and `anchors`.\n\n"
       + "There is no storage parameter and there is no way to pick one. A pull-request finding belongs on the pull request, where the person who wrote the code will see it; whether it also reaches the sidecar depends on whether this machine has one, which is not your decision.\n\n"
       + "To defer a pull-request finding into a bug later, use `defer_finding` — that cross-links the two instead of filing a second, unattributed copy."
@@ -1593,11 +1695,13 @@ const tools: Tool[] = [
     inputSchema: obj({
       context: {
         type: "object",
-        description: "What you were doing. `{kind:\"pull_request\", pr}`, `{kind:\"branch\", branch}` or `{kind:\"drive_by\", rationale}`.",
+        description: "What you were doing. `{kind:\"pull_request\", pr}`, `{kind:\"branch\", branch}`, `{kind:\"topic\", topic, walk?}` or `{kind:\"drive_by\", rationale}`.",
         properties: {
-          kind: { type: "string", enum: ["pull_request", "branch", "drive_by"] },
+          kind: { type: "string", enum: ["pull_request", "branch", "topic", "drive_by"] },
           pr: { type: "string", description: "Pull request NUMBER, for `pull_request`." },
           branch: { type: "string", description: "Branch name, for `branch`." },
+          topic: { type: "string", description: "Topic slug, for `topic`." },
+          walk: { type: "string", description: "For `topic`: the walkthrough id it was found in (`topic_walkthrough_get`'s `walk`). Default: the latest." },
           rationale: { type: "string", description: "What you were doing when you noticed it, for `drive_by`." },
         },
         required: ["kind"],

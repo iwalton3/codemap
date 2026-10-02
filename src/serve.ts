@@ -297,6 +297,14 @@ async function api(path: string, q: URLSearchParams): Promise<unknown> {
       return withLock(root, () => ops.prCode(root, q.get("pr") ?? "", q.get("id") ?? ""));
     case "/api/prs":
       return ops.prsFor(root);
+    // Review topics (ops/topics.ts). The walkthrough read resolves the selector at main's
+    // tip, which can build a snapshot, so it holds the lock as `/api/pr/code` does.
+    case "/api/topics":
+      return ops.topicList(root, { all: q.get("all") === "1" });
+    case "/api/topic/walkthrough":
+      return withLock(root, () => ops.topicWalkthroughGet(root, q.get("slug") ?? "", q.get("walk") || undefined));
+    case "/api/topic/code":
+      return withLock(root, () => ops.topicCode(root, q.get("slug") ?? "", q.get("walk") ?? "", q.get("id") ?? ""));
     case "/api/reverted":
       return { reverted: await opsRevertedMarks(root) };
     case "/api/tripwires":
@@ -919,6 +927,22 @@ async function serveRequest(req: IncomingMessage, res: ServerResponse): Promise<
         unmark: body.unmark === true,
         reviewer: body.reviewer,
       }));
+      res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify(out));
+      return;
+    }
+
+    // Signing in a topic walkthrough: appended to the LOCAL sign-off history, and the
+    // per-anchor mark re-projected from it (ops/topics.ts). Web-only, as PR sign-off is.
+    if (req.method === "POST" && (url.pathname === "/api/topic/step_mark" || url.pathname === "/api/topic/chapter_mark")) {
+      const chunks: Buffer[] = [];
+      for await (const c of req) chunks.push(c as Buffer);
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+      const root = rootFor(body.u ?? null);
+      const opts = { attestation: body.attestation === "viewed" ? "viewed" as const : "signed" as const, unmark: body.unmark === true, reviewer: body.reviewer };
+      const out = await withLock<unknown>(root, () => url.pathname === "/api/topic/step_mark"
+        ? ops.topicStepMark(root, String(body.slug ?? ""), String(body.walk ?? ""), String(body.id ?? ""), opts)
+        : ops.topicChapterMark(root, String(body.slug ?? ""), String(body.walk ?? ""), String(body.chapter ?? ""), opts));
       res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
       res.end(JSON.stringify(out));
       return;

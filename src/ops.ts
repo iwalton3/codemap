@@ -102,6 +102,10 @@ import { commentBug, corroborateBugOp, requestOnBugOp, acceptFinding, backlogBug
 import { readFinding, readBug, idsStartingWith, readSpec, readOperation } from "./store.js";
 import { isRemediation, type Ask, type FindingState, type Remediation, type Verdict } from "./shared-findings.js";
 export { reportDefect, type DefectContext, type DefectInput } from "./ops/defect.js";
+export {
+  topicList, topicDefine, topicRevise, topicRetire, topicPacket, topicWalkthroughSet, topicWalkthroughGet,
+  topicStepMark, topicChapterMark, topicCode,
+} from "./ops/topics.js";
 export { promoteAnnotation } from "./promote-annotation.js";
 export { postRound, decisionRounds, decisionRound, nominateComparison, logQuestion, relayAnswer, readerBrief, submitVerdict, recordReading, confirmReading, answerDirect, withdrawDecision, reportRuling, withdrawalReaderBrief, submitWithdrawalVerdict, revisionRelayBrief, reviseDecisionRelayed, reviseDecision, questionnaireList, noteWebPresence, webPresence, questionnaireDetail, submitQuestionnaire } from "./ops/decisions.js";
 

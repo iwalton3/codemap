@@ -20,10 +20,11 @@ import { headCommit, revParse, trunkRef, readBlobs } from "../git.js";
 import { loadLanes, LANE_POLICY } from "../lanes.js";
 import { loadIgnore } from "../ignore.js";
 import { resolveActor } from "../identity.js";
-import { appendWalkSignoffs, readWalkSignoffs, type WalkSignoff } from "../store.js";
+import { appendWalkSignoffs, readWalkSignoffs, readFindings, type WalkSignoff } from "../store.js";
+import { topicKey } from "../review-target.js";
 import { markReviewedBatch, unmarkReviewed, type Attestation } from "../reviews.js";
 import { ABSENT_HASH } from "../normalize.js";
-import { snapshotHashes, loadNodesShared } from "./shared.js";
+import { snapshotHashes, loadNodesShared, langFor } from "./shared.js";
 import { anchorMark } from "./triage.js";
 import { deliveryNote } from "../delivery.js";
 
@@ -76,16 +77,6 @@ export async function topicList(root: string, opts: { all?: boolean } = {}) {
   return {
     topics: shown.map((t, i) => ({ ...t, ...counts[i]! })),
     ...(opts.all ? {} : { retired: all.length - shown.length }),
-  };
-}
-
-export async function topicGet(root: string, slug: string) {
-  const t = await topicOr(root, slug);
-  if ("error" in t) return t;
-  const walks = await walksOf(root, t.cfg, slug);
-  return {
-    topic: t.topic,
-    walkthroughs: walks.map((w) => ({ id: w.id, head: w.walkthrough.head, base: w.walkthrough.base, by: w.walkthrough.by, author: w.actor.principal, at: w.at })),
   };
 }
 
@@ -319,6 +310,11 @@ export async function topicWalkthroughGet(root: string, slug: string, walkId?: s
     selectorChanged: selectorChanged(w.selector, t.topic.selector),
     newlyMatched: fresh,
     signoffs: walkState(root, pick.id),
+    /** The TOPIC's findings, not this walk's: walk 2 opens with walk 1's, each still open or not. */
+    findings: (await readFindings(root, { pr: topicKey(slug) })).findings.map((f) => ({
+      id: f.id, target: f.target, comment: f.comment ?? f.text, state: f.state, severity: f.severity,
+      author: f.author.principal, createdAt: f.createdAt,
+    })),
   };
 }
 
@@ -436,4 +432,25 @@ export async function topicFindingContext(root: string, slug: string, walkId?: s
   if (w) return { head: w.walkthrough.head, ...(w.walkthrough.base ? { base: w.walkthrough.base } : {}) };
   const head = defaultHead(root);
   return head ? { head } : { error: "no commit to witness the finding at: this is not a git repository" };
+}
+
+/** One symbol's source as a walkthrough walked it: at the walk's head, or at its base for a deletion. */
+export async function topicCode(root: string, slug: string, walkId: string, id: string) {
+  const t = await topicOr(root, slug);
+  if ("error" in t) return t;
+  const walk = (await walksOf(root, t.cfg, slug)).find((w) => w.id === walkId);
+  if (!walk) return { error: `no walkthrough ${walkId} of topic ${slug}` };
+  const w = walk.walkthrough;
+  for (const [sha, deleted] of [[w.head, false], [w.base, true]] as const) {
+    if (!sha) continue;
+    const a = (await readSnapshot(root, sha))?.find((x) => x.id === id);
+    if (!a) continue;
+    const src = readBlobs(root, sha, [a.file]).get(a.file);
+    return {
+      id, file: a.file, symbol: a.symbolPath.join(" › "), kind: a.kind, at: sha, deleted, lang: langFor(a.file),
+      startLine: a.loc?.startLine ?? 1,
+      code: src && a.loc ? src.slice(a.loc.startByte, a.loc.endByte) : null,
+    };
+  }
+  return { error: `${id} is in neither ${w.head.slice(0, 12)} nor its base` };
 }
