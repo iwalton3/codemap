@@ -894,6 +894,20 @@ function migrate(d: DatabaseSync): void {
       PRIMARY KEY (scope, id)
     );
 
+    -- Sign-off history of topic walkthroughs: LOCAL, append-only, never a projection
+    -- (owner, review topics F9: nothing about sign-off travels). Each row holds what an
+    -- event would, so a later export loses nothing. The per-anchor review mark is
+    -- re-projected from it (ops/topics.ts reprojectMark), never written beside it.
+    CREATE TABLE IF NOT EXISTS walk_signoffs (
+      walk_id TEXT NOT NULL, topic TEXT NOT NULL,
+      target_kind TEXT NOT NULL, target_id TEXT NOT NULL,
+      attestation TEXT NOT NULL, act TEXT NOT NULL,
+      body_hash TEXT, commit_sha TEXT NOT NULL, base_sha TEXT,
+      actor_principal TEXT NOT NULL, actor_via TEXT, at TEXT NOT NULL, covered_by TEXT
+    );
+    CREATE INDEX IF NOT EXISTS ix_walk_signoffs_target ON walk_signoffs(target_id, actor_principal);
+    CREATE INDEX IF NOT EXISTS ix_walk_signoffs_walk ON walk_signoffs(walk_id);
+
     -- Decision rounds, folded from decisions/<universe>. See shared-decisions.ts.
     CREATE TABLE IF NOT EXISTS decision_rounds (
       scope TEXT NOT NULL, id TEXT NOT NULL, body TEXT NOT NULL,

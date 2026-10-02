@@ -18,7 +18,7 @@ import type { PrWalkthrough } from "./walkthrough.js";
  */
 
 import type { DatabaseSync } from "node:sqlite";
-import type { DerivationTag } from "./schema.js";
+import type { DerivationTag, Actor as ActorRef } from "./schema.js";
 import { derivationTag, GRAMMAR_NAMES } from "./grammars.js";
 import { derivationFingerprint, derivationMark } from "./normalize.js";
 import { anchorIndex, derivationsOf, legacyIndex, type AnchorIndex, resolveAnchor} from "./anchor-resolve.js";
@@ -3056,4 +3056,53 @@ export function readRepairVerification(root: string, scope: string): RepairVerif
   const value: unknown = JSON.parse(row.body);
   if (!isRepairVerificationState(value)) throw new Error(`repair verifications ${scope} have a malformed shape`);
   return value;
+}
+
+
+// ---------------------------------------------------------------------------
+// Topic walkthrough sign-off history — local, append-only (see `walk_signoffs` in db.ts)
+// ---------------------------------------------------------------------------
+
+export interface WalkSignoff {
+  walkId: string;
+  topic: string;
+  targetKind: "symbol" | "chapter";
+  targetId: string;
+  attestation: "viewed" | "signed";
+  act: "signed" | "withdrawn";
+  /** The body at the walkthrough's head; absent for a chapter row. */
+  bodyHash?: string;
+  commit: string;
+  base?: string;
+  actor: ActorRef;
+  at: string;
+  coveredBy?: string;
+}
+
+export function appendWalkSignoffs(root: string, rows: WalkSignoff[]): void {
+  const d = db(root);
+  const ins = d.prepare("INSERT INTO walk_signoffs(walk_id,topic,target_kind,target_id,attestation,act,body_hash,commit_sha,base_sha,actor_principal,actor_via,at,covered_by) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)");
+  tx(d, () => {
+    for (const r of rows) {
+      ins.run(r.walkId, r.topic, r.targetKind, r.targetId, r.attestation, r.act, r.bodyHash ?? null, r.commit, r.base ?? null,
+        r.actor.principal, r.actor.via ? JSON.stringify(r.actor.via) : null, r.at, r.coveredBy ?? null);
+    }
+  });
+}
+
+/** In append order. Filtered by walk, by target, or by principal — any combination. */
+export function readWalkSignoffs(root: string, q: { walkId?: string; walkIds?: string[]; targetId?: string; principal?: string } = {}): WalkSignoff[] {
+  const where: string[] = [], args: string[] = [];
+  if (q.walkId) { where.push("walk_id = ?"); args.push(q.walkId); }
+  if (q.walkIds) { where.push(`walk_id IN (${q.walkIds.map(() => "?").join(",") || "NULL"})`); args.push(...q.walkIds); }
+  if (q.targetId) { where.push("target_id = ?"); args.push(q.targetId); }
+  if (q.principal) { where.push("actor_principal = ?"); args.push(q.principal); }
+  const rows = db(root).prepare(`SELECT * FROM walk_signoffs ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY rowid`).all(...args) as unknown as Record<string, string | null>[];
+  return rows.map((r) => ({
+    walkId: r.walk_id!, topic: r.topic!, targetKind: r.target_kind as WalkSignoff["targetKind"], targetId: r.target_id!,
+    attestation: r.attestation as WalkSignoff["attestation"], act: r.act as WalkSignoff["act"],
+    ...(r.body_hash ? { bodyHash: r.body_hash } : {}), commit: r.commit_sha!, ...(r.base_sha ? { base: r.base_sha } : {}),
+    actor: { principal: r.actor_principal!, ...(r.actor_via ? { via: JSON.parse(r.actor_via) } : {}) },
+    at: r.at!, ...(r.covered_by ? { coveredBy: r.covered_by } : {}),
+  }));
 }

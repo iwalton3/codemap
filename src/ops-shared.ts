@@ -116,6 +116,9 @@ function bind(root: string, via: { model?: string; harness?: string } = {}, opts
   return { cfg, actor };
 }
 
+/** `bind`, for an ops module outside this one that writes a family of its own (`ops/topics.ts`). */
+export const bindShared = bind;
+
 /** Every universe this process has bound to each sidecar: whose rows an arrival must fold. */
 const bound = new Map<string, Map<string, SidecarConfig>>();
 const universesOn = (logRoot: string): Map<string, SidecarConfig> => {
