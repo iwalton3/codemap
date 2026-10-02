@@ -259,20 +259,38 @@ export async function topicWalkthroughSet(
   return { ok: true, walk: e.id, ...summary, dryRun: false, note: deliveryNote(root) };
 }
 
+/**
+ * Whether one walk's rows sign one symbol, and through what. A symbol's DIRECT acts and each
+ * container's COVER acts are separate tracks: withdrawing a container takes back its cover and
+ * never a sign-off the person made on the member itself, as `unmarkCovered` does for PRs.
+ * The direct track wins when both sign.
+ */
+function standingOf(rows: WalkSignoff[]): WalkSignoff | null {
+  const last = new Map<string, WalkSignoff>();
+  for (const r of rows) last.set(r.coveredBy ?? "", r);
+  const direct = last.get("");
+  if (direct?.act === "signed") return direct;
+  return [...last.values()].find((r) => r.coveredBy && r.act === "signed") ?? null;
+}
+
 /** The sign-off state THIS walkthrough holds for this person — never another walk's (owner, Round 3). */
 function walkState(root: string, walkId: string) {
   const me = resolveActor(root)?.principal;
   const rows = me ? readWalkSignoffs(root, { walkId, principal: me }) : [];
-  const latest = new Map<string, WalkSignoff>();
-  for (const r of rows) latest.set(`${r.targetKind}\0${r.targetId}\0${r.attestation}`, r);
+  const tracks = new Map<string, WalkSignoff[]>();
+  for (const r of rows) {
+    const k = `${r.targetKind}\0${r.targetId}\0${r.attestation}`;
+    (tracks.get(k) ?? tracks.set(k, []).get(k)!).push(r);
+  }
   const out: Record<string, { signed?: boolean; viewed?: boolean; coveredBy?: string; at?: string }> = {};
   const chapters: Record<string, { signed?: boolean; viewed?: boolean }> = {};
-  for (const r of latest.values()) {
+  for (const group of tracks.values()) {
+    const r = group[0]!, standing = standingOf(group);
     const slot = r.targetKind === "chapter" ? (chapters[r.targetId] ??= {}) : (out[r.targetId] ??= {});
-    slot[r.attestation] = r.act === "signed";
-    if (r.targetKind === "symbol" && r.act === "signed" && r.attestation === "signed") {
-      (slot as { coveredBy?: string }).coveredBy = r.coveredBy;
-      (slot as { at?: string }).at = r.at;
+    slot[r.attestation] = !!standing;
+    if (r.targetKind === "symbol" && standing && r.attestation === "signed") {
+      if (standing.coveredBy) (slot as { coveredBy?: string }).coveredBy = standing.coveredBy;
+      (slot as { at?: string }).at = standing.at;
     }
   }
   return { symbols: out, chapters };
@@ -334,10 +352,10 @@ export async function topicWalkthroughGet(root: string, slug: string, walkId?: s
 async function reprojectMark(root: string, anchorId: string, attestation: Attestation, principal: string, reviewer?: string) {
   const rows = readWalkSignoffs(root, { targetId: anchorId, principal })
     .filter((r) => r.targetKind === "symbol" && r.attestation === attestation);
-  const byWalk = new Map<string, WalkSignoff>();
-  for (const r of rows) byWalk.set(r.walkId, r);
+  const byWalk = new Map<string, WalkSignoff[]>();
+  for (const r of rows) (byWalk.get(r.walkId) ?? byWalk.set(r.walkId, []).get(r.walkId)!).push(r);
   // Walk ids are event ids, which sort by time (`mintId`).
-  const standing = [...byWalk.values()].filter((r) => r.act === "signed").sort((a, b) => (a.walkId < b.walkId ? 1 : -1))[0];
+  const standing = [...byWalk.keys()].sort().reverse().map((w) => standingOf(byWalk.get(w)!)).find(Boolean);
   if (!standing) {
     await unmarkReviewed(root, { targetKind: "anchor", targetId: anchorId, level: "code", attestation, actor: "human" });
     return { unwitnessed: false };

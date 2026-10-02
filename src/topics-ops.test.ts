@@ -214,3 +214,20 @@ test("topic findings: landed from a walk at main's tip, ancestry from an off-tru
     assert.match(String((direct as { error?: string }).error), /topic fees is retired/);
   } finally { r.cleanup(); }
 });
+
+test("withdrawing a container takes back only its cover, never a member's own sign-off", async () => {
+  const r = await repo();
+  try {
+    const id = await r.ids();
+    ok(await topicDefine(r.root, { slug: "fees", title: "Fees", selector: { paths: ["src/fees.ts"] } }));
+    const w = ok(await topicWalkthroughSet(r.root, "fees", feat(ch("class", id.fees), ch("calc", id.calc), ch("round", id.round))));
+    ok(await topicStepMark(r.root, "fees", w.walk!, id.calc, { attestation: "signed" }));
+    ok(await topicStepMark(r.root, "fees", w.walk!, id.fees, { attestation: "signed" }));
+    ok(await topicStepMark(r.root, "fees", w.walk!, id.fees, { attestation: "signed", unmark: true }));
+    const s = ok(await topicWalkthroughGet(r.root, "fees", w.walk!)).signoffs!;
+    assert.equal(s.symbols[id.calc]?.signed, true, "calc was signed in its own right");
+    assert.equal(s.symbols[id.round]?.signed, false, "round was only ever covered");
+    assert.equal((await anchorMark(r.root, id.calc, { ref: r.head() })).reviewed, true);
+    assert.equal((await anchorMark(r.root, id.round, { ref: r.head() })).reviewed, false);
+  } finally { r.cleanup(); }
+});
