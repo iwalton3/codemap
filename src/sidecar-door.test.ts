@@ -45,8 +45,8 @@ const modules = (): { path: string; src: string }[] => {
   return files.map((path) => ({ path, src: readFileSync(path, "utf8") }));
 };
 
-/** The functions that ARE doors: each resolves the config and checks the binding. */
-const DOORS = /\bsidecarWriteDoor\b|\bsidecarForWrite\b|\bbugLog\b|\bbind\(/;
+/** The functions that ARE doors: each resolves the config and checks the binding. `bindShared` is `bind`, exported for `ops/topics.ts`. */
+const DOORS = /\bsidecarWriteDoor\b|\bsidecarForWrite\b|\bbugLog\b|\bbind\(|\bbindShared\(/;
 
 /**
  * Modules that reach `ensureSidecar` without a door, and why that is right.
