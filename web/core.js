@@ -623,9 +623,17 @@ window.addEventListener('pagehide', () => {
     navigator.sendBeacon(`/api/shared/sync?tab=${TAB}`, new Blob([JSON.stringify(withU(u))], { type: 'application/json' }));
 });
 
+/**
+ * The push gate as the last Sync now found it. A sync pulls too, and only the background loop
+ * updates `lastPull` — so without this the bar said "saved" over a gate this sync armed.
+ * @type {{ at: number, text: string } | null}
+ */
+let syncGate = null;
+
 /** Push this tab's staged writes in each universe, all or none per universe; refusals open the modal. */
 export async function syncNow() {
   /** @type {any[]} */ const refused = [];
+  /** @type {string[]} */ const gates = [];
   /** @type {any} */ let last = null;
   for (const u of universes()) {
     const r = await nativeFetch('/api/shared/sync', {
@@ -633,8 +641,10 @@ export async function syncNow() {
     }).then((x) => x.json()).catch((e) => ({ error: errText(e) }));
     if (r && r.conflicts && r.conflicts.length) refused.push(...r.conflicts.map((/** @type {any} */ c) => ({ ...c, u })));
     else if (r && r.error) flashError(`not synced yet — your changes are kept on this machine: ${r.error}`);
+    if (r && r.pushBlocked) gates.push(r.pushBlocked);
     last = r;
   }
+  syncGate = { at: Date.now(), text: gates[0] ?? '' };
   await refreshStatus();
   if (refused.length) showConflicts(refused);
   return last;
@@ -729,7 +739,9 @@ function paintStatus() {
   // the remote answered (round 4, owner: "showing the refusal text makes sense").
   const why = last && !last.ok ? (last.error ?? 'unknown error') : '';
   // A pull that worked can still have armed the push gate (data newer than this build).
-  const gate = last && last.ok ? (last.pushBlocked ?? '') : '';
+  // Whichever pull is newer speaks: this tab's Sync now, or the server's loop.
+  const gate = syncGate && (!last || syncGate.at >= Date.parse(last.at)) ? syncGate.text
+    : last && last.ok ? (last.pushBlocked ?? '') : '';
   const span = /** @type {HTMLElement} */ (el.firstChild);
   span.textContent = [
     unsaved ? `${unsaved} unsaved` : 'saved',

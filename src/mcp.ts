@@ -414,6 +414,8 @@ const tools: Tool[] = [
     name: "context",
     description: "ANSWER-FIRST: before exploring code, ask what codemap already knows about it. Given refs (files, dirs, `file#Symbol`, `file:line`, or anchor ids), returns a `verdict` (covered/partial/stale/gap), the covering docs with trust level, flows/open-bugs on that code, and the still-undocumented `gaps`. Read `trusted` docs instead of re-reading the code; explore only the gaps.\n\nWith a sidecar configured it also answers for the TEAM: `sharedDocs` is what colleagues have written about this code, and anything they cover is not reported as a gap. Those are not in your store — read them with `shared_docs` rather than relying on them unseen, and do not write a second doc about code somebody already documented.",
     inputSchema: obj({ refs: { type: "array", items: { type: "string" }, description: "Files, dirs, file#Symbol, file:line, or anchor ids — the code you're about to work in." }, at: AT, dirty: DIRTY }, ["refs"]),
+    // `at` builds and caches that commit's snapshot: a write, so under the lock (R27).
+    mutates: (a) => !!a.at,
     handler: (a, c) => ops.context(c.universe.path, a.refs, { at: a.at, dirty: a.dirty }),
   },
   {
@@ -491,12 +493,16 @@ const tools: Tool[] = [
     name: "diff_doc",
     description: "Diff a doc's PROSE across a branch diff: resolves which version of node `id` wins on `base` vs `head` and, if they differ (a fork), line-diffs their title/summary/body. Shows how the DOCUMENTATION changed between branches — grounds a code diff in the human-readable intent. Omit head to compare base against the working tree.",
     inputSchema: obj({ base: { type: "string" }, head: { type: "string" }, id: { type: "string" } }, ["base", "id"]),
+    // Builds and caches a snapshot when one is missing: a write, so under the lock (R27).
+    mutates: true,
     handler: (a, c) => ops.docDiff(c.universe.path, a.base, a.head, a.id),
   },
   {
     name: "diff",
     description: "Diff two anchor snapshots for reviewing a branch/PR: added/removed/changed symbols plus the impact on the docs, flows, reviews, bugs and REQUIREMENTS that cite them.\n\n`impact.requirements` is the audit trigger: a rule of the standard whose cited code this change moves is worth re-auditing, and `auditMoved` says the last audit\u2019s witnesses moved too \u2014 so whatever verdict is on record was reached against source this change rewrites, and a `conformant` there is not evidence any more. `assertionsMoved` is the sharper signal: this change rewrote the CHECK that asserts the rule \u2014 the detector being modified rather than the code it guards \u2014 and a rule appears for that reason alone even when nothing it cites moved. What the rollup cannot reach is a rule that neither cites nor is asserted by anything, which is invisible to a set-op over anchors. `base` is a cached snapshot (branch/tag/sha — cache it first with `init`/`snapshot`). Omit `head` to diff against a fresh index of the CURRENT working tree (the usual PR-review path: you've checked out the branch under review); or pass a second cached ref for a pure historical set-op.",
     inputSchema: obj({ base: { type: "string" }, head: { type: "string" } }, ["base"]),
+    // Builds and caches a snapshot when one is missing: a write, so under the lock (R27).
+    mutates: true,
     handler: (a, c) => ops.diff(c.universe.path, a.base, a.head),
   },
   {
@@ -519,6 +525,8 @@ const tools: Tool[] = [
     name: "search",
     description: "Search anchors, logical nodes, BUGS and FINDINGS for a substring. Node hits carry a trust level (trusted / unverified / stale) from freshness × review — prefer a `trusted` doc over re-reading code. Bugs and findings match on their id as well as their prose, because an id is the thing a person actually holds in their head — off a PR comment or a teammate's message; open ones sort ahead of closed. Findings also match their target anchor id and their discussion thread, and CLOSED ones are returned on purpose: \"was this ever reported?\" is what search is for, and a refuted finding is often the best answer — somebody already looked and their reasoning is in the record. A hit's `state` field, and its `backlogged` deadline where it has one, say whether it is still live. Set allUniverses:true to search every universe.",
     inputSchema: obj({ query: { type: "string" }, limit: { type: "number" }, allUniverses: { type: "boolean" }, at: AT, dirty: DIRTY }, ["query"]),
+    // `at` builds and caches that commit's snapshot: a write, so under the lock (R27).
+    mutates: (a) => !!a.at,
     handler: async (a, c) => (a.allUniverses
       ? (a.at ? { error: "`at` names a commit in one universe; drop `allUniverses` to use it" } : multi.searchAll(ws, a.query, a.limit))
       : ops.search(c.universe.path, a.query, a.limit, { at: a.at, dirty: a.dirty })),
@@ -532,12 +540,16 @@ const tools: Tool[] = [
       at: AT,
       dirty: DIRTY,
     }, ["id"]),
+    // `at` builds and caches that commit's snapshot: a write, so under the lock (R27).
+    mutates: (a) => !!a.at,
     handler: (a, c) => multi.getNodeEnriched(ws, c.universe.id, a.id, { compact: !!a.compact, at: a.at, dirty: a.dirty }),
   },
   {
     name: "get_anchor",
     description: "Read an anchor with its source code, citing nodes, related bugs, annotations, and review state. Use before documenting or filing a bug.\n\nThe source is the WORKING TREE's, and the response says so (`sourceRef: \"@work\"`, `sourceCommit`). During a pull-request review that is a THIRD version — not the PR's head, and not whatever branch you were last reading. An anchor id carries no ref (the same path+symbol is one anchor on every branch), so if you are reviewing a PR, get its bodies from `pr_packet`, and check `sourceCommit` before quoting this one as evidence. With `at`, the source is that commit's instead.",
     inputSchema: obj({ id: { type: "string" }, at: AT, dirty: DIRTY }, ["id"]),
+    // `at` builds and caches that commit's snapshot: a write, so under the lock (R27).
+    mutates: (a) => !!a.at,
     handler: (a, c) => ops.getAnchor(c.universe.path, a.id, { at: a.at, dirty: a.dirty }),
   },
   {
@@ -1009,6 +1021,8 @@ const tools: Tool[] = [
       pr: { type: "string", description: "PR number, url, or owner/repo#N." },
       all: { type: "boolean", description: "Every reading of this pull request, with bodies — the fold keeps one per author. Use it to read a teammate's instead of the one chosen for you." },
     }, ["pr"]),
+    // Builds and caches a snapshot when one is missing: a write, so under the lock (R27).
+    mutates: true,
     handler: (a, c) => ops.prWalkthroughGet(c.universe.path, String(a.pr ?? ""), { all: !!a.all }),
   },
   {
@@ -1794,6 +1808,8 @@ const tools: Tool[] = [
     name: "finding_backlog",
     description: "Every open finding, sorted by what the CODE says about it — the queue for findings that were real but never disposed of.\n\nThe pile this answers: a finding neither severe enough to hold a pull request nor worth promoting to a bug had nowhere to go, so it stayed open on a pull request that merged and nothing looked at it again. Measured across two universes: 97 of them, 46 still exactly true of the trunk.\n\nJudged against the DEFAULT BRANCH — a finding not yet landed against its change's current head — never your working tree. Eight buckets, each with a different next action:\n\n- `live` — the witnessed code is on the default branch UNCHANGED, so the claim is still true and nobody has disposed of it. The real backlog.\n- `moved` — the code changed where it is judged; re-validate before believing either way.\n- `unjudgeable` — no witness, or one this build cannot compare, so no drift question can be asked. Repair with `rewitness_finding`; this is the bucket that is never fixed if you leave it.\n- `unfetched` — the change this finding is about is not in this clone, so nothing here can judge it. An absence of evidence, NOT drift: the repair is to fetch the change's head, and `rewitness_finding` would refuse one that already has a witness. Listed, NOT in `attention`.\n- `due` — carried, and the release date has passed.\n- `woken` — carried, and the exact code the deferral was about changed where it is judged.\n- `inReview` — not landed, and its change still holds what it witnessed: ordinary review, owed on its PR or branch. NOT in `attention`.\n- `sleeping` — carried, still asleep. NOT debt, and deliberately not in `attention`.\n\nCarrying a finding is a person's act and there is deliberately no tool for it here. What you can do: investigate the live and unjudgeable buckets, then report what you found through the ordinary finding verbs.",
     inputSchema: obj({ asOf: { type: "string", description: "ISO date to judge carries against. Defaults to today." } }, []),
+    // Builds and caches a snapshot when one is missing: a write, so under the lock (R27).
+    mutates: true,
     handler: (a, c) => shared.findingBacklog(c.universe.path, { asOf: a.asOf }),
   },
   {

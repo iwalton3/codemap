@@ -34,6 +34,11 @@ test("a sync that pulls a family this build does not read names the push gate it
     }) + "\n");
     git(ana.sidecar, "add", "-A"); git(ana.sidecar, "commit", "-qm", "a newer build"); git(ana.sidecar, "push", "-q", "origin", "HEAD:main");
 
+    // The CLI's receipt says it too, and exits 0: the sync worked; the next push is what refuses (R33).
+    const cli = spawnSync(process.execPath, [join(process.cwd(), "dist/cli.js"), "sync", ben.repo], { encoding: "utf8" });
+    assert.equal(cli.status, 0, cli.stderr);
+    assert.match(cli.stdout, /PUSHES BLOCKED: .*futurething/);
+
     const after = await sharedSync(ben.repo) as { materialized?: { blocked: unknown[] }; pushBlocked?: string | null; error?: string };
     assert.equal(after.error, undefined, String(after.error));
     assert.deepEqual(after.materialized?.blocked, [], "no folded scope is blocked — which is why the summary used to look clean");

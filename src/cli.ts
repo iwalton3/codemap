@@ -279,6 +279,9 @@ async function cmdSync(root: string): Promise<void> {
     console.log(`  rebuilt ${m.folded} of ${m.scanned} scope(s)`);
     for (const b of m.blocked) console.log(`  BLOCKED ${b.scope}: ${b.reason}`);
   }
+  // A pull can arm the gate with no folded scope blocked (sync-push-gate.test.ts). Exit 0, as
+  // a BLOCKED scope does: the sync itself worked; the NEXT push is what will refuse.
+  if (r.pushBlocked) console.log(`  PUSHES BLOCKED: ${r.pushBlocked}`);
   if (r.warning) console.log(`  WARNING: ${r.warning}`);
 }
 
