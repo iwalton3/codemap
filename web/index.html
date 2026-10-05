@@ -654,7 +654,7 @@
     .blintro { color: var(--dim); font-size: 13px; line-height: 1.6; max-width: 78ch; margin-bottom: 14px; }
     .blintro b { color: var(--warn); }
     .blfilter { margin-bottom: 4px; align-items: center; }
-    .blfilter button.on { border-color: var(--accent); color: var(--accent); }
+    .blfilter button.on, .blfilter a.on { border-color: var(--accent); color: var(--accent); }
     /* `.sec` uppercases, which is right for a two-word label and unreadable for the
        sentence that follows it. The label keeps the treatment; the blurb does not. */
     .blsec { margin-top: 18px; }
@@ -991,6 +991,8 @@
        of text with code boxes attached, so it is set to read as prose: measured line
        length, and indented to sit with the symbols it is talking about. */
     .wkprose { padding: 6px 14px 8px 22px; max-width: 78ch; font-size: 13px; line-height: 1.6; }
+    /* What a topic chapter's cited container covers, under it: signed through it, each its own row. */
+    .wkmembers { margin-left: 22px; border-left: 2px solid var(--border); }
     .wkprose .md p { margin: 0 0 6px; }
     .wkprose .md code { font-size: 12px; }
     .wkacts { margin-left: auto; display: inline-flex; gap: 6px; }

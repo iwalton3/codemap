@@ -24,7 +24,9 @@ import { appendWalkSignoffs, readWalkSignoffs, readFindings, type WalkSignoff } 
 import { topicKey } from "../review-target.js";
 import { markReviewedBatch, codeAt, type Attestation } from "../reviews.js";
 import { ABSENT_HASH } from "../normalize.js";
-import { snapshotHashes, langFor } from "./shared.js";
+import { snapshotHashes } from "./shared.js";
+import { anchorCodeAt, workShapes } from "../pr.js";
+import { findingsByAnchor } from "../notes-lookup.js";
 import { anchorMark } from "./triage.js";
 import { deliveryNote } from "../delivery.js";
 
@@ -344,7 +346,8 @@ function withCovers(w: TopicWalkthrough): TopicWalkthrough {
   };
 }
 
-export async function topicWalkthroughGet(root: string, slug: string, walkId?: string) {
+/** `steps`: each symbol shaped for the web page's reading views — off for MCP and the CLI, which do not render them. */
+export async function topicWalkthroughGet(root: string, slug: string, walkId?: string, opts: { steps?: boolean } = {}) {
   const t = await topicOr(root, slug);
   if ("error" in t) return t;
   const walks = await walksOf(root, t.cfg, slug);
@@ -365,6 +368,11 @@ export async function topicWalkthroughGet(root: string, slug: string, walkId?: s
     const now = await resolveAt(root, t.topic.selector, trunk.sha);
     if (!("error" in now)) fresh = newlyMatched(seen, now.resolved.ids);
   }
+  const signoffs = walkState(root, pick.id);
+  // Coverage as the PR page computes it (ops/pr.ts), with what each cited container covers
+  // from the walk's own witnesses (owner R5a: "I'd reuse the same logic").
+  const coverage = walkCoverage(w.features, new Set(w.resolved.ids), w.resolved.outside,
+    new Map(w.covers.map((c) => [c.container, c.members.map((m) => m.anchorId)])));
   return {
     topic: t.topic,
     walk: pick.id,
@@ -376,7 +384,9 @@ export async function topicWalkthroughGet(root: string, slug: string, walkId?: s
     moved,
     selectorChanged: selectorChanged(w.selector, t.topic.selector),
     newlyMatched: fresh,
-    signoffs: walkState(root, pick.id),
+    signoffs,
+    coverage,
+    steps: opts.steps ? await topicSteps(root, slug, w, signoffs, new Set(moved?.symbols ?? [])) : undefined,
     /** The TOPIC's findings, not this walk's: walk 2 opens with walk 1's, each still open or not. */
     findings: (await readFindings(root, { pr: topicKey(slug) })).findings.map((f) => ({
       id: f.id, target: f.target, comment: f.comment ?? f.text, state: f.state, severity: f.severity,
@@ -513,23 +523,47 @@ export async function topicFindingContext(root: string, slug: string, walkId?: s
   return head ? { head } : { error: "no commit to witness the finding at: this is not a git repository" };
 }
 
-/** One symbol's source as a walkthrough walked it: at the walk's head, or at its base for a deletion. */
+/**
+ * One symbol's code pane as a walkthrough walked it — the PR page's shape (`anchorCodeAt`): the
+ * walk's head, and for a range topic its base too, with the diff between them.
+ */
 export async function topicCode(root: string, slug: string, walkId: string, id: string) {
   const t = await topicOr(root, slug);
   if ("error" in t) return t;
   const walk = (await walksOf(root, t.cfg, slug)).find((w) => w.id === walkId);
   if (!walk) return { error: `no walkthrough ${walkId} of topic ${slug}` };
   const w = walk.walkthrough;
-  for (const [sha, deleted] of [[w.head, false], [w.base, true]] as const) {
-    if (!sha) continue;
-    const a = (await readSnapshot(root, sha))?.find((x) => x.id === id);
-    if (!a) continue;
-    const src = readBlobs(root, sha, [a.file]).get(a.file);
-    return {
-      id, file: a.file, symbol: a.symbolPath.join(" › "), kind: a.kind, at: sha, deleted, lang: langFor(a.file),
-      startLine: a.loc?.startLine ?? 1,
-      code: src && a.loc ? src.slice(a.loc.startByte, a.loc.endByte) : null,
-    };
-  }
-  return { error: `${id} is in neither ${w.head.slice(0, 12)} nor its base` };
+  const [head, base] = await Promise.all([readSnapshot(root, w.head), w.base ? readSnapshot(root, w.base) : null]);
+  const inHead = head?.find((x) => x.id === id), inBase = base?.find((x) => x.id === id);
+  if (!inHead && !inBase) return { error: `${id} is in neither ${w.head.slice(0, 12)} nor its base` };
+  const code = await anchorCodeAt(root, id, (inHead ?? inBase)!.file, inHead ? w.head : null, inBase ? w.base! : null);
+  // A whole-selector topic has one side: its source is the code, not an all-added diff.
+  return w.base ? code : { ...code, lines: [] };
+}
+
+/**
+ * Each symbol the walk's set holds, shaped as the PR page's steps (`web/reading.js` `stepView`)
+ * so the topic page reads through the same views. Marks are THIS walk's sign-offs.
+ */
+async function topicSteps(root: string, slug: string, w: TopicWalkthrough, state: ReturnType<typeof walkState>, moved: ReadonlySet<string>) {
+  const [head, base] = await Promise.all([readSnapshot(root, w.head), w.base ? readSnapshot(root, w.base) : null]);
+  const headBy = new Map((head ?? []).map((a) => [a.id, a])), baseBy = new Map((base ?? []).map((a) => [a.id, a]));
+  const change = (id: string) => (!w.base ? undefined : !baseBy.has(id) ? "added" as const : !headBy.has(id) ? "removed" as const : "changed" as const);
+  const ids = [...w.resolved.ids, ...w.resolved.outside.map((o) => o.id)].filter((id) => headBy.has(id) || baseBy.has(id));
+  const shapes = await workShapes(root, w.base ?? w.head, w.head,
+    ids.map((id) => ({ b: { id, file: (headBy.get(id) ?? baseBy.get(id))!.file }, change: change(id) ?? "changed" })));
+  const findings = await findingsByAnchor(root, topicKey(slug));
+  const mark = (on: boolean | undefined, coveredBy?: string) =>
+    (on ? { state: "reviewed" as const, actor: "human" as const, ...(coveredBy ? { coveredBy } : {}) } : { state: "unreviewed" as const });
+  return Object.fromEntries(ids.map((id) => {
+    const a = (headBy.get(id) ?? baseBy.get(id))!, s = state.symbols[id] ?? {}, c = change(id);
+    return [id, {
+      anchorId: id, file: a.file, symbol: a.symbolPath.join(" › "), kind: a.kind, signature: shapes.get(id)?.signature ?? "",
+      ...(c ? { change: c } : {}),
+      reviewed: !!s.signed, viewed: !!s.viewed, review: mark(s.signed, s.coveredBy), viewedMark: mark(s.viewed),
+      annotations: [] as never[],
+      ...(findings.get(id)?.length ? { findings: findings.get(id)! } : {}),
+      ...(moved.has(id) ? { moved: true } : {}),
+    }];
+  }));
 }

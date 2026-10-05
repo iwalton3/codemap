@@ -3240,7 +3240,17 @@ class PrStoryPage extends Component {
     this.load.run();
   }
 
-  toggleChapter(id) { this.state.open = { ...this.state.open, [id]: !this.state.open[id] }; }
+  /**
+   * A walkthrough chapter renders open until closed (`walkChapterView`), every other section
+   * closed until opened — so an unset walkthrough chapter must toggle CLOSED, or its first
+   * click does nothing.
+   */
+  toggleChapter(id) {
+    const w = this.state.story && this.state.story.walkthrough;
+    const walked = !!w && w.features.some(f => f.chapters.some(c => c.id === id));
+    const open = walked ? this.state.open[id] !== false : !!this.state.open[id];
+    this.state.open = { ...this.state.open, [id]: !open };
+  }
   async openStep(step) {
     const id = step.anchorId;
     if (this.state.code[id]) { this.state.code = { ...this.state.code, [id]: null }; return; }

@@ -302,7 +302,7 @@ async function api(path: string, q: URLSearchParams): Promise<unknown> {
     case "/api/topics":
       return ops.topicList(root, { all: q.get("all") === "1" });
     case "/api/topic/walkthrough":
-      return withLock(root, () => ops.topicWalkthroughGet(root, q.get("slug") ?? "", q.get("walk") || undefined));
+      return withLock(root, () => ops.topicWalkthroughGet(root, q.get("slug") ?? "", q.get("walk") || undefined, { steps: true }));
     case "/api/topic/code":
       return withLock(root, () => ops.topicCode(root, q.get("slug") ?? "", q.get("walk") ?? "", q.get("id") ?? ""));
     case "/api/reverted":

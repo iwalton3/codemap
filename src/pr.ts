@@ -1033,19 +1033,24 @@ export async function prAnchorCode(root: string, input: string, id: string): Pro
   if ((!inHead && !inBase) || (inHead && inBase && sameBody(inHead.bodyHash, inBase.bodyHash))) {
     return { error: `anchor ${id} is not part of PR #${ctx.meta.number}` };
   }
-  const item = {
-    file: (inHead ?? inBase)!.file,
-    change: (!inBase ? "added" : !inHead ? "removed" : "changed") as "added" | "removed" | "changed",
-  };
+  const file = (inHead ?? inBase)!.file;
+  return anchorCodeAt(root, id, file, inHead ? refs.head : null, inBase ? refs.mergeBase : null);
+}
 
+/**
+ * One anchor's source on each side that holds it, the diff between them, and its notes — the
+ * code pane a walkthrough reads, for a pull request or a range topic. A null side is not read.
+ */
+export async function anchorCodeAt(root: string, id: string, file: string, headSha: string | null, baseSha: string | null): Promise<PrAnchorCode> {
+  const item = { file };
   const at = async (sha: string) => {
     const src = readBlobs(root, sha, [item.file]).get(item.file);
     if (!src) return { code: null as string | null, startLine: 1 };
     const a = (await indexBlob(src, item.file)).find((x) => x.id === id);
     return a?.loc ? { code: src.slice(a.loc.startByte, a.loc.endByte), startLine: a.loc.startLine } : { code: null, startLine: 1 };
   };
-  const head = item.change === "removed" ? { code: null as string | null, startLine: 1 } : await at(refs.head);
-  const base = item.change === "added" ? { code: null as string | null, startLine: 1 } : await at(refs.mergeBase);
+  const head = headSha ? await at(headSha) : { code: null as string | null, startLine: 1 };
+  const base = baseSha ? await at(baseSha) : { code: null as string | null, startLine: 1 };
   const anns = (await readAnnotations(root)).annotations.filter((a) => a.target.kind === "anchor" && a.target.id === id);
   // The team's, for the same reason the story's steps carry them: this is the pane a
   // reviewer reads the diff in, and a pointer pinned to a line is worth nothing anywhere
