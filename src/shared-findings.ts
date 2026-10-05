@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { registerKinds, registerReferences, tipReader, type ScopeReader } from "./eventlog.js";
 import { RETIRED_REPAIR_KINDS } from "./repair-records.js";
 import { collector, foldJudged, registerReport, staleRevision, wasOf, type RefusalClass, type Refusal } from "./validation.js";
@@ -1157,7 +1158,11 @@ async function outsideReferences(scope: string, e: LogEvent, _own: LogEvent[], r
   const universe = universeOfFindingScope(scope);
   if (!universe) return [];
   if (e.kind === "finding.rulingApplied") return rulingReferences(read, universe, e);
-  if (e.kind === "finding.created" && /\/t-[0-9a-f]+$/.test(scope)) return topicReferences(scope, universe, e, read);
+  if (e.kind === "finding.created") {
+    const bound = keyFieldProblem(scope, universe, e.data as Data | undefined);
+    if (bound) return [{ id: e.id, kind: e.kind, cls: "reference", why: bound }];
+    if (/\/t-[0-9a-f]+$/.test(scope)) return topicReferences(scope, universe, e, read);
+  }
   const named = e.kind === "finding.promotedToBug" ? [str(e.data as Data | undefined, "bug")]
     : e.kind === "repair.verification-recorded"
       ? (((e.data as Data | undefined)?.results as { sites?: { bug?: unknown }[] }[] | undefined) ?? [])
@@ -1168,6 +1173,31 @@ async function outsideReferences(scope: string, e: LogEvent, _own: LogEvent[], r
   const filed = new Set((await read.read(`bugs/${universe}`)).filter((b) => b.kind === "bug.filed").map((b) => b.subject));
   const missing = wanted.find((b) => !filed.has(b));
   return missing ? [{ id: e.id, kind: e.kind, cls: "reference", why: `no bug ${missing} has been filed in bugs/${universe}` }] : [];
+}
+
+/** A branch scope's hex: `findingKeyScope`'s layout, which this module cannot import (it sits below it). */
+export const branchHex = (universe: string, branch: string): string =>
+  createHash("sha256").update(`${universe}\0branch\0${branch}`).digest("hex").slice(0, 40);
+
+/**
+ * A created finding's `topic` and `branch` fields are its KEY (the projection indexes by them),
+ * so each is allowed only in its own kind of scope, and a branch or topic scope needs its
+ * field: a stray field files the finding under a key whose scope never holds it (F50). Owner
+ * R26, conditional on a measurement of the production sidecar, which held no violation.
+ */
+function keyFieldProblem(scope: string, universe: string, d: Data | undefined): string | null {
+  const kind = /\/(pr|b|t)-([^/]+)$/.exec(scope);
+  if (!kind) return null;
+  const topic = d?.topic, branch = d?.branch;
+  if (kind[1] === "pr") {
+    if (topic !== undefined || branch !== undefined) return `a finding on a pull request names no ${topic !== undefined ? "topic" : "branch"}`;
+    return null;
+  }
+  if (kind[1] === "t") return branch !== undefined ? "a topic finding names no branch" : null;
+  if (topic !== undefined) return "a branch finding names no topic";
+  if (typeof branch !== "string" || !branch) return "a finding in a branch scope names its branch";
+  if (branchHex(universe, branch) !== kind[2]) return `a finding on branch ${branch} belongs in findings/${universe}/b-${branchHex(universe, branch)}, not ${scope}`;
+  return null;
 }
 
 /**

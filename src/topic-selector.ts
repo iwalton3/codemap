@@ -57,6 +57,14 @@ export function resolveSelector(sel: TopicSelector, input: ResolveInput): Resolv
   if (sel.paths?.length) {
     const ig = compileIgnore(sel.paths.join("\n"));
     for (const a of known.values()) if (ig.ignores(a.file, false)) picked.add(a.id);
+    // Each entry on its own, as a symbol is: a renamed file must not leave a topic silently.
+    // A negation narrows the others and names nothing of its own.
+    const filesHere = [...new Set([...known.values()].map((a) => a.file))];
+    for (const p of sel.paths) {
+      if (p.startsWith("!")) continue;
+      const one = compileIgnore(p);
+      if (!filesHere.some((f) => one.ignores(f, false))) unresolved.push({ kind: "path", id: p });
+    }
   }
 
   const takeSymbol = (id: string, via?: string) => {

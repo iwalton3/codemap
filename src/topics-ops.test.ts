@@ -244,3 +244,63 @@ test("a topic finding at a line nothing holds is not told to file on a branch", 
     assert.doesNotMatch(String(e.error), /your branch/);
   } finally { r.cleanup(); }
 });
+
+test("an identical define of a retired topic is refused, not a silent success (R21)", async () => {
+  const r = await repo();
+  try {
+    const def = { slug: "fees", title: "Fees", selector: { paths: ["src/fees.ts"] } };
+    ok(await topicDefine(r.root, def));
+    ok(await topicRetire(r.root, "fees"));
+    assert.match(String((await topicDefine(r.root, def) as { error?: string }).error), /never reused/);
+  } finally { r.cleanup(); }
+});
+
+test("a chapter citing only the class shows moved when main changes a member (R15)", async () => {
+  const r = await repo();
+  try {
+    const id = await r.ids();
+    ok(await topicDefine(r.root, { slug: "fees", title: "Fees", selector: { paths: ["src/fees.ts"] } }));
+    const w = ok(await topicWalkthroughSet(r.root, "fees", feat(ch("the class", id.fees))));
+    r.commit("src/fees.ts", FEES.replace("c * 2", "c * 3"));
+    const g = ok(await topicWalkthroughGet(r.root, "fees", w.walk!));
+    assert.deepEqual(g.moved!.chapters, ["the-class"]);
+    assert.deepEqual(g.moved!.symbols, [id.calc]);
+  } finally { r.cleanup(); }
+});
+
+test("a path entry that matches nothing is reported unresolved (R18)", async () => {
+  const r = await repo();
+  try {
+    ok(await topicDefine(r.root, { slug: "fees", title: "Fees", selector: { paths: ["src/fees.ts", "src/renamed.ts"] } }));
+    const p = ok(await topicPacket(r.root, "fees"));
+    assert.deepEqual(p.unresolved, [{ kind: "path", id: "src/renamed.ts" }]);
+  } finally { r.cleanup(); }
+});
+
+test("a symbolic base is resolved to its commit when the topic is defined and revised (R20)", async () => {
+  const r = await repo();
+  try {
+    const git = (...a: string[]) => spawnSync("git", a, { cwd: r.root, encoding: "utf8" }).stdout.trim();
+    const h1 = r.head();
+    git("branch", "release");
+    ok(await topicDefine(r.root, { slug: "fees", title: "Fees", selector: { paths: ["src/fees.ts"], base: "release" } }));
+    const sel = () => (topicList(r.root) as Promise<{ topics: { selector: { base?: string } }[] }>).then((l) => l.topics[0]!.selector.base);
+    assert.equal(await sel(), h1);
+    r.commit("src/fees.ts", FEES.replace("c * 2", "c * 3"));
+    git("branch", "-f", "release", "HEAD");
+    const id = await r.ids();
+    const w = ok(await topicWalkthroughSet(r.root, "fees", feat(ch("calc", id.calc))));
+    assert.equal(w.base, h1, "the walk's range is the commit the topic named, not where the branch is now");
+    ok(await topicRevise(r.root, "fees", { selector: { paths: ["src/fees.ts"], base: "release" } }));
+    assert.equal(await sel(), r.head());
+    assert.match(String((await topicDefine(r.root, { slug: "x", title: "X", selector: { paths: ["a"], base: "nope" } }) as { error?: string }).error), /nope/);
+  } finally { r.cleanup(); }
+});
+
+test("an empty walkthrough is refused (R34)", async () => {
+  const r = await repo();
+  try {
+    ok(await topicDefine(r.root, { slug: "fees", title: "Fees", selector: { paths: ["src/fees.ts"] } }));
+    assert.match(String((await topicWalkthroughSet(r.root, "fees", []) as { error?: string }).error), /walks nothing/);
+  } finally { r.cleanup(); }
+});

@@ -247,5 +247,7 @@
 // reset a spec that is not a draft (O3); and any fold arm the C16 property test finds. One bump
 // for the round: no build ships between its fold changes. Same reason as 18 → 19.
 // 55 → 56 (plan 2026-10-02-review-topics): two new families, `topics/` and
-// `topic-walkthrough/`, with their tables; and findings learn a topic key. Same reason as 18 → 19.
+// `topic-walkthrough/`, with their tables; and findings learn a topic key. Its review round
+// (2026-10-05) tightened those folds and the findings scope binding before anything shipped, so
+// it rides this bump: no build carrying 56 left the branch between them. Same reason as 18 → 19.
 export const MATERIALIZER_VERSION = 56;

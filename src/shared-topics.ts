@@ -20,7 +20,8 @@ import { collector, foldJudged, registerReport, type Refusal, type RefusalClass 
 import { emitEvent } from "./write.js";
 import { canonical } from "./canonical.js";
 import { walkthroughShaped } from "./shared-walkthrough.js";
-import type { Actor } from "./schema.js";
+import { validateWalkthrough } from "./walkthrough.js";
+import type { Actor, BugWitness } from "./schema.js";
 import type { WalkFeature } from "./walkthrough.js";
 
 /** A topic's selector and what it resolves to; the resolver is `topic-selector.ts`, above this. */
@@ -45,7 +46,7 @@ export interface ResolvedTopic {
    * dropped: a renamed symbol silently leaving a topic is the floating claim this exists
    * to prevent. `via` is the node whose citation it was.
    */
-  unresolved: { kind: "symbol" | "node"; id: string; via?: string }[];
+  unresolved: { kind: "path" | "symbol" | "node"; id: string; via?: string }[];
 }
 
 export const TOPIC_SLUG = /^[a-z0-9-]{1,64}$/;
@@ -102,11 +103,10 @@ function foldTopicsWith(events: LogEvent[], refuse: (e: LogEvent, cls: RefusalCl
 
     if (e.kind === "topic.defined") {
       if (out.has(slug)) {
-        if (created.get(slug) !== canonical(d ?? null)) {
-          refuse(e, "state", out.get(slug)!.status === "retired"
-            ? `topic ${slug} was retired, and a retired topic's slug is never reused`
-            : `topic ${slug} already exists`);
-        }
+        // Identical bytes are a retry only while the topic stands: after a retire, the same
+        // define is a fresh act that would otherwise read as success and change nothing.
+        if (out.get(slug)!.status === "retired") refuse(e, "state", `topic ${slug} was retired, and a retired topic's slug is never reused`);
+        else if (created.get(slug) !== canonical(d ?? null)) refuse(e, "state", `topic ${slug} already exists`);
         continue;
       }
       const title = typeof d?.title === "string" ? d.title.trim() : "";
@@ -135,8 +135,11 @@ function foldTopicsWith(events: LogEvent[], refuse: (e: LogEvent, cls: RefusalCl
         if (bad) { refuse(e, "shape", bad); continue; }
       }
       // A compare-and-swap, as `staleRevision`, but by CONTENT: a selector is an object, and
-      // two equal ones read from two places are never `===`.
-      const moved = (["title", "selector"] as const).filter((k) => now[k] !== undefined && k in was
+      // two equal ones read from two places are never `===`. `was` is REQUIRED per changed
+      // field: topics have no legacy writer, so a missing one is a write that skipped the check.
+      const unread = (["title", "selector"] as const).filter((k) => now[k] !== undefined && !(k in was));
+      if (unread.length) { refuse(e, "shape", `a revision says what it read of ${unread.join(" and ")}`); continue; }
+      const moved = (["title", "selector"] as const).filter((k) => now[k] !== undefined
         && canonical(t[k]) !== canonical(was[k]) && canonical(t[k]) !== canonical(now[k]));
       if (moved.length) { refuse(e, "state", `${moved.join(", ")} changed since you read it`); continue; }
       t.revisions.push({
@@ -195,6 +198,12 @@ export interface TopicWalkthrough {
   by: string;
   at: string;
   features: WalkFeature[];
+  /**
+   * What each cited container covers in the set, witnessed at the head. A class's own hash is
+   * its shell without member bodies, so without these a chapter citing only the class never
+   * reads "moved" when a member changes (R15).
+   */
+  covers: { container: string; members: BugWitness[] }[];
 }
 
 export interface SharedTopicWalkthrough {
@@ -216,8 +225,38 @@ const shapeProblem = (w: TopicWalkthrough | undefined): string | null => {
     return "a topic walkthrough carries the set it resolved";
   }
   if (!walkthroughShaped(w as never)) return "a walkthrough's chapters need an id and witnesses — this is not a built walkthrough";
-  return null;
+  return accountingProblem(w);
 };
+
+/**
+ * What `topicWalkthroughSet` checks, checked again here so a walk that skipped the op is
+ * refused by the same rule (the guard-in-one-end shape). The PR walkthrough door is NOT
+ * tightened alike: it has events on real logs, which a new refusal would turn into damage.
+ */
+function accountingProblem(w: TopicWalkthrough): string | null {
+  if (!w.features.length) return "a topic walkthrough walks nothing: it needs at least one feature";
+  const inSet = new Set([...w.resolved.ids, ...w.resolved.outside.map((o) => o?.id)]);
+  const v = validateWalkthrough(w.features, inSet);
+  if (v.notInPr.length) return `cites what its resolved set does not hold: ${v.notInPr.join(", ")}`;
+  if (v.claimedTwice.length) return `walks ${v.claimedTwice.map((c) => c.anchorId).join(", ")} in more than one chapter`;
+  if (v.emptyChapters.length) return `chapters that walk no symbol: ${v.emptyChapters.join(", ")}`;
+  const cited = new Set<string>();
+  for (const c of w.features.flatMap((f) => f.chapters)) {
+    const cites = c.blocks.filter((b) => b.kind === "symbol").map((b) => (b as { anchorId: string }).anchorId);
+    const seen = new Set(c.witnesses.map((x) => x?.anchorId));
+    const bare = cites.filter((id) => !seen.has(id));
+    if (bare.length) return `chapter ${c.id} cites without a witness: ${bare.join(", ")}`;
+    for (const id of cites) cited.add(id);
+  }
+  if (!Array.isArray(w.covers)) return "a topic walkthrough carries what its cited containers cover";
+  for (const c of w.covers) {
+    if (!c || !cited.has(c.container)) return `a cover names ${c?.container}, which no chapter cites`;
+    if (!Array.isArray(c.members) || !c.members.every((m) => inSet.has(m?.anchorId) && typeof m.bodyHash === "string")) {
+      return `what ${c.container} covers is witnessed members of the resolved set`;
+    }
+  }
+  return null;
+}
 
 /** Every snapshot of a topic, oldest first. Nothing replaces anything: each is its own record. */
 export function foldTopicWalkthroughsReport(events: LogEvent[]): { value: SharedTopicWalkthrough[]; refused: Refusal[] } {
@@ -243,9 +282,11 @@ async function walkReferences(scope: string, e: LogEvent, _own: LogEvent[], read
   if (e.kind !== "topic.walkthrough.published") return [];
   const slug = ((e.data as Data | undefined)?.walkthrough as { topic?: unknown } | undefined)?.topic;
   const m = WALK_SCOPE.exec(scope);
-  if (typeof slug !== "string" || !m) return [];
-  const [, universe, hex] = m;
   const refuse = (why: string): Refusal[] => [{ id: e.id, kind: e.kind, cls: "reference", why }];
+  // Reads and lists find a topic's walks by its hash scope; one filed anywhere else is never read.
+  if (!m) return refuse(`${scope} is not a topic walkthrough scope (topic-walkthrough/<universe>/t-<hex>)`);
+  if (typeof slug !== "string") return [];
+  const [, universe, hex] = m;
   if (topicHex(universe!, slug) !== hex) return refuse(`a walkthrough of topic ${slug} belongs in ${topicWalkthroughScope(universe!, slug)}, not ${scope}`);
   const topic = foldTopicsReport(await read.read(topicsScope(universe!))).value.find((t) => t.slug === slug);
   if (!topic) return refuse(`no topic ${slug} has been defined`);

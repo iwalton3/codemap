@@ -83,11 +83,23 @@ export async function topicList(root: string, opts: { all?: boolean } = {}) {
 const checkSlug = (slug: string): Err | null =>
   TOPIC_SLUG.test(slug) ? null : { error: `"${slug}" is not a topic slug — lowercase letters, digits and dashes, at most 64` };
 
+/**
+ * A range's base as the full commit it names now (owner R20): a branch, tag or short sha
+ * moves or turns ambiguous, and then the same topic resolves to a different set.
+ */
+function pinBase(root: string, sel: TopicSelector): TopicSelector | Err {
+  if (!sel.base) return sel;
+  const sha = revParse(root, sel.base);
+  return sha ? { ...sel, base: sha } : { error: `the selector's base "${sel.base}" is not a commit this clone has` };
+}
+
 export async function topicDefine(root: string, input: { slug: string; title: string; selector: TopicSelector }) {
   const bad = checkSlug(input.slug) ?? (selectorProblem(input.selector) ? { error: selectorProblem(input.selector)! } : null);
   if (bad) return bad;
   if (!input.title?.trim()) return { error: "a topic needs a title" };
-  const r = await write(root, (cfg, actor) => defineTopic(cfg.path, cfg.universe, actor, input.slug, input.title.trim(), input.selector));
+  const selector = pinBase(root, input.selector);
+  if ("error" in selector) return selector;
+  const r = await write(root, (cfg, actor) => defineTopic(cfg.path, cfg.universe, actor, input.slug, input.title.trim(), selector));
   if ("error" in r) return r;
   return { ok: true, topic: input.slug, note: deliveryNote(root) };
 }
@@ -95,6 +107,11 @@ export async function topicDefine(root: string, input: { slug: string; title: st
 export async function topicRevise(root: string, slug: string, now: { title?: string; selector?: TopicSelector }) {
   if (now.title === undefined && now.selector === undefined) return { error: "nothing to revise: pass a title, a selector, or both" };
   if (now.selector !== undefined && selectorProblem(now.selector)) return { error: selectorProblem(now.selector)! };
+  if (now.selector !== undefined) {
+    const selector = pinBase(root, now.selector);
+    if ("error" in selector) return selector;
+    now = { ...now, selector };
+  }
   const t = await topicOr(root, slug);
   if ("error" in t) return t;
   if (t.topic.status === "retired") return { error: `topic ${slug} is retired` };
@@ -240,13 +257,18 @@ export async function topicWalkthroughSet(
     return { error: "the walkthrough does not describe this topic's set", notInSet: v.notInPr, claimedTwice: v.claimedTwice, emptyChapters: v.emptyChapters };
   }
   const cited = new Set(input.flatMap((f) => f.chapters.flatMap((c) => c.blocks.filter((b) => b.kind === "symbol").map((b) => (b as { anchorId: string }).anchorId))));
-  const coverage = walkCoverage(input, queue, p.resolved.outside, containmentFor(cited, p.sides, queue));
+  const contained = containmentFor(cited, p.sides, inSet);
+  const coverage = walkCoverage(input, queue, p.resolved.outside, contained);
   // Witnessed at the walk's head, never trunk's tip: signing is pinned to this commit (§3.3).
   const live = await snapshotHashes(root, p.head);
   const built = buildWalkthrough({ pr: 0, head: p.head, by: opts.by || "agent", at: new Date().toISOString(), features: input }, (id) => live.get(id));
   const w: TopicWalkthrough = {
     topic: slug, head: p.head, ...(p.base ? { base: p.base } : {}),
     selector: p.topic.selector, resolved: p.resolved, by: built.by, at: built.at, features: built.features,
+    // A member a chapter cites on its own is that chapter's, not the container's.
+    covers: [...contained].map(([container, ms]) => ({
+      container, members: ms.filter((m) => !cited.has(m)).map((m) => ({ anchorId: m, bodyHash: live.get(m) ?? ABSENT_HASH })),
+    })).filter((c) => c.members.length),
   };
   const summary = {
     topic: slug, head: p.head, ...(p.base ? { base: p.base } : {}), ...(p.since ? { since: p.since } : {}),
@@ -296,6 +318,17 @@ function walkState(root: string, walkId: string) {
   return { symbols: out, chapters };
 }
 
+/** Each chapter's witnesses with what its cited containers cover, so a member's change moves the chapter. */
+function withCovers(w: TopicWalkthrough): TopicWalkthrough {
+  const by = new Map(w.covers.map((c) => [c.container, c.members]));
+  return {
+    ...w,
+    features: w.features.map((f) => ({
+      ...f, chapters: f.chapters.map((c) => ({ ...c, witnesses: [...c.witnesses, ...c.witnesses.flatMap((x) => by.get(x.anchorId) ?? [])] })),
+    })),
+  };
+}
+
 export async function topicWalkthroughGet(root: string, slug: string, walkId?: string) {
   const t = await topicOr(root, slug);
   if ("error" in t) return t;
@@ -307,7 +340,7 @@ export async function topicWalkthroughGet(root: string, slug: string, walkId?: s
   const w = pick.walkthrough;
 
   const trunk = trunkRef(root);
-  const moved = trunk ? movedSince(w, await snapshotHashes(root, trunk.sha)) : { chapters: [], symbols: [] };
+  const moved = trunk ? movedSince(withCovers(w), await snapshotHashes(root, trunk.sha)) : { chapters: [], symbols: [] };
   // Against every walk up to this one: a delta walk only ever saw the delta, and "never
   // seen" means no walk of the topic so far accounted for it.
   const seen = walks.slice(0, i + 1).flatMap((x) => [...x.walkthrough.resolved.ids, ...x.walkthrough.resolved.outside.map((o) => o.id)]);

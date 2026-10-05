@@ -67,6 +67,7 @@ test("the door refuses what the fold refuses: re-defining a retired topic", asyn
 const walk = (topic: string, head: string, title = "F"): TopicWalkthrough => ({
   topic, head, selector: SEL, resolved: { ids: ["a_1"], outside: [], unresolved: [] }, by: "agent", at: "t",
   features: [{ id: "f", title, summary: "s", chapters: [{ id: "c", title: "C", blocks: [{ kind: "symbol", anchorId: "a_1" }], witnesses: [{ anchorId: "a_1", bodyHash: "sha256:x" }] }] }],
+  covers: [],
 });
 
 test("two walks by one person at one commit both survive, each with its own id", async () => {
@@ -95,5 +96,83 @@ test("a topic walkthrough is refused for an undefined or retired topic, a misfil
     const input = { ...walk("rent", "h"), features: [{ title: "F", summary: "s", chapters: [{ title: "C", blocks: [] }] }] };
     const { refused } = foldTopicWalkthroughsReport([ev(1, "topic.walkthrough.published", "rent", { walkthrough: input })]);
     assert.equal(refused[0]?.cls, "shape");
+  } finally { discard(root); }
+});
+
+// ---------------------------------------------------------------------------
+// Review round 2026-10-05: tightenings that are free only before any topic event is on a real log
+// ---------------------------------------------------------------------------
+
+test("an identical define is one act while the topic is active, and refused once it is retired (R21)", () => {
+  const def = { title: "Fees", selector: SEL };
+  const active = foldTopicsReport([ev(1, "topic.defined", "fees", def), ev(2, "topic.defined", "fees", def, dana)]);
+  assert.deepEqual(active.refused, []);
+  assert.equal(active.value[0]!.definedBy.principal, "izzie@x.com");
+  const retired = foldTopicsReport([ev(1, "topic.defined", "fees", def), ev(2, "topic.retired", "fees", {}), ev(3, "topic.defined", "fees", def)]);
+  assert.deepEqual(retired.refused.map((r) => [r.id, r.cls]), [["e003", "state"]]);
+  assert.match(retired.refused[0]!.why, /never reused/);
+});
+
+test("a revision names what it read for every field it changes (R22)", () => {
+  const { refused, value } = foldTopicsReport([
+    ev(1, "topic.defined", "fees", { title: "Fees", selector: SEL }),
+    ev(2, "topic.revised", "fees", { now: { title: "Fee rules" }, was: { title: "Fees" } }, dana),
+    ev(3, "topic.revised", "fees", { now: { title: "Fee maths" }, was: {} }),
+    ev(4, "topic.revised", "fees", { now: { title: "Fee maths", selector: { paths: ["x/**"] } }, was: { title: "Fee rules" } }),
+  ]);
+  assert.deepEqual(refused.map((r) => r.id), ["e003", "e004"]);
+  assert.equal(value[0]!.title, "Fee rules");
+});
+
+test("a walkthrough accounts within its resolved set, witnesses what it cites, and walks something (R23, R34)", async () => {
+  const fold = (w: unknown) => foldTopicWalkthroughsReport([ev(1, "topic.walkthrough.published", "fees", { walkthrough: w })]).refused;
+  assert.deepEqual(fold(walk("fees", "h1")), [], "the fixture itself is a good walk");
+  const outside = walk("fees", "h1");
+  outside.features[0]!.chapters[0]!.blocks = [{ kind: "symbol", anchorId: "a_out" }];
+  outside.features[0]!.chapters[0]!.witnesses = [{ anchorId: "a_out", bodyHash: "sha256:x" }];
+  assert.match(fold(outside)[0]?.why ?? "", /a_out/);
+  const unwitnessed = walk("fees", "h1");
+  unwitnessed.features[0]!.chapters[0]!.witnesses = [];
+  assert.match(fold(unwitnessed)[0]?.why ?? "", /witness/);
+  assert.match(fold({ ...walk("fees", "h1"), features: [] })[0]?.why ?? "", /walks nothing/);
+  const twice = walk("fees", "h1");
+  twice.features[0]!.chapters.push({ ...twice.features[0]!.chapters[0]!, id: "c2", title: "C2" });
+  assert.match(fold(twice)[0]?.why ?? "", /more than one chapter/);
+
+  const root = mkdtempSync(join(tmpdir(), "codemap-topics-"));
+  try {
+    await defineTopic(root, "acme-api", izzie, "fees", "Fees", SEL);
+    await assert.rejects(publishTopicWalkthrough(root, "acme-api", izzie, outside), /a_out/);
+    await assert.rejects(publishTopicWalkthrough(root, "acme-api", izzie, unwitnessed), /witness/);
+  } finally { discard(root); }
+});
+
+test("a walkthrough filed outside a topic scope is refused (R24)", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codemap-topics-"));
+  try {
+    await defineTopic(root, "acme-api", izzie, "fees", "Fees", SEL);
+    await assert.rejects(
+      emitEvent(root, "topic-walkthrough/acme-api/not-a-topic-hash", izzie, "topic.walkthrough.published", "fees", { walkthrough: walk("fees", "h1") as never }),
+      /not a topic walkthrough scope/);
+  } finally { discard(root); }
+});
+
+test("a finding's topic or branch field binds it to its scope, at the door (R26)", async () => {
+  const { createFinding } = await import("./shared-findings.js");
+  const { findingScopeOfBugKey } = await import("./shared-bugs.js");
+  const root = mkdtempSync(join(tmpdir(), "codemap-topics-"));
+  const f = (extra: Record<string, unknown>) => ({ targetKind: "anchor", targetId: "a_1", text: "t", ...extra }) as never;
+  const scopeOf = (key: string) => findingScopeOfBugKey("acme-api", key)!.slice("findings/".length);
+  try {
+    await defineTopic(root, "acme-api", izzie, "fees", "Fees", SEL);
+    await assert.rejects(createFinding(root, scopeOf("5"), izzie, f({ topic: "ghost" })), /pull request/);
+    await assert.rejects(createFinding(root, scopeOf("5"), izzie, f({ branch: "feat/x" })), /pull request/);
+    await assert.rejects(createFinding(root, scopeOf("topic:fees"), izzie, f({ topic: "fees", branch: "feat/x" })), /branch/);
+    await assert.rejects(createFinding(root, scopeOf("branch:feat/x"), izzie, f({})), /names its branch/);
+    await assert.rejects(createFinding(root, scopeOf("branch:feat/x"), izzie, f({ branch: "feat/y" })), /belongs in/);
+    await assert.rejects(createFinding(root, scopeOf("branch:feat/x"), izzie, f({ branch: "feat/x", topic: "fees" })), /topic/);
+    await createFinding(root, scopeOf("5"), izzie, f({}));
+    await createFinding(root, scopeOf("branch:feat/x"), izzie, f({ branch: "feat/x" }));
+    await createFinding(root, scopeOf("topic:fees"), izzie, f({ topic: "fees" }));
   } finally { discard(root); }
 });
