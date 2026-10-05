@@ -175,7 +175,7 @@ export async function reportDefect(root: string, input: DefectInput) {
     // A PR is measured from its OWN base, a branch from where it left the trunk (owner,
     // triage 2026-09-19-deletion-fixes-review Q2; a branch declares no parent).
     const base = input.base ?? (branch ? undefined : topic ? topicBase : await prBaseForFinding(root, key) ?? undefined);
-    const r = await changeTarget(root, branch ?? (topic ? `topic ${topic}` : `pull request ${key}`), branch, ref, targetId, base);
+    const r = await changeTarget(root, branch ?? (topic ? `topic ${topic}` : `pull request ${key}`), branch, ref, targetId, base, !!topic);
     if ("error" in r) return r;
     ({ targetId, witness, sourceRef } = r);
   }
@@ -244,7 +244,7 @@ const ambiguous = (e: string) => e.startsWith("ambiguous ");
  * pick (I1), and a `file:line` is refused rather than re-read by the same number in the
  * base, where it can name a different symbol (I2, Q6).
  */
-async function changeTarget(root: string, label: string, branch: string | undefined, sha: string, target: string, changeBase?: string) {
+async function changeTarget(root: string, label: string, branch: string | undefined, sha: string, target: string, changeBase?: string, topic = false) {
   const snapAt = async (commit: string) => {
     const snap = await readSnapshot(root, commit);
     if (!snap) throw new Error(snapshotRefusal(root, commit)?.message ?? `cannot index ${commit.slice(0, 12)}`);
@@ -283,7 +283,8 @@ async function changeTarget(root: string, label: string, branch: string | undefi
         + "a finding is about code the change holds, or code it deletes"
         // Code in commits not pushed yet is the local branch's (owner, triage
         // 2026-09-19-post-round-review Q12), and a linked branch's findings show on the PR.
-        + (branch ? "" : '. If it is in commits you have not pushed, file it on your branch: `context: {kind:"branch", branch:"<name>"}`'),
+        // A topic finding is witnessed at its walk's commit: no branch of yours holds it.
+        + (branch || topic ? "" : '. If it is in commits you have not pushed, file it on your branch: `context: {kind:"branch", branch:"<name>"}`'),
     };
   } catch (e) {
     return { error: (e as Error).message };

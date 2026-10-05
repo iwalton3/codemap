@@ -7,7 +7,7 @@ import { spawnSync } from "node:child_process";
 import * as ops from "../ops.js";
 import { sharedSync } from "../ops-shared.js";
 import { discard } from "../test-tmp.js";
-import { resolvePlaywright, launchPlaywright, startServer, type Server } from "./harness.js";
+import { resolvePlaywright, launchPlaywright, startServer, watchErrors, type Server } from "./harness.js";
 import type { Questionnaire } from "../questionnaire.js";
 
 const pw = resolvePlaywright();
@@ -41,7 +41,7 @@ describe("pending questionnaire popup", { skip: pw ? false : "playwright not res
   }
   test("a new questionnaire shows as a badge without taking focus; Escape keeps the draft; a dismissal survives reload", async () => {
     const page = await browser.newPage({ viewport: { width: 390, height: 700 } });
-    const errors: string[] = []; page.on("pageerror", (e: Error) => errors.push(e.message));
+    const { errors } = watchErrors(page);
     await page.goto(`${server.url}/#/u/${universe}/`, { waitUntil: "networkidle" });
     assert.equal(await page.locator('.questionnaire-popup[open]').count(), 0);
     await page.locator('main').click();

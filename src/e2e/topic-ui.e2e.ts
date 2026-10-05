@@ -9,7 +9,7 @@ import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { resolvePlaywright, launchPlaywright, startServer, type Server } from "./harness.js";
+import { resolvePlaywright, launchPlaywright, startServer, watchErrors, type Server } from "./harness.js";
 import { discard } from "../test-tmp.js";
 
 const pw = resolvePlaywright();
@@ -39,6 +39,8 @@ describe("review topic page", { skip: pw ? false : "playwright not resolvable (s
       { kind: "prose" as const, text: "Read the class; calc is the whole rule." }, { kind: "symbol" as const, anchorId: fees }] }] }];
     walk1 = ((await ops.topicWalkthroughSet(root, "fees", features)) as { walk: string }).walk;
     walk2 = ((await ops.topicWalkthroughSet(root, "fees", features, { whole: true })) as { walk: string }).walk;
+    // An indicator: the page must render its banners, which once threw on every load that had one.
+    await ops.topicRevise(root, "fees", { selector: { paths: ["src/fees.ts", "src/more.ts"] } });
 
     server = await startServer(root);
     browser = await launchPlaywright(pw);
@@ -53,8 +55,7 @@ describe("review topic page", { skip: pw ? false : "playwright not resolvable (s
 
   test("a chapter signed in walk 1 stays signed there across a reload, and walk 2 has its own state", async () => {
     const page = await browser.newPage();
-    const errors: string[] = [];
-    page.on("pageerror", (e: Error) => errors.push(e.message));
+    const { errors } = watchErrors(page);
     try {
       const open = async (walk: string) => {
         await page.goto(`${server.url}/#/u/${universe}/topic/fees/?walk=${walk}`, { waitUntil: "networkidle" });
@@ -64,6 +65,7 @@ describe("review topic page", { skip: pw ? false : "playwright not resolvable (s
       assert.match(await page.textContent("main"), /Fee rules/);
       assert.match(await page.textContent("main"), /calc is the whole rule/, "prose renders between symbols");
       assert.equal(await page.locator("main .dnav a").count(), 2, "the snapshot picker lists both walks");
+      assert.match(await page.textContent("main"), /selector changed/i, "the indicator banner renders");
 
       await page.locator("main .blrow .blhead button", { hasText: "sign" }).first().click();
       await page.waitForFunction(() => /✓ signed/.test(document.querySelector("main")?.textContent ?? ""), null, { timeout: 15_000 });

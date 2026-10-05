@@ -231,3 +231,16 @@ test("withdrawing a container takes back only its cover, never a member's own si
     assert.equal((await anchorMark(r.root, id.round, { ref: r.head() })).reviewed, false);
   } finally { r.cleanup(); }
 });
+
+test("a topic finding at a line nothing holds is not told to file on a branch", async () => {
+  const r = await repo();
+  try {
+    const { reportDefect } = await import("./ops/defect.js");
+    ok(await topicDefine(r.root, { slug: "fees", title: "Fees", selector: { paths: ["src/fees.ts"] } }));
+    const e = await reportDefect(r.root, {
+      context: { kind: "topic", topic: "fees" }, targetKind: "anchor", targetId: "src/fees.ts:400", text: "x", comment: "x is wrong",
+    }) as { error?: string };
+    assert.match(String(e.error), /not in topic fees/);
+    assert.doesNotMatch(String(e.error), /your branch/);
+  } finally { r.cleanup(); }
+});

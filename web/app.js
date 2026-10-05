@@ -2676,7 +2676,7 @@ class BugsPage extends Component {
     return html`<div class="ddetail">
       <div class="dsymhead"><span class="sevdot" style="background:${SEV_COLOR[b.severity] || SEV_COLOR.medium}"></span> <b>${b.title}</b> <span class="bchip ${b.state}">${b.state}</span>${when(b.possiblyFixed, () => html`<span class="bchip poss">possibly fixed</span>`)}</div>
       <div class="meta">${b.severity} · ${b.id}${b.createdCommit ? ' · filed @ ' + b.createdCommit.slice(0, 8) : ''}${b.shared ? ' · shared' : ' · local only'}${b.filedAt && !unknownAt(b.filedAt) ? ' · originally ' + b.filedAt.slice(0, 10) : ''}</div>
-      ${when(!!b.from, () => html`<div class="meta">accepted from finding ${b.from.finding} on <a class="lk" href="${href(`/u/${u}/pr/${b.from.pr}/`)}">PR ${b.from.pr}</a></div>`)}
+      ${when(!!b.from, () => html`<div class="meta">accepted from finding ${b.from.finding} on <a class="lk" href="${href(sharedUrl(u, b.from.pr), { f: b.from.finding })}">${reviewLabel(b.from.pr)}</a></div>`)}
       ${when(!!b.pending, () => html`<div class="attn-banner"><span>${b.pending.by} asked to <b>${b.pending.ask}</b>: ${b.pending.rationale}</span></div>`)}
       <div class="drev">
         <span class="dim">state:</span>

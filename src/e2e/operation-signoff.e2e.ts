@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { resolvePlaywright, launchPlaywright, startServer } from './harness.js';
+import { resolvePlaywright, launchPlaywright, startServer, watchErrors } from './harness.js';
 import { draftSpec, addOperation, reviseOperation } from '../requirements.js';
 import { writeLocalProposalWitness } from '../store.js';
 import { operationContent, type ProposalWitness } from '../schema.js';
@@ -30,8 +30,7 @@ test('operation sign-off provenance distinguishes human authority, agent executi
     server = await startServer(root);
     browser = await launchPlaywright(pw);
     const page = await browser.newPage();
-    const errors: string[] = [];
-    page.on('pageerror', (e: any) => errors.push(String(e)));
+    const { errors } = watchErrors(page);
     const universes = await (await fetch(server.url + '/api/universes')).json() as any;
     await page.goto(`${server.url}/#/u/${universes.primary}/standard/spec/${spec.id}/`);
     await page.waitForSelector('.operation-signoff-receipt');
