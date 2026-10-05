@@ -245,10 +245,14 @@ export async function prWalkthroughChapter(
  * merged. Null for a pull request that has not landed — its code is not main's yet, so every
  * symbol it changes would read as moved.
  */
-async function trunkMoved(root: string, w: { features: WalkFeature[] }, pr: { headSha: string; state?: string }) {
+export async function trunkMoved(root: string, w: { features: WalkFeature[] }, pr: { headSha: string; state?: string; mergeCommit?: string }) {
   const trunk = trunkRef(root);
   if (!trunk) return null;
-  if (pr.state !== "MERGED" && !isAncestor(root, pr.headSha, trunk.sha)) return null;
+  // MERGED alone is not on main: a stacked PR merges into its base. Its merge commit must
+  // reach the trunk (repair-lifecycle.ts's rule; a squash defeats head ancestry, so not that).
+  const onTrunk = isAncestor(root, pr.headSha, trunk.sha)
+    || (pr.state === "MERGED" && !!pr.mergeCommit && isAncestor(root, pr.mergeCommit, trunk.sha));
+  if (!onTrunk) return null;
   return { trunk: trunk.sha, ...movedSince(w, await snapshotHashes(root, trunk.sha)) };
 }
 
@@ -323,7 +327,7 @@ export async function prStoryFor(root: string, input: string, opts: { fetch?: bo
       ...(pick.others.length ? { otherReadings: pick.others } : {}),
       headMoved: stored.head !== story.refs.head,
       stale: staleChapters(stored, live),
-      movedOnMain: await trunkMoved(root, stored, { headSha: story.refs.head, state: story.pr.state }),
+      movedOnMain: await trunkMoved(root, stored, { headSha: story.refs.head, state: story.pr.state, mergeCommit: story.pr.mergeCommit }),
       coverage: walkCoverage(stored.features, queue, []),
     },
   };

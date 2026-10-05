@@ -16,15 +16,15 @@ import {
 import { resolveSelector, containmentFor, touchedBetween, selectorChanged, newlyMatched, type TopicSelector, type ResolvedTopic } from "../topic-selector.js";
 import { validateWalkthrough, buildWalkthrough, walkCoverage, movedSince, type WalkInput } from "../walkthrough.js";
 import { readSnapshot } from "../snapshots.js";
-import { headCommit, revParse, trunkRef, readBlobs } from "../git.js";
+import { headCommit, revParse, trunkRef, readBlobs, isAncestor } from "../git.js";
 import { loadLanes, LANE_POLICY } from "../lanes.js";
-import { loadIgnore } from "../ignore.js";
+import { loadIgnoreAt } from "../ignore.js";
 import { resolveActor } from "../identity.js";
 import { appendWalkSignoffs, readWalkSignoffs, readFindings, type WalkSignoff } from "../store.js";
 import { topicKey } from "../review-target.js";
-import { markReviewedBatch, type Attestation } from "../reviews.js";
+import { markReviewedBatch, codeAt, type Attestation } from "../reviews.js";
 import { ABSENT_HASH } from "../normalize.js";
-import { snapshotHashes, loadNodesShared, langFor } from "./shared.js";
+import { snapshotHashes, langFor } from "./shared.js";
 import { anchorMark } from "./triage.js";
 import { deliveryNote } from "../delivery.js";
 
@@ -141,6 +141,12 @@ interface Resolution {
   sides: Anchor[][];
 }
 
+/** Docs as of a commit: membership is version-dependent (`codeAt`), after the team's docs are folded. */
+async function nodesAt(root: string, sha: string) {
+  await import("../docs-lookup.js").then((m) => m.docsVerdict(root)).catch(() => null);
+  return (await codeAt(root, sha)).nodes;
+}
+
 /** The commit a topic is walked at by default: main's tip, else whatever is checked out. */
 const defaultHead = (root: string): string | null => trunkRef(root)?.sha ?? headCommit(root);
 
@@ -155,13 +161,15 @@ async function resolveAt(root: string, sel: TopicSelector, head: string, delta?:
   const baseAnchors = base ? await readSnapshot(root, base) : null;
   if (base && !baseAnchors) return { error: `cannot read commit ${base.slice(0, 12)} here` };
 
-  const [lanes, ignore] = await Promise.all([loadLanes(root), loadIgnore(root)]);
+  // Ignore and node citations as of the walked commit (owner R19), so one head resolves to one
+  // set wherever it is walked; lanes stay the working tree's, as the PR path reads them.
+  const [lanes, ignore] = await Promise.all([loadLanes(root), loadIgnoreAt(root, head)]);
   const outsideLane = (f: string) => {
     if (ignore.isTest(f, false)) return "test";
     const lane = lanes.classify(f);
     return LANE_POLICY[lane].review === "queue" ? null : lane;
   };
-  const nodeAnchors = sel.nodes?.length ? new Map((await loadNodesShared(root)).map((n) => [n.id, n.anchors])) : undefined;
+  const nodeAnchors = sel.nodes?.length ? new Map((await nodesAt(root, head)).map((n) => [n.id, n.anchors])) : undefined;
   let resolved = resolveSelector({ ...sel, ...(base ? { base } : {}) },
     { head: headAnchors, ...(baseAnchors ? { base: baseAnchors } : {}), nodeAnchors, outsideLane });
   // A re-walk of a RANGE topic: the delta base narrows, and the selector's own range still bounds.
@@ -347,7 +355,8 @@ export async function topicWalkthroughGet(root: string, slug: string, walkId?: s
   const w = pick.walkthrough;
 
   const trunk = trunkRef(root);
-  const moved = trunk ? movedSince(withCovers(w), await snapshotHashes(root, trunk.sha)) : { chapters: [], symbols: [] };
+  // Null off main (owner R16, as `trunkMoved`): a walk of a side branch's code is not "main moved".
+  const moved = trunk && isAncestor(root, w.head, trunk.sha) ? movedSince(withCovers(w), await snapshotHashes(root, trunk.sha)) : null;
   // Against every walk up to this one: a delta walk only ever saw the delta, and "never
   // seen" means no walk of the topic so far accounted for it.
   const seen = walks.slice(0, i + 1).flatMap((x) => [...x.walkthrough.resolved.ids, ...x.walkthrough.resolved.outside.map((o) => o.id)]);

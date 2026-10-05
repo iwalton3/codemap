@@ -90,8 +90,8 @@ test("two walks at one commit both survive; a revision and a trunk commit show o
     r.commit("src/fees.ts", FEES.replace("c * 2", "c * 3"));
     const g = ok(await topicWalkthroughGet(r.root, "fees", w1.walk!));
     assert.deepEqual(g.selectorChanged, { paths: { added: ["src/other.ts"], removed: [] } });
-    assert.deepEqual(g.moved.chapters, ["calc"]);
-    assert.deepEqual(g.moved.symbols, [id.calc]);
+    assert.deepEqual(g.moved!.chapters, ["calc"]);
+    assert.deepEqual(g.moved!.symbols, [id.calc]);
     assert.deepEqual(g.newlyMatched, [id.other]);
   } finally { r.cleanup(); }
 });
@@ -386,5 +386,60 @@ test("the re-walk base is the latest walk with a sign-off still standing — not
     assert.equal(ok(await topicPacket(r.root, "fees")).base, h2);
     ok(await topicStepMark(r.root, "fees", w2.walk!, id.fees, { attestation: "signed", unmark: true }));
     assert.equal(ok(await topicPacket(r.root, "fees")).base, h1, "walk 2's sign-off was withdrawn");
+  } finally { r.cleanup(); }
+});
+
+// ---------------------------------------------------------------------------
+// Review round 2026-10-05 §C: indicators and what a selector resolves against
+// ---------------------------------------------------------------------------
+
+test("a walk whose head is not on main shows no 'main has moved' (R16)", async () => {
+  const r = await repo();
+  try {
+    const id = await r.ids();
+    ok(await topicDefine(r.root, { slug: "fees", title: "Fees", selector: { paths: ["src/fees.ts"] } }));
+    spawnSync("git", ["checkout", "-q", "-b", "side"], { cwd: r.root });
+    const side = r.commit("src/fees.ts", FEES.replace("c * 2", "c * 2 + 0"));
+    spawnSync("git", ["checkout", "-q", "main"], { cwd: r.root });
+    const w = ok(await topicWalkthroughSet(r.root, "fees", feat(ch("all", id.fees)), { head: side }));
+    assert.equal(ok(await topicWalkthroughGet(r.root, "fees", w.walk!)).moved, null);
+  } finally { r.cleanup(); }
+});
+
+test("MERGED is on main only when the merge commit reaches it (R17)", async () => {
+  const { trunkMoved } = await import("./ops/pr.js");
+  const { mergedOnto } = await import("./pr.js");
+  const r = await repo();
+  try {
+    const git = (...a: string[]) => spawnSync("git", a, { cwd: r.root, encoding: "utf8" }).stdout.trim();
+    const w = { features: [] };
+    git("checkout", "-q", "-b", "stack-base");
+    git("checkout", "-q", "-b", "stacked");
+    const head = r.commit("src/other.ts", "export function other() {\n  return 3;\n}\n");
+    git("checkout", "-q", "stack-base");
+    git("merge", "-q", "--no-ff", "-m", "merge stacked", "stacked");
+    const mergedIntoBase = r.head();
+    git("checkout", "-q", "main");
+    assert.equal(await trunkMoved(r.root, w, { headSha: head, state: "MERGED", mergeCommit: mergedIntoBase }), null, "merged into a stack base, not main");
+    git("merge", "-q", "--no-ff", "-m", "merge base", "stack-base");
+    assert.notEqual(await trunkMoved(r.root, w, { headSha: head, state: "MERGED", mergeCommit: mergedIntoBase }), null);
+
+    assert.equal(mergedOnto({ at: "t", oid: "x" }, () => false), false, "merged elsewhere is not landed");
+    assert.equal(mergedOnto({ at: "t", oid: "x" }, () => true), "t");
+    assert.equal(mergedOnto({ at: "t", oid: "x" }, () => null), null, "a merge commit this clone lacks says nothing");
+    assert.equal(mergedOnto({ at: "t", oid: null }, () => true), null);
+    assert.equal(mergedOnto(false, () => true), false);
+  } finally { r.cleanup(); }
+});
+
+test("a selector resolves with the walked commit's .codemapignore, not the working tree's (R19)", async () => {
+  const r = await repo();
+  try {
+    r.commit(".codemapignore", "[tests]\nsrc/fees.ts\n");
+    writeFileSync(join(r.root, ".codemapignore"), "");
+    ok(await topicDefine(r.root, { slug: "fees", title: "Fees", selector: { paths: ["src/fees.ts"] } }));
+    const p = ok(await topicPacket(r.root, "fees"));
+    assert.equal(p.counts.total, 0);
+    assert.deepEqual([...new Set(p.outside.map((o) => o.lane))], ["test"]);
   } finally { r.cleanup(); }
 });

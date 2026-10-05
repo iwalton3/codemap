@@ -8,8 +8,8 @@ import { type Anchor } from "./schema.js";
 import { parserForPath } from "./grammars.js";
 import { indexSource } from "./indexer.js";
 import { listSupportedFiles, toPosixRel, isIndexablePath, MAX_BYTES } from "./fs-scan.js";
-import { compileIgnore, loadIgnore, type Ignore } from "./ignore.js";
-import { lsTreeEntries, readBlobs, showFile, unreadableGitlink, recordUnreadableGitlink } from "./git.js";
+import { loadIgnoreAt, type Ignore } from "./ignore.js";
+import { lsTreeEntries, readBlobs, unreadableGitlink, recordUnreadableGitlink } from "./git.js";
 
 /** Index a single file. `relPath` is the repo-relative POSIX path stored on anchors. */
 export async function indexFile(absPath: string, relPath: string): Promise<Anchor[]> {
@@ -78,15 +78,9 @@ export async function indexCommit(
   if (!tree) return null;
   const prefix = opts.prefix ?? "";
 
-  // Committed rules win — a branch may legitimately change what it excludes, and
-  // judging it by another commit's rules invents added/removed symbols. But
-  // `.codemapignore` is frequently *untracked* (both live universes keep it in
-  // .git/info/exclude), and then the working copy is the only statement of intent
-  // there is, so fall back to it rather than indexing everything.
-  // Inherited on recursion so one ruleset covers submodule paths too, matching
-  // `listSupportedFiles`, which loads the ignore file once for the whole walk.
-  const committed = showFile(root, sha, ".codemapignore")?.toString("utf8");
-  const ignore = opts.ignore ?? (committed !== undefined ? compileIgnore(committed) : await loadIgnore(root));
+  // The commit's own rules (`loadIgnoreAt`). Inherited on recursion so one ruleset covers
+  // submodule paths too, matching `listSupportedFiles`, which loads the ignore file once.
+  const ignore = opts.ignore ?? await loadIgnoreAt(root, sha);
 
   // Fail fast: an unreadable submodule makes the whole index null (below), so find out from
   // tree listings before parsing the parent. `readSnapshot` keeps no negative cache.

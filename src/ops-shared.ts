@@ -724,10 +724,16 @@ async function findingJudge(root: string, all: SharedFinding[]) {
   // only then. A repo that merges with merge commits never pays for it, and a machine
   // with no `gh`, no auth or no network gets `null` and keeps ancestry's answer.
   const slug = originSlug(root);
+  // Merged ONTO the trunk: the merge commit must reach it, or a stacked PR reads landed (R17).
+  const reached = new Map<string, boolean | null>();
+  const reaches = (oid: string): boolean | null => {
+    if (!reached.has(oid)) reached.set(oid, !trunk || !revParse(root, oid) ? null : isAncestor(root, oid, trunk.sha));
+    return reached.get(oid)!;
+  };
   const isMerged = (n: number): boolean | null =>
-    slug ? prIsMerged(`${slug.owner}/${slug.repo}`, n) : null;
+    slug ? prIsMerged(`${slug.owner}/${slug.repo}`, n, reaches) : null;
 
-  const mergedAt = (n: number) => (slug ? prMergedAt(`${slug.owner}/${slug.repo}`, n) : null);
+  const mergedAt = (n: number) => (slug ? prMergedAt(`${slug.owner}/${slug.repo}`, n, reaches) : null);
 
   // The trunk tip's bodies, once per listing (a snapshot is cached per sha). A finding whose
   // cited body is there is landed whatever its ref says — a cherry-pick, or code the trunk

@@ -78,6 +78,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { resolveSidecar } from "./sidecar-config.js";
+import { showFile } from "./git.js";
 
 interface Pattern {
   re: RegExp;
@@ -208,6 +209,17 @@ export const sidecarIgnorePath = (sidecarRoot: string, universe: string): string
  * needs no new transport — `sync` commits the sidecar with `git add -A`, so a file
  * dropped at `sidecarIgnorePath` travels with the next one.
  */
+/**
+ * The rules a COMMIT is judged by. Committed rules win — a branch may legitimately change
+ * what it excludes, and judging it by another commit's rules invents added/removed symbols.
+ * But `.codemapignore` is frequently *untracked* (both live universes keep it in
+ * .git/info/exclude), and then the working copy is the only statement of intent there is.
+ */
+export async function loadIgnoreAt(root: string, sha: string): Promise<Ignore> {
+  const committed = showFile(root, sha, ".codemapignore")?.toString("utf8");
+  return committed !== undefined ? compileIgnore(committed) : loadIgnore(root);
+}
+
 export async function loadIgnore(root: string): Promise<Ignore> {
   try {
     return compileIgnore(await readFile(join(root, ".codemapignore"), "utf8"), "repo");

@@ -125,7 +125,7 @@ class TopicPage extends Component {
 
   symbolEl(id) {
     const d = this.state.d, s = d.signoffs.symbols[id] || {}, c = this.state.code[id];
-    const moved = d.moved.symbols.includes(id);
+    const moved = !!d.moved && d.moved.symbols.includes(id);
     return html`<div class="rvstep">
       <div class="blhead">
         <a class="dim" href="${href(`/u/${this.props.params.universe}/anchor/${id}/`)}">${id}</a>
@@ -152,7 +152,7 @@ class TopicPage extends Component {
     if (forms.length || sc.base) notes.push(html`<div class="attn-banner"><span class="attn-n">Δ</span><span>the topic's selector changed since this walkthrough:
       ${each(forms, (k) => html`<span> ${k} ${sc[k].added.length ? '+' + sc[k].added.join(', +') : ''}${sc[k].removed.length ? ' −' + sc[k].removed.join(', −') : ''};</span>`, (k) => k)}
       ${when(!!sc.base, () => html`<span> range ${short(sc.base.from) || 'none'} → ${short(sc.base.to) || 'none'}</span>`)}</span></div>`);
-    if (d.moved.chapters.length) notes.push(html`<div class="attn-banner"><span class="attn-n">⟳</span><span>main has moved the code of ${d.moved.symbols.length} symbol(s) in ${d.moved.chapters.length} chapter(s) since this walkthrough's commit — what was read here is no longer main's</span></div>`);
+    if (d.moved && d.moved.chapters.length) notes.push(html`<div class="attn-banner"><span class="attn-n">⟳</span><span>main has moved the code of ${d.moved.symbols.length} symbol(s) in ${d.moved.chapters.length} chapter(s) since this walkthrough's commit — what was read here is no longer main's</span></div>`);
     if (d.newlyMatched && d.newlyMatched.length) notes.push(html`<div class="attn-banner"><span class="attn-n">+</span><span>${d.newlyMatched.length} symbol(s) match the selector now that no walkthrough has seen — the prompt to re-walk</span></div>`);
     const un = d.walkthrough.resolved.unresolved;
     if (un.length) notes.push(html`<div class="attn-banner"><span class="attn-n">?</span><span>${un.length} selector entr${un.length === 1 ? 'y' : 'ies'} named nothing at this commit: ${un.map((x) => x.id).join(', ')}</span></div>`);
@@ -181,7 +181,7 @@ class TopicPage extends Component {
           <div class="bltext">${f.summary}</div>
           ${each(f.chapters, (c) => html`<div class="blrow">
             <div class="blhead"><b>${c.title}</b>
-              ${when(d.moved.chapters.includes(c.id), () => html`<span class="prbadge">code moved on main</span>`)}
+              ${when(!!d.moved && d.moved.chapters.includes(c.id), () => html`<span class="prbadge">code moved on main</span>`)}
               ${this.signBtn('chapter', c.id, !!(d.signoffs.chapters[c.id] || {}).signed)}
             </div>
             ${each(c.blocks, (b) => (b.kind === 'prose' ? html`<md-content text="${b.text}"></md-content>` : this.symbolEl(b.anchorId)),

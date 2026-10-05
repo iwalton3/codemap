@@ -76,23 +76,28 @@ function gh(args: string[], cwd?: string, timeout = 120_000): { ok: boolean; out
  * YES can never go stale — but new merges happen while a server runs, and a permanent
  * memo would keep answering "not merged" for them all day.
  */
-const mergedCache = new Map<string, { at: number; nums: Map<number, string>; capped: boolean }>();
+/** A merge: when, and the commit it made — `oid` null when GitHub gave none. */
+type Merge = { at: string; oid: string | null };
+const mergedCache = new Map<string, { at: number; nums: Map<number, Merge>; capped: boolean }>();
 const MERGED_TTL_MS = 10 * 60_000;
 const MERGED_LIMIT = 200;
 
-/** Merged pull requests in the window, number → merge time. */
-function mergedList(repoSlug: string): { nums: Map<number, string>; capped: boolean } | null {
+/** Merged pull requests in the window, number → merge. */
+function mergedList(repoSlug: string): { nums: Map<number, Merge>; capped: boolean } | null {
   const hit = mergedCache.get(repoSlug);
   if (hit && Date.now() - hit.at < MERGED_TTL_MS) return hit;
-  const r = gh(["pr", "list", "--repo", repoSlug, "--state", "merged", "--limit", String(MERGED_LIMIT), "--json", "number,mergedAt"], undefined, 8_000);
+  const r = gh(["pr", "list", "--repo", repoSlug, "--state", "merged", "--limit", String(MERGED_LIMIT), "--json", "number,mergedAt,mergeCommit"], undefined, 8_000);
   if (!r.ok) return null;
   try {
-    const parsed = JSON.parse(r.out) as { number: number; mergedAt?: string }[];
+    const parsed = JSON.parse(r.out) as { number: number; mergedAt?: string; mergeCommit?: { oid?: string } | null }[];
     // CAPPED matters, and measuring it is what caught this: `Acme.React` returned exactly
     // 200, which is the limit — so the window is the 200 most recent merges and an older
     // squashed pull request is absent for a reason that has nothing to do with whether it
     // merged. Absence is only authoritative when the list came back short.
-    const entry = { at: Date.now(), nums: new Map(parsed.map((j) => [j.number, j.mergedAt ?? ""])), capped: parsed.length >= MERGED_LIMIT };
+    const entry = {
+      at: Date.now(), capped: parsed.length >= MERGED_LIMIT,
+      nums: new Map(parsed.map((j) => [j.number, { at: j.mergedAt ?? "", oid: j.mergeCommit?.oid ?? null }])),
+    };
     mergedCache.set(repoSlug, entry);
     return entry;
   } catch { return null; }
@@ -108,16 +113,16 @@ function mergedList(repoSlug: string): { nums: Map<number, string>; capped: bool
  * never appears in the list and falls through to here each time. The TTL is the same one
  * the list uses, which bounds how stale a "not merged yet" can be.
  */
-const oneCache = new Map<string, { at: number; merged: string | false }>();
-function mergedOne(repoSlug: string, n: number): string | false | null {
+const oneCache = new Map<string, { at: number; merged: Merge | false }>();
+function mergedOne(repoSlug: string, n: number): Merge | false | null {
   const key = `${repoSlug}#${n}`;
   const hit = oneCache.get(key);
   if (hit && (hit.merged !== false || Date.now() - hit.at < MERGED_TTL_MS)) return hit.merged;
-  const r = gh(["pr", "view", String(n), "--repo", repoSlug, "--json", "state,mergedAt"], undefined, 8_000);
+  const r = gh(["pr", "view", String(n), "--repo", repoSlug, "--json", "state,mergedAt,mergeCommit"], undefined, 8_000);
   if (!r.ok) return null;
   try {
-    const j = JSON.parse(r.out) as { state: string; mergedAt?: string };
-    const merged = j.state === "MERGED" ? j.mergedAt ?? "" : false;
+    const j = JSON.parse(r.out) as { state: string; mergedAt?: string; mergeCommit?: { oid?: string } | null };
+    const merged = j.state === "MERGED" ? { at: j.mergedAt ?? "", oid: j.mergeCommit?.oid ?? null } : false;
     oneCache.set(key, { at: Date.now(), merged });
     return merged;
   } catch { return null; }
@@ -130,26 +135,39 @@ function mergedOne(repoSlug: string, n: number): string | false | null {
  * settles the rest — so the ordinary page costs one round trip, and only a finding on a
  * pull request older than the window costs a second.
  */
-export function prIsMerged(repoSlug: string, n: number): boolean | null {
-  const at = prMergedAt(repoSlug, n);
+export function prIsMerged(repoSlug: string, n: number, reaches: (oid: string) => boolean | null): boolean | null {
+  const at = prMergedAt(repoSlug, n, reaches);
   return at === null ? null : at !== false;
 }
 
 /**
- * When this pull request merged: its time (`""` when GitHub gave none), `false` when it
- * has not, null when nothing here can say. A branch finding needs the TIME, because a
- * branch name is one review for ever and a merge before the finding was filed says
- * nothing about its code (`mergedAfter`).
+ * When this pull request merged ONTO THE TRUNK: its time (`""` when GitHub gave none),
+ * `false` when it has not, null when nothing here can say. A branch finding needs the TIME,
+ * because a branch name is one review for ever and a merge before the finding was filed says
+ * nothing about its code (`mergedAfter`). `reaches` says whether a commit is on the trunk.
  */
-export function prMergedAt(repoSlug: string, n: number): string | false | null {
+export function prMergedAt(repoSlug: string, n: number, reaches: (oid: string) => boolean | null): string | false | null {
   const list = mergedList(repoSlug);
   const hit = list?.nums.get(n);
-  if (hit !== undefined) return hit;
+  if (hit !== undefined) return mergedOnto(hit, reaches);
   // Absence is an answer only when the window was not full. Otherwise the pull request
   // may simply be older than the 200 most recent merges, and treating that as "not
   // merged" is the silent-truncation bug this exists to avoid.
   if (list && !list.capped) return false;
-  return mergedOne(repoSlug, n);
+  return mergedOnto(mergedOne(repoSlug, n), reaches);
+}
+
+/**
+ * MERGED is not "on the trunk": a stacked pull request merges into its base branch and reads
+ * MERGED while its code is nowhere near main. So its merge commit must reach the trunk —
+ * `linkedRepairLanded`'s rule (repair-lifecycle.ts), never "require ancestry of the head",
+ * which a squash defeats. A merge commit this clone cannot judge is null, never a no.
+ */
+export function mergedOnto(m: Merge | false | null, reaches: (oid: string) => boolean | null): string | false | null {
+  if (!m) return m;
+  if (!m.oid) return null;
+  const r = reaches(m.oid);
+  return r === null ? null : r ? m.at : false;
 }
 
 /**
@@ -208,9 +226,11 @@ export interface PrMeta {
    * meta leaves it unset — and an unset one is never linked to a local branch of the same name.
    */
   crossRepo?: boolean;
+  /** The commit a MERGED pull request's merge made — whether it reaches the trunk is what "on main" means. */
+  mergeCommit?: string;
 }
 
-const PR_FIELDS = "number,url,title,author,baseRefName,headRefName,baseRefOid,headRefOid,isDraft,state,createdAt,updatedAt,additions,deletions,changedFiles,commits,isCrossRepository";
+const PR_FIELDS = "number,url,title,author,baseRefName,headRefName,baseRefOid,headRefOid,isDraft,state,createdAt,updatedAt,additions,deletions,changedFiles,commits,isCrossRepository,mergeCommit";
 /**
  * Same minus `commits`. That field is a GraphQL *connection*, and asking for it
  * across a page of PRs multiplies out past GitHub's 500k-node ceiling — a repo
@@ -267,6 +287,7 @@ export function fetchPrMeta(ref: PrRef, opts: { fresh?: boolean } = {}): PrMeta 
       commits: Array.isArray(j.commits) ? j.commits.length : 0,
       source: "gh",
       ...(typeof j.isCrossRepository === "boolean" ? { crossRepo: j.isCrossRepository } : {}),
+      ...(typeof j.mergeCommit?.oid === "string" ? { mergeCommit: j.mergeCommit.oid } : {}),
     };
     metaCache.set(key, { at: Date.now(), value: meta });
     return meta;
@@ -775,7 +796,7 @@ export interface PacketItem {
 }
 
 export interface PrPacket {
-  pr: { number: number; title: string; url: string; author: string; headRef: string; baseRef: string; state?: string };
+  pr: { number: number; title: string; url: string; author: string; headRef: string; baseRef: string; state?: string; mergeCommit?: string };
   refs: { mergeBase: string; head: string };
   /** Spec/doc files the PR itself changed — the author's own account of the change. */
   specs: { path: string; text: string }[];
@@ -951,7 +972,7 @@ export async function prStory(
   const story = buildStory(sections, steps, { known });
   return {
     ...story,
-    pr: { number: t.pr.number, title: t.pr.title, url: t.pr.url, author: t.pr.author, headRef: t.pr.headRef, baseRef: t.pr.baseRef, state: t.pr.state },
+    pr: { number: t.pr.number, title: t.pr.title, url: t.pr.url, author: t.pr.author, headRef: t.pr.headRef, baseRef: t.pr.baseRef, state: t.pr.state, mergeCommit: t.pr.mergeCommit },
     refs: { mergeBase: t.refs.mergeBase, head: t.refs.head, baseAheadOfMergeBase: t.refs.baseAheadOfMergeBase },
     // Carried so a walkthrough with nothing in it can say *why* — a PR that is all
     // tests or all generated code has an empty queue by design, and an unexplained
@@ -1201,9 +1222,11 @@ export function offStoryReason(a: Annotation, ctx: OffStoryContext): OffStoryRea
  * the merged-PR set) are a `git` call and a `gh` call, and neither is the interesting
  * part. What is interesting is the ORDER, and it is the whole design:
  *
- * 1. **Ancestry, when it can speak.** Local, free, and never wrong when it says yes. It
- *    also gets the stacked case right, where a pull request's status field does not: a PR
- *    merged into another feature branch has not reached the trunk, whatever GitHub says.
+ * 1. **Ancestry, when it can speak.** Local, free, and never wrong when it says yes. A
+ *    pull request's status field is not enough on its own for the stacked case: a PR merged
+ *    into another feature branch reads MERGED while it has not reached the trunk — so the
+ *    `isMerged` the caller passes must also require the merge commit to reach the trunk
+ *    (`prIsMerged`'s `reaches`).
  * 2. **`null` is "this clone cannot say"** — no `sourceRef`, `@work`, or a commit this
  *    checkout does not have — and it stays `unknown`. Absence of evidence is not evidence,
  *    and guessing either way puts real debt in the wrong pile silently.

@@ -15,14 +15,14 @@
 import { join } from "node:path";
 import type { Anchor, LogicalNode } from "../schema.js";
 import { indexFile } from "../repo.js";
-import { revParse, showFile, worktreeForBranch, uncommittedPaths, defaultBranch, mergeBase } from "../git.js";
+import { revParse, worktreeForBranch, uncommittedPaths, defaultBranch, mergeBase } from "../git.js";
 import { reviewStatesFor } from "../reviews.js";
 import { computeDiff } from "../diff.js";
 import { readSnapshot } from "../snapshots.js";
 import { snapshotRefusal, loadNodesAt, derivationLookup } from "../store.js";
 import { anchorIndex, derivationsOf, type AnchorIndex } from "../anchor-resolve.js";
 import { isIndexablePath } from "../fs-scan.js";
-import { compileIgnore, loadIgnore, type Ignore } from "../ignore.js";
+import { loadIgnoreAt, type Ignore } from "../ignore.js";
 
 export interface AtView {
   /** What the caller asked for, as they spelled it. */
@@ -46,8 +46,7 @@ export async function viewAt(root: string, at: string, opts: { dirty?: boolean }
   const committedAnchors = await readSnapshot(root, sha);
   if (!committedAnchors) return { error: snapshotRefusal(root, sha)?.message ?? `cannot index ${sha.slice(0, 12)}` };
   // The commit's own rules, as `indexCommit` uses to build the snapshot.
-  const committed = showFile(root, sha, ".codemapignore")?.toString("utf8");
-  const ignore = committed !== undefined ? compileIgnore(committed) : await loadIgnore(root);
+  const ignore = await loadIgnoreAt(root, sha);
 
   const worktree = revParse(root, `refs/heads/${at}`) === sha ? worktreeForBranch(root, at) : null;
   const uncommitted = worktree ? uncommittedPaths(worktree).filter((p) => isIndexablePath(p, ignore)) : [];
