@@ -24,7 +24,8 @@ import { readFileSync } from "node:fs";
 // Repo-relative, matching `api-map.test.ts` — these tests read SOURCE, and the suite
 // runs from the repository root. Resolving from `import.meta.url` would land in `dist/`,
 // where `schema.ts` does not exist.
-const APP = "web/app.js";
+/** VIA_TIP and VIA_MARK live in reading.js (shared by the PR and topic pages); revMark in app.js. */
+const APP = ["web/app.js", "web/reading.js"];
 const SCHEMA = "src/schema.ts";
 
 /** The union's members, read from the source of truth rather than restated here. */
@@ -47,7 +48,7 @@ test("the AcceptanceVia union is what this test thinks it is", () => {
 });
 
 test("every via that needs a label has a tooltip in the web UI", () => {
-  const app = readFileSync(APP, "utf8");
+  const app = APP.map((f) => readFileSync(f, "utf8")).join("\n");
   const tips = /const VIA_TIP = \{([\s\S]*?)\};/.exec(app);
   assert.ok(tips, "VIA_TIP is gone or renamed");
   for (const via of NEEDS_A_LABEL(acceptanceVia())) {
@@ -60,7 +61,7 @@ test("every via that needs a label has a tooltip in the web UI", () => {
 });
 
 test("and a glyph, so it is distinguishable without hovering", () => {
-  const app = readFileSync(APP, "utf8");
+  const app = APP.map((f) => readFileSync(f, "utf8")).join("\n");
   const marks = /const VIA_MARK = \{([^}]*)\}/.exec(app);
   assert.ok(marks, "VIA_MARK is gone or renamed");
   for (const via of NEEDS_A_LABEL(acceptanceVia())) {
@@ -83,7 +84,7 @@ test("every surface that draws a mark is PASSED the via", () => {
   // tables were correct: `revBtn` called `revCls(st, actor)` and `revMark(st, actor)`
   // with two arguments, so on that surface every via collapsed to a plain tick no
   // matter what the lookup tables said.
-  const app = readFileSync(APP, "utf8");
+  const app = APP.map((f) => readFileSync(f, "utf8")).join("\n");
   for (const call of [...app.matchAll(/\b(revCls|revMark|revDot)\(([^)]*)\)/g)]) {
     const [, fn, args] = call;
     if (/^\s*\(?[a-z]/i.test(args!) === false) continue; // the definition itself
@@ -107,7 +108,7 @@ test("every surface that draws a mark is PASSED the via", () => {
  * long as every handler computed `unmark` from `state` alone.
  */
 test("clicking a mark that cannot be verified re-signs it instead of clearing it", () => {
-  const app = readFileSync(APP, "utf8");
+  const app = APP.map((f) => readFileSync(f, "utf8")).join("\n");
   const fn = /const unmarkOn = [^\n]*\n/.exec(app);
   assert.ok(fn, "unmarkOn is gone or renamed — it is what makes the tooltip's promise true");
   assert.match(fn![0]!, /via !== 'unverifiable'/, "unmarkOn no longer exempts the unverifiable case");
@@ -129,7 +130,7 @@ test("and the via reaches the handler that decides it", () => {
   // `markBtnEl` is the only place the click is wired, but every consumer passes its
   // own callback — one that stops at `actor` silently drops the argument `unmarkOn`
   // needs, and `via` arrives as undefined: a clear again, with no error anywhere.
-  const app = readFileSync(APP, "utf8");
+  const app = APP.map((f) => readFileSync(f, "utf8")).join("\n");
   assert.match(app, /onMark\(attestation, st, actor, via\)/, "markBtnEl no longer passes the via on click");
   const short = [...app.matchAll(/\((?:att|attestation), (?:st|state), actor\)\s*=>/g)];
   assert.deepEqual(
@@ -146,7 +147,7 @@ test("and the via reaches the handler that decides it", () => {
  * is the single predicate they all go through.
  */
 test("the walkthrough does not retire a symbol whose sign-off it could not check", () => {
-  const app = readFileSync(APP, "utf8");
+  const app = APP.map((f) => readFileSync(f, "utf8")).join("\n");
   assert.match(app, /stepSigned\(step\) \{[^}]*isUnverifiable\(step\.review\)/, "stepSigned is gone, renamed, or no longer excludes the unverifiable case");
   const next = /nextUnsignedAfter\(anchorId[\s\S]*?\n  \}/.exec(app);
   assert.ok(next, "nextUnsignedAfter is gone or renamed");

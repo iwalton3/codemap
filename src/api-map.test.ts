@@ -13,7 +13,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 
 /** Route names from the GET dispatcher in serve.ts. */
 function servedRoutes(): string[] {
@@ -74,7 +74,8 @@ function sharedActions(): string[] {
  */
 function sharedUses(): { action: string; where: string }[] {
   const out: { action: string; where: string }[] = [];
-  for (const f of ["web/app.js", "web/shared.js", "web/standard.js", "web/core.js"]) {
+  // Every page module, not a list: a list missed the moves into reading.js and topics.js.
+  for (const f of readdirSync("web").filter((n) => n.endsWith(".js")).map((n) => `web/${n}`)) {
     const src = readFileSync(f, "utf8");
     // A bare `${...}` segment is a dispatcher variable, not a literal, and is covered by
     // the call sites that supply it — this scan is for the ones spelled out in place.
