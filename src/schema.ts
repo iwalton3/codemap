@@ -845,6 +845,12 @@ export interface AcceptedEntry {
   commit: string | null;
   branch: string | null;
   at: string;
+  /**
+   * Who wrote it when it was not a direct mark: `topic:<walkId>` for a topic walk's sign-off,
+   * which is re-projected from `walk_signoffs` and replaces only its own entries — so a topic
+   * withdrawal never takes a pull request's acceptance with it (owner, review round 2026-10-05 R8).
+   */
+  source?: string;
 }
 
 export interface AcceptedCitation {

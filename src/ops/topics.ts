@@ -22,7 +22,7 @@ import { loadIgnore } from "../ignore.js";
 import { resolveActor } from "../identity.js";
 import { appendWalkSignoffs, readWalkSignoffs, readFindings, type WalkSignoff } from "../store.js";
 import { topicKey } from "../review-target.js";
-import { markReviewedBatch, unmarkReviewed, type Attestation } from "../reviews.js";
+import { markReviewedBatch, type Attestation } from "../reviews.js";
 import { ABSENT_HASH } from "../normalize.js";
 import { snapshotHashes, loadNodesShared, langFor } from "./shared.js";
 import { anchorMark } from "./triage.js";
@@ -175,15 +175,22 @@ async function resolveAt(root: string, sel: TopicSelector, head: string, delta?:
 }
 
 /**
- * The head of the latest walkthrough of this topic in which THIS MACHINE'S PERSON signed
- * anything (owner, F6). By principal, never "the caller": an agent writes a walkthrough
+ * The head of the latest walkthrough of this topic in which THIS MACHINE'S PERSON has a
+ * sign-off still standing (owner, F6; "At least one sign-off still standing", 2026-10-05).
+ * `viewed` is not a sign-off. By principal, never "the caller": an agent writes a walkthrough
  * and never signs one, so "the latest I wrote" would always be the agent's.
  */
 function lastSignedWalk(root: string, walks: SharedTopicWalkthrough[]): SharedTopicWalkthrough | null {
   const me = resolveActor(root)?.principal;
   if (!me || !walks.length) return null;
-  const signed = new Set(readWalkSignoffs(root, { walkIds: walks.map((w) => w.id), principal: me }).map((r) => r.walkId));
-  for (let i = walks.length - 1; i >= 0; i--) if (signed.has(walks[i]!.id)) return walks[i]!;
+  const tracks = new Map<string, WalkSignoff[]>();
+  for (const r of readWalkSignoffs(root, { walkIds: walks.map((w) => w.id), principal: me })) {
+    if (r.attestation !== "signed") continue;
+    const k = `${r.walkId}\0${r.targetKind}\0${r.targetId}`;
+    (tracks.get(k) ?? tracks.set(k, []).get(k)!).push(r);
+  }
+  const standing = new Set([...tracks.values()].filter((g) => standingOf(g)).map((g) => g[0]!.walkId));
+  for (let i = walks.length - 1; i >= 0; i--) if (standing.has(walks[i]!.id)) return walks[i]!;
   return null;
 }
 
@@ -373,14 +380,17 @@ export async function topicWalkthroughGet(root: string, slug: string, walkId?: s
 // Signing — web only, as PR sign-off is
 // ---------------------------------------------------------------------------
 
+/** The `AcceptedEntry.source` prefix every topic acceptance carries. */
+const TOPIC_SOURCE = "topic:";
+
 /**
  * Re-derive this person's per-anchor mark for one symbol from `walk_signoffs`.
  *
  * The standing sign-off is the LATEST WALK whose latest act on the symbol is `signed`, written
  * at that walk's head (and base). So withdrawing in May leaves March's sign-off standing on the
- * map, and signing an older walk after a newer one does not displace the newer one. Known
- * limit: the mark is one row per reviewer, shared with PR sign-off, so a topic withdrawal can
- * clear a mark a PR walkthrough wrote for the same symbol.
+ * map, and signing an older walk after a newer one does not displace the newer one. Only the
+ * entries tagged `topic:` are replaced, so a pull request's acceptance of the same symbol is
+ * never touched (owner R8). "Latest" is mint order — see docs/review-topics.md on a replayed walk.
  */
 async function reprojectMark(root: string, anchorId: string, attestation: Attestation, principal: string, reviewer?: string) {
   const rows = readWalkSignoffs(root, { targetId: anchorId, principal })
@@ -389,12 +399,13 @@ async function reprojectMark(root: string, anchorId: string, attestation: Attest
   for (const r of rows) (byWalk.get(r.walkId) ?? byWalk.set(r.walkId, []).get(r.walkId)!).push(r);
   // Walk ids are event ids, which sort by time (`mintId`).
   const standing = [...byWalk.keys()].sort().reverse().map((w) => standingOf(byWalk.get(w)!)).find(Boolean);
+  const own = { level: "code" as const, actor: "human" as const, attestation, reviewer, replaceSource: TOPIC_SOURCE };
   if (!standing) {
-    await unmarkReviewed(root, { targetKind: "anchor", targetId: anchorId, level: "code", attestation, actor: "human" });
+    await markReviewedBatch(root, [anchorId], { ...own, drop: true });
     return { unwitnessed: false };
   }
   const r = await markReviewedBatch(root, [anchorId], {
-    level: "code", actor: "human", attestation, reviewer, ref: standing.commit, base: standing.base,
+    ...own, ref: standing.commit, base: standing.base, source: TOPIC_SOURCE + standing.walkId,
     ...(standing.coveredBy ? { coveredBy: standing.coveredBy } : {}),
   });
   return { unwitnessed: !!r.unwitnessed?.includes(anchorId) };
@@ -431,9 +442,17 @@ async function signIn(
     commit: w.head, ...(w.base ? { base: w.base } : {}), actor: me, at, ...(coveredBy ? { coveredBy } : {}),
   });
   const direct = new Set(targets.ids);
+  // Withdrawing a member directly ends every cover it holds in this walk too (owner R10, PR
+  // parity): otherwise its "click to withdraw" changes nothing while its class stays signed.
+  const covers = opts.unmark
+    ? readWalkSignoffs(root, { walkId, principal: me.principal })
+      .filter((r) => r.targetKind === "symbol" && r.coveredBy && direct.has(r.targetId) && r.attestation === opts.attestation)
+      .map((r) => [r.targetId, r.coveredBy!] as const)
+    : [];
   const rows: WalkSignoff[] = [
     ...(targets.chapter ? [row("chapter", targets.chapter)] : []),
     ...targets.ids.map((id) => row("symbol", id)),
+    ...[...new Map(covers.map(([m, c]) => [`${m}\0${c}`, [m, c] as const])).values()].map(([m, c]) => row("symbol", m, c)),
     ...[...contained].flatMap(([c, ms]) => ms.filter((m) => !direct.has(m)).map((m) => row("symbol", m, c))),
   ];
   appendWalkSignoffs(root, rows);

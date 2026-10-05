@@ -152,8 +152,10 @@ export function resolveAcceptance(entries: AcceptedEntry[], liveHash: string | u
  * go. It now takes `cap` DISTINCT bodies to lose one rather than `cap` re-marks.
  */
 export function recordAcceptance(entries: AcceptedEntry[], next: AcceptedEntry, cap: number): AcceptedEntry[] {
-  // Re-approving the same body on the same commit is a no-op rather than a new row.
-  const kept = entries.filter((e) => !(sameBody(e.bodyHash, next.bodyHash) && e.commit === next.commit));
+  // Re-approving the same body on the same commit is a no-op rather than a new row — from the
+  // same source: a topic's entry must not stand in for a pull request's, or withdrawing one
+  // takes the other.
+  const kept = entries.filter((e) => !(sameBody(e.bodyHash, next.bodyHash) && e.commit === next.commit && e.source === next.source));
   const out = [...kept, next];
   while (out.length > cap) {
     const counts = new Map<string, number>();

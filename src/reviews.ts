@@ -1063,9 +1063,20 @@ export async function markReviewedBatch(
      * of pull requests.
      */
     hashes?: Map<string, string>;
+    /**
+     * Re-projection: this write REPLACES the prior entries whose `source` starts with this
+     * prefix, and leaves every other entry as it was. With `drop`, it writes none of its own,
+     * and a row left with no entries is deleted. A shared row keeps last-writer `coveredBy`,
+     * `at` and witnesses — the residual the owner accepted (R8).
+     */
+    replaceSource?: string;
+    /** Tags the entry this write records; see `AcceptedEntry.source`. */
+    source?: string;
+    drop?: boolean;
   },
 ): Promise<{ marked: number; unwitnessed?: string[] }> {
   if (!anchorIds.length) return { marked: 0 };
+  if (input.drop && !input.replaceSource) throw new Error("drop re-projects: it needs replaceSource");
   const live = input.hashes ?? await liveHashes(root, anchorIds, input.ref);
   const actor = input.actor ?? "agent";
   // The existing human/agent binary decides WHETHER this was an agent; `resolveActor`
@@ -1094,7 +1105,7 @@ export async function markReviewedBatch(
   const deletedAt = input.hashes ? new Map<string, string>()
     : await deletedBodies(root, input.ref, anchorIds.filter((id) => live.get(id) === undefined), input.base);
   let unwitnessed: string[] = [];
-  if (!input.hashes && !input.coveredBy) {
+  if (!input.hashes && !input.coveredBy && !input.drop) {
     const unhashed = anchorIds.filter((id) => live.get(id) === undefined && !deletedAt.has(id));
     const known = unhashed.length ? workHas(root, unhashed, input.ref ? snapshotKey(root, input.ref) : undefined) : new Set<string>();
     unwitnessed = unhashed.filter((id) => !known.has(id));
@@ -1116,14 +1127,26 @@ export async function markReviewedBatch(
 
   // A cover may replace another cover (the inner container is the more specific
   // claim) but never a mark made about the symbol itself.
-  if (input.coveredBy) anchorIds = anchorIds.filter((id) => priorFor.get(id)?.coveredBy !== undefined || !priorFor.has(id));
+  // A re-projection owns only its tagged entries, so the direct/cover rule is its own (`walk_signoffs`).
+  if (input.coveredBy && !input.replaceSource) anchorIds = anchorIds.filter((id) => priorFor.get(id)?.coveredBy !== undefined || !priorFor.has(id));
 
-  const fresh: Review[] = anchorIds.map((id) => {
+  const tagged = input.replaceSource;
+  const dropped: string[] = [];
+  const fresh: Review[] = anchorIds.flatMap((id) => {
     const prior = priorFor.get(id);
-    const entries = prior ? (acceptedOf(prior).find((c) => c.anchorId === id)?.entries ?? []) : [];
+    let entries = prior ? (acceptedOf(prior).find((c) => c.anchorId === id)?.entries ?? []) : [];
+    if (tagged) entries = entries.filter((e) => !e.source?.startsWith(tagged));
+    if (input.drop) {
+      if (!prior) return [];
+      if (!entries.length) { dropped.push(id); return []; }
+      return [{ ...prior, accepted: [{ anchorId: id, entries }] }];
+    }
     const hash = live.get(id);
     const gone = hash === undefined ? deletedAt.get(id) : undefined;
-    return {
+    const src = input.source ? { source: input.source } : {};
+    // A row that still holds another source's entries keeps that source's direct/cover status.
+    const coveredBy = tagged && prior && entries.length ? prior.coveredBy : input.coveredBy;
+    return [{
       id: "rev_" + randomBytes(6).toString("hex"),
       target: { kind: "anchor" as const, id },
       level: input.level,
@@ -1131,20 +1154,20 @@ export async function markReviewedBatch(
     ...(by ? { by } : {}),
       actor,
       attestation,
-      coveredBy: input.coveredBy,
+      coveredBy,
       at: stamp,
       reviewedCommit: commit,
       witnesses: [gone ? { anchorId: id, bodyHash: gone, deleted: true as const } : { anchorId: id, bodyHash: hash ?? "sha256:absent" }],
       accepted: [{
         anchorId: id,
-        entries: hash ? recordAcceptance(entries, { bodyHash: hash, commit, branch, at: stamp }, ACCEPTED_CAP)
-          : gone ? recordAcceptance(entries, { bodyHash: gone, deleted: true, commit, branch, at: stamp }, ACCEPTED_CAP)
+        entries: hash ? recordAcceptance(entries, { bodyHash: hash, commit, branch, at: stamp, ...src }, ACCEPTED_CAP)
+          : gone ? recordAcceptance(entries, { bodyHash: gone, deleted: true, commit, branch, at: stamp, ...src }, ACCEPTED_CAP)
           : entries,
       }],
-    };
+    }];
   });
 
-  const replaced = new Set(fresh.map((r) => r.target.id));
+  const replaced = new Set([...fresh.map((r) => r.target.id), ...dropped]);
   // Replaces only this reviewer's rows — see `rowIdentity`. Without the identity
   // clause a batch mark would clear every OTHER reviewer's marks across a whole
   // pull request's worth of anchors in one call, which is the same defect as

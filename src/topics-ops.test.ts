@@ -304,3 +304,87 @@ test("an empty walkthrough is refused (R34)", async () => {
     assert.match(String((await topicWalkthroughSet(r.root, "fees", []) as { error?: string }).error), /walks nothing/);
   } finally { r.cleanup(); }
 });
+
+// ---------------------------------------------------------------------------
+// Review round 2026-10-05 §B: the map mark carries topic acceptances apart from PR ones
+// ---------------------------------------------------------------------------
+
+test("withdrawing in a newer walk leaves only the older walk's acceptance on the map (R8, F25)", async () => {
+  const r = await repo();
+  try {
+    const id = await r.ids();
+    ok(await topicDefine(r.root, { slug: "fees", title: "Fees", selector: { symbols: [id.calc] } }));
+    const w1 = ok(await topicWalkthroughSet(r.root, "fees", feat(ch("calc", id.calc))));
+    ok(await topicStepMark(r.root, "fees", w1.walk!, id.calc, { attestation: "signed" }));
+    const h2 = r.commit("src/fees.ts", FEES.replace("c * 2", "c * 3"));
+    const w2 = ok(await topicWalkthroughSet(r.root, "fees", feat(ch("calc", id.calc)), { whole: true }));
+    ok(await topicStepMark(r.root, "fees", w2.walk!, id.calc, { attestation: "signed" }));
+    assert.equal((await anchorMark(r.root, id.calc, { ref: h2 })).reviewed, true);
+    ok(await topicStepMark(r.root, "fees", w2.walk!, id.calc, { attestation: "signed", unmark: true }));
+    assert.equal((await anchorMark(r.root, id.calc, { ref: h2 })).reviewed, false, "walk 2's body is no longer accepted");
+  } finally { r.cleanup(); }
+});
+
+test("a topic withdrawal leaves a pull request's acceptance of the same symbol standing (R8)", async () => {
+  const r = await repo();
+  try {
+    const { markReviewedBatch } = await import("./reviews.js");
+    const id = await r.ids();
+    const h = r.head();
+    await markReviewedBatch(r.root, [id.calc], { level: "code", actor: "human", attestation: "signed", ref: h });
+    ok(await topicDefine(r.root, { slug: "fees", title: "Fees", selector: { symbols: [id.calc] } }));
+    const w = ok(await topicWalkthroughSet(r.root, "fees", feat(ch("calc", id.calc))));
+    ok(await topicStepMark(r.root, "fees", w.walk!, id.calc, { attestation: "signed" }));
+    ok(await topicStepMark(r.root, "fees", w.walk!, id.calc, { attestation: "signed", unmark: true }));
+    assert.equal((await anchorMark(r.root, id.calc, { ref: h })).reviewed, true, "the pull request's sign-off still stands");
+  } finally { r.cleanup(); }
+});
+
+test("a later walk's cover replaces an earlier walk's direct mark on the map (R8, F26)", async () => {
+  const r = await repo();
+  try {
+    const id = await r.ids();
+    ok(await topicDefine(r.root, { slug: "fees", title: "Fees", selector: { paths: ["src/fees.ts"] } }));
+    const w1 = ok(await topicWalkthroughSet(r.root, "fees", feat(ch("calc", id.calc), ch("rest", id.fees, id.round))));
+    ok(await topicStepMark(r.root, "fees", w1.walk!, id.calc, { attestation: "signed" }));
+    const h2 = r.commit("src/fees.ts", FEES.replace("c * 2", "c * 3"));
+    const w2 = ok(await topicWalkthroughSet(r.root, "fees", feat(ch("the class", id.fees)), { whole: true }));
+    ok(await topicStepMark(r.root, "fees", w2.walk!, id.fees, { attestation: "signed" }));
+    assert.equal((await anchorMark(r.root, id.calc, { ref: h2 })).reviewed, true, "walk 2's cover of calc is the standing one");
+  } finally { r.cleanup(); }
+});
+
+test("withdrawing a covered member directly ends its cover in that walk; its siblings stay covered (R10)", async () => {
+  const r = await repo();
+  try {
+    const id = await r.ids();
+    ok(await topicDefine(r.root, { slug: "fees", title: "Fees", selector: { paths: ["src/fees.ts"] } }));
+    const w = ok(await topicWalkthroughSet(r.root, "fees", feat(ch("the class", id.fees))));
+    ok(await topicStepMark(r.root, "fees", w.walk!, id.fees, { attestation: "signed" }));
+    ok(await topicStepMark(r.root, "fees", w.walk!, id.round, { attestation: "signed", unmark: true }));
+    const s = ok(await topicWalkthroughGet(r.root, "fees", w.walk!)).signoffs!;
+    assert.equal(s.symbols[id.round]?.signed, false);
+    assert.equal(s.symbols[id.calc]?.signed, true);
+    assert.equal((await anchorMark(r.root, id.round, { ref: r.head() })).reviewed, false);
+  } finally { r.cleanup(); }
+});
+
+test("the re-walk base is the latest walk with a sign-off still standing — not a viewed one, not a withdrawn one (R13, R14)", async () => {
+  const r = await repo();
+  try {
+    const id = await r.ids();
+    ok(await topicDefine(r.root, { slug: "fees", title: "Fees", selector: { paths: ["src/fees.ts"] } }));
+    const h1 = r.head();
+    const w1 = ok(await topicWalkthroughSet(r.root, "fees", feat(ch("all", id.fees))));
+    ok(await topicStepMark(r.root, "fees", w1.walk!, id.fees, { attestation: "signed" }));
+    const h2 = r.commit("src/fees.ts", FEES.replace("c * 2", "c * 3"));
+    const w2 = ok(await topicWalkthroughSet(r.root, "fees", feat(ch("all", id.fees)), { whole: true }));
+    ok(await topicStepMark(r.root, "fees", w2.walk!, id.fees, { attestation: "viewed" }));
+    r.commit("src/other.ts", "export function other() {\n  return 2;\n}\n");
+    assert.equal(ok(await topicPacket(r.root, "fees")).base, h1, "walk 2 was only viewed");
+    ok(await topicStepMark(r.root, "fees", w2.walk!, id.fees, { attestation: "signed" }));
+    assert.equal(ok(await topicPacket(r.root, "fees")).base, h2);
+    ok(await topicStepMark(r.root, "fees", w2.walk!, id.fees, { attestation: "signed", unmark: true }));
+    assert.equal(ok(await topicPacket(r.root, "fees")).base, h1, "walk 2's sign-off was withdrawn");
+  } finally { r.cleanup(); }
+});
