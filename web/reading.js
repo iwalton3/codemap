@@ -11,6 +11,7 @@
  * `src/import-cycles.test.ts`.
  */
 import { html, when, each, raw } from './vendor/vdx/framework.js';
+import { href, isErr } from './core.js';
 
 export const anchorUrl = (u, id) => `/u/${u}/anchor/${id}/`;
 
@@ -162,12 +163,14 @@ export async function raiseFinding(c, u, anchorId, line) {
   const key = findingKey(anchorId, line);
   const text = (c._fdrafts?.[key] || '').trim(); if (!text) return;
   const pr = c.props && c.props.params && c.props.params.pr;
+  // A host that is a review of its own (a topic walk) names its context; the PR page's is its number.
+  const ctx = c.findingContext ? c.findingContext() : pr ? { kind: 'pull_request', pr: String(pr) } : null;
   // What you type here IS the submitter-facing version: a finding raised in one line
   // while reading a diff is already the short form. The evidence half only diverges
   // once someone investigates, and it is editable in the findings list when it does.
-  const body = pr
-    ? { u, context: { kind: 'pull_request', pr: String(pr) }, targetKind: 'anchor', targetId: anchorId,
-        text, comment: text, ...(Number.isFinite(line) ? { line } : {}), ref: c.state?.prRef }
+  const body = ctx
+    ? { u, context: ctx, targetKind: 'anchor', targetId: anchorId,
+        text, comment: text, ...(Number.isFinite(line) ? { line } : {}), ...(pr ? { ref: c.state?.prRef } : {}) }
     : { u, context: { kind: 'drive_by', rationale: 'raised while reading this symbol' },
         title: text.split('\n')[0].slice(0, 120), text, anchors: [anchorId] };
   const res = await asJson(fetch('/api/defect', {
@@ -318,7 +321,7 @@ export const findingForm = (c, u, anchorId, line) => {
   if (!c._fdrafts) c._fdrafts = {};
   const key = findingKey(anchorId, line);
   const err = c.state.raiseErr && c.state.raiseErr.key === key ? c.state.raiseErr.error : null;
-  return html`<div class="rvaddf"><span class="rvfpin">${line ? '↳' + line : '✎'}</span><input class="rvftextin" placeholder="finding / action item — sign-off still allowed" value="${c._fdrafts[key] || ''}" on-input="${(e) => { c._fdrafts[key] = e.target.value; }}" on-keydown="${(e) => { if (e.key === 'Enter') raiseFinding(c, u, anchorId, line); else if (e.key === 'Escape') closeFindingForm(c); }}"><button title="${c.props && c.props.params && c.props.params.pr ? 'files a finding on this pull request' : 'files a bug — you are not in a pull request review, so this outlives the branch'}" on-click="${() => raiseFinding(c, u, anchorId, line)}">${c.props && c.props.params && c.props.params.pr ? 'raise' : 'file as bug'}</button><button class="ghost" on-click="${() => closeFindingForm(c)}">cancel</button>${when(err, () => html`<span class="rvferr">${err}</span>`)}</div>`;
+  return html`<div class="rvaddf"><span class="rvfpin">${line ? '↳' + line : '✎'}</span><input class="rvftextin" placeholder="finding / action item — sign-off still allowed" value="${c._fdrafts[key] || ''}" on-input="${(e) => { c._fdrafts[key] = e.target.value; }}" on-keydown="${(e) => { if (e.key === 'Enter') raiseFinding(c, u, anchorId, line); else if (e.key === 'Escape') closeFindingForm(c); }}"><button title="${c.findingContext ? 'files a finding on this review' : c.props && c.props.params && c.props.params.pr ? 'files a finding on this pull request' : 'files a bug — you are not in a pull request review, so this outlives the branch'}" on-click="${() => raiseFinding(c, u, anchorId, line)}">${c.findingContext || (c.props && c.props.params && c.props.params.pr) ? 'raise' : 'file as bug'}</button><button class="ghost" on-click="${() => closeFindingForm(c)}">cancel</button>${when(err, () => html`<span class="rvferr">${err}</span>`)}</div>`;
 };
 
 /**
@@ -514,3 +517,128 @@ export function readingOrder(story, steps) {
 export const CHANGE_COLOR = { added: '#7ee787', changed: '#f0a35e', removed: '#f85149' };
 
 export const LAYER_NAME = ['command', 'handler', 'event', 'aggregate', 'read-model', 'job'];
+
+// --- a walkthrough, read --------------------------------------------------------
+// The PR page and the topic page render a walkthrough through these, over a HOST that
+// supplies: `state.code` / `state.pending` / `state.showDiff` / `state.open` /
+// `state.chapterBusy` keyed by anchor or chapter id, and `stepsByAnchor()`, `stepSigned(step)`,
+// `coverLabel(step)`, `openStep(step)`, `markStep(step, attestation, state, actor, via)`,
+// `toggleChapter(id)`, `markChapter(id, attestation, unmark)`. Optional: `membersOf(id)`, the
+// steps a cited container covers, rendered under it (a topic's class covers its members).
+
+/** Whether a step's open pane shows the diff rather than the whole source. */
+export function showsDiff(c, step) {
+  const code = /** @type {any} */ (c.state.code[step.anchorId]);
+  if (!code || typeof code.error === 'string' || !code.lines || !code.lines.length) return false;
+  const override = c.state.showDiff[step.anchorId];
+  return override === undefined ? step.change === 'changed' : !!override;
+}
+
+// A removed symbol's source is the body the change DELETES — `head` is null for it.
+// Falling through to `head` rendered "(source unavailable)" over a step that
+// still carried a sign-off button, i.e. an attestation to code never shown.
+export function sourceOf(code) {
+  return code.head != null
+    ? { text: code.head, startLine: code.startLine }
+    : { text: code.base, startLine: code.baseStartLine };
+}
+
+export function stepView(c, u, step) {
+  const held = c.state.code[step.anchorId];
+  // One narrowed binding, rather than the same union unpicked at each of the
+  // fourteen reads below.
+  const code = isErr(held) ? null : held;
+  const finds = openFindingCount(step.annotations);
+  const src = code ? sourceOf(code) : null;
+  return html`<div class="prstep ${c.stepSigned(step) ? 'done' : ''}" id="step-${step.anchorId}">
+    <div class="prsthead" on-click="${() => c.openStep(step)}">
+      <span class="prlayer" title="position on the command → read-model spine">${LAYER_NAME[step.layer] || step.kind || 'code'}</span>
+      ${when(!!step.change, () => html`<span class="prchg" style="color:${CHANGE_COLOR[step.change] || '#8b949e'}">${step.change}</span>`)}
+      ${sevDot(step.severity)}
+      <code class="prsig">${step.signature || step.symbol}</code>
+      <span class="dim prfile">${step.file.split('/').pop()}</span>
+      ${when(finds, () => html`<span class="prfind" title="${finds} open finding(s)">⚑${finds}</span>`)}
+      ${when(!!step.moved, () => html`<span class="warn" title="main's tip has changed this symbol since this walkthrough's commit">code moved on main</span>`)}
+      <span class="prrev" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); }}">${reviewRowEl({ code: step.review || { state: step.reviewed ? 'reviewed' : 'unreviewed' } }, { code: step.viewedMark || { state: step.viewed ? 'reviewed' : 'unreviewed' } }, (att, st, actor, via) => c.markStep(step, att, st, actor, via), 'code', c.coverLabel(step))}</span>
+    </div>
+    ${when(c.state.pending[step.anchorId], () => html`<div class="dim prload">loading source…</div>`)}
+    ${when(!!code, () => html`<div class="prsbody">
+      <div class="prstools">
+        <span class="dim">${code.file}</span>
+        ${when(src && src.text != null && code.lines && code.lines.length, () => html`<button class="ghost" on-click="${() => { c.state.showDiff = { ...c.state.showDiff, [step.anchorId]: !showsDiff(c, step) }; }}">${showsDiff(c, step) ? 'show full source' : 'show diff'}</button>`)}
+        ${when(code.lineEndingsChanged, () => html`<span class="crlf" title="one side uses CRLF and the other LF. The diff below is normalised so a line-ending flip does not read as a full rewrite — but the change is real and will show in the file diff on GitHub.">⚠ line endings changed</span>`)}
+        <a class="viewlink" title="open the full anchor page" href="${href(anchorUrl(u, step.anchorId))}">↗</a>
+      </div>
+      ${when(showsDiff(c, step),
+        () => diffReviewLines(c, u, step.anchorId, code.lines, code.lang, code.startLine, code.annotations, code.sharedNotes, step.findings),
+        () => codeReviewLines(c, u, step.anchorId, src.text, code.lang, src.startLine, code.annotations, code.sharedNotes, step.findings))}
+    </div>`)}
+    ${when(isErr(held), () => html`<div class="prsbody dim">${isErr(held) ? held.error : ''}</div>`)}
+  </div>`;
+}
+
+function walkBlockView(c, u, block, steps, missingTip) {
+  if (block.kind === 'prose') return html`<div class="wkprose"><md-content text="${block.text}" untrusted="${true}"></md-content></div>`;
+  const step = steps.get(block.anchorId);
+  if (!step) return html`<div class="wkprose warn">${missingTip(block.anchorId)}</div>`;
+  const members = c.membersOf ? c.membersOf(block.anchorId) : [];
+  if (!members.length) return stepView(c, u, step);
+  return html`${stepView(c, u, step)}<div class="wkmembers" title="covered by ${step.symbol}: signing it signs these">${each(members, (m) => stepView(c, u, m), (m) => m.anchorId)}</div>`;
+}
+
+/** Every symbol a chapter accounts for: the ones it cites, and what its cited containers cover. */
+const chapterSteps = (c, ch, steps) => {
+  const cited = ch.blocks.filter((b) => b.kind === 'symbol').map((b) => steps.get(b.anchorId)).filter(Boolean);
+  return [...cited, ...(c.membersOf ? cited.flatMap((s) => c.membersOf(s.anchorId)) : [])];
+};
+
+export function walkChapterView(c, u, ch, steps, stale, movedOnMain, tips) {
+  const mine = chapterSteps(c, ch, steps);
+  const signed = mine.filter((s) => c.stepSigned(s)).length;
+  const viewed = mine.filter((s) => s.viewed).length;
+  const busy = !!c.state.chapterBusy[ch.id];
+  const open = c.state.open[ch.id] !== false;          // chapters start open — this is the reading order
+  return html`<section class="prchapter wkchapter ${stale ? 'stale' : ''}">
+    <div class="prchead" on-click="${() => c.toggleChapter(ch.id)}">
+      <span class="prtwisty">${open ? '▾' : '▸'}</span>
+      <b>${ch.title}</b>
+      <span class="dim">${signed}/${mine.length} signed${viewed ? ` · ${viewed} viewed` : ''}</span>
+      ${when(stale, () => html`<span class="warn" title="the code this chapter walks has changed since it was written — it needs re-walking">stale</span>`)}
+      ${when(movedOnMain, () => html`<span class="warn" title="${tips.moved}">code moved on main</span>`)}
+      <span class="wkacts" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); }}">
+        <button disabled="${busy}" title="mark every symbol in this chapter viewed — a shortcut, the same per-symbol marks underneath" on-click="${() => c.markChapter(ch.id, 'viewed', viewed === mine.length)}">${viewed === mine.length && mine.length ? 'unview all' : 'view all'}</button>
+        <button class="on" disabled="${busy}" title="sign off every symbol in this chapter" on-click="${() => c.markChapter(ch.id, 'signed', signed === mine.length)}">${signed === mine.length && mine.length ? 'unsign all' : 'sign all'}</button>
+      </span>
+    </div>
+    ${when(open, () => html`<div class="prcbody">${each(ch.blocks, (b, i) => walkBlockView(c, u, b, steps, tips.missing), (b, i) => b.kind === 'symbol' ? 's' + b.anchorId : 'p' + i)}</div>`)}
+  </section>`;
+}
+
+/**
+ * The features, their chapters, and what the walkthrough leaves unaccounted for.
+ * `opts.stale` / `opts.moved` are chapter-id sets; `opts.uncovered` anchor ids; `opts.tips` the
+ * host's own words for what moved, what is unstated, what is unaccounted for and what went missing.
+ */
+export function walkFeaturesView(c, u, w, opts) {
+  const steps = c.stepsByAnchor();
+  const uncovered = opts.uncovered || [];
+  return html`
+    ${each(w.features, f => html`<section class="wkfeature">
+      <div class="wkfhead">
+        <b>${f.title}</b>
+        ${when(f.unstated, () => html`<span class="wkunstated" title="${opts.tips.unstated}">not in the spec</span>`)}
+        <span class="dim">${f.chapters.length} chapter(s)</span>
+      </div>
+      <div class="wkfsummary"><md-content text="${f.summary}" untrusted="${true}"></md-content></div>
+      ${each(f.chapters, ch => walkChapterView(c, u, ch, steps, opts.stale.has(ch.id), opts.moved.has(ch.id), opts.tips), ch => ch.id)}
+    </section>`, f => f.id)}
+    ${when(uncovered.length, () => html`<section class="prchapter wkuncovered">
+      <div class="prchead" on-click="${() => c.toggleChapter(UNCOVERED_ID)}">
+        <span class="prtwisty">${c.state.open[UNCOVERED_ID] ? '▾' : '▸'}</span>
+        <b>Not in the walkthrough</b>
+        <span class="dim">${uncovered.length} symbol(s)</span>
+        <span class="warn" title="${opts.tips.uncovered}">unaccounted for</span>
+      </div>
+      ${when(c.state.open[UNCOVERED_ID], () => html`<div class="prcbody">${each(uncovered.filter(id => steps.get(id)), id => stepView(c, u, steps.get(id)), id => id)}</div>`)}
+    </section>`)}`;
+}

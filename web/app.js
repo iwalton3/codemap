@@ -32,7 +32,7 @@ import { decisionsUrl } from './decisions.js';
 import { repairsUrl } from './repairs.js';
 import { topicsUrl } from './topics.js';
 import {
-  anchorUrl, SEV_COLOR, isUnverifiable, unmarkOn, VIA_TIP, notSignedNote, sevDot, VIA_MARK, whereFrom, markBtnEl, reviewRowEl, postRevise, postWithdraw, postResolveAnnotation, findingKey, openFindingForm, closeFindingForm, ANNO_ICON, openFindingCount, afterAnnotationWrite, asJson, raiseFinding, toggleFinding, postAssign, assignFinding, reviseFinding, withdrawFinding, postEscalate, escalateFinding, isAgentFinding, OUTCOME_ICON, findingPinEl, REMEDIATION_LABEL_APP, PENDING_LABEL_APP, setFindingState, teamNoteEl, findingItemEl, findingForm, pinTeamNotes, codeReviewLines, highlight, highlightLines, diffCodeRows, diffReviewLines, REVEAL_PAD, REVEAL_MIN_READ, revealStep, UNCOVERED_ID, readingOrder, CHANGE_COLOR, LAYER_NAME,
+  anchorUrl, SEV_COLOR, isUnverifiable, unmarkOn, VIA_TIP, notSignedNote, sevDot, VIA_MARK, whereFrom, markBtnEl, reviewRowEl, postRevise, postWithdraw, postResolveAnnotation, findingKey, openFindingForm, closeFindingForm, ANNO_ICON, openFindingCount, afterAnnotationWrite, asJson, raiseFinding, toggleFinding, postAssign, assignFinding, reviseFinding, withdrawFinding, postEscalate, escalateFinding, isAgentFinding, OUTCOME_ICON, findingPinEl, REMEDIATION_LABEL_APP, PENDING_LABEL_APP, setFindingState, teamNoteEl, findingItemEl, findingForm, pinTeamNotes, codeReviewLines, highlight, highlightLines, diffCodeRows, diffReviewLines, REVEAL_PAD, REVEAL_MIN_READ, revealStep, UNCOVERED_ID, readingOrder, CHANGE_COLOR, LAYER_NAME, stepView, walkFeaturesView,
 } from './reading.js';
 
 import {
@@ -2977,6 +2977,14 @@ if (typeof window !== 'undefined') window.__revealStep = revealStep;
 if (typeof window !== 'undefined') window.__readingOrder = readingOrder;
 
 
+/** The PR page's words for the shared walkthrough view (`reading.js` `walkFeaturesView`). */
+const PR_WALK_TIPS = {
+  moved: 'this pull request is merged, and main has since changed code this chapter walks — what was signed here is no longer what main runs',
+  unstated: "not part of this pull request's stated purpose — a drive-by the agent found and named",
+  uncovered: 'nothing here has been explained — this is what you would end up reading on GitHub, unviewed and without context',
+  missing: (id) => `a symbol this walkthrough cites is no longer in the pull request (${id})`,
+};
+
 /** @extends {Component<PageProps, PrStoryState>} */
 class PrStoryPage extends Component {
   static props = { params: {}, query: {} };
@@ -3288,64 +3296,18 @@ class PrStoryPage extends Component {
     for (const [id, mark] of Object.entries(res.marks || {})) this.patchStep(id, mark);
   }
 
-  walkBlockEl(u, block, steps) {
-    if (block.kind === 'prose') return html`<div class="wkprose"><md-content text="${block.text}" untrusted="${true}"></md-content></div>`;
-    const step = steps.get(block.anchorId);
-    if (!step) return html`<div class="wkprose warn">a symbol this walkthrough cites is no longer in the pull request (${block.anchorId})</div>`;
-    return this.stepEl(u, step);
-  }
-
-  walkChapterEl(u, ch, steps, stale, movedOnMain) {
-    const ids = ch.blocks.filter(b => b.kind === 'symbol').map(b => b.anchorId);
-    const mine = ids.map(id => steps.get(id)).filter(Boolean);
-    const signed = mine.filter(s => this.stepSigned(s)).length;
-    const viewed = mine.filter(s => s.viewed).length;
-    const busy = !!this.state.chapterBusy[ch.id];
-    const open = this.state.open[ch.id] !== false;          // chapters start open — this is the reading order
-    return html`<section class="prchapter wkchapter ${stale ? 'stale' : ''}">
-      <div class="prchead" on-click="${() => this.toggleChapter(ch.id)}">
-        <span class="prtwisty">${open ? '▾' : '▸'}</span>
-        <b>${ch.title}</b>
-        <span class="dim">${signed}/${mine.length} signed${viewed ? ` · ${viewed} viewed` : ''}</span>
-        ${when(stale, () => html`<span class="warn" title="the code this chapter walks has changed since it was written — it needs re-walking">stale</span>`)}
-        ${when(movedOnMain, () => html`<span class="warn" title="this pull request is merged, and main has since changed code this chapter walks — what was signed here is no longer what main runs">code moved on main</span>`)}
-        <span class="wkacts" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); }}">
-          <button disabled="${busy}" title="mark every symbol in this chapter viewed — a shortcut, the same per-symbol marks underneath" on-click="${() => this.markChapter(ch.id, 'viewed', viewed === mine.length)}">${viewed === mine.length && mine.length ? 'unview all' : 'view all'}</button>
-          <button class="on" disabled="${busy}" title="sign off every symbol in this chapter" on-click="${() => this.markChapter(ch.id, 'signed', signed === mine.length)}">${signed === mine.length && mine.length ? 'unsign all' : 'sign all'}</button>
-        </span>
-      </div>
-      ${when(open, () => html`<div class="prcbody">${each(ch.blocks, (b, i) => this.walkBlockEl(u, b, steps), (b, i) => b.kind === 'symbol' ? 's' + b.anchorId : 'p' + i)}</div>`)}
-    </section>`;
-  }
-
   walkthroughEl(u, st) {
     const w = st.walkthrough;
-    const steps = this.stepsByAnchor();
-    const stale = new Set(w.stale || []);
-    const moved = new Set((w.movedOnMain && w.movedOnMain.chapters) || []);
-    const uncovered = (w.coverage && w.coverage.uncovered) || [];
     return html`
       ${when(!!w.sharedBy, () => html`<div class="wkbanner wkteam">Read from <b>${w.sharedBy}</b>'s walkthrough of this pull request, from the team's sidecar — not one written here.${when((w.otherReadings || []).length > 0, () => html` <span class="dim">${(w.otherReadings || []).length} other reading(s): ${(w.otherReadings || []).map(o => o.mine ? 'yours' : o.by).join(', ')}.</span>`)}</div>`)}
       ${when(!w.sharedBy && (w.otherReadings || []).length > 0, () => html`<div class="wkbanner dim">Your own walkthrough. ${(w.otherReadings || []).length} other reading(s) of this pull request: ${(w.otherReadings || []).map(o => o.by).join(', ')}.</div>`)}
       ${when(w.headMoved, () => html`<div class="warn wkbanner">This walkthrough was written against a different commit (${String(w.head).slice(0, 12)}). Every chapter is suspect — ask an agent to re-walk the pull request.</div>`)}
-      ${each(w.features, f => html`<section class="wkfeature">
-        <div class="wkfhead">
-          <b>${f.title}</b>
-          ${when(f.unstated, () => html`<span class="wkunstated" title="not part of this pull request's stated purpose — a drive-by the agent found and named">not in the spec</span>`)}
-          <span class="dim">${f.chapters.length} chapter(s)</span>
-        </div>
-        <div class="wkfsummary"><md-content text="${f.summary}" untrusted="${true}"></md-content></div>
-        ${each(f.chapters, c => this.walkChapterEl(u, c, steps, stale.has(c.id), moved.has(c.id)), c => c.id)}
-      </section>`, f => f.id)}
-      ${when(uncovered.length, () => html`<section class="prchapter wkuncovered">
-        <div class="prchead" on-click="${() => this.toggleChapter(UNCOVERED_ID)}">
-          <span class="prtwisty">${this.state.open[UNCOVERED_ID] ? '▾' : '▸'}</span>
-          <b>Not in the walkthrough</b>
-          <span class="dim">${uncovered.length} symbol(s)</span>
-          <span class="warn" title="nothing here has been explained — this is what you would end up reading on GitHub, unviewed and without context">unaccounted for</span>
-        </div>
-        ${when(this.state.open[UNCOVERED_ID], () => html`<div class="prcbody">${each(uncovered.filter(id => steps.get(id)), id => this.stepEl(u, steps.get(id)), id => id)}</div>`)}
-      </section>`)}`;
+      ${walkFeaturesView(this, u, w, {
+        stale: new Set(w.stale || []),
+        moved: new Set((w.movedOnMain && w.movedOnMain.chapters) || []),
+        uncovered: (w.coverage && w.coverage.uncovered) || [],
+        tips: PR_WALK_TIPS,
+      })}`;
   }
 
   walkOrder() { return readingOrder(this.state.story, this.stepsByAnchor()); }
@@ -3991,54 +3953,7 @@ class PrStoryPage extends Component {
   // A changed symbol opens on its diff — the delta is the review, and the rest of
   // the body is context the reviewer did not ask for. Added and removed symbols
   // have no meaningful "before", so those open on the source itself.
-  showsDiff(step) {
-    const code = this.state.code[step.anchorId];
-    if (!code || isErr(code) || !code.lines || !code.lines.length) return false;
-    const override = this.state.showDiff[step.anchorId];
-    return override === undefined ? step.change === 'changed' : !!override;
-  }
-
-  // A removed symbol's source is the body the PR DELETES — `head` is null for it.
-  // Falling through to `head` rendered "(source unavailable)" over a step that
-  // still carried a sign-off button, i.e. an attestation to code never shown.
-  sourceOf(code) {
-    return code.head != null
-      ? { text: code.head, startLine: code.startLine }
-      : { text: code.base, startLine: code.baseStartLine };
-  }
-
-  stepEl(u, step) {
-    const held = this.state.code[step.anchorId];
-    // One narrowed binding, rather than the same union unpicked at each of the
-    // fourteen reads below.
-    const code = isErr(held) ? null : held;
-    const finds = openFindingCount(step.annotations);
-    const src = code ? this.sourceOf(code) : null;
-    return html`<div class="prstep ${this.stepSigned(step) ? 'done' : ''}" id="step-${step.anchorId}">
-      <div class="prsthead" on-click="${() => this.openStep(step)}">
-        <span class="prlayer" title="position on the command → read-model spine">${LAYER_NAME[step.layer] || 'code'}</span>
-        <span class="prchg" style="color:${CHANGE_COLOR[step.change] || '#8b949e'}">${step.change}</span>
-        ${sevDot(step.severity)}
-        <code class="prsig">${step.signature || step.symbol}</code>
-        <span class="dim prfile">${step.file.split('/').pop()}</span>
-        ${when(finds, () => html`<span class="prfind" title="${finds} open finding(s)">⚑${finds}</span>`)}
-        <span class="prrev" on-click="${(e) => { if (e.stopPropagation) e.stopPropagation(); }}">${reviewRowEl({ code: step.review || { state: step.reviewed ? 'reviewed' : 'unreviewed' } }, { code: step.viewedMark || { state: step.viewed ? 'reviewed' : 'unreviewed' } }, (att, st, actor, via) => this.markStep(step, att, st, actor, via), 'code', this.coverLabel(step))}</span>
-      </div>
-      ${when(this.state.pending[step.anchorId], () => html`<div class="dim prload">loading source…</div>`)}
-      ${when(!!code, () => html`<div class="prsbody">
-        <div class="prstools">
-          <span class="dim">${code.file}</span>
-          ${when(src && src.text != null && code.lines && code.lines.length, () => html`<button class="ghost" on-click="${() => { this.state.showDiff = { ...this.state.showDiff, [step.anchorId]: !this.showsDiff(step) }; }}">${this.showsDiff(step) ? 'show full source' : 'show diff'}</button>`)}
-          ${when(code.lineEndingsChanged, () => html`<span class="crlf" title="one side uses CRLF and the other LF. The diff below is normalised so a line-ending flip does not read as a full rewrite — but the change is real and will show in the file diff on GitHub.">⚠ line endings changed</span>`)}
-          <a class="viewlink" title="open the full anchor page" href="${href(anchorUrl(u, step.anchorId))}">↗</a>
-        </div>
-        ${when(this.showsDiff(step),
-          () => diffReviewLines(this, u, step.anchorId, code.lines, code.lang, code.startLine, code.annotations, code.sharedNotes, step.findings),
-          () => codeReviewLines(this, u, step.anchorId, src.text, code.lang, src.startLine, code.annotations, code.sharedNotes, step.findings))}
-      </div>`)}
-      ${when(isErr(held), () => html`<div class="prsbody dim">${isErr(held) ? held.error : ''}</div>`)}
-    </div>`;
-  }
+  stepEl(u, step) { return stepView(this, u, step); }
 
   chapterEl(u, ch) {
     const open = !!this.state.open[ch.id];
