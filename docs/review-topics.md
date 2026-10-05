@@ -3,7 +3,8 @@
 > **Kind: current reference — NORMATIVE for review topics.** Proposed 2026-10-02 against
 > `main` at `6859b46` and built the same day (plan `2026-10-02-review-topics`). §2, §6 and §8
 > are the owner's rulings, quoted; §7 is a measurement; §9 is what the build added beyond the
-> proposal and what it deliberately did not do.
+> proposal and what it deliberately did not do. Revised after the review round of 2026-10-05
+> (`.git/triage/2026-10-05-review-topics/`): §10 lists what it changed and where.
 
 ## 1. Why
 
@@ -67,11 +68,17 @@ as a union then filtered:
 | `paths: [glob…]` | every anchor in a matching file |
 | `symbols: [anchorId…]` | those anchors and every anchor contained in them (byte span, as `prContainment`) |
 | `nodes: [nodeId…]` | the anchors a doc or flow node cites |
-| `base: <ref>` (optional) | intersect with what changed between `base` and the head — the "merged range" form, deleted symbols included |
+| `base: <ref>` (optional) | intersect with what changed between `base` and the head — the "merged range" form, deleted symbols included. Pinned to its full sha when the topic is defined or revised: a branch or tag moves, a short sha turns ambiguous, and either would make one topic resolve to different sets (owner, R20) |
 
 Then the existing lane policy: `[tests]`, excluded and generated paths are counted apart
-(`WalkCoverage.outsideQueue`), never in the denominator. A `symbols` entry the head no longer
-has is reported as `unresolved`, never dropped.
+(`WalkCoverage.outsideQueue`), never in the denominator. An entry that names nothing — a
+`paths` glob no file matches, a `symbols` id the head no longer has, a node unknown — is
+reported as `unresolved` with its kind, never dropped. A `!negation` path names nothing of its
+own and is never reported.
+
+The `.codemapignore` and the node citations are read **as of the walked commit**
+(`loadIgnoreAt`, and docs at that commit), so one head resolves to one set wherever it is walked;
+lanes stay the working tree's, as on the PR path (owner, R19).
 
 A snapshot **copies** the selector it resolved and the resolved id set, so revising a
 topic's selector never rewrites what an old walkthrough was about.
@@ -94,7 +101,20 @@ March after May's walk re-signs the same code. The ordinary per-anchor mark
 (`markReviewedBatch`, `ref` = the head, `base` = the base when there is one) is re-projected
 from that history — the latest walk whose latest act on the symbol is a sign-off — so the
 map's review state and staleness work as today, and withdrawing in May leaves March's
-sign-off standing on the map. The cover (`coveredBy`) is bounded by the topic's resolved set where the PR path bounds it
+sign-off standing on the map. A topic's acceptances carry `source: "topic:<walk>"` on the mark
+and the re-projection replaces only those, so a topic act never touches a pull request's
+acceptance of the same symbol (owner, R8: "Tag acceptances by source"); the accepted residual is
+that a row shared by both keeps last-writer `coveredBy`, `at` and witnesses.
+
+A symbol's direct acts and each container's cover are separate tracks: withdrawing a container
+takes back its cover, never a sign-off made on the member itself. And withdrawing a covered
+member directly ends its cover in that walk too (owner, R10, as the PR page does), so the
+member reads unsigned while its siblings stay covered.
+
+"Latest" is MINT order — walk ids are event ids, which sort by time. A walk staged, then raced
+and replayed after another walk landed, sits AFTER it in the log but BEFORE it in id order, so
+the earlier-minted one is not the latest even though it landed last (owner, R12: keep mint
+order and write the case down). The cover (`coveredBy`) is bounded by the topic's resolved set where the PR path bounds it
 by what the PR touches — same reason: one click must not become a claim over code the
 reviewer was never shown as part of this review.
 
@@ -109,8 +129,13 @@ A snapshot is judged against the live trunk, not only its own head: re-resolving
 selector at the tip shows chapters whose code moved (`staleChapters` against trunk hashes)
 and symbols the selector matches now that the snapshot never saw. Both are the prompt to
 re-walk. A re-walk is a NEW snapshot; the old one stays readable as history. Its `base`
-defaults to the head of the latest walkthrough of the topic in which THIS MACHINE'S PERSON
-signed anything — an agent writes, the person signs — with the whole selector on request.
+defaults to the head of the latest walkthrough of the topic in which THIS MACHINE'S PERSON has
+a sign-off still standing — not a `viewed` mark, and not a walk whose every sign-off was
+withdrawn (§8.3) — an agent writes, the person signs — with the whole selector on request.
+
+"Main has moved" is shown only for a walk whose head is on main: a walk of a side branch's
+code would otherwise report the branch's own changes as main's (owner, R16: "No indicator until
+it is on main").
 
 ### 3.5 Findings
 
@@ -131,9 +156,11 @@ checks such as `repair-lifecycle.ts:91`); no count is given, because two greps d
 the sweep test is the authority. Most fall through to "not a PR, not a branch",
 which for a topic is usually right — `repairSourceBranch` returning no branch means "compare
 against the default branch", which is exactly a topic's case. Usually is not always, so
-`src/key-kind-sweep.test.ts` finds the switches (src and web, counted per file) and each one
-either handles `topic:<slug>` or carries the reason falling through is right. A new switch,
-or a new file with one, fails it.
+`src/key-kind-sweep.test.ts` finds the switches (src and web) and judges each enclosing
+FUNCTION, through the vendored grammar: that function either handles `topic:<slug>` or carries
+the reason falling through is right. A web route built as `/u/…/pr/${…}` counts as a switch.
+A new switch fails it. Per function, not per file: a file-wide check passed while one function
+in a file with a topic arm elsewhere dropped the topic.
 
 ## 4. Storage and the sidecar
 
@@ -142,10 +169,23 @@ or a new file with one, fails it.
   because findings cite the key (the `withdraw_spec` lesson in `requirements-architecture.md`).
 - **Snapshots travel.** Their own family, `topic-walkthrough/<universe>/t-<hex>`, kind
   `topic.walkthrough.published` — not `walkthrough/`, whose door and fold are registered by
-  prefix and would claim them. Each carries the topic key, head, base, copied selector and
-  resolved set. A topic walkthrough is an immutable record whose id is its publishing event's,
+  prefix and would claim them. Each carries the topic key, head, base, copied selector,
+  resolved set, and `covers`: what each cited container covers in the set, witnessed at the
+  head, so a chapter citing only a class reads "moved" when one of its members changes (a
+  class's own hash is its shell). A member some chapter cites on its own is that chapter's, not
+  the container's. A topic walkthrough is an immutable record whose id is its publishing event's,
   never replaced: its sign-off history (§3.3) hangs off that id, so replacing one would orphan
   it. The PR fold keeps its one-per-author rule.
+- **What the folds refuse** — at the door and on read, one rule at both ends: a define of a
+  retired slug, even with identical bytes (while the topic stands, identical bytes are one act
+  seen twice); a revision without `was` for every field it changes; a walkthrough that cites
+  outside its resolved set, walks a symbol in two chapters, has an empty chapter, cites a
+  symbol without witnessing it, or walks nothing; one filed outside a
+  `topic-walkthrough/<universe>/t-<hex>` scope; and a created finding whose `topic` or `branch`
+  field disagrees with its scope kind (a pull-request scope carries neither; a topic scope its
+  `topic`; a branch scope its `branch`, hash checked). All were free before any topic event was
+  on a real log; the last was measured clean on the production sidecar first (owner, R26).
+  The PR walkthrough door is NOT tightened alike: it has events on real logs.
 - New families register kinds and doors (`registerKinds`, `registerDoor`). Teaching folds new
   events costs a **`MATERIALIZER_VERSION` bump (55 → 56)** for the reason `finding-backlog.md`
   gives: a teammate a day behind folds the new kind into nothing, upgrades, and is served the
@@ -164,7 +204,7 @@ each op, and why one is absent.
 |---|---|
 | ops | `src/ops/topics.ts` over the pure `src/topic-selector.ts` and `src/walkthrough.ts` (`walkCoverage` takes an optional containment map; `movedSince`) |
 | MCP | `topic` (define / revise / retire / list), `topic_packet` (resolved set + source, as `pr_packet`), `topic_walkthrough` (write, carrying the walking contract), `topic_walkthrough_get`; `report_defect` takes `context: {kind:"topic", topic, walk?}` |
-| web | `/#/u/:u/topics/` and `/#/u/:u/topic/:slug/?walk=<id>` (`web/topics.js`): selector and definer, snapshot picker, the three indicators, per-symbol and per-chapter sign-off, the topic's findings. Its own page, not the PR renderer: that one is built around the PR story's steps and diffs |
+| web | `/#/u/:u/topics/` and `/#/u/:u/topic/:slug/?walk=<id>` (`web/topics.js`): selector and definer, snapshot picker, the indicators, progress, and the walkthrough read through the PR page's own views — `web/reading.js` (`walkFeaturesView`, `stepView`, the code and diff panes with line numbers and inline findings), shared by both pages, with each page as the views' host. A cited container's members show under it; findings filed on a line are topic findings (`findingContext`) |
 | CLI | `codemap topic list\|define\|revise\|retire\|walk\|show` |
 
 **Signing is web-only**, as PR sign-off is: there is no MCP tool for it, which keeps "hand
@@ -223,6 +263,9 @@ What follows:
    enough to be shared later.
 2. **A re-walk defaults to the delta since the latest walkthrough you signed in**, the whole
    selector on request (§3.4).
+3. **"Signed in" means a sign-off still standing** (owner, 2026-10-05, R14): "At least one
+   sign-off still standing." A walk whose sign-offs were all withdrawn is not the delta base,
+   and neither is one that was only viewed (R13).
 
 ## 9. As built (2026-10-02)
 
@@ -231,26 +274,42 @@ What follows:
   commit on jellyfin, cached after. A snapshot copies the selector and the resolved set
   (`ids`, `outside`, `unresolved`), so it never changes meaning when the topic is revised.
 - **The re-walk delta.** `base` defaults to the head of the latest walkthrough of the topic in
-  which this machine's person (`resolveActor().principal`) has a sign-off row — never "the
-  caller": an agent writes and never signs. For a RANGE topic the selector's own `base` still
+  which this machine's person (`resolveActor().principal`) has a `signed` sign-off still
+  standing (§8.3) — never "the caller": an agent writes and never signs. For a RANGE topic the selector's own `base` still
   bounds the set; the delta narrows it. `whole: true` drops the default.
 - **Sign-off history** is the local `walk_signoffs` table, append-only: walk, target (symbol or
   chapter), attestation, signed or withdrawn, the body hash at the walk's head, the walk's head
   and base, the actor, `covered_by`. The per-anchor review mark is RE-PROJECTED from it after
   every act: the standing sign-off is the latest walk whose latest act on the symbol is a
-  sign-off, written at that walk's head. **Known limit, not fixed:** the mark is one row per
-  reviewer and shared with PR sign-off, so a topic withdrawal can clear a mark a PR walkthrough
-  wrote for the same symbol.
+  sign-off, written at that walk's head, replacing only the mark's `topic:`-tagged acceptances
+  (§3.3).
 - **New findings on a retired or undefined topic are refused at the door** (a cross-scope
   reference, checked against the log before the event); a retired topic's existing findings
   keep resolving under its key. The same holds for new walkthroughs.
 - **Two changes reached the PR side** (owner took both into scope): a merged pull request's
   walkthrough reports `movedOnMain` — `movedSince` against main's tip, null for an unlanded PR,
-  whose every changed symbol differs from main by definition — and the PR page marks the
+  whose every changed symbol differs from main by definition. MERGED alone is not "landed": a
+  stacked PR merges into its base, so its merge commit must reach the trunk (owner, R17;
+  `repair-lifecycle.ts`'s rule), here and in the finding backlog's `landingOf` — and the PR page marks the
   chapter; and a sync or pull reports `pushBlocked` from `pushGate`, which the status bar shows,
   closing the §7 aside.
 - **Checks:** `topic-selector.test.ts` (the pure model), `shared-topics.test.ts` (the folds, run
   on hand-built events and through the door), `topics-ops.test.ts` (ops end to end, sign-off
   history, the delta default, topic findings), `key-kind-sweep.test.ts`, `topic-reach.test.ts`,
-  `sync-push-gate.test.ts`, and `e2e/topic.e2e.ts` / `e2e/topic-ui.e2e.ts` (a range topic over
-  the merged jellyfin fixture PR equals its code lane; the page signs and reads back per walk).
+  `sync-push-gate.test.ts`, `mcp-snapshot-lock.test.ts`, and `e2e/topic.e2e.ts` /
+  `e2e/topic-ui.e2e.ts` (a range topic over the merged jellyfin fixture PR equals its code lane;
+  the page signs and reads back per walk; prose is untrusted) / `e2e/topic-parity.e2e.ts` (one
+  change as a PR and as a range topic, every reading feature exercised on both pages, each
+  screenshotted — set `CODEMAP_E2E_SHOTS` to keep them).
+
+## 10. The review round of 2026-10-05
+
+Record: `.git/triage/2026-10-05-review-topics/` (`plan.md`, `owner.md`). Where each change is
+described above: the fold refusals (§4), `covers` (§4), unresolved paths, the pinned base and
+commit-coupled resolution (§3.1), acceptances tagged by source, direct withdrawal of a covered
+member and mint order (§3.3), the standing delta base and "main has moved" off main (§3.4,
+§8.3), MERGED as landed (§9), the per-function sweep (§3.5), and the shared reading views (§5).
+Also: read tools that can build a snapshot (`diff`, `diff_doc`, `pr_walkthrough_get`,
+`finding_backlog`, and `context` / `search` / `get_anchor` / `get_node` given `at`) run under
+the universe lock on MCP; and `codemap sync` prints `PUSHES BLOCKED` when a pull armed the gate,
+which the web status bar now takes from Sync now as well as from the background pull.

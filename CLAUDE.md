@@ -190,8 +190,10 @@ src/analyzers/*      OPT-IN framework plugins (Marten) — see the caveat below
 
 ### The web app is typechecked in place
 
-It is three modules: `core.js` (fetch, nav, page frame — imports NEITHER of the
-others), `app.js` (the pages and the route table) and `shared.js`. `core.js` exists
+Its spine is `core.js` (fetch, nav, page frame — imports NO page), `app.js` (the pages
+and the route table) and page modules beside it (`shared.js`, `topics.js`, …);
+`reading.js` holds the walkthrough reading views the PR and topic pages share, and like
+`core.js` imports no page. `core.js` exists
 to break a real `app.js` <-> `shared.js` cycle, whose failure mode here is a blank
 page that logs nothing; `src/import-cycles.test.ts` walks `web/` and fails if it
 returns.
