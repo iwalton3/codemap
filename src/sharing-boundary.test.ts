@@ -395,3 +395,21 @@ test("the anchor and hash mapping is not a shared entity kind", () => {
     );
   }
 });
+
+test("the topic families' registered folds fold — not just a registration that exists", async () => {
+  // F58: `fold: () => []` beside the right prefix passed the text check above, and a
+  // teammate's walk was then projected as empty. So fold a sample event through what is registered.
+  const { projectionFor } = await import("./shared-projections.js");
+  const { topicWalkthroughScope } = await import("./shared-topics.js");
+  const { testEvent } = await import("./test-events.js");
+  const actor = { principal: "izzie@x.com" };
+  const sel = { paths: ["src/**"] };
+  const defined = testEvent({ id: "e001", seq: 1, kind: "topic.defined", subject: "fees", data: { title: "Fees", selector: sel }, actor });
+  assert.equal(projectionFor("topics/acme-api")!.fold([defined]).length, 1);
+  const walk = {
+    topic: "fees", head: "h", selector: sel, resolved: { ids: ["a_1"], outside: [], unresolved: [] }, by: "agent", at: "t", covers: [],
+    features: [{ id: "f", title: "F", summary: "s", chapters: [{ id: "c", title: "C", blocks: [{ kind: "symbol", anchorId: "a_1" }], witnesses: [{ anchorId: "a_1", bodyHash: "sha256:x" }] }] }],
+  };
+  const published = testEvent({ id: "e002", seq: 1, kind: "topic.walkthrough.published", subject: "fees", data: { walkthrough: walk }, actor });
+  assert.equal(projectionFor(topicWalkthroughScope("acme-api", "fees"))!.fold([published]).length, 1);
+});

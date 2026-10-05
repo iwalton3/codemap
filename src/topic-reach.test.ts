@@ -38,3 +38,38 @@ test("every topic op is reachable where it should be, and signing is web-only", 
     assert.ok(pages.includes(`'${route}'`), `web/topics.js never calls ${route}`);
   }
 });
+
+test("the MCP topic tool dispatches every action it advertises", async () => {
+  // F55: a renamed `case` left `ops.topicRetire(` in the file, so the text check above passed
+  // while the advertised action failed. Call each one through the real stdio server.
+  const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { spawnSync } = await import("node:child_process");
+  const { init } = await import("./ops.js");
+  const { rpc } = await import("./test-mcp.js");
+  const { discard } = await import("./test-tmp.js");
+  const base = mkdtempSync(join(tmpdir(), "codemap-topic-reach-"));
+  try {
+    const root = join(base, "repo");
+    const git = (...a: string[]) => spawnSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...a], { cwd: root });
+    mkdirSync(join(root, "src"), { recursive: true }); mkdirSync(join(root, ".codemap"));
+    git("init", "-q", "-b", "main"); git("config", "user.email", "t@t");
+    writeFileSync(join(root, "src/a.ts"), "export function a() {\n  return 1;\n}\n");
+    writeFileSync(join(root, ".gitignore"), ".codemap/\n");
+    writeFileSync(join(root, ".codemap", "sidecar"), join(base, "side"));
+    git("add", "-A"); git("commit", "-qm", "one");
+    await init(root);
+    const out = await rpc(root, [
+      { name: "topic", arguments: { action: "define", slug: "fees", title: "Fees", selector: { paths: ["src/**"] } } },
+      { name: "topic", arguments: { action: "revise", slug: "fees", title: "Fee rules" } },
+      { name: "topic", arguments: { action: "list" } },
+      { name: "topic", arguments: { action: "retire", slug: "fees" } },
+    ]);
+    for (const [i, action] of ["define", "revise", "list", "retire"].entries()) {
+      assert.doesNotMatch(out[i]!, /"error"|Error:/, `${action}: ${out[i]}`);
+    }
+    assert.match(out[2]!, /Fee rules/);
+    assert.match(out[3]!, /"retired": true/);
+  } finally { discard(base); }
+});

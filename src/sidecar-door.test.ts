@@ -110,3 +110,27 @@ test("only a door composes the binding check itself", () => {
     assert.match(m.src, /\bcheckSidecarBinding\(/, `stale exemption: ${p} no longer checks`);
   }
 });
+
+test("bindShared refuses a write to a sidecar this store was not bound to", async () => {
+  // Behavioural, not a token in a file: F56's mutation — bindShared calling bind as a READ —
+  // left every text sweep green while a repointed store wrote topics into a stranger's log.
+  const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { spawnSync } = await import("node:child_process");
+  const { bindShared } = await import("./ops-shared.js");
+  const { discard } = await import("./test-tmp.js");
+  const base = mkdtempSync(join(tmpdir(), "codemap-bindshared-"));
+  try {
+    const git = (cwd: string, ...a: string[]) => spawnSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...a], { cwd });
+    const repo = join(base, "repo");
+    mkdirSync(join(repo, ".codemap"), { recursive: true });
+    git(repo, "init", "-q"); git(repo, "config", "user.email", "t@t");
+    for (const s of ["side1", "side2"]) { mkdirSync(join(base, s)); git(join(base, s), "init", "-q"); git(join(base, s), "commit", "-q", "--allow-empty", "-m", s); }
+    writeFileSync(join(repo, ".codemap", "sidecar"), join(base, "side1"));
+    assert.ok(!("error" in bindShared(repo)), "the first sidecar binds");
+    writeFileSync(join(repo, ".codemap", "sidecar"), join(base, "side2"));
+    const r = bindShared(repo);
+    assert.ok("error" in r && /different sidecar/.test(r.error), "repointed: a write must refuse");
+  } finally { discard(base); }
+});
