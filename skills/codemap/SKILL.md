@@ -75,4 +75,5 @@ still holds. Ask instead (`references/asking.md`).
 
 The normative documents are in the codemap repository, not shipped with this skill:
 `docs/repair-verification.md`, `docs/finding-backlog.md`, `docs/sidecar-architecture.md`. When a
-procedure here and a tool's own description disagree, the tool is current; say so to the person.
+procedure here and a tool's own description disagree, neither wins by default: tell the person what
+each says. Tool descriptions have been wrong too; what the tool actually refuses is the answer.

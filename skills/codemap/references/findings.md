@@ -24,9 +24,8 @@ defect moves with `promote_annotation`, which keeps its id and history.
 
 ## Working one
 
-- **Assigned to you** (`review_queue`): investigate or fix, then report with `close_finding`.
-  `result` is what you did (`fixed`, `answered`, `declined`). `disposition` is what turned out to be
-  true. A fix spans one file; declining a wider one, with what it would take, is the right answer.
+- **Assigned to you** (`review_queue`): investigate or fix, then report with `close_finding`. A fix
+  spans one file; declining a wider one, with what it would take, is the right answer.
 - **Somebody else's**: `corroborate` with a rationale. Disagreement is the signal, so refute
   plainly.
 - **Wrong wording, target or severity**: `revise_finding`. It appends; the old text stays. A
