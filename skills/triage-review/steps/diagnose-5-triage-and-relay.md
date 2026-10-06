@@ -88,9 +88,8 @@ Three invented options are worse than one honest sentence, because they imply th
 further than it did and they spend the attention that was going to go on §2.
 
 **Do not apply the answer in this session.** A choice is not an instruction to begin: relay
-what they picked, hand on the envelope, and write the handoff below. Whether the triage is right is
-the user's call, the evidence is in the file so they can check it, and the commands are there to
-re-run.
+what they picked, hand on the envelope, and stop. Whether the triage is right is the user's
+call, the evidence is in the file so they can check it, and the commands are there to re-run.
 
 **Append the exchange to the report as §11, and nothing else.** Each question and its answer,
 verbatim. A picked option is recorded as its label with the option text marked as yours: it is
@@ -112,12 +111,8 @@ favour:
   units and are distorted in different directions; a single percentage quoted to a lead gets
   quoted back forever.
 
-**Then write the handoff to planning** (`references/diagnose.md` D8): `RECORD/handoff.md`. At its
-head: that it is resumed with `/ez-plan --resume RECORD/handoff.md`, that it came from the
-diagnosis route, and that it is deleted once the plan is implemented, or cleaned up where the work
-is done without one (`references/shared.md` K4). It names the report, `RECORD/sort.md`,
-`RECORD/owner.md` and every `--spec` by path; `ez-plan` reads the report's §3 decision and §11
-answers as rulings. Tell the owner its path and that command, commit the record where it is in the
-working tree (`references/shared.md` K2), and stop.
+**Where `RECORD/open-decisions.md` exists**, end the relay by naming it: the open decisions this
+run was given wait there, and `/ez-plan --round <RECORD>` plans them, in a later session, with the
+round (the skill developer, agreeing to exactly this).
 
 This is the last step.

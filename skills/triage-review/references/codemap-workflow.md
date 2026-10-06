@@ -123,6 +123,11 @@ Where questions go, in order:
 
 A fork question — the opening's choice of route — is asked in the session, never deferred.
 
+`ez-plan`'s **Plan with Artifact** page stays available in shared mode. Its marks are read with
+`ArtifactData`, which is not a verified answer, so they go to `owner.md` only and are never posted,
+logged or relayed as codemap rulings. A decision whose effect needs a ruling — settling or
+unblocking a finding — is asked through codemap as above.
+
 ## Repair evidence and verification
 
 Before claiming success, record `record_repair_evidence` with exact witness/base/fix commits,

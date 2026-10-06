@@ -1,0 +1,329 @@
+<title>Plan decisions</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&family=JetBrains+Mono:wght@400&display=swap">
+<style>
+/* Layout: one reading column; a sticky tally; one card per decision, options first, dependents nested;
+   the agent's decision log collapsed at the bottom. */
+:root{
+  --bg:#f3f4f6; --panel:#ffffff; --ink:#1b1f27; --muted:#5d6472; --line:#dadde3;
+  --accent:#2f5a8f; --accent-soft:#e2eaf5;
+  --owner:#1b1f27; --session:#6a7180;
+  --l4:#8a5a12; --l4-bg:#f6ecda; --l5:#6b5a86; --l5-bg:#ece7f3; --open:#2e7466; --open-bg:#dff0ec;
+  --rule:#9b3b33; --rule-bg:#f6e3e1; --pick:#2f5a8f; --pick-bg:#e2eaf5; --logged:#3d6b46; --logged-bg:#e3f0e5;
+  --display:"Instrument Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --body:"Instrument Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --voice:"Source Serif 4",Georgia,"Times New Roman",serif;
+  --mono:"JetBrains Mono",ui-monospace,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#12151b; --panel:#1a1e26; --ink:#e6e8ec; --muted:#9aa1ae; --line:#2c323d;
+  --accent:#8db3e6; --accent-soft:#1f2b3d; --owner:#eef0f3; --session:#8f96a3;
+  --l4:#e2b46a; --l4-bg:#342917; --l5:#b9a6d9; --l5-bg:#2a2436; --open:#7fcbb9; --open-bg:#17312c;
+  --rule:#ee8f86; --rule-bg:#3a2120; --pick:#8db3e6; --pick-bg:#1f2b3d; --logged:#8fc79a; --logged-bg:#1b2e20;
+  color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#12151b; --panel:#1a1e26; --ink:#e6e8ec; --muted:#9aa1ae; --line:#2c323d;
+  --accent:#8db3e6; --accent-soft:#1f2b3d; --owner:#eef0f3; --session:#8f96a3;
+  --l4:#e2b46a; --l4-bg:#342917; --l5:#b9a6d9; --l5-bg:#2a2436; --open:#7fcbb9; --open-bg:#17312c;
+  --rule:#ee8f86; --rule-bg:#3a2120; --pick:#8db3e6; --pick-bg:#1f2b3d; --logged:#8fc79a; --logged-bg:#1b2e20;
+  color-scheme:dark}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font:15px/1.55 var(--body);padding-inline:16px;padding-block:24px 72px}
+.wrap{max-width:960px;margin:0 auto;display:flex;flex-direction:column;gap:26px}
+h1{font:600 30px/1.15 var(--display);margin:0;letter-spacing:-.01em;text-wrap:balance}
+h2{font:600 20px/1.25 var(--display);margin:0;text-wrap:balance}
+h3{font:600 13px/1.3 var(--display);margin:0;text-transform:uppercase;letter-spacing:.07em;color:var(--muted)}
+p{margin:0}
+.sub{color:var(--muted);max-width:70ch}
+code,.mono{font-family:var(--mono);font-size:.82em}
+.bar{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;background:var(--bg);border-bottom:1px solid var(--line);padding-block:10px;display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;font-size:13px;font-variant-numeric:tabular-nums}
+.bar .status{margin-left:auto;color:var(--muted)}
+.pill{padding:2px 9px;border-radius:999px;border:1px solid var(--line);white-space:nowrap}
+.stats{display:flex;flex-wrap:wrap;gap:10px 28px;font-variant-numeric:tabular-nums}
+.stat b{display:block;font:600 24px/1.1 var(--display)}
+.stat span{color:var(--muted);font-size:13px}
+.goal{font:16px/1.5 var(--voice);border-left:3px solid var(--accent);padding-left:12px}
+section{display:flex;flex-direction:column;gap:14px}
+.card{background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--line);border-radius:6px;padding:14px 16px;display:flex;flex-direction:column;gap:12px;min-width:0}
+.card[data-kind="rule"]{border-left-color:var(--rule)}
+.card[data-level="4"]{border-left-color:var(--l4)}
+.card[data-level="5"]{border-left-color:var(--l5)}
+.card[data-level="open"]{border-left-color:var(--open)}
+.card[data-answered="true"]{box-shadow:inset 0 0 0 1px var(--pick)}
+.deps{display:flex;flex-direction:column;gap:12px;margin-left:18px;padding-left:14px;border-left:2px dashed var(--line)}
+.dep-note{font-size:12px;color:var(--muted)}
+.head{display:flex;flex-wrap:wrap;gap:6px 10px;align-items:baseline}
+.id{font:400 12px var(--mono);color:var(--muted)}
+.title{font:600 17px/1.3 var(--display)}
+.tag{font-size:11px;text-transform:uppercase;letter-spacing:.07em;padding:1px 7px;border-radius:4px;border:1px solid currentColor}
+.tag.q{color:var(--accent)} .tag.l4{color:var(--l4)} .tag.l5{color:var(--l5)} .tag.open{color:var(--open)} .tag.rule{color:var(--rule)} .tag.who{color:var(--muted)}
+.situation{max-width:75ch}
+.cites{font-size:12px;color:var(--muted);display:flex;flex-wrap:wrap;gap:4px 14px}
+.cites .mono{overflow-wrap:anywhere}
+.options{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px}
+.opt{display:flex;flex-direction:column;gap:6px;text-align:left;font:inherit;color:inherit;background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:10px 12px;cursor:pointer;min-width:0}
+.opt:hover{border-color:var(--muted)}
+.opt[aria-pressed="true"]{background:var(--pick-bg);border-color:var(--pick)}
+.opt .ol{font-weight:600}
+.opt .oc{font-size:13px;color:var(--muted)}
+.opt .od{font-size:12px;color:var(--muted)}
+.opt .reading{font-size:12px;color:var(--session);font-style:italic}
+.alts{display:flex;flex-wrap:wrap;gap:6px}
+.alts button{font:500 13px var(--body);padding:5px 11px;border-radius:5px;border:1px solid var(--line);background:transparent;color:var(--ink);cursor:pointer}
+.alts button[aria-pressed="true"]{background:var(--open-bg);border-color:var(--open);color:var(--open);font-weight:600}
+button:focus-visible,textarea:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+label{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;display:block;margin-bottom:4px}
+textarea,input[type=text]{width:100%;font:15px/1.45 var(--voice);color:var(--owner);background:var(--bg);border:1px solid var(--line);border-radius:5px;padding:7px 9px}
+textarea{min-height:56px;resize:vertical}
+.row2{display:grid;grid-template-columns:2fr 1fr;gap:10px}
+details.box{border-top:1px solid var(--line);padding-top:12px}
+details.box summary{cursor:pointer;font:600 17px/1.3 var(--display)}
+details.box[open] summary{margin-bottom:12px}
+.log{display:flex;flex-direction:column;gap:0;background:var(--panel);border:1px solid var(--line);border-radius:6px}
+.area{font:600 13px var(--display);text-transform:uppercase;letter-spacing:.07em;color:var(--muted);padding:12px 14px 4px}
+.li{display:grid;grid-template-columns:auto 1fr auto;gap:4px 12px;padding:10px 14px;border-top:1px solid var(--line);align-items:start}
+.li[data-problem="true"]{background:var(--rule-bg)}
+.li .lv{font:400 12px var(--mono);color:var(--logged);padding-top:2px;white-space:nowrap}
+.li .lt{min-width:0}
+.li .lt b{font-weight:600}
+.li .lt .ls{display:block;font-size:13px;color:var(--muted);overflow-wrap:anywhere}
+.li .lt .l7{color:var(--l4);font-size:12px;font-weight:600}
+.li .pb{font:500 12px var(--body);padding:3px 9px;border-radius:5px;border:1px solid var(--line);background:transparent;color:var(--ink);cursor:pointer;white-space:nowrap}
+.li .pb[aria-pressed="true"]{background:var(--rule-bg);border-color:var(--rule);color:var(--rule)}
+.li .note{grid-column:1/-1}
+.myreading{font-size:14px;color:var(--session);border-left:3px solid var(--line);padding-left:10px}
+.myreading b{font-style:normal;color:var(--muted);font-weight:500}
+.hidden-why{font-size:13px;color:var(--muted)}
+.empty{color:var(--muted);font-style:italic}
+.offline{color:var(--rule)}
+@media (max-width:640px){.row2{grid-template-columns:1fr}.li{grid-template-columns:1fr auto}.li .lv{grid-column:1/-1}}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+
+<div class="wrap">
+  <header style="display:flex;flex-direction:column;gap:10px">
+    <h1 id="h1">Plan decisions</h1>
+    <p class="sub" id="lede">The decisions this plan needs from you, most binding first. Pick an option, or say none fits and discuss it; your own words go in the box. Below them is what the agent decided on its own: flag anything that's a problem. Marks save as you go. Tell the session when you're done with a pass.</p>
+  </header>
+  <div class="bar"><span class="pill" id="tally">Loading…</span><span class="status" id="status">Connecting…</span></div>
+  <div class="stats" id="stats"></div>
+  <main id="main" class="wrap" style="gap:30px"></main>
+</div>
+
+<script>
+// decisions.json — written by ez-plan (steps/3-plan.md, *Plan with Artifact*):
+// {run, goal?, counts:{logged, decisions, toMeasure, landed},
+//  refuted:[{id, title, situation, cites}],
+//  questions:[{id, kind:"goal"|"critical"|"scope"|"not-correct"|"other", title, situation?, reading?,
+//              options?}],   — the planning questions (Z10); reading is the session's, marked as such
+//  decisions:[{id, title, level:"4"|"5"|"open", consequence:"high"|"medium"|"low", who?, dependsOn?,
+//              situation, cites?, options:[{key, label, cost, dependsOnIt?, reading?}], hidden?, round?}],
+//  log:[{id, area, title, level, settledBy, fix, check, changes?}]}
+// Marks: marks/<id> {pick, words, as, by, problem, note, at}.
+const LEVEL_ORDER = {"4":0,"5":1,"open":2};
+const CONSEQ = {high:0, medium:1, low:2};
+const KIND_LABEL = {goal:"The goal", critical:"What counts as critical", scope:"Scope of a suggestion", "not-correct":"Not correct as written", other:"Planning question"};
+const LEVEL_TAG = {"4":["l4","Business rule · level 4"], "5":["l5","Design fork · level 5"], "open":["open","Nothing settles it"]};
+const state = {};
+const ids = [];
+let db = null, me = null, round = "1";
+const chains = {};
+// id -> {field: write}: set here and not yet saved. A snapshot keeps these fields' local values,
+// or one sent before the write lands would undo it on screen and in the next write's body.
+const dirty = {};
+let writes = 0;
+const $ = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+
+function box(id, field, labelText, multiline){
+  const w = $("div");
+  const l = $("label", null, labelText); l.htmlFor = `f-${id}-${field}`;
+  const t = multiline ? $("textarea") : $("input"); if (!multiline) t.type = "text";
+  t.id = `f-${id}-${field}`; t.dataset.field = field;
+  let timer;
+  t.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(() => setField(id, field, t.value), 700); });
+  t.addEventListener("blur", () => { clearTimeout(timer); setField(id, field, t.value); });
+  w.append(l, t); return w;
+}
+function cites(list){
+  const c = $("div","cites");
+  for (const x of [].concat(list || [])) c.appendChild($("span","mono",x));
+  return c;
+}
+function decisionCard(d){
+  ids.push(d.id);
+  const card = $("article","card"); card.id = "card-"+d.id; card.dataset.level = d.level || "open";
+  const head = $("div","head");
+  head.append($("span","id",d.id), $("span","title",d.title||""));
+  const [cls,label] = d.kind ? ["q", KIND_LABEL[d.kind] || KIND_LABEL.other] : (LEVEL_TAG[d.level] || LEVEL_TAG.open);
+  head.append($("span","tag "+cls,label));
+  if (d.who) head.append($("span","tag who","For " + d.who));
+  card.append(head);
+  if (d.situation) card.append($("p","situation",d.situation));
+  if (d.cites) card.append(cites(d.cites));
+  if (d.reading){ const m = $("p","myreading"); m.append($("b",null,"The session's reading, for you to correct: "), document.createTextNode(d.reading)); card.append(m); }
+  const opts = $("div","options"); opts.setAttribute("role","group"); opts.setAttribute("aria-label","Options");
+  for (const o of d.options || []){
+    const b = $("button","opt"); b.type = "button"; b.dataset.v = o.key; b.dataset.field = "pick"; b.setAttribute("aria-pressed","false");
+    b.append($("span","ol",o.label||o.key));
+    if (o.cost) b.append($("span","oc","Costs: " + o.cost));
+    if (o.dependsOnIt) b.append($("span","od","Depends on it: " + o.dependsOnIt));
+    if (o.reading) b.append($("span","reading","Agent's reading: " + o.reading));
+    b.addEventListener("click", () => setField(d.id, "pick", state[d.id]?.pick === o.key ? null : o.key));
+    opts.append(b);
+  }
+  if (d.options?.length) card.append(opts);
+  const alts = $("div","alts");
+  const altList = [["other", d.options?.length ? "None of these: my words below" : "My words below"],["discuss","Discuss this first"],["defer","Ask someone else"]];
+  if (d.reading) altList.unshift(["reading","The reading is right"]);
+  for (const [v,l] of altList){
+    const b = $("button",null,l); b.type = "button"; b.dataset.v = v; b.dataset.field = "pick"; b.setAttribute("aria-pressed","false");
+    b.addEventListener("click", () => setField(d.id, "pick", state[d.id]?.pick === v ? null : v));
+    alts.append(b);
+  }
+  card.append(alts);
+  const r = $("div","row2");
+  const words = box(d.id,"words","In your words (optional with an option picked)",true);
+  // Typing with nothing picked means "none of these": select it, so the words aren't read as a note.
+  words.querySelector("textarea").addEventListener("input", () => { if (!state[d.id]?.pick) setField(d.id, "pick", "other"); });
+  r.append(words, box(d.id,"as","Answering for (if not yourself)",false));
+  card.append(r);
+  return card;
+}
+function ruleCard(x){
+  ids.push(x.id);
+  const card = $("article","card"); card.id = "card-"+x.id; card.dataset.kind = "rule";
+  const head = $("div","head"); head.append($("span","id",x.id), $("span","title",x.title||""), $("span","tag rule","A rule may be wrong"));
+  card.append(head);
+  if (x.situation) card.append($("p","situation",x.situation));
+  if (x.cites) card.append(cites(x.cites));
+  const alts = $("div","alts");
+  for (const [v,l] of [["holds","The rule holds"],["lapsed","It no longer applies"],["discuss","Discuss"]]){
+    const b = $("button",null,l); b.type = "button"; b.dataset.v = v; b.dataset.field = "pick"; b.setAttribute("aria-pressed","false");
+    b.addEventListener("click", () => setField(x.id, "pick", state[x.id]?.pick === v ? null : v));
+    alts.append(b);
+  }
+  card.append(alts, box(x.id,"words","In your words",true));
+  return card;
+}
+function withDependents(d, all){
+  const card = decisionCard(d);
+  const kids = all.filter(k => k.dependsOn === d.id);
+  if (!kids.length) return card;
+  const wrap = $("div"); wrap.style.display = "flex"; wrap.style.flexDirection = "column"; wrap.style.gap = "10px";
+  const deps = $("div","deps");
+  deps.append($("p","dep-note",`Depends on ${d.id}: answer that one first.`));
+  kids.forEach(k => deps.appendChild(withDependents(k, all)));
+  wrap.append(card, deps); return wrap;
+}
+function logList(log){
+  const box = $("div","log");
+  const areas = [...new Set(log.map(x => x.area || "Other"))];
+  for (const a of areas){
+    box.append($("div","area",a));
+    for (const x of log.filter(y => (y.area || "Other") === a)){
+      ids.push(x.id);
+      const li = $("div","li"); li.id = "card-"+x.id;
+      li.append($("span","lv","L" + (x.level ?? "?")));
+      const t = $("div","lt"); t.append($("b",null,x.title||x.id));
+      if (x.changes) t.append(document.createTextNode(" "), $("span","l7","changes an approved decision"));
+      t.append($("span","ls",`${x.fix ? x.fix + " · " : ""}settled by ${x.settledBy||"—"}${x.check ? " · check: " + x.check : ""}`));
+      const pb = $("button","pb","Problem"); pb.type = "button"; pb.dataset.field = "problem"; pb.setAttribute("aria-pressed","false");
+      pb.addEventListener("click", () => setField(x.id, "problem", !state[x.id]?.problem || null));
+      const note = box2(x.id); note.hidden = true; note.className = "note"; note.dataset.role = "note";
+      li.append(t, pb, note);
+      box.append(li);
+    }
+  }
+  return box;
+}
+function box2(id){ return box(id, "note", "What's wrong with it", true); }
+function render(d){
+  round = String(d.round || 1);
+  document.getElementById("h1").textContent = `Plan decisions${d.run ? ", " + d.run : ""}`;
+  const k = d.counts || {};
+  const stats = document.getElementById("stats");
+  const stat = (v,l) => { const s = $("div","stat"); s.append($("b",null,String(v ?? "–")), $("span",null,l)); stats.appendChild(s); };
+  stat((d.decisions||[]).filter(x => !x.hidden).length + (d.refuted||[]).length + (d.questions||[]).length,"for you");
+  stat(k.logged ?? (d.log||[]).length,"decided by the agent");
+  if (k.landed != null) stat(k.landed,"landed before planning");
+  stat(`pass ${round}`,"of this page");
+  const main = document.getElementById("main");
+  if (d.goal){ const g = $("section"); g.append($("h3",null,"The goal, in your words"), $("p","goal",d.goal)); main.append(g); }
+  if (d.refuted?.length){
+    const s = $("section"); s.append($("h2",null,"First: rules a finding may have broken"), $("p","sub","A finding contradicts one of the project's rules, or trips its falsifier. Everything built on the rule depends on the answer."));
+    d.refuted.forEach(x => s.appendChild(ruleCard(x))); main.append(s);
+  }
+  const KIND_ORDER = {goal:0, critical:1, scope:2, "not-correct":3, other:4};
+  const qs = (d.questions || []).slice().sort((a,b) => (KIND_ORDER[a.kind] ?? 9) - (KIND_ORDER[b.kind] ?? 9));
+  if (qs.length){
+    const s = $("section"); s.append($("h2",null,`Questions for the plan · ${qs.length}`), $("p","sub","What the plan is for and how far it reaches. Where the session offers a reading, it is its guess, not yours: confirm it or say it your way."));
+    qs.forEach(x => s.appendChild(decisionCard(x))); main.append(s);
+  }
+  const open = (d.decisions || []).filter(x => !x.hidden);
+  const roots = open.filter(x => !x.dependsOn || !open.some(y => y.id === x.dependsOn))
+    .sort((a,b) => (LEVEL_ORDER[a.level] ?? 9) - (LEVEL_ORDER[b.level] ?? 9) || (CONSEQ[a.consequence] ?? 9) - (CONSEQ[b.consequence] ?? 9));
+  const s = $("section"); s.append($("h2",null,`Decisions · ${open.length}`));
+  if (!open.length) s.append($("p","empty","Nothing is waiting on you in this pass."));
+  roots.forEach(x => s.appendChild(withDependents(x, open)));
+  main.append(s);
+  const hidden = (d.decisions || []).filter(x => x.hidden);
+  if (hidden.length){
+    const det = $("details","box"); det.append($("summary",null,`Settled by another answer · ${hidden.length}`));
+    det.append($("p","sub","Hidden this pass, each with why. Mark one if you disagree and it counts like the rest."));
+    for (const x of hidden){ const c = decisionCard(x); const w = $("p","hidden-why"); w.textContent = "Hidden: " + x.hidden; c.insertBefore(w, c.children[1]); det.append(c); }
+    main.append(det);
+  }
+  if (d.log?.length){
+    const det = $("details","box"); det.append($("summary",null,`What the agent decided · ${d.log.length}`));
+    det.append($("p","sub","Settled by a rule, a principle, a fix the code already makes elsewhere, or a check, and logged with it. You don't need to read these. Flag any that's a problem and it becomes a decision next pass."));
+    det.append(logList(d.log)); main.append(det);
+  }
+  ids.forEach(paint); tally();
+}
+function paint(id){
+  const el = document.getElementById("card-"+id); if (!el) return;
+  const st = state[id] || {};
+  el.dataset.answered = String(!!st.pick);
+  if ("problem" in el.dataset || el.classList.contains("li")) el.dataset.problem = String(!!st.problem);
+  el.querySelectorAll("button[data-field]").forEach(b => {
+    const v = b.dataset.field === "problem" ? !!st.problem : st[b.dataset.field] === b.dataset.v;
+    b.setAttribute("aria-pressed", String(v));
+  });
+  el.querySelectorAll("textarea,input").forEach(t => { if (document.activeElement !== t) t.value = st[t.dataset.field] || ""; });
+  const note = el.querySelector('[data-role="note"]'); if (note) note.hidden = !st.problem;
+}
+function tally(){
+  const cards = ids.filter(id => !document.getElementById("card-"+id)?.classList.contains("li"));
+  let picked = 0, flagged = 0;
+  for (const id of ids){ if (state[id]?.pick) picked++; if (state[id]?.problem) flagged++; }
+  document.getElementById("tally").textContent = `${picked} of ${cards.length} answered · ${flagged} flagged in the log`;
+}
+function status(msg, bad){ const s = document.getElementById("status"); s.textContent = msg; s.className = "status" + (bad ? " offline" : ""); }
+function setField(id, field, value){
+  const cur = state[id] || {}; if ((cur[field] ?? null) === (value ?? null)) return;
+  state[id] = {...cur, [field]: value}; paint(id); tally();
+  const n = ++writes; (dirty[id] ||= {})[field] = n;
+  save("marks/"+id, state[id])?.then(ok => { if (ok && dirty[id][field] === n) delete dirty[id][field]; });
+}
+function save(path, body){
+  if (!db){ status("Not saved: this view can't store marks", true); return; }
+  const full = {...body, by: me, round, at: new Date().toISOString()};
+  return chains[path] = (chains[path] || Promise.resolve()).then(() => db.doc(path).set(full))
+    .then(() => { status("Saved"); return true; }, e => { status("Save failed: " + (e?.code || "error"), true); return false; });
+}
+(async () => {
+  let data;
+  try { const r = await fetch("decisions.json"); if (!r.ok) throw new Error(r.status); data = await r.json(); }
+  catch(e){ document.getElementById("main").appendChild($("p","empty","The decisions file didn't load, so there is nothing to answer yet.")); status("No data", true); return; }
+  render(data);
+  try { db = await window.claude?.use?.("db"); } catch { db = null; }
+  try { const u = await window.claude?.use?.("user"); me = u ? await u.id() : null; } catch { me = null; }
+  if (!db){ status("Read-only here: answers will not save", true); return; }
+  status("Saves as you answer");
+  db.collection("marks").onSnapshot(snap => {
+    for (const d of snap.docs){ const b = d.data(); if (!b) continue; const {at, by, round: r, ...rest} = b;
+      for (const f in dirty[d.id]) rest[f] = state[d.id]?.[f];
+      state[d.id] = rest; paint(d.id); }
+    tally();
+  }, e => status("Live sync stopped: " + (e?.code || "error"), true));
+})();
+</script>

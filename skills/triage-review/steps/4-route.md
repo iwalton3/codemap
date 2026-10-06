@@ -4,14 +4,14 @@
    tie in the round — never one per tie — and nothing else applies to those items until it returns.
    They are not the owner's question, and not yours to break the tie on:
    - **valid or not** — one sorter calls it invalid and the other calls it real;
-   - **one finding or two** — the sorters' covers sets differ;
+   - **one cause or two** — the sorters split a cluster differently, so their covers sets differ;
    - **isolated or pattern** — both put it in group 1, with different kinds.
 
    Substitute every bracket:
 
    > Break the ties between two sorters of review findings. You are read-only.
    >
-   > - the ties, each with its kind: `<per tie: valid or not / one finding or two / isolated defect
+   > - the ties, each with its kind: `<per tie: valid or not / one cause or two / isolated defect
    >   or defect pattern>`
    > - the findings behind each tie, as the reviewer wrote them: `<each from RECORD/findings.md,
    >   with its number, under its tie>`
@@ -26,21 +26,19 @@
    >   review>`
    > - the round: `<which review>`
    > - the definitions: `SKILL_DIR/prompts/sorter.md`
-   > - what the work was built against: `<the written criteria steps/1-blame.md collected, or
-   >   "none">` — read them to judge a finding, as the artifact's own requirements
    >
    > **Settle validity for every tied item first, then the action axis** — the covers split, and
    > isolated versus pattern. **Skip the action question on anything you invalidated:** it is moot.
    >
    > Read the artifact at those commits and the history under them. Do not go looking for any
-   > earlier sort, triage record or ruling on these items, or any plan beyond the criteria above:
-   > finding the previous answer makes you an echo, not a third reading. If you come across one
-   > anyway, name it and do not decide on it.
+   > earlier sort, plan, triage record or ruling on these items: finding the previous answer makes
+   > you an echo, not a third reading. If you come across one anyway, name it and do not decide on
+   > it.
    >
    > **Rule each tie on evidence from the artifact, never on the other sorter's record across
    > ties.** Finding one sorter wrong on one tie tells you nothing about that sorter on the next.
    >
-   > Answer each tie under its own heading — valid or invalid and which refutation; one item or two
+   > Answer each tie under its own heading — valid or invalid and which refutation; one cause or two
    > and which findings each covers; isolated or pattern and the sites you counted with the command
    > — **what you rested on, per tie**, and anything you needed and were not given.
    >
@@ -56,43 +54,46 @@
    to the arbitrator is marked "don't fix early"**, whatever was ruled (`references/contract.md`
    P1).
 
-2. **Every other disagreement is carried, never settled here** — a different group, a different
-   site count. Keep both readings, who gave them, and each command where the sorter gave one. The
-   higher count is not automatically right, and neither is yours.
+2. **Every other disagreement is carried, never settled here** — a different group, a different site
+   count, a different answer to what settles it or at what level, a level-5 fork one sorter saw and
+   the other did not. A carried disagreement keeps the item from landing early. Keep both readings,
+   who gave them, and each command where the sorter gave one. The higher count is not automatically
+   right, and neither is yours.
 
 ## Route
 
 Using the blame from `steps/1-blame.md`, one of three (`references/contract.md` R4):
 
 - **No finding is fixes on fixes** → land, then hand over to `ez-plan`.
-- **Fixes on fixes** → answer R4's question from the blame and the sort: *are there assumptions or
-  inconsistencies in the codebase, created during the last fix round, which aren't easily
-  explainable or summarizable to a human?*
-  - **No** — each gap is one the owner can fill, and it is known: work not completely applied, a
-    rule stated in a plan and forgotten, a design change this round follows. A prior run that ended
-    in ad-hoc fixes wrote no `plan.md`; its `sort.md` choice line marked `cancelled` and its
-    commits' trailer and message — on a Claude Artifact, the published version's label alone — are
-    its explanation, written down. → land, then hand over, **without asking**. Say in `sort.md`'s
-    route, in one or two sentences, that it was fixes on fixes and why no diagnosis was needed.
-  - **Yes** — inconsistencies, many hidden assumptions, or rot patterns → ask the owner: *diagnose,
-    or don't?*, recommending Diagnose. A diagnosis takes about half an hour, so this bar is narrow.
-    State why in one or two sentences in the question's own text, in the artifact's terms: no
-    quoted finding text, no finding ids, site lists, group names or counts. Route by the answer.
+- **Fixes on fixes, and the explanation is written down** — work not completely applied, a rule
+  already stated in a plan and forgotten — **or this round follows a design change** → ask the
+  owner: *diagnose, or don't?* A prior run that ended in ad-hoc fixes wrote no `plan.md`; its
+  `sort.md` choice line marked `cancelled` and its commits' trailer and message — on a Claude
+  Artifact, the published version's label alone — are its explanation, written down. State why in one or
+  two sentences in the question's own text, in the artifact's terms: no quoted finding text, no finding ids, site lists,
+  group names or counts. Route by the answer.
+- **Fixes on fixes, and a hole the owner is unlikely to know** — an assumption, an invented
+  requirement, something nobody wrote down → the diagnosis route. Where you are in doubt which of
+  these it is, tell the owner the disposition and let them decide.
 
 ## Write `RECORD/sort.md`
 
 In the order `references/shared.md` S2 gives, in plain prose. What this skill puts in it:
 
 - **Who sorted it**: two sorters, one blind, and the arbitrator.
-- **The items**, clustered, each with both sorters' readings wherever they differed, any
-  arbitration with its outcome and the path of its reply, and **"don't fix early"** where it went to
-  the arbitrator.
-- **The round**: the unit, and per member the range the review covered — through the in-flight
-  commit for a review this session ran; otherwise the pull request's or the branch's range unless
-  the owner said otherwise. Then which review, at which commit, and which findings were fixes on
-  fixes — or one sentence saying the findings are new work against existing code
-  (`references/contract.md` R1). For a versioned Artifact, per version: fixes on fixes or not and what
-  the call rested on, any version not held, and node 4's question and answer verbatim.
+- **The items**, clustered, each with what settles it and its level — both sorters' readings
+  wherever they differed — any level-5 fork with each fix and what depends on it, any arbitration
+  with its outcome and the path of its reply, and **"don't fix early"** where it went to the
+  arbitrator.
+- **Rules to raise first**: any rule a finding refuted or whose falsifier it tripped, one line
+  each, or `none`.
+- **The round**: the unit, the walls found at step 1 (each path, or `none`), and per member the
+  range the review covered — through the in-flight commit for a review this session ran; otherwise
+  the pull request's or the branch's range unless the owner said otherwise. Then which review, at
+  which commit, and which findings were fixes on fixes — or one sentence saying the findings are new
+  work against existing code (`references/contract.md` R1). For a versioned Artifact, per version:
+  fixes on fixes or not and what the call rested on, any version not held, and node 4's question and
+  answer verbatim.
 - **The route and why**, with the owner's answer verbatim if they were asked.
 - **One sentence of counts about the review itself** — *eleven of twenty were out of scope.*
 - **The carried sentences**, and last, **`Uncovered:`**.

@@ -55,10 +55,15 @@ Ignored, or under `.git/`, and nothing is committed. Otherwise **every step comm
 it before that step ends** (`references/shared.md` K2). Tell the owner its path and whether it is
 committed.
 
+**Where `--decisions` was given**, copy each file verbatim into `RECORD/open-decisions.md`, under a
+heading naming its path, and number its decisions O1..On in the order they appear. They are not
+findings: nothing below sorts, blames or lands them, and no sorter is given them.
+
 **Write `RECORD/findings.md` first** (`references/shared.md` S2): F1..Fn in the order received,
-across every source, under a heading per source, each with the source's own id in brackets where it
-has one and **its full text, copied — never a pointer**. One comment making two claims is still one
-finding; the sort decides what it covers. Every later step names findings by F-number.
+across every source, under a heading per source, each under its own heading `### F<n>`, with the
+source's own id in brackets where it has one and **its full text, copied — never a pointer**. One
+comment making two claims is still one finding; clustering decides what it covers. Every later step
+names findings by F-number.
 
 ## Purpose — documents only
 
@@ -66,33 +71,51 @@ Where the artifact is a document, write one or two sentences: what it is for, an
 (`references/shared.md` S1). Where you cannot, write `not stated` and ask nobody. On code, skip
 this.
 
-## The written criteria
+## The walls
 
-What the work under review was built against (`references/contract.md` R3): each `--spec`, and each
-`plan.md` a `Work-plan:` trailer in the reviewed range names — `git log --format=%B <range>` per
-member, the trailer's run found where `references/shared.md` K5 looks. Where there are none, the
-list is `none`.
+Find what already decides fixes in this unit, for both sorters to cite: `docs/rules/INDEX.md` and
+the area docs it points to, and the `## PRINCIPLES` section of each `CLAUDE.md` in scope, the user's
+global one included. Note each path, or `none`, in `sort.md`'s round section, where `ez-plan` reads
+them. A project with neither is sorted as before: what settles an item can then only be a sibling in
+the code or the finding's own check. Read no earlier triage or plan records for this.
+
+## Cluster by cause
+
+Write `RECORD/clusters.md` yourself, before anything sorts (`references/shared.md`, *Clustering*):
+C1..Cn, each with its cause in one sentence — what, fixed, would make its findings go away — and
+`covers F…`. The same claim reported twice is one cluster; the same cause at several sites is one
+cluster. A finding making two claims goes in two. **Order and add only**: judge nothing — no
+validity, no group, no fix — and drop nothing. Then check that nothing was lost:
+
+    comm -23 <(grep -oE '^### F[0-9]+' RECORD/findings.md | grep -oE 'F[0-9]+' | sort -u) \
+             <(grep -oE '\bF[0-9]+\b' RECORD/clusters.md | sort -u)
+
+It prints every finding no cluster covers; it must print nothing. The ids come from the headings
+only: a finding's text often quotes another review's `F<n>`, which is not one of this round's.
 
 ## Launch the blind second sort
 
 **Always, and now, before blame** (`references/contract.md` R3). **Do not wait on it** — launch it
-and go straight on to blame. Give it nothing of your own reading:
+and go straight on to blame. Give it nothing of your own reading beyond the clusters, which are
+ordering and not a sort:
 
 > Sort these review findings. You are read-only and propose no fixes.
 >
-> - the findings, numbered: `RECORD/findings.md`
+> - the findings, numbered: `RECORD/findings.md`, and clustered by cause: `RECORD/clusters.md`
+> - what already decides fixes here: `<the docs/rules/ paths and the CLAUDE.md files with a
+>   PRINCIPLES section, or "none">`
 > - what the artifact is for: `<the purpose sentences, "not stated", or "code">`. *Out of scope*
 >   is a verdict only on a document with a stated purpose: never on code, and never where it is
 >   `not stated`.
-> - the sorting rules — deduplicating, the covers format, the two kinds, the definitions, the
->   defect-pattern rule and the group-1 exclusions: follow `SKILL_DIR/prompts/sorter.md`
+> - the sorting rules — sorting the clusters, the covers format, the two kinds, the definitions,
+>   the defect-pattern rule, the group-1 exclusions, what settles an item and its level: follow
+>   `SKILL_DIR/prompts/sorter.md`
 > - the artifact: `<each member's absolute path and commit, or for a document, the version under
 >   review>`
-> - what the work was built against: `<the written criteria above, or "none">` — read them to judge
->   a finding, as the artifact's own requirements
 >
 > Per item: the findings it covers (`covers F4, F30`); a group; for group 1 its kind, the sites
-> you counted and the command; for group 5 its refutation; and what the "why" rests on.
+> you counted and the command; for group 5 its refutation; what settles it; its level, with any
+> level-5 fork spelled out; and what the "why" rests on.
 >
 > **Write your finished sort to `RECORD/sort-b.md` yourself**, and **return nothing of it in your
 > reply** — not the sort, not a summary, not what you made of any one finding. Another sorter is

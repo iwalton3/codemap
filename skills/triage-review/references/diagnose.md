@@ -71,11 +71,6 @@ contract: where a step file disagrees with this file, the step file is the defec
   the answer for a date, at the confirmation for a description; on a spanning run, the windows that
   have a base start at 14.
 
-- **D8.** After the relay the route writes an `ez-plan` handoff, `RECORD/handoff.md`
-  (`references/shared.md` K4), naming the report, `sort.md`, `owner.md` and every `--spec` by path,
-  and gives the owner `/ez-plan --resume RECORD/handoff.md`. It plans in a fresh session; this one
-  applies nothing (`D3`).
-
 **Diagnosis questions.** Nodes 15 and 18 ask under the shared question rules
 (`references/shared.md` Q1-Q3) and these of their own: they come after the deposition (`D1`); and
 `owner.md` reaches the lens readers, so **a question must not carry the review's framing** — quoted

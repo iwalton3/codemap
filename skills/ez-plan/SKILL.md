@@ -1,12 +1,14 @@
 ---
 name: ez-plan
-description: Turn a pile of work into decisions the owner can make — each broken down into an approachable chunk with its consequences already analysed — and one coherent plan. Takes a todo list, a session's open items or diffuse context from a discussion, a round handed over by /triage-review, or a handoff from an earlier session. Sorts a todo list into mechanical work, work that needs design, suggestions whose scope the plan decides, and items not correct as written; takes a /triage-review round already sorted. Lets the owner discuss first, plan now, or hand off to a fresh session, and never lands anything the owner has not been shown.
+description: Turn a pile of work into one checked plan, putting to the owner only the decisions that are theirs. By the owner's solidity ladder, what a rule, a principle, the code or a check already settles the agent decides and logs; level-5 design forks, business rules and anything nothing settles go to the owner — as questions, or on an editable page. Takes a todo list, a session's open items or diffuse context from a discussion, a round handed over by /triage-review, or a handoff from an earlier session. Sorts a todo list into mechanical work, work that needs design, suggestions whose scope the plan decides, and items not correct as written; takes a /triage-review round already sorted. Lets the owner discuss first, plan with questions or on a page, or hand off to a fresh session, and never lands anything the owner has not been shown.
 argument-hint: "[<todo list: a path, or text> | --round <RECORD> | --resume <path to handoff.md>] [--spec <path>]..."
 ---
 
 Work handed to an agent drifts from what it was for when the decisions inside it are made by the
-agent in passing. This skill puts those decisions to the owner at the altitude they rule at, with
-the consequences worked out, and writes one plan from the answers. **It does not execute the plan,
+agent in passing, and stalls when every one of them is put to the owner. This skill decides by the
+ladder (`references/shared.md` L): what is already settled, it decides and logs; the rest it puts
+to the owner at the altitude they rule at, with the consequences worked out; and it writes one
+checked plan from both. **It does not execute the plan,
 and it never reviews its own work.**
 
 `references/contract.md` is this skill's contract and `references/shared.md` the rules it shares
@@ -38,8 +40,10 @@ a source of plan items.
 Read each file when you reach it. Each ends by naming what comes next.
 
 1. `SKILL_DIR/steps/1-input.md` — the input, the unit, the tree, and on a todo list the sort
-2. `SKILL_DIR/steps/2-opening.md` — the summary, the opening, and a discussion if one is chosen
-3. `SKILL_DIR/steps/3-plan.md` — the questions, the plan, the coherence check, or the handoff
+2. `SKILL_DIR/steps/2-opening.md` — the first settling pass, the summary, the opening, and a
+   discussion if one is chosen
+3. `SKILL_DIR/steps/3-plan.md` — the second settling pass, the decisions as questions or on a page,
+   the plan, the coherence check, or the handoff
 
 ## Stop conditions
 

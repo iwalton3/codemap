@@ -391,12 +391,15 @@ without the server it has nothing to run.
 
 ### The `triage-review` and `ez-plan` skills
 
-Ship in this repo under **`skills/`**. `/triage-review` sorts a pile of review
-findings (implementation defect, design defect, assumption, suggestion, or invalid
-with the reason) with a second agent sorting blind, lands only the trivial fixes,
-and hands the rest to `/ez-plan`, which puts the decisions to you at the altitude
-you rule at and writes one plan from your answers. When fixes keep landing on
-fixes, `/triage-review` can instead diagnose the hole underneath.
+Ship in this repo under **`skills/`**. `/triage-review` clusters a pile of review
+findings by cause and sorts them (implementation defect, design defect, assumption,
+suggestion, or invalid with the reason) with a second agent sorting blind, lands
+only the isolated defects both sorters agree are settled, each with a check that
+fails first, and hands the rest to `/ez-plan`. That decides what a project rule
+(`docs/rules/`), a principle (`CLAUDE.md`'s `## PRINCIPLES`), a sibling in the code
+or a check already settles, logs it, puts only the rest to you — as questions or
+on a page you mark — and writes one plan from your answers. When fixes keep
+landing on fixes, `/triage-review` can instead diagnose the hole underneath.
 
 With the codemap MCP server attached they post their rounds, questions and repair
 verification into codemap, so questions are answered on the decisions page and

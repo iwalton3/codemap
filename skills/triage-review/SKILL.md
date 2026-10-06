@@ -1,7 +1,7 @@
 ---
 name: triage-review
-description: Handle a review round's findings without starting a repair loop. It blames each finding for whether it lands in an earlier round's fixes, sorts them with two sorters, one blind, and an arbitrator (implementation defect, design defect, assumption, design suggestion, or invalid with the reason), lands the trivial fixes both sorters agree on, and hands the rest to /ez-plan to decide with the owner — or, when fixes keep landing on fixes over a hole nobody named, diagnoses the loop into a report the owner can forward. Runs on its own when a review returns more than four findings; the owner can run it on any.
-argument-hint: "[<path to the review output> | <reference to the findings>] [--since <last-known-good ref>] [--spec <path>]... [--test <path>]"
+description: Handle a review round's findings without starting a repair loop. It blames each finding for whether it lands in an earlier round's fixes, clusters them by cause, sorts the clusters with two sorters, one blind, and an arbitrator (implementation defect, design defect, assumption, design suggestion, or invalid with the reason — and what already settles each fix, and at what level of the owner's ladder), lands the defects both sorters agree are settled, each red first, and hands the rest to /ez-plan to decide with the owner — or, when fixes keep landing on fixes over a hole nobody named, diagnoses the loop into a report the owner can forward. Runs on its own when a review returns more than four findings; the owner can run it on any.
+argument-hint: "[<path to the review output> | <reference to the findings>] [--since <last-known-good ref>] [--spec <path>]... [--test <path>] [--decisions <path>]..."
 ---
 
 Findings carry assumptions. Applying a list nobody has ruled on rots the artifact: it drifts from
@@ -26,8 +26,13 @@ where questions go and independent verification.
 **The arguments.** `--spec` reaches both routes: the diagnosis route's evidence pack reads it, and
 `ez-plan` receives it as a written criterion. `--test` and `--since` are the diagnosis route's —
 `--since` names a git member's window base — and are a **declared no-op** on a round that is handed
-to `ez-plan`. Say so rather than dropping one silently. Resuming a plan is `ez-plan --resume`, not
-an argument here.
+to `ez-plan`. Say so rather than dropping one silently. **`--decisions`** names a file of open
+decisions the session was already carrying when the review came in — lingering questions, not
+findings: they are copied into the record, never sorted, and handed to `ez-plan` with the round,
+which settles them with the rest (the skill developer: *"If an agent runs a review with findings and
+also had open lingering decisions, it would be useful to be able to feed both of those through to
+the planning phase"*). On the diagnosis route the relay names them and the `/ez-plan --round`
+command that plans them. Resuming a plan is `ez-plan --resume`, not an argument here.
 
 The work is a **unit** of one or more repositories, established at step 1 (`references/shared.md`
 U); the skill runs from its **primary** member. `REPO` is a member's repository root: where a step
@@ -50,15 +55,15 @@ latest GPT Sol model, not Astra unless the user explicitly asks for it.
 
 Read each file when you reach it, not before. Each ends by naming what comes next.
 
-1. `SKILL_DIR/steps/1-blame.md` — the tree, the record and the findings, purpose, the blind
-   sorter's launch, then blame every finding
+1. `SKILL_DIR/steps/1-blame.md` — the tree, the record and the findings, purpose, the walls,
+   clustering by cause, the blind sorter's launch, then blame every finding
 2. `SKILL_DIR/steps/2-sort.md` — the first sort
 3. `SKILL_DIR/steps/3-blind-sort.md` — collect the blind second sort
 4. `SKILL_DIR/steps/4-route.md` — reconcile, write `sort.md`, route
 
 No diagnosis:
 
-5. `SKILL_DIR/steps/5-land-and-hand-over.md` — land the trivial fixes, then hand over to `ez-plan`
+5. `SKILL_DIR/steps/5-land-and-hand-over.md` — land the settled fixes, then hand over to `ez-plan`
 
 Diagnosis route:
 

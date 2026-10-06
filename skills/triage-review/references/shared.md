@@ -89,6 +89,27 @@ else outside git stops the skill: "not a git repository".
   resume from that launch when the owner says so. An agent interrupted by an outage is resumed with
   `SendMessage`, not relaunched. Never downgrade.
 
+## The ladder
+
+- **L.** A decision's level is who can change it and what that costs — the skill developer's solidity
+  ladder, condensed. The agent infers the level (the skill developer: *"counterintuitively the agent can
+  usually infer the level and can be generally trusted to do so"*), and who acts follows from it:
+  - **1-3, natural law, law, industry rule** — cited in `docs/rules/`. They do not move: a finding
+    or a plan that conflicts with one is wrong.
+  - **4, business rule** — in `docs/rules/`, human-written with its reason. A conflict goes up the
+    chain of command; no agent settles it.
+  - **5, design rule** — a commitment a design direction made, costly to change. **Mostly written
+    nowhere**: the code and docs show it, in how much depends on it and what reversing it would
+    take (the skill developer: *"most level 5 items are unwritten and implicit based on code or
+    docs"*). A change to one goes through a plan, with its cost.
+  - **6, principle** — `CLAUDE.md`'s `## PRINCIPLES`, the owner's words. The agent decides within
+    it, citing it, and escalates where it cannot be upheld.
+  - **7, approved decision** — the agent may change it, and says so.
+  - **8, implementation detail** — the agent decides.
+
+  A rule a finding refutes, or whose falsifier a finding trips, goes to the owner, never sorted
+  away.
+
 ## The groups
 
 - **S1. Purpose.** On a document, purpose is one or two sentences, used only to call findings that
@@ -112,20 +133,25 @@ state it differently, and converging them is not the pin's job.
    it'". Two kinds:
    - **Isolated defect** — one site.<!--/pin-defs-->
    - **Defect pattern** — the same mechanical defect at several sites. Count the sites before
-     sorting: grep the pattern, not the site. It is not fixed as a courtesy; it is ruled on in the
-     plan, and the default decision is to fix it at every site. A pattern is *evidence* that a
-     design rule may be missing, not proof of one — often, but not always — so the plan's question
-     is only *does this pattern mean a rule is missing?*, and **"no, just fix them" is a first-class
-     answer**. The skill developer's examples, verbatim: "we can keep fixing sql injection, or we can switch to
-     prepared statements" — keep fixing is the default, and prepared statements has to earn the
-     switch — and *"sql injection because someone is using `mysql_real_escape_string`
-     instead of PDO … another would be tenant isolation failing because the check happens
-     per-module and not in a database repository helper"*. The second is the shape the first does
-     not show: not a wrong call repeated, but a correct check placed at the wrong level.
-     **In both, the higher-order fix is a change to the code's design**, with fixing each site the
-     same way as the standing alternative. Where the higher-order fix would be a change to
+     sorting: grep the pattern, not the site. **It never lands before the plan**: the plan settles
+     it, so its fix goes through the coherence check (the skill developer: *"fixing patterns early
+     means the pattern fix doesn't go through a coherence check, which catches a surprising number
+     of issues"*). It is settled there without the owner **unless fixing it forks the design** (`L`,
+     level 5) — a sorter names a higher-order fix (the skill developer: *"a lot of defect clusters I
+     think can be auto-settled unless there is a major level 5 fork for how to deal with them"*). A
+     pattern is *evidence* that a design rule may be missing, not proof of one — often, but not
+     always. **A pattern whose fix forks the design is put to the owner as its fork**: each fix,
+     fixing every site among them, with what it costs and what depends on it, and no option the
+     default (the skill developer, agreeing to exactly that; it supersedes fixing every site as the
+     default). The skill developer's examples, verbatim: "we can keep fixing sql injection, or we can switch
+     to prepared statements" and *"sql injection because someone is using
+     `mysql_real_escape_string` instead of PDO … another would be tenant isolation failing because
+     the check happens per-module and not in a database repository helper"*. The second is the shape
+     the first does not show: not a wrong call repeated, but a correct check placed at the wrong
+     level. **In both, the higher-order fix is a change to the code's design**, with fixing each
+     site the same way as the standing alternative. Where the higher-order fix would be a change to
      *process* rather than to the code, the cluster is **not** a defect pattern: its sites resemble
-     each other without sharing a defect, and the plan's question has no missing rule to be about.<!--pin-defs-->
+     each other without sharing a defect, and the plan has no design fork to put.<!--pin-defs-->
 2. **Design defect:** "We designed something. It causes a problem downstream. A proposal is
    needed."
 3. **Assumption:** "Past code made an assumption documented nowhere. The assumption either broke
@@ -150,8 +176,12 @@ On a document, the design is what it is for and how it is organised. Findings th
 qualifications the reader does not need are suggestions where they are harmless, and *out of scope*
 where they work against the purpose.
 
-**Clustering** puts related items next to each other in `sort.md` so the plan is easier to work
-around. It is ordering, not a group, and it loses nothing.
+**Clustering** puts findings together by cause. It is ordering and addition only: every finding is
+in at least one cluster, a finding making two claims may be in two, and nothing is judged, merged
+away or dropped. `triage-review` clusters before anything sorts, so the sorters sort causes, not
+findings (the skill developer: *"clustering should probably happen first and be ordering/additive
+only so one agent can do it and findings don't get lost"*). A sorter that reads a cluster as two
+causes splits it, naming the findings each part covers.
 
 **Carried sentences.** While sorting, a sentence about the work itself — a fix that was already
 wrong once, a rule at more sites than named, growth against a stated limit — goes into the sort
@@ -163,19 +193,22 @@ verbatim.
   them from a review, `ez-plan` writes them from a todo list or a session's items, and both read
   them.
   - `findings.md` — the input, numbered F1..Fn in the order received, under a heading per source,
-    each with the source's own id and its full text. Where the input was diffuse — a discussion,
-    items mentioned in passing — the session itemizes it and says so at the head.
+    each under its own heading `### F<n>` with the source's own id and its full text. Where the
+    input was diffuse — a discussion, items mentioned in passing — the session itemizes it and says
+    so at the head.
   - `sort.md` holds: **who sorted it** — two sorters and an arbitrator, or one sorter with the owner
     reading every item — and so **which categories**: the groups below, or `ez-plan`'s work-item
     categories (its contract, `Z2`); purpose (documents only, `S1`); each item's group, kind and
-    sites with the command, the findings it covers, both readings where they differed with any
-    arbitration and its outcome, and **"don't fix early"** where it applies; related items
-    clustered; the round; the route and why, where `triage-review` routed it; **what landed** before
-    planning, per fix one line, its commit (or Artifact version) and its check — the command that
-    fails without the fix, what it did without the fix and what it does with it, or `no check:
-    <why>`; **one choice line per `ez-plan` session** (its contract says what it holds); one
-    sentence of counts; carried sentences; and
-    last, `Uncovered:` — `none`, or the numbered findings no item covers.
+    sites with the command, the findings it covers, what settles it and the level its fix decides at
+    (`L`), both readings where they differed with any arbitration and its outcome, and **"don't fix
+    early"** where it applies; related items clustered; **rules to raise first** — a rule a finding
+    refuted or whose falsifier it tripped, or `none`, where `triage-review` wrote the sort; the
+    round, with the walls it found; the route and why, where `triage-review` routed it; **what
+    landed** before planning, per fix one line, its commit (or Artifact version), what settled it,
+    and its check — the command that fails without the fix, what it did without the fix and what it
+    does with it, or `no check: <why>`; **one choice line per `ez-plan` session** (its contract says
+    what it holds); one sentence of counts; carried sentences; and last, `Uncovered:` — `none`, or
+    the numbered findings no item covers.
   - **The round** is the unit — per member its label, absolute path, why it belongs, in-flight
     commit or `none`, and the range the input covered there — and where the input was a review,
     which review, at which commit, which findings were fixes on fixes. A commit made when a later
@@ -231,13 +264,10 @@ discussion included. How questions are drafted and batched is each skill's own.
 - **K3. `owner.md`** holds every question the skill puts to the owner about the artifact, and their
   answer, verbatim, wherever it was asked. A process question goes there only where a later agent
   reads the answer. It is **sealed when the plan is finalised** — the planning session ending, or
-  the owner executing the plan. When the plan is shown, a seal line is appended saying that rulings
-  taken after that, while the plan is revised or executed, are logged below it; they go there
-  verbatim under a heading naming the session, and are not errata (the skill developer: *"The rulings
-  causing ad-hoc plan changes get logged correctly and there is no friction or rule violation
-  because it becomes sanctioned"*). It may be appended to with a marked errata on the same terms as
-  `sort.md`; the owner's words are never rewritten. A superseded ruling is marked superseded, points
-  to the ruling that replaces it, and says which part of it still stands.
+  the owner executing the plan; a ruling taken while the plan is applied is quoted at the site it
+  changes instead. It may be appended to with a marked errata on the same terms as `sort.md`; the
+  owner's words are never rewritten. A superseded ruling is marked superseded, points to the ruling
+  that replaces it, and says which part of it still stands.
 - **K4. `handoff.md`** goes in `RECORD`, beside the `plan.md` it exists to produce, and is deleted
   once that plan is implemented, by whoever implements it. It says so at its head. Advisory: where
   the work is done without a plan ever being written, the handoff file should be cleaned up too.
@@ -247,8 +277,8 @@ discussion included. How questions are drafted and batched is each skill's own.
   somebody named its parent — a default or a `CLAUDE.md`'s choice — and `triage-<date>-<slug>` or
   `plan-<date>-<slug>` in the one place nobody did, the current directory of an Artifact run outside
   git. From each prior run: `sort.md`, `owner.md`, `owner-late.md`, `plan.md` and `deposition.md` —
-  never `findings.md`, `sort-a.md`, `sort-b.md`, `arbitration.md` or `lens-*.md`. A plan holds the
-  owner's intent, which is what turns an apparent assumption into a ruling.
+  never `findings.md`, `clusters.md`, `sort-a.md`, `sort-b.md`, `arbitration.md` or `lens-*.md`. A
+  plan holds the owner's intent, which is what turns an apparent assumption into a ruling.
 
 ## Commits
 
