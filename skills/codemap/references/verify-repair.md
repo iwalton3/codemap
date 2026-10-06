@@ -11,32 +11,44 @@ person's ask (`close_finding` with a closing state).
 `pull`, then `repair_records` for the review: the findings' claims, the sorts with their `eligible`
 flag and `holds`, any evidence, and earlier requests with their results. `repair_pending` lists
 jobs already open. If a request is open for these findings, go to step 5. Do not start a second
-one beside it.
+one beside it. Once both runs are in and agree, `repair_pending` lists nothing for that request even
+though nothing is applied yet: go to step 6.
 
-## 2. A current, eligible sort
+Check holds now, before any evidence work. `findings` marks a finding `held` when a person's
+decision holds it, and `repair_request` refuses a request that covers a held or closed finding. A
+held finding is a person's decision first (`references/asking.md`).
+
+## 2. Claims first, then a current, eligible sort
+
+**Split the claims before anything is sorted.** A finding that makes several claims is split with
+`record_repair_claims` (parent `<findingId>:original`, with a reason). A verdict on a claim the
+sort does not cover is refused, so a split found after the sort needs a new sort (below), and one
+made after the evidence makes that evidence stale. The original stays an obligation, so a partial
+fix never closes the whole finding.
 
 `repair_request` needs a sort that is current (nothing superseded it) and eligible (no holds).
 
 - **There is none:** the sort comes from `/triage-review`, which posts a `dual-sorted` sort — two
   sorters in distinct sessions, an arbitrator where they disagreed — when codemap is attached.
-  Run it over these findings. An agent cannot post an `owner-reviewed` sort: that one needs a
-  person's authorship and their exact source.
-- **It has holds:** read them. Only `implementation-defect` and `mechanical`, or a factual
-  refutation, are eligible. A design defect, an assumption, a scope judgment or a dependency on a
-  requirement is a person's decision first (`references/asking.md`), not something a verifier
-  can settle.
-- **The sort is wrong:** post a correction that names it as prior. Adding sites or claims is free;
-  dropping one needs a logged ruling (a decisions answer id) on why it is not an instance.
-
-A finding that makes several claims can be split with `record_repair_claims`. The original stays
-an obligation, so a partial fix never closes the whole finding.
+  Run it over these findings. An `owner-reviewed` sort needs a person's authorship and their exact
+  source: one an agent posts is held, and then stands in the way of the next sort.
+- **It has holds:** read them. Three shapes are eligible: `implementation-defect` or `mechanical`;
+  a factual refutation (`refutationSubtype: "factual"`); and a reviewer's refuted assumption
+  (`invalid` with `refutationSubtype: "assumed"`). A non-empty `restsOn` always holds. A design
+  defect, an assumption in the code, a scope judgment or a dependency on a requirement is a
+  person's decision first
+  (`references/asking.md`), not something a verifier can settle.
+- **The sort is wrong:** a correction is a whole new sort. Re-sort with `/triage-review`, naming
+  the current sort as `prior`, with a reason. Adding sites or claims is free; dropping one needs a
+  logged ruling (a decisions answer id) on why it is not an instance.
 
 ## 3. Evidence
 
 `record_repair_evidence` against the sort, by whoever ran the checks — usually the fixer.
 
-- **witness / base / fix commits**: the defect shown, the parent, the fix. All pinned and
-  reachable.
+- **witness / base / fix commits**: the defect shown, the parent, the fix — full shas, and present
+  in this clone before `repair_request`. A commit it cannot read is frozen into the request as
+  unknown, and that request can never be applied.
 - **reproducer runs** with `phase: "witness"` and `phase: "fix"`: the same command, the actual
   exit code and output — it **fails at the witness and passes at the fix**. Run them yourself
   before recording. Commands are data; codemap runs nothing, so a result you did not observe is
@@ -53,7 +65,8 @@ an obligation, so a partial fix never closes the whole finding.
 
 `repair_request` with the review, the sort id and the evidence id. It freezes everything and
 returns a request id. You are now the requester: you can never fill a slot of this request, but
-you may launch the verifiers.
+you may launch the verifiers. If a `begin` is open, `sync` now: a staged request is invisible to
+every verifier outside this session.
 
 ## 5. Two blind verifiers
 
@@ -64,37 +77,25 @@ Two ways, and only these two count.
 1. `repair_brief` with the review, the request id, `role: "verifier"` and the slot. It returns
    `launch`, a one-line prompt.
 2. Launch a fresh subagent whose prompt is **exactly `launch`, with nothing added before or
-   after**. Use an agent type that has the codemap tools. Never a fork: a fork inherits this
-   session. The two may run in parallel. Do not send either one anything else, and never relay one
-   verifier's result to the other.
-3. The subagent reads its own brief, runs the checks in a scratch worktree and calls
+   after**, and with `isolation: "worktree"` so its checkouts cannot move a live checkout (an
+   isolated subagent's transcript still passes codemap's check, measured 2026-10-06). Use an agent
+   type that has the codemap tools. Never a fork: a fork inherits this session. The two may run in
+   parallel. Do not send either one anything else, and never relay one verifier's result to the
+   other.
+3. The subagent reads its own brief, works in a scratch worktree at the pinned commits and calls
    `repair_verification`. That submission is **held** until you record it.
 4. Record it with `record_repair_verification`: the review, the request id, `role: "verifier"`, the
-   slot, the subagent's `agentId` (from its launch result), its `receipt`, and the `callId` — the
-   tool-use id of the subagent's own `repair_verification` call. The subagent cannot see that id;
-   take it from its transcript:
+   slot and the `receipt` the subagent got back, which it reports. codemap finds the subagent's
+   call that returned that receipt, and checks that its transcript shows the exact prompt and the
+   exact held submission. `pending` means the call is not on disk yet: record again in a moment
+   (for up to a minute). An error means the run will never count — a fork, a message sent to it
+   after launch, or a call this machine's transcripts do not show. Say so, and launch a new verifier
+   rather than resubmitting.
 
-   ```sh
-   t=$(find ~/.claude/projects -name "agent-<agentId>.jsonl" | head -1)
-   jq -r 'select(.type=="assistant") | .message.content[]?
-          | select(.type=="tool_use" and (.name|test("(^|__)repair_verification$"))) | .id' "$t"
-   ```
-
-   The receipt is in that call's result, which the subagent usually reports too:
-
-   ```sh
-   jq -r --arg id "<callId>" 'select(.type=="user") | .message.content[]?
-          | select(.type=="tool_result" and .tool_use_id==$id) | .content | tostring' "$t" \
-     | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -1
-   ```
-
-   codemap checks that the transcript shows the exact prompt, the exact held submission and that
-   receipt. `pending` means the transcript has not landed yet: wait and record again. An error
-   means the run does not count. Say so; do not resubmit for it.
-
-**B. Sessions a person starts.** Ask the person to open two fresh sessions and run
-`/codemap-verify <review>` in each. They claim the role and submit directly; nothing to record.
-Use this when subagents cannot reach the codemap tools, or when the person prefers it.
+**B. Sessions a person starts.** The request must be on the remote first (`sync`, step 4). Ask the
+person to open two fresh sessions and run `/codemap-verify <review>` in each. They claim the role,
+`pull`, and submit directly; nothing to record. `pull` before step 6 to see their runs. Use this
+when subagents cannot reach the codemap tools, or when the person prefers it.
 
 **Arbitration.** When `repair_pending` shows the two runs disagree, do the same with
 `role: "arbitrator"` and no slot. Its call is `repair_arbitration`, and it is recorded with

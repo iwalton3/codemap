@@ -5,18 +5,22 @@ they were shown and their own words. A summary of what they said is not one.
 
 ## Asking
 
-1. **Post first.** `post_round` with each decision's exact question (`payload`) and per option its
-   `effects`. The question text names its ref and every finding its options act on. If it answers
-   `alreadyRuled`, tell the person there is a standing ruling rather than asking again.
-2. **Ask where they are.** `questionnaire_list`: when `codemapOpen.open` is true, post the round
-   with a questionnaire, give the person its link, and wait with `questionnaire_wait`. Otherwise
-   ask with `AskUserQuestion`, using the returned `ask` payload **verbatim**. A paraphrase cannot
-   be matched.
-3. **Log it.** After every `AskUserQuestion`, `log_question` with its tool-use id and the round.
+1. **Decide where to ask, first.** `questionnaire_list`: when `codemapOpen.open` is true, the
+   round goes out with a questionnaire. A questionnaire is attached only when the round is posted,
+   so this comes before the post.
+2. **Post once.** `post_round` with each decision's exact question (`payload`), per option its
+   `effects`, and the questionnaire if step 1 chose one. The question text names its ref and every
+   finding its options act on. If it answers `alreadyRuled`, the round is posted anyway: codemap
+   learns of a standing ruling only by posting. Tell the person there is a standing ruling, and ask
+   them to withdraw the now-redundant question on the web. Do not withdraw it yourself.
+3. **Ask.** With a questionnaire, give the person its link and wait with `questionnaire_wait`.
+   Otherwise ask with `AskUserQuestion`, using the returned `ask` payload **verbatim**. A
+   paraphrase cannot be matched.
+4. **Log it.** After every `AskUserQuestion`, `log_question` with its tool-use id and the round.
    codemap reads the question and the answer from this session's transcript. Retrying is safe.
 
-The person may defer a batch into a questionnaire instead. Anyone on the team may answer it under
-their own name.
+The person may defer a batch into a questionnaire instead. That is a round posted with one, so it
+is decided before the post (step 1). Anyone on the team may answer it under their own name.
 
 ## Typed answers
 

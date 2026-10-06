@@ -30,12 +30,17 @@ defect moves with `promote_annotation`, which keeps its id and history.
 - **Somebody else's**: `corroborate` with a rationale. Disagreement is the signal, so refute
   plainly.
 - **Wrong wording, target or severity**: `revise_finding`. It appends; the old text stays. A
-  confirmed finding's severity is not yours to re-rate.
+  confirmed finding's severity is not yours to re-rate. A finding already posted to the pull
+  request is refused unless you pass `allowPostEdit`, which changes the map and not the posted
+  comment; usually, reply on the pull request instead.
 - **Its symbol is missing**: check `target.where` first. `offTree` is fine. For `retained` or
   `lost`, propose `relocate_finding`.
 - **No witness**: `rewitness_finding`, after reading the finding against the current code. It is
   the one repair an agent makes on its own.
-- **`held`**: a person's decision holds it. Do not work on it.
+- **`held`**: a person's decision holds it. Do not work on it — unless a person assigned it to
+  you themselves after the hold began (`review_queue` keeps those, still marked `held`), which
+  releases an ordinary hold. A hold waiting on a comparison of the person's words is never
+  released that way.
 
 ## The exits
 

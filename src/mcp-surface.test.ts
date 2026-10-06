@@ -44,6 +44,7 @@ const SKILL_VOCAB = new Set([
   "held", "holds", "pending", "refused", "eligible", "receipt", "payload", "effects", "ask", "inspected",
   "result", "fixed", "answered", "declined", "withdraw", "drive_by", "mechanical",
   "retained", "lost", "live", "moved", "unjudgeable", "due", "woken",
+  "verified", "checked", "invalid",                          // review trust levels, a sort classification
 ]);
 
 /** `use \`x\``, `see \`x\``, `with \`x\`` … — a reference to something callable. */
