@@ -354,6 +354,26 @@ standard (`draft_spec`, `add_operation`, `sign_off_operation`, `ratify_spec`,
 `declare_pointer`, `record_audit`, `raise_problem`, `standard_queue`,
 `scrub_plan`, …).
 
+### The `codemap` skill
+
+Ships at **`skills/codemap/`**. The tool descriptions say what each tool does;
+this says how they fit together, so you do not have to explain codemap's
+processes to an agent each time. It loads on its own when the work touches
+findings, bugs, review queues, repair verification or rulings, and carries:
+
+- the acts that are a person's and never an agent's (closing a finding,
+  backlogging one, signing, lowering a stake);
+- a table from what you asked ("were these findings actually fixed?", "what is
+  open on this PR?") to the procedure or the other skill that does it;
+- the procedures that span many tools: verifying a repair with two blind
+  subagents end to end, a finding's exits, and asking you so your answer
+  becomes a ruling.
+
+```sh
+mkdir -p ~/.claude/skills
+cp -r ~/codemap/skills/codemap ~/.claude/skills/
+```
+
 ### The `codemap-audit` skill
 
 Ships in this repo at **`skills/codemap-audit/SKILL.md`**, beside the other

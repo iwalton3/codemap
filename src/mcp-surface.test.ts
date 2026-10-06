@@ -40,6 +40,10 @@ const SKILL_VOCAB = new Set([
   "prior", "evidence", "observations", "assertedby",       // record fields
   "fork", "launch", "follows",                              // triage-review / ez-plan prose
   "available", "unavailable", "unknown", "unmeasured",      // codemap-workflow capability states
+  // the codemap skill: result fields and values, close_finding results, backlog buckets
+  "held", "holds", "pending", "refused", "eligible", "receipt", "payload", "effects", "ask", "inspected",
+  "result", "fixed", "answered", "declined", "withdraw", "drive_by", "mechanical",
+  "retained", "lost", "live", "moved", "unjudgeable", "due", "woken",
 ]);
 
 /** `use \`x\``, `see \`x\``, `with \`x\`` … — a reference to something callable. */
@@ -127,8 +131,13 @@ test("the skills name only tools that exist", () => {
   const dir = "skills";
   const files = readdirSync(dir, { withFileTypes: true })
     .filter((d) => d.isDirectory())
-    // codemap-workflow.md is where triage-review and ez-plan name codemap's tools.
-    .flatMap((d) => [join(dir, d.name, "SKILL.md"), join(dir, d.name, "references", "codemap-workflow.md")])
+    // triage-review and ez-plan name codemap's tools in codemap-workflow.md only; the codemap
+    // skill names them in every reference.
+    .flatMap((d) => {
+      const refs = join(dir, d.name, "references");
+      const read = d.name === "codemap" && existsSync(refs) ? readdirSync(refs).filter((f) => f.endsWith(".md")) : ["codemap-workflow.md"];
+      return [join(dir, d.name, "SKILL.md"), ...read.map((f) => join(refs, f))];
+    })
     .filter((f) => existsSync(f));
   assert.ok(files.length, "no skills found — if they moved, this sweep is now vacuous");
 
