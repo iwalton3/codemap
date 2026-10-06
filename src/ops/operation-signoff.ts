@@ -9,7 +9,7 @@ import { foldStandard, lawScope, standardDoor, standardScope } from '../shared-s
 import { materializeStandard } from '../standard-publish.js';
 import { decisionScope, foldDecisions, answerHasCurrentAuthority, rulerOf, intentCandidates, comparisonRestricts } from '../shared-decisions.js';
 import { operationContent, framingContent, contentDiff } from '../schema.js';
-import { locateReaderCall, verifyReaderCall, type ReaderExpectation } from '../reader-call.js';
+import { locateReaderCall, recordedAgain, verifyReaderCall, type ReaderExpectation } from '../reader-call.js';
 import { saveReaderRequest, readerRequest, holdReaderReceipt, readerReceipts, settleReaderReceipt } from '../reader-local.js';
 import { readProposalWitnesses } from '../store.js';
 import { operationSignoffDisplay, operationSignoffReaderPrompt, operationSignoffKey, signoffHash, validateOperationSignoff, SIGN_OPERATION, type OperationSignoffCapsule } from '../operation-signoff.js';
@@ -168,10 +168,6 @@ export function recordOperationSignoffVerdict(root: string, input: { requestId: 
   const held = readerReceipts(root, key).find(r => r.receipt === input.receipt);
   if (!held)
     return { error: 'no held operation sign-off reader receipt' };
-  if (held.state === 'recorded')
-    return { ok: true as const, recorded: true as const, existing: true as const, callId: held.call };
-  if (held.state !== 'pending')
-    return { error: `reader receipt is ${held.state}: ${held.why ?? 'not actionable'}` };
   let body: { verdict: string; rationale: string };
   try {
     body = JSON.parse(held.body);
@@ -179,6 +175,10 @@ export function recordOperationSignoffVerdict(root: string, input: { requestId: 
   catch {
     return { error: 'malformed reader verdict' };
   }
+  if (held.state === 'recorded')
+    return recordedAgain(expect(brief, held.receipt, body), held.heldAt, held.call, dir);
+  if (held.state !== 'pending')
+    return { error: `reader receipt is ${held.state}: ${held.why ?? 'not actionable'}` };
   const verified = locateReaderCall(expect(brief, held.receipt, body), held.heldAt, dir);
   if ('pending' in verified)
     return { pending: true as const, reason: verified.pending };

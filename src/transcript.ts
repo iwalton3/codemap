@@ -448,7 +448,10 @@ export function readSubagentCall(agentId: string, callId: string, tool: RegExp, 
   const results = own.filter((e) => e.type === "user" && Array.isArray(e.message?.content))
     .flatMap((e) => e.message.content.filter((x: any) => x?.type === "tool_result" && x.tool_use_id === callId).map((x: any) => ({ e, x })));
   if (results.length !== 1) return { unverified: `subagent ${agentId}'s call ${callId} has no single result` };
-  return { reader, input: calls[0]!.input, result: resultObject(results[0]!.e.toolUseResult) ?? resultObject(results[0]!.x.content) };
+  // A row's `toolUseResult` is the row's, not the block's: trust it only when the row holds one result.
+  const { e, x } = results[0]!;
+  const single = e.message.content.filter((y: any) => y?.type === "tool_result").length === 1;
+  return { reader, input: calls[0]!.input, result: (single ? resultObject(e.toolUseResult) : undefined) ?? resultObject(x.content) };
 }
 
 /** How long a held submission may go unfound on disk before it is invalid. The call reaches its

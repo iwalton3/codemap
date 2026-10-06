@@ -31,3 +31,13 @@ export function locateReaderCall(e: ReaderExpectation, heldAt: string, dir?: str
   if ("pending" in found) return found;
   return isUnverified(found) ? { error: found.unverified } : check(found, e);
 }
+
+/** A retry of a record that already landed answers with the same reference the first success did:
+ *  a caller whose first response was lost still needs both ids for the apply that follows. */
+export function recordedAgain(e: ReaderExpectation, heldAt: string, recordedCall: string | undefined, dir?: string) {
+  const again = locateReaderCall(e, heldAt, dir);
+  if ("callId" in again && again.callId === recordedCall)
+    return { ok: true as const, recorded: true as const, existing: true as const, agentId: again.agentId, callId: again.callId };
+  const why = "error" in again ? again.error : "pending" in again ? again.pending : `call ${again.callId} returned it`;
+  return { error: `the reader was recorded from call ${recordedCall}, which cannot be read back here: ${why}` };
+}

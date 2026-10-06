@@ -325,3 +325,18 @@ test("D3: an application reader recorded by receipt alone; a fork, or a call nev
     u.cleanup();
   }
 });
+
+test("a recorded retry returns the whole reader reference, so a lost first response is recoverable (Codex, 2026-10-06)", async () => {
+  const u = await fixture();
+  try {
+    await asAgent(async () => {
+      const brief = await applicationReaderBrief(u.root, { issue: u.issue, answerId: u.answer, slot: 1 }, u.tx) as any;
+      const held = submitApplicationVerdict(u.root, { requestId: brief.requestId, verdict: "sound", rationale: "The person rejects the premise." }) as any;
+      const ref = transcript(u.tx, brief.prompt, brief.requestId, "sound", "The person rejects the premise.", held.receipt);
+      assert.equal((recordApplicationVerdict(u.root, ref, u.tx) as any).recorded, true);
+      const again = recordApplicationVerdict(u.root, { requestId: ref.requestId, receipt: ref.receipt }, u.tx) as any;
+      assert.equal(again.existing, true, JSON.stringify(again));
+      assert.deepEqual([again.agentId, again.callId], [ref.agentId, ref.callId]);
+    });
+  } finally { u.cleanup(); }
+});

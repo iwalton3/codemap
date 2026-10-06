@@ -181,3 +181,14 @@ test('D3: a sign-off reader whose call never reaches disk is pending only within
     u.cleanup();
   }
 });
+
+test('a recorded retry returns the whole reader reference, so a lost first response is recoverable (Codex, 2026-10-06)', async () => {
+  const u = await fixture();
+  try {
+    const ref = await reader(u);
+    const again = recordOperationSignoffVerdict(u.b.repo, { requestId: ref.requestId, receipt: ref.receipt }, u.tx) as any;
+    assert.equal(again.existing, true, JSON.stringify(again));
+    assert.equal(again.agentId, ref.agentId);
+    assert.equal(again.callId, ref.callId);
+  } finally { u.cleanup(); }
+});

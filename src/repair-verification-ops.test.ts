@@ -11,7 +11,7 @@ import { readFinding, readAnchorStore, writeLocalLink } from "./store.js";
 import * as ops from "./ops.js";
 import type { RepairClaimVerdict } from "./repair-verification.js";
 import type { RepairSortInput, RepairEvidenceInput } from "./repair-records.js";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -297,6 +297,27 @@ test("a subagent verifier counts only from its own transcript; the requester's s
     const result = records.verificationResults.find((r) => r.findingId === f.ids[0]);
     assert.equal(result?.complete, true);
     assert.ok(!("launchedByParticipant" in (result ?? {})), "the fixer-launched grade is gone");
+  } finally { discard(dir); f.t.dispose(); }
+});
+
+test("a result row holding two results is read by the matching block, not the row-wide result (Codex, 2026-10-06)", async () => {
+  const f = await fixture();
+  const dir = mkdtempSync(join(tmpdir(), "codemap-repair-tx-"));
+  try {
+    const brief = await repairVerificationBrief(f.root, 7, { requestId: f.requestId, role: "verifier", slot: 1 }, f.orchestrator) as { launch: string };
+    ok(brief);
+    const results = f.results();
+    const held = await submitRepairVerification(f.root, 7, { requestId: f.requestId, slot: 1, results }, f.orchestrator) as { held: boolean; receipt: string };
+    const agentId = "a6666666", callId = subagentTranscript(dir, agentId, brief.launch, "repair_verification", { review: "7", requestId: f.requestId, slot: 1, results }, held);
+    // Parallel calls: one row carries both results, and its row-wide result belongs to the OTHER call.
+    const file = join(dir, "5e55a0a0-0000-0000-0000-000000000006", "subagents", `agent-${agentId}.jsonl`);
+    const rows = readFileSync(file, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    rows[1].message.content.unshift({ type: "tool_use", id: "toolu_other", name: "Bash", input: { command: "true" } });
+    rows[2].message.content.push({ type: "tool_result", tool_use_id: "toolu_other", content: "done" });
+    rows[2].toolUseResult = { stdout: "done" };
+    writeFileSync(file, rows.map((r) => JSON.stringify(r)).join("\n") + "\n");
+    assert.equal(callId, `toolu_${agentId}`);
+    ok(await recordRepairVerification(f.root, 7, { requestId: f.requestId, role: "verifier", slot: 1, receipt: held.receipt }, dir));
   } finally { discard(dir); f.t.dispose(); }
 });
 
