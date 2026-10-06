@@ -81,6 +81,45 @@ export function sessionHolding(id: string, dir: string = transcriptDir()): strin
   return { unverified: `no session in ${dir} holds ${id}` };
 }
 
+/** Top-level transcripts (never a subagent's) written to at or after `since`, or only `session`'s. */
+function sessionsSince(since: string, dir: string, session?: string): string[] | Unverified {
+  if (session !== undefined) return SESSION.test(session) ? [session] : { unverified: `not a session id: ${JSON.stringify(session)}` };
+  // Only saves scans. A file's mtime comes from a coarser clock than Date.now(), so one written
+  // just after `since` can read as older; each entry's own timestamp is what decides.
+  const floor = Date.parse(since) - 60_000;
+  try {
+    return readdirSync(dir).filter((f) => f.endsWith(".jsonl") && SESSION.test(f.slice(0, -6)))
+      .filter((f) => { try { return !(statSync(join(dir, f)).mtimeMs < floor); } catch { return false; } })
+      .map((f) => f.slice(0, -6));
+  } catch { return { unverified: `no transcripts in ${dir}` }; }
+}
+
+/**
+ * Every `AskUserQuestion` call sent after `since` that asks at least one of `questions` — how
+ * `log_question` finds a call the agent cannot name: the tool_use id is in the transcript file and
+ * not in what the model sees (measured 2026-10-06). The caller refuses more than one.
+ */
+export function findAskCalls(questions: AskedQuestion[], since: string, dir: string = transcriptDir(), session?: string):
+  { session: string; toolUseId: string; at: string }[] | Unverified {
+  const sessions = sessionsSince(since, dir, session);
+  if (isUnverified(sessions)) return sessions;
+  const out: { session: string; toolUseId: string; at: string }[] = [];
+  for (const s of sessions) {
+    const all = entries(s, dir);
+    if (isUnverified(all)) continue;
+    for (const e of all) {
+      if (e.type !== "assistant" || e.isSidechain === true || !Array.isArray(e.message?.content)) continue;
+      const at = stampOf(e);
+      if (isUnverified(at) || !(Date.parse(at) > Date.parse(since))) continue;
+      for (const b of e.message.content) {
+        if (b?.type !== "tool_use" || b.name !== "AskUserQuestion" || typeof b.id !== "string" || !Array.isArray(b.input?.questions)) continue;
+        if (b.input.questions.some((q: unknown) => isQuestion(q) && questions.some((p) => sameQuestion(q, p)))) out.push({ session: s, toolUseId: b.id, at });
+      }
+    }
+  }
+  return out.sort((a, b) => a.at.localeCompare(b.at));
+}
+
 /** An entry's own timestamp. An answer is bound only to a question posted before it, so an
  *  entry without one cannot be bound at all. */
 const stampOf = (e: Record<string, any>): string | Unverified =>
@@ -358,6 +397,32 @@ export function readMessage(session: string, entryId: string, dir: string = tran
   if (isUnverified(all)) return all;
   const e = all.find((x) => x.uuid === entryId);
   if (!e) return { unverified: `no entry ${entryId} in session ${session}` };
+  return messageOf(session, entryId, e);
+}
+
+/**
+ * Every message the person typed after `since` whose WHOLE text is `words` (edge whitespace
+ * aside) — how `relay_answer` finds a message the agent can quote but not name. Part of a
+ * message never matches, for the reason `readMessage` copies whole ones. The caller refuses
+ * more than one.
+ */
+export function findMessages(words: string, since: string, dir: string = transcriptDir(), session?: string): PersonMessage[] | Unverified {
+  const sessions = sessionsSince(since, dir, session);
+  if (isUnverified(sessions)) return sessions;
+  const out: PersonMessage[] = [];
+  for (const s of sessions) {
+    const all = entries(s, dir);
+    if (isUnverified(all)) continue;
+    for (const e of all) {
+      if (typeof e.uuid !== "string") continue;
+      const m = messageOf(s, e.uuid, e);
+      if (!isUnverified(m) && m.text.trim() === words.trim() && Date.parse(m.at) > Date.parse(since)) out.push(m);
+    }
+  }
+  return out.sort((a, b) => a.at.localeCompare(b.at));
+}
+
+function messageOf(session: string, entryId: string, e: Record<string, any>): PersonMessage | Unverified {
   if (e.isSidechain === true) return { unverified: "the entry is a subagent's" };
   if (e.type === "user") {
     if (e.origin?.kind !== "human") return { unverified: `the entry's origin is ${JSON.stringify(e.origin?.kind ?? null)}, not the person` };

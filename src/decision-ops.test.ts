@@ -420,6 +420,72 @@ test("an unverifiable call writes nothing", async () => {
   } finally { u.cleanup(); }
 });
 
+test("I12: log_question finds its own call from the round's payload — an agent never sees the tool_use id", async () => {
+  const u = await universe();
+  try {
+    const [f, g] = [await withFinding(u), await withFinding(u)];
+    await asAgent(async () => {
+      await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f), decision("d2", g, {}, "D2")] });
+      const t = transcript(u.transcripts);
+      // Asked before the round was posted: not a candidate.
+      t.ask("toolu_early", [payloadFor(f)], { [payloadFor(f).question]: "Real, fix it" }, new Date(Date.now() - 60_000).toISOString());
+      t.ask("toolu_1", [payloadFor(f)], { [payloadFor(f).question]: "Not a defect" });
+      const r = await logQuestion(u.root, { round: "R1" }, {}, u.transcripts) as any;
+      assert.equal(r.ok, true, JSON.stringify(r));
+      assert.equal(r.answered[0].verified, true);
+      assert.ok((await decisionRounds(u.root) as any).ruledNotCarriedOut.some((x: any) => x.finding === f && x.on === "settle"));
+      // Logged now, so a second call for the round is the only unlogged one.
+      t.ask("toolu_2", [payloadFor(g, "D2")], { [payloadFor(g, "D2").question]: "Real, fix it" });
+      const two = await logQuestion(u.root, { round: "R1" }, {}, u.transcripts) as any;
+      assert.equal(two.answered.find((a: any) => hasDecisionLabel(a.decision, "d2"))?.recorded, true, JSON.stringify(two));
+      // Everything logged: the newest is the retry, and it records nothing new.
+      const again = await logQuestion(u.root, { round: "R1" }, {}, u.transcripts) as any;
+      assert.equal(again.retried, true, JSON.stringify(again));
+    });
+  } finally { u.cleanup(); }
+});
+
+test("I12: two unlogged calls asking the round's questions are refused by name, never guessed", async () => {
+  const u = await universe();
+  try {
+    const f = await withFinding(u);
+    await asAgent(async () => {
+      await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f)] });
+      const t = transcript(u.transcripts);
+      t.ask("toolu_a", [payloadFor(f)], { [payloadFor(f).question]: "Not a defect" });
+      t.ask("toolu_b", [payloadFor(f)], { [payloadFor(f).question]: "Real, fix it" });
+      const r = await logQuestion(u.root, { round: "R1" }, {}, u.transcripts) as any;
+      assert.match(String(err(r)), /toolu_a.*toolu_b/, JSON.stringify(r));
+      assert.equal((await decisionRound(u.root, "R1") as any).decisions[0].answers.length, 0);
+      const none = await logQuestion(u.root, { round: "R1" }, {}, join(u.transcripts, "missing")) as any;
+      assert.equal(none.ok, false, "no call found writes nothing");
+    });
+  } finally { u.cleanup(); }
+});
+
+test("I12: relay_answer finds the person's message by its whole words", async () => {
+  const u = await universe();
+  try {
+    const [f, g] = [await withFinding(u), await withFinding(u)];
+    await asAgent(async () => {
+      await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f), decision("d2", g, {}, "D2")] });
+      const t = transcript(u.transcripts);
+      t.typed("m0", "D1 B", new Date(Date.now() - 60_000).toISOString());
+      t.typed("m1", "D1 B");
+      const r = await relayAnswer(u.root, { round: "R1", decision: "d1", words: "D1 B" }, {}, u.transcripts) as any;
+      assert.equal(r.verified, true, JSON.stringify(r));
+      assert.equal(r.awaitsReading, true);
+      // Part of a message is not the message: recorded unverified, as before.
+      t.typed("m2", "D2 A, but not the tests");
+      const part = await relayAnswer(u.root, { round: "R1", decision: "d2", words: "D2 A" }, {}, u.transcripts) as any;
+      assert.equal(part.verified, false, JSON.stringify(part));
+      t.typed("m3", "same words");
+      t.typed("m4", "same words");
+      assert.match(String(err(await relayAnswer(u.root, { round: "R1", decision: "d2", words: "same words" }, {}, u.transcripts))), /m3.*m4/);
+    });
+  } finally { u.cleanup(); }
+});
+
 test("round five: a related question does not erase an earlier answer logged later", async () => {
   const u = await universe();
   try {
