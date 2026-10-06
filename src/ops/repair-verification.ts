@@ -6,7 +6,8 @@
  * role before anything else and then submits directly; or a SUBAGENT an agent launches with the
  * exact launch prompt `repair_brief` issues, whose submission is held on this machine until the
  * session that launched it records it with `record_repair_verification`, which checks the
- * subagent's own transcript. A subagent the fixer launched counts, at a weaker grade.
+ * subagent's own transcript. Whoever launched it, there is no second grade (R2,
+ * docs/repair-verification.md).
  */
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
