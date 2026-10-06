@@ -301,6 +301,15 @@ test("a subagent verifier counts only from its own transcript; the requester's s
   } finally { discard(dir); f.t.dispose(); }
 });
 
+test("F15: the brief sends the verifier to a scratch worktree, never a live checkout — a subagent shares the launcher's", async () => {
+  const f = await fixture();
+  try {
+    const brief = await repairVerificationBrief(f.root, 7, { requestId: f.requestId, role: "verifier", slot: 1 }, f.orchestrator) as { instruction: string };
+    ok(brief);
+    assert.match(brief.instruction, /scratch worktree at the pinned commits .*never in anyone's live checkout/);
+  } finally { f.t.dispose(); }
+});
+
 test("D3: a recording is `pending` only while its call may still reach disk; never found, or a fork, is an error that burns the receipt", async () => {
   const f = await fixture();
   const dir = mkdtempSync(join(tmpdir(), "codemap-repair-tx-"));
