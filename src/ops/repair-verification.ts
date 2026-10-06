@@ -29,7 +29,7 @@ import { canonicalIssueKey } from "../decision-issues.js";
 import { workEligibility } from "./decision-holds.js";
 import { issueClaimHash } from "../ruling-application.js";
 import { gitBin } from "../git.js";
-import { canonical, isUnverified, readSubagentCall, transcriptDir } from "../transcript.js";
+import { canonical, isUnverified, readReceiptCall, transcriptDir } from "../transcript.js";
 import { saveReaderRequest, readerRequest, holdReaderReceipt, readerReceipts, settleReaderReceipt, type ReaderPurpose } from "../reader-local.js";
 import { verifierIdentityKey, type RepairConnection, type VerifierIdentity } from "../verifier-boundary.js";
 import {
@@ -339,29 +339,35 @@ export async function arbitrateRepairVerification(root: string, review: number |
 /**
  * Record a subagent's held verification or arbitration. Its transcript must show it was launched
  * with exactly the issued prompt, made the submit call with exactly what was held, and got the
- * held receipt back. Recorded as the subagent — `child` — on the connection it submitted on.
+ * held receipt back. The call is found from the receipt (`readReceiptCall`): `pending` only while
+ * it may still be on its way to disk, an error once it will never count. Recorded as the
+ * subagent — `child` — on the connection it submitted on.
  */
 export async function recordRepairVerification(root: string, review: number | string,
-  input: { requestId: string; role: "verifier" | "arbitrator"; slot?: 1 | 2; receipt: string; agentId: string; callId: string }, dir: string = transcriptDir()) {
+  input: { requestId: string; role: "verifier" | "arbitrator"; slot?: 1 | 2; receipt: string }, dir: string = transcriptDir()) {
   const job: Job = { requestId: input.requestId, role: input.role, ...(input.role === "verifier" ? { slot: input.slot } : {}) };
   const key = { purpose: purposeOf(job), requestId: jobKey(job) };
   const launch = readerRequest(root, key);
   const held = readerReceipts(root, key).find((r) => r.receipt === input.receipt);
   if (!launch || !held || held.state !== "pending") return { error: "no pending held submission with that receipt for this job" };
   const { body, session } = JSON.parse(held.body) as { body: Record<string, unknown>; session: string };
-  const call = readSubagentCall(input.agentId, input.callId, job.role === "verifier" ? /(^|__)repair_verification$/ : /(^|__)repair_arbitration$/, dir);
-  if (isUnverified(call)) return { pending: true as const, reason: call.unverified };
+  const call = readReceiptCall(job.role === "verifier" ? /(^|__)repair_verification$/ : /(^|__)repair_arbitration$/, input.receipt, held.heldAt, dir);
+  if ("pending" in call) return { pending: true as const, reason: call.pending };
+  if (isUnverified(call)) {
+    settleReaderReceipt(root, key, input.receipt, "invalid", call.unverified);
+    return { error: call.unverified };
+  }
   const expected = { review: String(review), requestId: job.requestId, ...(job.slot ? { slot: job.slot } : {}), ...body };
   const reason = call.reader.prompt !== launch ? "the subagent was not launched with exactly the issued prompt"
     : canonical({ ...call.input, review: String(call.input?.review) }) !== canonical(expected) ? "the subagent's submission differs from what was held"
     : call.result?.receipt !== input.receipt ? "the subagent's call did not return this receipt" : undefined;
   if (reason) {
-    settleReaderReceipt(root, key, input.receipt, "invalid", reason, input.callId);
+    settleReaderReceipt(root, key, input.receipt, "invalid", reason, call.callId);
     return { error: reason };
   }
   const actor = requireActor(root);
   if ("error" in actor) return actor;
-  const identity: VerifierIdentity = { principal: actor.principal, harness: "claude-subagent", session, child: input.agentId };
+  const identity: VerifierIdentity = { principal: actor.principal, harness: "claude-subagent", session, child: call.agentId };
   const recorded = await append(root, review, identity, async (events) => {
     const request = foldRepairVerification(events).requests.find((r) => r.id === job.requestId);
     if (!request) return { error: "unknown request" };
@@ -375,7 +381,7 @@ export async function recordRepairVerification(root: string, review: number | st
       runIds: body.runIds as [string, string], addresses: body.addresses as RepairVerificationArbitration["addresses"] };
     return { kind: "repair.verification-arbitrated", subject: data.id, data: { ...data } };
   });
-  if (!("error" in recorded)) settleReaderReceipt(root, key, input.receipt, "recorded", undefined, input.callId);
+  if (!("error" in recorded)) settleReaderReceipt(root, key, input.receipt, "recorded", undefined, call.callId);
   return recorded;
 }
 

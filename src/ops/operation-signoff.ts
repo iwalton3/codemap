@@ -1,6 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { requireActor } from '../identity.js';
 import type { SidecarConfig } from '../sidecar-config.js';
 import type { Operation, Spec, AskedQuestion } from '../schema.js';
@@ -11,7 +9,7 @@ import { foldStandard, lawScope, standardDoor, standardScope } from '../shared-s
 import { materializeStandard } from '../standard-publish.js';
 import { decisionScope, foldDecisions, answerHasCurrentAuthority, rulerOf, intentCandidates, comparisonRestricts } from '../shared-decisions.js';
 import { operationContent, framingContent, contentDiff } from '../schema.js';
-import { readReader, isUnverified, transcriptDir } from '../transcript.js';
+import { locateReaderCall, verifyReaderCall, type ReaderExpectation } from '../reader-call.js';
 import { saveReaderRequest, readerRequest, holdReaderReceipt, readerReceipts, settleReaderReceipt } from '../reader-local.js';
 import { readProposalWitnesses } from '../store.js';
 import { operationSignoffDisplay, operationSignoffReaderPrompt, operationSignoffKey, signoffHash, validateOperationSignoff, SIGN_OPERATION, type OperationSignoffCapsule } from '../operation-signoff.js';
@@ -134,80 +132,17 @@ export function submitOperationSignoffVerdict(root: string, input: {
   const held = holdReaderReceipt(root, { purpose: PURPOSE, requestId: input.requestId }, receipt, JSON.stringify({ verdict: input.verdict, rationale: input.rationale }));
   return 'error' in held ? held : { ok: true as const, held: true as const, receipt };
 }
-interface VerifiedCall {
-  agentId: string;
-  callId: string;
-  session: string;
-  launch: string;
-  launchedAt: string;
-}
-const resultObject = (v: unknown): any => {
-  if (v && typeof v === "object") {
-    if (Array.isArray(v))
-      return resultObject(v.find((x) => x?.type === "text")?.text);
-    if ((v as any).content && !(v as any).held)
-      return resultObject((v as any).content);
-    return v;
-  }
-  if (typeof v === "string") {
-    try {
-      return resultObject(JSON.parse(v));
-    }
-    catch {
-      return undefined;
-    }
-  }
-  return undefined;
-};
-function verifyCall(brief: Brief, receipt: string, body: {
-  verdict: string;
-  rationale: string;
-}, agentId: string, callId: string, dir: string | undefined): VerifiedCall | {
-  error: string;
-} {
-  dir ??= transcriptDir();
-  const reader = readReader(agentId, callId, dir);
-  if (isUnverified(reader))
-    return { error: reader.unverified };
-  if (reader.prompt !== brief.prompt)
-    return { error: "reader launch did not use the exact issued operation sign-off brief" };
-  let lines: any[];
-  try {
-    lines = readFileSync(join(dir, reader.session, "subagents", `agent-${agentId}.jsonl`), "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line));
-  }
-  catch {
-    return { error: "reader transcript is unreadable" };
-  }
-  const calls = lines.filter((e) => e.type === "assistant" && e.isSidechain === true && e.agentId === agentId)
-    .flatMap((e) => (e.message?.content ?? []).filter((x: any) => x?.type === "tool_use" && x.id === callId).map((x: any) => ({ e, x })));
-  if (calls.length !== 1 || !/(^|__)submit_operation_signoff_verdict$/.test(calls[0]!.x.name ?? ""))
-    return { error: "reader's operation sign-off submit call was not found uniquely" };
-  const submitted = calls[0]!.x.input;
-  if (submitted?.requestId !== brief.requestId || submitted?.verdict !== body.verdict || submitted?.rationale !== body.rationale)
-    return { error: "reader's submitted verdict differs from the held receipt" };
-  const results = lines.filter((e) => e.type === "user" && e.isSidechain === true && e.agentId === agentId
-    && Array.isArray(e.message?.content) && e.message.content.some((x: any) => x?.type === "tool_result" && x.tool_use_id === callId));
-  if (results.length !== 1)
-    return { error: "reader's submit call has no unique result" };
-  const result = results[0]!;
-  const blocks = Array.isArray(result.message?.content) ? result.message.content.filter((x: any) => x?.type === "tool_result") : [];
-  if (blocks.length !== 1)
-    return { error: "reader submit result is ambiguous" };
-  const parsed = resultObject(result.toolUseResult) ?? resultObject(blocks[0]!.content);
-  if (parsed?.ok !== true || parsed?.held !== true || parsed?.receipt !== receipt)
-    return { error: "reader's successful submit receipt was not found" };
-  return { agentId, callId, session: reader.session, launch: reader.toolUseId, launchedAt: reader.launchedAt };
-}
-function verifiedReceipt(root: string, ref: OperationSignoffReceiptRef, dir: string | undefined, recorded = true) {
+const TOOL = /(^|__)submit_operation_signoff_verdict$/;
+const expect = (brief: Brief, receipt: string, body: { verdict: string; rationale: string }): ReaderExpectation =>
+  ({ tool: TOOL, what: 'operation sign-off', prompt: brief.prompt, requestId: brief.requestId, receipt, body });
+function verifiedReceipt(root: string, ref: OperationSignoffReceiptRef, dir: string | undefined) {
   const brief = parsedBrief(root, ref?.requestId);
   if (!brief)
     return { error: 'operation reader brief is missing' };
   const held = readerReceipts(root, { purpose: PURPOSE, requestId: ref.requestId }).find(r => r.receipt === ref.receipt);
   if (held?.state === 'recorded' && held.call !== ref.callId) return {error:'reader receipt was recorded from another call'};
-  if (!held || (recorded && (held.state !== 'recorded' || held.call !== ref.callId)))
+  if (!held || held.state !== 'recorded')
     return { error: 'operation reader receipt is not recorded and verified' };
-  if (!['pending', 'recorded'].includes(held.state))
-    return { error: 'reader receipt is not actionable' };
   let body: {
     verdict: 'sound' | 'unsound';
     rationale: string;
@@ -218,17 +153,41 @@ function verifiedReceipt(root: string, ref: OperationSignoffReceiptRef, dir: str
   catch {
     return { error: 'malformed reader verdict' };
   }
-  const call = verifyCall(brief, ref.receipt, body, ref.agentId, ref.callId, dir);
+  const call = verifyReaderCall(expect(brief, ref.receipt, body), ref.agentId, ref.callId, dir);
   if ('error' in call)
     return call;
   return { brief, body, call };
 }
-export function recordOperationSignoffVerdict(root: string, input: OperationSignoffReceiptRef, dir?: string) {
-  const checked = verifiedReceipt(root, input, dir, false);
-  if ('error' in checked)
-    return { pending: true as const, reason: checked.error };
-  const settled = settleReaderReceipt(root, { purpose: PURPOSE, requestId: input.requestId }, input.receipt, 'recorded', undefined, input.callId);
-  return 'error' in settled ? settled : { ok: true as const, recorded: true as const };
+/** Find the call that returned the held receipt and verify it; `pending` only within the grace.
+ *  Returns the ids `apply_operation_signoff` takes in its reader ref. */
+export function recordOperationSignoffVerdict(root: string, input: { requestId: string; receipt: string }, dir?: string) {
+  const brief = parsedBrief(root, input?.requestId);
+  if (!brief)
+    return { error: 'operation reader brief is missing' };
+  const key = { purpose: PURPOSE, requestId: input.requestId };
+  const held = readerReceipts(root, key).find(r => r.receipt === input.receipt);
+  if (!held)
+    return { error: 'no held operation sign-off reader receipt' };
+  if (held.state === 'recorded')
+    return { ok: true as const, recorded: true as const, existing: true as const, callId: held.call };
+  if (held.state !== 'pending')
+    return { error: `reader receipt is ${held.state}: ${held.why ?? 'not actionable'}` };
+  let body: { verdict: string; rationale: string };
+  try {
+    body = JSON.parse(held.body);
+  }
+  catch {
+    return { error: 'malformed reader verdict' };
+  }
+  const verified = locateReaderCall(expect(brief, held.receipt, body), held.heldAt, dir);
+  if ('pending' in verified)
+    return { pending: true as const, reason: verified.pending };
+  if ('error' in verified) {
+    settleReaderReceipt(root, key, input.receipt, 'invalid', verified.error);
+    return verified;
+  }
+  const settled = settleReaderReceipt(root, key, input.receipt, 'recorded', undefined, verified.callId);
+  return 'error' in settled ? settled : { ok: true as const, recorded: true as const, agentId: verified.agentId, callId: verified.callId };
 }
 export async function applyOperationSignoff(root: string, input: {
   operationId: string;

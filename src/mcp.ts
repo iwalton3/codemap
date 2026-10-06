@@ -236,10 +236,11 @@ const APPLICATION_RECEIPT_REF = {
   type: "object", description: "A recorded independent reader's exact request and successful submit-call receipt.",
   properties: {
     requestId: { type: "string" }, receipt: { type: "string" },
-    agentId: { type: "string", description: "The independently launched subagent's ID." },
-    callId: { type: "string", description: "That subagent's submit_application_verdict tool-use ID." },
+    agentId: { type: "string", description: "The independently launched subagent's ID, as the record tool returned it." },
+    callId: { type: "string", description: "That subagent's submit call id, as the record tool returned it." },
   }, required: ["requestId", "receipt", "agentId", "callId"], additionalProperties: false,
 };
+const RECORD_BY_RECEIPT = obj({ requestId: { type: "string" }, receipt: { type: "string", description: "The receipt the reader's submit call returned." } }, ["requestId", "receipt"]);
 
 const repairString = { type: "string" };
 const repairStrings = { type: "array", items: repairString };
@@ -331,9 +332,9 @@ const tools: Tool[] = [
   },
   {
     name: "record_repair_verification",
-    description: "Record a subagent verifier's held submission: its agent id and the id of its repair_verification (or repair_arbitration) call. Codemap checks the subagent's transcript: launched with exactly the issued prompt, and submitted exactly what was held.",
+    description: "Record a subagent verifier's held submission by the receipt it got back. Codemap finds the subagent's repair_verification (or repair_arbitration) call that returned it and checks its transcript: launched with exactly the issued prompt, and submitted exactly what was held." + " `pending`: the call is not in its transcript yet — call again in a moment (for up to a minute). An error: it will never count (a fork, a message sent after launch, a call this machine's transcripts do not show) — launch a new one.",
     inputSchema: obj({ review: { type: "string" }, requestId: { type: "string" }, role: { type: "string", enum: ["verifier", "arbitrator"] }, slot: { type: "integer", enum: [1, 2] },
-      receipt: { type: "string" }, agentId: { type: "string" }, callId: { type: "string" } }, ["review", "requestId", "role", "receipt", "agentId", "callId"]),
+      receipt: { type: "string" } }, ["review", "requestId", "role", "receipt"]),
     mutates: true,
     handler: (a, c) => ops.recordRepairVerification(c.universe.path, a.review, a),
   },
@@ -1339,8 +1340,8 @@ const tools: Tool[] = [
   },
   {
     name: "record_operation_signoff_verdict",
-    description: "Record a reader's held verdict after checking its transcript: launched with the exact brief, its own submit call and receipt.",
-    inputSchema: APPLICATION_RECEIPT_REF,
+    description: "Record a reader's held verdict by its receipt: codemap finds the reader's submit call that returned it and checks its transcript (launched with the exact brief, its own call). Returns the agentId and callId that apply_operation_signoff's reader ref takes." + " `pending`: the call is not in its transcript yet — call again in a moment (for up to a minute). An error: it will never count (a fork, a message sent after launch, a call this machine's transcripts do not show) — launch a new one.",
+    inputSchema: RECORD_BY_RECEIPT,
     mutates: true,
     handler: async (a, c) => ops.recordOperationSignoffVerdict(c.universe.path, a as never),
   },
@@ -1377,12 +1378,8 @@ const tools: Tool[] = [
   },
   {
     name: "record_application_verdict",
-    description: "Record a reader's held verdict after checking its transcript: launched with the exact brief, its own submit call and receipt. Missing evidence leaves it pending.",
-    inputSchema: obj({
-      requestId: { type: "string" }, receipt: { type: "string" },
-      agentId: { type: "string", description: "The reader subagent's ID." },
-      callId: { type: "string", description: "The reader's submit_application_verdict tool-use ID." },
-    }, ["requestId", "receipt", "agentId", "callId"]),
+    description: "Record a reader's held verdict by its receipt: codemap finds the reader's submit call that returned it and checks its transcript (launched with the exact brief, its own call). Returns the agentId and callId that apply_ruling's reader refs take." + " `pending`: the call is not in its transcript yet — call again in a moment (for up to a minute). An error: it will never count (a fork, a message sent after launch, a call this machine's transcripts do not show) — launch a new one.",
+    inputSchema: RECORD_BY_RECEIPT,
     mutates: true,
     handler: async (a, c) => recordApplicationVerdict(c.universe.path, a as never),
   },

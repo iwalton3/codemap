@@ -46,7 +46,8 @@ test("MCP advertises the four application verbs with exact issue and reader rece
     assert.deepEqual(apply.inputSchema.required, ["issue", "answerId", "readers"]);
     assert.deepEqual(apply.inputSchema.properties.issue.required, ["kind", "universe", "id", "scope"]);
     assert.deepEqual(apply.inputSchema.properties.readers.items.required, ["requestId", "receipt", "agentId", "callId"]);
-    assert.deepEqual(record.inputSchema.required, ["requestId", "receipt", "agentId", "callId"]);
+    // Found by its receipt, so a mistyped id cannot burn the reader (D3).
+    assert.deepEqual(record.inputSchema.required, ["requestId", "receipt"]);
     assert.deepEqual(submit.inputSchema.properties.verdict.enum, ["sound", "unsound"]);
     assert.match(apply.description, /one sound reader/);
     assert.match(apply.description, /two independent readers/);
@@ -63,7 +64,7 @@ test("MCP routes all four verbs to refusals and rejects undeclared authority fla
     const out = await rpc(root, [
       { name: "application_reader_brief", arguments: { issue, answerId: "answer_missing", slot: 1 } },
       { name: "submit_application_verdict", arguments: { requestId: "missing", verdict: "sound", rationale: "reviewed" } },
-      { name: "record_application_verdict", arguments: { requestId: "missing", receipt: "r", agentId: "a12345678", callId: "c" } },
+      { name: "record_application_verdict", arguments: { requestId: "missing", receipt: "r" } },
       { name: "apply_ruling", arguments: { issue, answerId: "answer_missing", readers: [] } },
       { name: "apply_ruling", arguments: { issue, answerId: "answer_missing", readers: [], agent: false } },
     ]);
@@ -93,7 +94,7 @@ test("MCP operation sign-off surface preserves narrow receipt inputs and refuses
       { name: "operation_signoff_question", arguments: { operationId: "missing" } },
       { name: "operation_signoff_reader_brief", arguments: { operationId: "missing", answerId: "missing" } },
       { name: "submit_operation_signoff_verdict", arguments: { requestId: "missing", verdict: "sound", rationale: "read" } },
-      { name: "record_operation_signoff_verdict", arguments: { requestId: "missing", receipt: "r", agentId: "a12345678", callId: "c" } },
+      { name: "record_operation_signoff_verdict", arguments: { requestId: "missing", receipt: "r" } },
       { name: "apply_operation_signoff", arguments: { operationId: "missing", answerId: "missing", reader: { requestId: "missing", receipt: "r", agentId: "a12345678", callId: "c" }, principal: "alice@other.test" } },
     ]);
     assert.equal(out.length, 5);

@@ -265,9 +265,9 @@ async function viaSubagent(f: Awaited<ReturnType<typeof fixture>>, launcher: Rep
   const results = f.results();
   const held = await submitRepairVerification(f.root, 7, { requestId: f.requestId, slot, results }, launcher) as { held: boolean; receipt: string };
   assert.equal(held.held, true, JSON.stringify(held));
-  const callId = subagentTranscript(dir, agentId, tamper.prompt ?? brief.launch, "repair_verification",
+  subagentTranscript(dir, agentId, tamper.prompt ?? brief.launch, "repair_verification",
     { review: "7", requestId: f.requestId, slot, results: tamper.results ?? results }, held, undefined, tamper.sentMessage);
-  return recordRepairVerification(f.root, 7, { requestId: f.requestId, role: "verifier", slot, receipt: held.receipt, agentId, callId }, dir);
+  return recordRepairVerification(f.root, 7, { requestId: f.requestId, role: "verifier", slot, receipt: held.receipt }, dir);
 }
 
 test("a subagent verifier counts only from its own transcript; the requester's subagents verify, with no second grade", async () => {
@@ -280,7 +280,8 @@ test("a subagent verifier counts only from its own transcript; the requester's s
     assert.match((changed as { error: string }).error, /differs from what was held/);
     // G2 stays as built (plan 3.2): a second message into the subagent after launch is flagged.
     const told = await viaSubagent(f, f.orchestrator, 1, "a2222223", dir, { sentMessage: true });
-    assert.match((told as { reason: string }).reason, /sent a message after it was launched/, JSON.stringify(told));
+    // A permanent cause is an error, never `pending` (D3): retrying it could never count.
+    assert.match((told as { error: string }).error, /sent a message after it was launched/, JSON.stringify(told));
     assert.ok(!("run" in told), "and it does not count");
     const before = await pendingRepairJobs(f.root, 7) as { jobs: { requestId: string; role: string; slot?: number }[] };
     assert.deepEqual(before.jobs.map((j) => [j.role, j.slot]), [["verifier", 1], ["verifier", 2]]);
@@ -298,6 +299,36 @@ test("a subagent verifier counts only from its own transcript; the requester's s
     assert.equal(result?.complete, true);
     assert.ok(!("launchedByParticipant" in (result ?? {})), "the fixer-launched grade is gone");
   } finally { discard(dir); f.t.dispose(); }
+});
+
+test("D3: a recording is `pending` only while its call may still reach disk; never found, or a fork, is an error that burns the receipt", async () => {
+  const f = await fixture();
+  const dir = mkdtempSync(join(tmpdir(), "codemap-repair-tx-"));
+  const grace = process.env.CODEMAP_VERDICT_GRACE_MS;
+  try {
+    const hold = async (slot: 1 | 2) => {
+      const brief = await repairVerificationBrief(f.root, 7, { requestId: f.requestId, role: "verifier", slot }, f.orchestrator) as { launch: string };
+      ok(brief);
+      const results = f.results();
+      const held = await submitRepairVerification(f.root, 7, { requestId: f.requestId, slot, results }, f.orchestrator) as { held: boolean; receipt: string };
+      assert.equal(held.held, true, JSON.stringify(held));
+      return { brief, results, held, record: () => recordRepairVerification(f.root, 7, { requestId: f.requestId, role: "verifier", slot, receipt: held.receipt }, dir) };
+    };
+    const unwritten = await hold(1);
+    assert.equal((await unwritten.record() as { pending?: boolean }).pending, true, "inside the grace it may still be on its way");
+    process.env.CODEMAP_VERDICT_GRACE_MS = "0";
+    // A transcript directory codemap cannot see looks exactly like this, for ever.
+    assert.match((await unwritten.record() as { error: string }).error, /no subagent call that returned receipt .* past the grace/);
+    assert.match((await unwritten.record() as { error: string }).error, /no pending held submission/, "and the receipt is spent");
+    delete process.env.CODEMAP_VERDICT_GRACE_MS;
+    const forked = await hold(2);
+    subagentTranscript(dir, "a5555555", forked.brief.launch, "repair_verification", { review: "7", requestId: f.requestId, slot: 2, results: forked.results }, forked.held);
+    writeFileSync(join(dir, "5e55a0a0-0000-0000-0000-000000000005", "subagents", "agent-a5555555.meta.json"), JSON.stringify({ agentType: "fork", isFork: true, toolUseId: "launch_a5555555" }));
+    assert.match((await forked.record() as { error: string }).error, /is a fork/);
+  } finally {
+    if (grace === undefined) delete process.env.CODEMAP_VERDICT_GRACE_MS; else process.env.CODEMAP_VERDICT_GRACE_MS = grace;
+    discard(dir); f.t.dispose();
+  }
 });
 
 test("plan 3.4: a pattern closes only with every sorted site fixed or filed as an open, inherited bug at that site", async () => {

@@ -24,7 +24,7 @@ import {
   type AnswerVia, type BriefEntry, type FoldedDecision, type Mapping, type SharedDecisions,
 } from "../shared-decisions.js";
 import { decisionsView } from "./decision-holds.js";
-import { findVerdictCalls, isUnverified, readCall, readMessage, readReader, readSubagentCall, sameQuestion, sessionHolding, transcriptDir } from "../transcript.js";
+import { findVerdictCalls, isUnverified, readCall, readMessage, readReader, readSubagentCall, sameQuestion, sessionHolding, transcriptDir, verdictGraceMs } from "../transcript.js";
 import { saveReaderRequest, readerRequest, readerRequests, holdReaderReceipt, readerReceipts, settleReaderReceipt,
   legacyReaderRequest, legacyReaderVerdicts, holdLegacyReaderVerdict, pendingLegacyReaderAnswers,
   settleLegacyReaderVerdict, noteLegacyReaderVerdict, type LegacyReaderVerdict } from "../reader-local.js";
@@ -642,9 +642,7 @@ export function parseVerdict(report: string, listed: Pick<FoldedDecision, "id" |
 // submits and launch another, and a parent can build the brief — it is deterministic — and
 // launch a reader before asking codemap for it.
 
-/** How long a held verdict may go unfound on disk before it is invalid. The call reaches its
- *  transcript ~12 ms after it returns (measured 2026-09-24). */
-const graceMs = () => Number(process.env.CODEMAP_VERDICT_GRACE_MS ?? 60_000);
+const graceMs = verdictGraceMs;
 
 interface ReaderRequest { answer: string; maps: Mapping[]; reading?: string; asks?: string; brief: string; manifest?: BriefEntry[]; issuedAt: string; requestId?: string; responseHash?: string }
 type HeldState = "pending" | "recorded" | "invalid" | "superseded";

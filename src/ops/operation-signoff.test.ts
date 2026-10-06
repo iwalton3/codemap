@@ -164,3 +164,20 @@ test('a genuinely recorded unsound reader cannot grant sign-off', async () => {
     assert.equal((await readProposalWitnesses(u.b.repo,{specId:u.spec.id})).length,0);
   } finally {u.cleanup();}
 });
+
+test('D3: a sign-off reader whose call never reaches disk is pending only within the grace, then an error that spends the receipt', async () => {
+  const u = await fixture();
+  const grace = process.env.CODEMAP_VERDICT_GRACE_MS;
+  try {
+    const brief = ok(await operationSignoffReaderBrief(u.b.repo, { operationId: u.operation.id, answerId: u.answer }));
+    const held = ok(submitOperationSignoffVerdict(u.b.repo, { requestId: brief.requestId, verdict: 'sound', rationale: 'The human approves the full exact operation, separately from ratification.' }));
+    const ref = { requestId: brief.requestId, receipt: held.receipt };
+    assert.equal((recordOperationSignoffVerdict(u.b.repo, ref, u.tx) as any).pending, true);
+    process.env.CODEMAP_VERDICT_GRACE_MS = '0';
+    assert.match(String((recordOperationSignoffVerdict(u.b.repo, ref, u.tx) as any).error), /past the grace/);
+    assert.match(String((recordOperationSignoffVerdict(u.b.repo, ref, u.tx) as any).error), /reader receipt is invalid/);
+  } finally {
+    if (grace === undefined) delete process.env.CODEMAP_VERDICT_GRACE_MS; else process.env.CODEMAP_VERDICT_GRACE_MS = grace;
+    u.cleanup();
+  }
+});

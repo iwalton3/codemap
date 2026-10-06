@@ -298,3 +298,30 @@ test("explicit human acceptance is credited to the answerer, never reported as f
     });
   } finally { if (oldPrincipal === undefined) delete process.env.CODEMAP_PRINCIPAL; else process.env.CODEMAP_PRINCIPAL = oldPrincipal; u.cleanup(); }
 });
+
+test("D3: an application reader recorded by receipt alone; a fork, or a call never on disk past the grace, is an error that spends the receipt", async () => {
+  const u = await fixture();
+  const grace = process.env.CODEMAP_VERDICT_GRACE_MS;
+  try {
+    await asAgent(async () => {
+      const hold = async (slot: number) => {
+        const brief = await applicationReaderBrief(u.root, { issue: u.issue, answerId: u.answer, slot }, u.tx) as any;
+        assert.equal(brief.ok, true, JSON.stringify(brief));
+        const held = submitApplicationVerdict(u.root, { requestId: brief.requestId, verdict: "sound", rationale: "The person rejects the premise." }) as any;
+        return { brief, held, ref: { requestId: brief.requestId, receipt: held.receipt } };
+      };
+      const forked = await hold(1);
+      transcript(u.tx, forked.brief.prompt, forked.brief.requestId, "sound", "The person rejects the premise.", forked.held.receipt, "a55555555");
+      writeFileSync(join(u.tx, session, "subagents", "agent-a55555555.meta.json"), JSON.stringify({ agentType: "fork", isFork: true, toolUseId: "toolu_launch_a55555555" }));
+      assert.match(error(recordApplicationVerdict(u.root, forked.ref, u.tx)), /is a fork/);
+      assert.match(error(recordApplicationVerdict(u.root, forked.ref, u.tx)), /reader receipt is invalid/);
+      const unwritten = await hold(2);
+      assert.equal((recordApplicationVerdict(u.root, unwritten.ref, u.tx) as any).pending, true);
+      process.env.CODEMAP_VERDICT_GRACE_MS = "0";
+      assert.match(error(recordApplicationVerdict(u.root, unwritten.ref, u.tx)), /past the grace/);
+    });
+  } finally {
+    if (grace === undefined) delete process.env.CODEMAP_VERDICT_GRACE_MS; else process.env.CODEMAP_VERDICT_GRACE_MS = grace;
+    u.cleanup();
+  }
+});

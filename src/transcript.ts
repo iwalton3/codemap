@@ -450,3 +450,49 @@ export function readSubagentCall(agentId: string, callId: string, tool: RegExp, 
   if (results.length !== 1) return { unverified: `subagent ${agentId}'s call ${callId} has no single result` };
   return { reader, input: calls[0]!.input, result: resultObject(results[0]!.e.toolUseResult) ?? resultObject(results[0]!.x.content) };
 }
+
+/** How long a held submission may go unfound on disk before it is invalid. The call reaches its
+ *  transcript ~12 ms after it returns (measured 2026-09-24). */
+export const verdictGraceMs = () => Number(process.env.CODEMAP_VERDICT_GRACE_MS ?? 60_000);
+
+/**
+ * The one subagent call to `tool` whose own result returned `receipt`, verified as
+ * `readSubagentCall` verifies it. Found by the receipt, as `findVerdictCalls` finds a reader's
+ * verdict, rather than by ids the caller passes: a mistyped id would settle the receipt invalid.
+ * Not found, or found more than once, is `pending` until the receipt is older than the grace and
+ * unverified after — a call this machine's transcripts never show (a directory codemap cannot
+ * see) must not read as "try again" for ever.
+ */
+export function readReceiptCall(tool: RegExp, receipt: string, heldAt: string, dir: string = transcriptDir()):
+  { agentId: string; callId: string; reader: ReaderAgent; input: any; result: any } | Unverified | { pending: string } {
+  const found: { agentId: string; callId: string }[] = [];
+  let top: string[] = [];
+  try { top = readdirSync(dir).filter((s) => SESSION.test(s)); } catch { /* nothing found */ }
+  for (const session of top) {
+    let subs: string[] = [];
+    try { subs = readdirSync(join(dir, session, "subagents")); } catch { continue; }
+    for (const name of subs) {
+      const agentId = /^agent-(a[A-Za-z0-9]{6,63})\.jsonl$/.exec(name)?.[1];
+      const rows = agentId ? jsonl(join(dir, session, "subagents", name)) : undefined;
+      if (!agentId || !rows) continue;
+      for (const row of rows) {
+        if (row.type !== "user" || !Array.isArray(row.message?.content)) continue;
+        const blocks = row.message.content.filter((x: any) => x?.type === "tool_result");
+        for (const block of blocks) {
+          const payload = (blocks.length === 1 ? resultObject(row.toolUseResult) : undefined) ?? resultObject(block.content);
+          if (payload?.held !== true || payload?.receipt !== receipt || typeof block.tool_use_id !== "string") continue;
+          const called = rows.some((e) => e.type === "assistant" && Array.isArray(e.message?.content)
+            && e.message.content.some((x: any) => x?.type === "tool_use" && x.id === block.tool_use_id && tool.test(String(x.name ?? ""))));
+          if (called) found.push({ agentId, callId: block.tool_use_id });
+        }
+      }
+    }
+  }
+  if (found.length !== 1) {
+    const what = found.length ? `${found.length} calls returned receipt ${receipt}` : `no subagent call that returned receipt ${receipt} is in ${dir}`;
+    return Date.now() - Date.parse(heldAt) > verdictGraceMs() ? { unverified: `${what}, past the grace` } : { pending: `${what} yet` };
+  }
+  const { agentId, callId } = found[0]!;
+  const call = readSubagentCall(agentId, callId, tool, dir);
+  return isUnverified(call) ? call : { agentId, callId, ...call };
+}
