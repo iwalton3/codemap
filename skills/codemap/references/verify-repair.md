@@ -108,13 +108,15 @@ the requester can.
 
 | Verdict | The finding becomes |
 | --- | --- |
-| fixed (both runs, or arbitrated) | resolved |
+| fixed — both runs, or an arbitrator between two closing verdicts | resolved |
 | factually refuted | refuted |
 | a reviewer's assumption refuted | invalid |
 | decision-needed | nothing — it is a person's decision now |
 | unknown | nothing — not closed, not reopened |
 
-Linked bugs are not closed by this.
+An arbitrator only chooses between two runs that both closed with evidence: fixed against unknown
+or decision-needed stays open, and so does a finding whose claims mix invalid with another
+verdict. Linked bugs are not closed by this.
 
 ## 7. Tell the person
 
