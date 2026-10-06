@@ -41,8 +41,10 @@ and could claim the role. This guards against mistakes, not adversaries.
 ## The request and the two slots
 
 `repair_request` freezes an eligible current sort and evidence record, the immutable original and decomposed claims, the pinned witness/base/fix commits and
-diff, the findings' open epochs and claim hashes, and the ruling context. Missing code is recorded
-as unknown. Nothing runs a stored command.
+diff, the findings' open epochs and claim hashes, and the ruling context. A pinned commit missing
+from the requesting clone refuses the request (owner, 2026-10-06): one frozen as unknown could never
+be applied. That is not a verdict on the finding; fetch the commit and request again. Nothing runs a
+stored command.
 
 Each request has exactly two blind verifier slots. `repair_brief` gives a slot the claims, the
 sort, the pinned commits and the checks the fixer pinned — never the fixer's conclusions or the

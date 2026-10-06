@@ -60,6 +60,7 @@ async function fixture(count = 1, decomposed = false, changeEvidence?: (evidence
   const requested = await requestRepairVerification(root, 7, { sortId, evidenceId }, orchestrator);
   let requestId = "";
   if (holdBeforeRequest) assert.match((requested as { error: string }).error, /held|decision/);
+  else if (/is not in this clone/.test(String((requested as { error?: string }).error))) { /* A5: the test asserts it */ }
   else { ok(requested); assert.ok("request" in requested && requested.request); requestId = requested.request.id; }
   const results = (verdict: RepairClaimVerdict["verdict"] = "fixed", subset = false): RepairClaimVerdict[] => sort.coverage.flatMap(ref => (subset ? ref.claimIds.slice(0, 1) : ref.claimIds).map(claimId => ({ findingId: ref.findingId, claimId, verdict,
     reason: verdict === "fixed" ? "independently inspected the exact guard and checked its return before mutation" : verdict === "factually-refuted" ? "the exact claimed absent guard is visibly present" : "target evidence unavailable",
@@ -184,15 +185,13 @@ test("recorded command data is never executed by request, brief, run or applicat
   } finally { f.t.dispose(); }
 });
 
-test("unavailable pinned code remains explicit unknown and cannot be applied", async () => {
+test("A5: a request naming a commit this clone does not have is refused, naming it — it could never be applied", async () => {
   const f = await fixture(1, false, e => { e.fixCommit = "a".repeat(40); });
   try {
+    assert.match((f.requested as { error: string }).error, new RegExp(`pinned commit ${"a".repeat(40)} is not in this clone`));
     const records = await repairVerificationRecords(f.root, 7);
     assert.ok("records" in records && records.records);
-    assert.equal(records.records.requests[0]!.capsule.code.availability, "unknown");
-    await f.run(1); await f.run(2);
-    const applied = await applyRepairVerification(f.root, 7, { requestId: f.requestId, findingId: f.ids[0]!, reason: "missing code cannot be closed" }, f.orchestrator);
-    assert.match((applied as { error: string }).error, /unavailable/);
+    assert.equal(records.records.requests.length, 0);
     assert.equal((await readFinding(f.root, f.ids[0]!, { pr: 7 }))!.state, "created");
   } finally { f.t.dispose(); }
 });

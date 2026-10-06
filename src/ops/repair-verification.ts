@@ -142,10 +142,14 @@ async function capsule(root: string, review: number | string, events: LogEvent[]
   const cfg = resolveSidecar(root)!;
   const code: RepairVerificationCapsule["code"] = { witnessCommit: evidence.input.witnessCommit, baseCommit: evidence.input.baseCommit,
     fixCommit: evidence.input.fixCommit, touched: [], availability: "available" };
-  try {
-    for (const sha of [code.witnessCommit, code.baseCommit, code.fixCommit]) await runGit(gitBin(), ["cat-file", "-e", `${sha}^{commit}`], { cwd: root });
-    code.touched = await touchedBlobs(root, code.baseCommit, code.fixCommit);
-  } catch { code.availability = "unknown"; code.reason = "one or more pinned commits are unavailable in this clone"; }
+  // Refused rather than frozen as "unknown" (owner, 2026-10-06, A5): such a request could never
+  // be applied. Not a verdict on the finding. `availability` stays for requests made before.
+  for (const sha of [code.witnessCommit, code.baseCommit, code.fixCommit]) {
+    try { await runGit(gitBin(), ["cat-file", "-e", `${sha}^{commit}`], { cwd: root }); }
+    catch { return { error: `pinned commit ${sha} is not in this clone: fetch it, then request again` }; }
+  }
+  try { code.touched = await touchedBlobs(root, code.baseCommit, code.fixCommit); }
+  catch { return { error: "the diff between the pinned base and fix commits cannot be read in this clone" }; }
   return { scope: findingScope(findingKeyScope(cfg, review)), targets, code,
     claims: repairs.claims.filter((c) => targets.some((t) => t.findingId === c.findingId)), sort: structuredClone(sort.input),
     evidence: structuredClone(evidence.input), rulingContext: context.value, orchestrator: structuredClone(orchestrator) };

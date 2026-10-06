@@ -46,9 +46,8 @@ fix never closes the whole finding.
 
 `record_repair_evidence` against the sort, by whoever ran the checks — usually the fixer.
 
-- **witness / base / fix commits**: the defect shown, the parent, the fix — full shas, and present
-  in this clone before `repair_request`. A commit it cannot read is frozen into the request as
-  unknown, and that request can never be applied.
+- **witness / base / fix commits**: the defect shown, the parent, the fix — full shas, present in
+  this clone. `repair_request` refuses one it cannot read: fetch it and request again.
 - **reproducer runs** with `phase: "witness"` and `phase: "fix"`: the same command, the actual
   exit code and output — it **fails at the witness and passes at the fix**. Run them yourself
   before recording. Commands are data; codemap runs nothing, so a result you did not observe is
