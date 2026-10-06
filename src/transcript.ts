@@ -120,6 +120,22 @@ export function findAskCalls(questions: AskedQuestion[], since: string, dir: str
   return out.sort((a, b) => a.at.localeCompare(b.at));
 }
 
+/**
+ * The latest entry in `session`'s own transcript where the skill `skill` ran: the model's `Skill`
+ * call, or the person typing `/<skill>` — the two shapes measured 2026-10-06. Evidence the skill
+ * was run, never of what it concluded.
+ */
+export function findSkillRun(session: string, skill: string, dir: string = transcriptDir()): { session: string; entry: string } | Unverified {
+  const all = entries(session, dir);
+  if (isUnverified(all)) return all;
+  const typed = `<command-name>/${skill}</command-name>`;
+  const ran = all.filter((e) => e.isSidechain !== true && typeof e.uuid === "string" && (
+    (e.type === "assistant" && Array.isArray(e.message?.content) && e.message.content.some((b: any) => b?.type === "tool_use" && b.name === "Skill" && b.input?.skill === skill))
+    || (e.type === "user" && e.origin?.kind === "human" && textOf(e.message?.content)?.includes(typed))));
+  const last = ran.at(-1);
+  return last ? { session, entry: last.uuid } : { unverified: `no /${skill} run in session ${session}'s transcript` };
+}
+
 /** An entry's own timestamp. An answer is bound only to a question posted before it, so an
  *  entry without one cannot be bound at all. */
 const stampOf = (e: Record<string, any>): string | Unverified =>

@@ -361,7 +361,7 @@ const tools: Tool[] = [
   },
   {
     name: "post_repair_sort",
-    description: "Post the skill's sort of a repair: classification, claim coverage, and who sorted (owner-reviewed, or dual-sorted with both sorters and any arbitration). A correction names the current sort as prior and supersedes it; one that removes sites or claims needs a ruling (a logged answer id). Returns the sort's id; holds come back in repair_records.",
+    description: "Post the skill's sort of a repair: classification, claim coverage, and who sorted (owner-reviewed, or dual-sorted with both sorters and any arbitration). A correction names the current sort as prior and supersedes it; one that removes sites or claims needs a ruling (a logged answer id). A dual-sorted sort's two sorters must be in distinct sessions — unless /triage-review ran in a session the sort names: codemap finds that run in the transcript and stamps it on the sort, and then its subagent sorters and arbitrator may share the session (`unstamped` says why it did not). Returns the sort's id; holds come back in repair_records.",
     inputSchema: obj({ review: repairString, sort: repairSortSchema }, ["review", "sort"]),
     mutates: true,
     handler: (a, c) => ops.postRepairSort(c.universe.path, a.review, a.sort),

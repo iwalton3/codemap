@@ -437,7 +437,7 @@ easy to get wrong:
 - **A third finding-key kind, `topic:<slug>`.** Every switch on the key kind handles it or says
   why it falls through, and `src/key-kind-sweep.test.ts` finds those switches — add a switch,
   update the sweep.
-- **`EVENT_SCHEMA` is 2** because a topic finding carries a data field an older build would fold
+- **`EVENT_SCHEMA` went to 2** because a topic finding carries a data field an older build would fold
   under a garbled key; schema is stamped on every event, so the team upgrades together.
 
 ## Requirements — read `docs/requirements-architecture.md` before touching them

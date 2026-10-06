@@ -9,7 +9,8 @@ import { readFinding } from "./store.js";
 import { rpc } from "./test-mcp.js";
 import { postRound, answerDirect } from "./ops/decisions.js";
 import { decisionsView } from "./ops/decision-holds.js";
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const ok = (v: unknown) => assert.equal((v as { error?: string }).error, undefined, JSON.stringify(v));
@@ -75,6 +76,39 @@ test("repair ops preserve original scope and sync partial evidence", async () =>
       assert.ok("error" in refused);
     } finally { writeFileSync(pointer, original); }
   } finally { t.dispose(); }
+});
+
+test("I13 through the op: /triage-review's run in the sorters' session is stamped on the sort; a caller's stamp is refused", async () => {
+  const t = await team(["alice@acme.test"]);
+  const dir = mkdtempSync(join(tmpdir(), "codemap-repair-tx-"));
+  try {
+    const root = t.all[0]!.repo;
+    const f = await shareFinding(root, 7, { targetKind: "anchor", targetId: "src/pay.ts#transfer", text: "a guard is missing" }) as { id: string };
+    ok(f);
+    const [skill, typed, none] = ["5e55a0a0-0000-0000-0000-00000000000a", "5e55a0a0-0000-0000-0000-00000000000b", "5e55a0a0-0000-0000-0000-00000000000c"];
+    // The two shapes measured 2026-10-06: the model's Skill call, and the person typing the command.
+    writeFileSync(join(dir, `${skill}.jsonl`), JSON.stringify({ type: "assistant", uuid: "e-skill", isSidechain: false, timestamp: new Date().toISOString(),
+      message: { content: [{ type: "tool_use", id: "toolu_s", name: "Skill", input: { skill: "triage-review", args: "the round" } }] } }) + "\n");
+    writeFileSync(join(dir, `${typed}.jsonl`), JSON.stringify({ type: "user", uuid: "e-typed", isSidechain: false, timestamp: new Date().toISOString(), origin: { kind: "human" },
+      message: { role: "user", content: "<command-message>triage-review</command-message>\n<command-name>/triage-review</command-name>\n<command-args>x</command-args>" } }) + "\n");
+    writeFileSync(join(dir, `${none}.jsonl`), JSON.stringify({ type: "user", uuid: "e-none", isSidechain: false, timestamp: new Date().toISOString(), origin: { kind: "human" },
+      message: { role: "user", content: "please sort these" } }) + "\n");
+    const dual = (session: string, text: string): Omit<RepairSortInput, "id"> => ({ ...sort(f.id, []), source: text, provenance: "dual-sorted",
+      assessments: [0, 1].map(i => ({ identity: { principal: "alice@acme.test", session }, classification: "implementation-defect", reason: `sorter ${i}` })) });
+    let head: string | undefined;
+    for (const [session, entry] of [[skill, "e-skill"], [typed, "e-typed"]] as const) {
+      const posted = await postRepairSort(root, 7, { ...dual(session, `run in ${session}`), ...(head ? { prior: head, reason: "next" } : {}) }, dir) as any;
+      ok(posted);
+      head = posted.id;
+      const s = posted.records.sorts.find((x: any) => x.input.id === posted.id);
+      assert.deepEqual(s.input.execution, { skill: "triage-review", session, entry });
+      assert.equal(s.eligible, true, s.holds.join());
+    }
+    const unrun = await postRepairSort(root, 7, dual(none, "never ran"), dir) as any;
+    assert.match(String(unrun.error), /distinct sessions/, "no run found: today's rule");
+    const forged = await postRepairSort(root, 7, { ...dual(none, "forged"), execution: { skill: "triage-review", session: none, entry: "e-none" } } as never, dir) as any;
+    assert.match(String(forged.error), /codemap stamps/);
+  } finally { t.dispose(); rmSync(dir, { recursive: true, force: true }); }
 });
 
 test("over MCP a connection that has worked cannot claim the verifier role; a claimed one cannot read the repair records", async () => {

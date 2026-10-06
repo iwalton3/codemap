@@ -17,4 +17,9 @@ export interface RepairSortInput {
   arbitration?: { addresses: string[]; reason: string; identity: ReportedSorter; receipt?: ReportedSortReceipt };
   /** A logged decisions answer on why the sites or claims this correction removes are not instances (R5, plan 5.2). */
   ruling?: string;
+  /** Stamped by `post_repair_sort`, never the caller: the transcript entry where /triage-review ran
+   *  in a session this sort names. Its sorters are subagents of that one session, so the fold
+   *  trusts the stamp in place of distinct sessions (owner, I13: "assumes the agent didn't cheat"). */
+  execution?: RepairExecutionStamp;
 }
+export interface RepairExecutionStamp { skill: "triage-review"; session: string; entry: string }

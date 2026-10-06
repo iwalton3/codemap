@@ -250,4 +250,7 @@
 // `topic-walkthrough/`, with their tables; and findings learn a topic key. Its review round
 // (2026-10-05) tightened those folds and the findings scope binding before anything shipped, so
 // it rides this bump: no build carrying 56 left the branch between them. Same reason as 18 → 19.
-export const MATERIALIZER_VERSION = 56;
+// 56 → 57 (plan 2026-10-06-codemap-skill-flows): the repair fold accepts a dual sort stamped as
+// /triage-review's from one session, evidence carries site-bug ids, and a correction that drops a
+// `restsOn` entry needs a ruling. Same reason as 18 → 19.
+export const MATERIALIZER_VERSION = 57;

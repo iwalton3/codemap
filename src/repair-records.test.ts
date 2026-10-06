@@ -89,6 +89,23 @@ test("two sorters who agree make a sort eligible; one session sorting twice is r
   assert.match(repeated.rejected[0]!.reason, /distinct sessions/);
 });
 
+test("I13: /triage-review's sorts, stamped as run, pass in one session — its sorters are subagents of it", () => {
+  // Owner: "Codemap just verifies /triage-review was actually run in the transcript, and, if it was
+  // it accepts the sorts as-written and assumes the agent didn't cheat."
+  const execution = { skill: "triage-review", session: "s1", entry: "e-1" };
+  const same = [who, who].map((identity, i) => ({ identity, classification: i ? "assumption" : "mechanical", reason: "read code" }));
+  const arbitrated = { disagreements: [{ id: "d", text: "which" }], arbitration: { addresses: ["d"], identity: who, reason: "the code says" } };
+  const stamped = foldRepairRecords(chain([sorted(sort({ provenance: "dual-sorted", assessments: same, ...arbitrated, execution } as never), agent)]));
+  assert.deepEqual(stamped.rejected, []);
+  assert.equal(stamped.sorts[0]!.eligible, true, stamped.sorts[0]!.holds.join());
+  const bare = foldRepairRecords(chain([sorted(sort({ provenance: "dual-sorted", assessments: same, ...arbitrated }), agent)]));
+  assert.match(bare.rejected[0]!.reason, /distinct sessions/, "without the stamp, today's rule");
+  const stranger = foldRepairRecords(chain([sorted(sort({ provenance: "dual-sorted", assessments: same, ...arbitrated, execution: { ...execution, session: "elsewhere" } } as never), agent)]));
+  assert.match(stranger.rejected[0]!.reason, /execution/, "a stamp names a session the sort names");
+  const one = foldRepairRecords(chain([sorted(sort({ provenance: "dual-sorted", assessments: [same[0]!], execution } as never), agent)]));
+  assert.match(one.rejected[0]!.reason, /two sorters/, "still two assessments");
+});
+
 test("arbitration must address each disagreement and unresolved dependency holds", () => {
   const conflict = sort({ disagreements: [{ id: "d1", text: "requirement missing" }], arbitration: { addresses: [], reason: "agree", identity: who }, restsOn: ["question-1"] });
   const records = foldRepairRecords(chain([sorted(conflict)]));
@@ -138,7 +155,7 @@ test("unchanged shards replay old materializer cache and atomically persist repa
     const result = await readCached(root, log, scope, "identity", foldFindings, findingsProjection);
     assert.equal((result.value as import("./repair-records.js").RepairFindingMap<import("./shared-findings.js").SharedFinding>).repairRecords!.evidence.length, 1);
     assert.equal(readRepairRecords(root, scope).claims[0]!.text, created.data.text);
-    assert.equal(MATERIALIZER_VERSION, 56);
+    assert.equal(MATERIALIZER_VERSION, 57);
     assert.equal((d.prepare("SELECT fingerprint FROM shared_scope WHERE scope=?").get(scope) as {fingerprint:string}).fingerprint, await scopeFingerprint(log, scope, "identity"));
     d.prepare("UPDATE repair_records SET body='{}' WHERE scope=?").run(scope);
     assert.throws(() => readRepairRecords(root, scope), /malformed shape/);
