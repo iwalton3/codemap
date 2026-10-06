@@ -406,6 +406,16 @@ test("I14: a site filed as a bug reaches the blind verifier through the evidence
   } finally { f.t.dispose(); }
 });
 
+test("I2: the blind brief tells the verifier to judge whether a cited ruling decides the claim", async () => {
+  const f = await fixture();
+  try {
+    const h = new RepairConnection("owner@acme.test"); assert.equal(h.claim().ok, true);
+    const brief = await repairVerificationBrief(f.root, 7, { requestId: f.requestId, role: "verifier", slot: 1 }, h) as any;
+    ok(brief);
+    assert.match(brief.instruction, /cites a `ruling`.*judge whether that ruling decides the claim.*decision-needed/);
+  } finally { f.t.dispose(); }
+});
+
 test("K7: a finding confirmed after its site bug was filed closes through that bug once the site is re-filed", async () => {
   const f = await fixture(1, false, undefined, undefined, { kind: "pattern", predicate: "missing guard", sites: ["src/pay.ts"] });
   try {

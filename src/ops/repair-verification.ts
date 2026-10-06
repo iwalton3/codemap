@@ -246,7 +246,8 @@ export async function repairVerificationBrief(root: string, review: number | str
   const neutral = { scope: c.scope, targets: c.targets, code: c.code,
     claims: c.claims.map(({ id, findingId, text, parentId, witness, asFiled }) => ({ id, findingId, text, parentId, witness, asFiled })),
     sort: { id: c.sort.id, classification: c.sort.classification, kind: c.sort.kind, coverage: c.sort.coverage,
-      predicate: c.sort.predicate, sites: c.sort.sites, refutationSubtype: c.sort.refutationSubtype, restsOn: c.sort.restsOn },
+      predicate: c.sort.predicate, sites: c.sort.sites, refutationSubtype: c.sort.refutationSubtype, restsOn: c.sort.restsOn,
+      ...(c.sort.ruling ? { ruling: c.sort.ruling } : {}) },
     evidence: { id: c.evidence.id, witnessCommit: c.evidence.witnessCommit, baseCommit: c.evidence.baseCommit, fixCommit: c.evidence.fixCommit,
       checks: [...new Set(c.evidence.reproducer.map((x) => x.command))], regression: c.evidence.regression.map(({ command, commit }) => ({ command, commit })),
       inspected: c.evidence.inspected.map(({ source, commit }) => ({ source, commit })),
@@ -255,7 +256,9 @@ export async function repairVerificationBrief(root: string, review: number | str
     rulingContext: c.rulingContext };
   return { requestId: request.id, capsuleHash: request.capsuleHash, capsule: neutral, launch,
     ...(job.role === "arbitrator" ? { runs } : {}),
-    instruction: "Independently assess only the original claims against the pinned code. Work in a scratch worktree "
+    instruction: "Independently assess only the original claims against the pinned code. Where the sort cites a `ruling` "
+      + "(its text is in `rulingContext`), first judge whether that ruling decides the claim as it is now classified; if it "
+      + "does not, the verdict is decision-needed. Work in a scratch worktree "
       + "at the pinned commits (`git worktree add <scratch> <commit>`), never in anyone's live checkout. For \"fixed\", run each "
       + "check yourself: it must FAIL at the witness commit (phase witness) and PASS at the fix commit (phase fix), and "
       + "you record both results. To refute (\"factually-refuted\", or \"invalid\" when the sort says the reviewer "

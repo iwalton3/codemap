@@ -71,7 +71,9 @@ export function foldRepairRecords(input: LogEvent[]): RepairRecords {
   // The log is linear, so corrections are sequential (plan 5.2): a correction names the CURRENT
   // sort of its claims as prior or is stale, and it supersedes that sort — except that removing
   // coverage the prior had needs a logged ruling on why those are not instances (owner, batch 5:
-  // "Narrowing needs a ruling"). The fold checks the field is there; the op checks the answer.
+  // "Narrowing needs a ruling"). Dropping a `restsOn` entry is narrowing too: it is what releases a
+  // held sort, so without this the hold defended nothing (I2). The fold checks the field is there;
+  // the op checks the answer, and the claimed verifiers judge whether it decides the claim.
   const sequenceError = (d: RepairSortInput): string | undefined => {
     const current = heads(), named = priorsOf(d);
     const stale = named.find(p => !current.some(s => s.input.id === p));
@@ -85,6 +87,8 @@ export function foldRepairRecords(input: LogEvent[]): RepairRecords {
       const sites = (prior.sites ?? []).filter(site => !(d.sites ?? []).includes(site));
       if (claims.length || sites.length)
         return `a correction that removes ${[...claims, ...sites].join(", ")} from ${prior.id} needs a logged ruling citing why they are not instances`;
+      const settled = prior.restsOn.filter(x => !d.restsOn.includes(x));
+      if (settled.length) return `a correction that drops ${settled.join(", ")} from what ${prior.id} rests on needs a logged ruling that decides it`;
     }
   };
   for (const e of events) {
@@ -134,6 +138,8 @@ export function foldRepairRecords(input: LogEvent[]): RepairRecords {
         if (!error && data.regression.some(x => x.phase !== "regression")) error = "regression runs have a separate phase";
         if (!error && !unique(data.rulingIds)) error = "ruling IDs must be unique";
         if (!error && data.rulingIds.some(x => !nonempty(x))) error = "ruling IDs must be nonempty";
+        // So the blind brief always carries the ruling a release rests on (I2).
+        if (!error && nonempty(sort!.input.ruling) && !data.rulingIds.includes(sort!.input.ruling)) error = `evidence for a sort that cites ruling ${sort!.input.ruling} must list it in rulingIds`;
         if (!error && data.attribution.some(x => !nonempty(x.file) || !nonempty(x.hunk) || !Array.isArray(x.claimIds) || x.claimIds.some(id => !data.coverage.some(c => c.claimIds.includes(id))))) error = "attribution must cite covered claims";
         const pe = data.patternEnumeration;
         if (!error && pe && (!nonempty(pe.method) || !Array.isArray(pe.expected) || !Array.isArray(pe.actual)

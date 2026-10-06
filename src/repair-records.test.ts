@@ -106,6 +106,21 @@ test("I13: /triage-review's sorts, stamped as run, pass in one session — its s
   assert.match(one.rejected[0]!.reason, /two sorters/, "still two assessments");
 });
 
+test("I2: a correction that drops what a held sort rests on needs a ruling, and its evidence must cite it", () => {
+  const held = sort({ classification: "design-defect", restsOn: ["which guard"] });
+  const freed = (over: Partial<RepairSortInput>) => sort({ id: "next", prior: "s1", reason: "ruled", restsOn: [], ...over });
+  const unruled = foldRepairRecords(chain([sorted(held), sorted(freed({ classification: "implementation-defect" }))]));
+  assert.match(unruled.rejected[0]?.reason ?? "", /which guard.*needs a logged ruling/, "today the hold defends nothing");
+  const ruled = foldRepairRecords(chain([sorted(held), sorted(freed({ classification: "implementation-defect", ruling: "ans_1" }))]));
+  assert.equal(ruled.sorts.find(s => s.input.id === "next")!.eligible, true, ruled.sorts.map(s => s.holds).join());
+  const stillDesign = foldRepairRecords(chain([sorted(held), sorted(freed({ classification: "design-defect", ruling: "ans_1" }))]));
+  assert.equal(stillDesign.sorts.find(s => s.input.id === "next")!.eligible, false, "a ruling alone does not reclassify");
+  const bare = foldRepairRecords(chain([sorted(held), sorted(freed({ classification: "implementation-defect", ruling: "ans_1" })), proof(ev({ sortId: "next" }))]));
+  assert.match(bare.rejected[0]?.reason ?? "", /ans_1/, "the brief must carry the ruling the sort rests its release on");
+  const cited = foldRepairRecords(chain([sorted(held), sorted(freed({ classification: "implementation-defect", ruling: "ans_1" })), proof(ev({ sortId: "next", rulingIds: ["ans_1"] }))]));
+  assert.deepEqual(cited.rejected, []);
+});
+
 test("arbitration must address each disagreement and unresolved dependency holds", () => {
   const conflict = sort({ disagreements: [{ id: "d1", text: "requirement missing" }], arbitration: { addresses: [], reason: "agree", identity: who }, restsOn: ["question-1"] });
   const records = foldRepairRecords(chain([sorted(conflict)]));
