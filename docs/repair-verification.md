@@ -16,7 +16,10 @@ optionally with a **subagent** id. There are two ways to be one:
 
 - **A dedicated session.** A separate agent session calls `claim_verifier` before any other
   codemap tool on its connection. The claim is held in memory for the connection's life — no
-  table, no permanent taint — and the connection is then refused anything outside the role.
+  table, no permanent taint — and the connection is then refused anything outside the role. The
+  role includes `pull` (owner, 2026-10-06), so a request made on another clone reaches it. A pull
+  brings records into the projection, but none of the role's tools reads them back, and it adopts
+  no gone session's queue (it could never sync one).
 - **A subagent.** An agent launches one with exactly the `launch` prompt `repair_brief` returns
   ("Run the instructions from codemap MCP tool repair_brief with …"). Its `repair_verification`
   is only HELD on this machine; the launching session records it with

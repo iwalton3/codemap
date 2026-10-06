@@ -18,12 +18,16 @@ Call `claim_verifier` **before any other codemap tool**. A session that has alre
 call cannot claim, and the claim is refused. If it is refused, stop and tell the person: this
 session cannot verify, and they should start a fresh one.
 
-After the claim, this connection can only call `repair_pending`, `repair_brief`,
+After the claim, this connection can only call `pull`, `repair_pending`, `repair_brief`,
 `repair_verification` and `repair_arbitration`. Anything else is refused. That is the point.
 
 ## 2. Take one job
 
-Call `repair_pending` with the review from the arguments. It lists open jobs: a request id and a
+Call `pull` first: the request may have been made on another clone, and this one sees it only once
+it has the team's log. If the pull refuses (a locked store, say), stop and show the person what it
+said. This session cannot repair it.
+
+Then call `repair_pending` with the review from the arguments. It lists open jobs: a request id and a
 verifier slot (1 or 2), or an arbitration. If nothing is open, say so and stop.
 
 Take **one** job. A claimed connection holds one job for its life, so a second one needs another

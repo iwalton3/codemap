@@ -488,6 +488,21 @@ test("C10: a gone session's refused write is the only conflict; the next session
   } finally { s.dispose(); }
 });
 
+test("D1: a pull adopts no gone session's queue — a claimed verifier pulls, and could never sync what it took", async () => {
+  const s = await scenario(["ana@x.com", "ben@x.com"]);
+  try {
+    const ana = who(s, "ana@x.com"), ben = who(s, "ben@x.com");
+    await withSession(DEAD, "cli", async () => { begin(ana.sidecar); await claim(ana, "x"); });
+    await claim(ben, "x");
+    assert.deepEqual((await attemptGone(ana.sidecar)).map((o) => o.outcome), ["conflict"]);
+    const next = { session: "cli:1:verifier", kind: "cli" as const };
+    const pulled = await withSession(next.session, next.kind, () => pullLinear(ana.sidecar, ana.actor));
+    assert.ok(!("error" in pulled), JSON.stringify(pulled));
+    assert.equal(queue.conflicts(ana.sidecar, DEAD).length, 1, "the gone session still holds its conflict");
+    assert.equal(queue.conflicts(ana.sidecar, next.session).length, 0, "and the pulling session took nothing");
+  } finally { s.dispose(); }
+});
+
 test("C19: dropping a staged write leaves the next one the tip it read", async () => {
   const s = await scenario(["ana@x.com"]);
   try {

@@ -22,9 +22,10 @@ export function verifierIdentityKey(identity: VerifierIdentity): string {
   return JSON.stringify([identity.principal, identity.session, identity.child ?? null]);
 }
 
-/** The work a claimed verifier connection may do; anything else ends the claim. */
+/** The work a claimed verifier connection may do; anything else ends the claim. `pull` brings in
+ *  a request made on another clone (owner, D1); what it receives is readable through none of these. */
 export const REPAIR_VERIFIER_TOOLS: readonly string[] = Object.freeze([
-  "repair_pending", "repair_brief", "repair_verification", "repair_arbitration",
+  "pull", "repair_pending", "repair_brief", "repair_verification", "repair_arbitration",
 ]);
 
 /**
