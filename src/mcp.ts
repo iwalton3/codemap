@@ -270,6 +270,8 @@ const repairEvidenceSchema = obj({ sortId: repairString, witnessCommit: repairSt
     ["findingId", "claimIds", "result", "reason", "claimResults"], false) },
   reproducer: { type: "array", items: repairRun }, regression: { type: "array", items: repairRun },
   patternEnumeration: obj({ expected: repairStrings, actual: repairStrings, method: repairString }, ["expected", "actual", "method"], false),
+  siteBugs: { type: "array", description: "Each pattern site you filed with file_site_bug instead of fixing, with the id it returned: the blind verifier is told them, and reports those sites by these ids.",
+    items: obj({ findingId: repairString, site: repairString, bug: repairString }, ["findingId", "site", "bug"], false) },
   inspected: { type: "array", items: obj({ source: repairString, commit: repairString, reasoning: repairString }, ["source", "commit", "reasoning"], false) },
   noCheckReason: repairString, rulingIds: repairStrings,
   attribution: { type: "array", items: obj({ file: repairString, hunk: repairString, claimIds: repairStrings }, ["file", "hunk", "claimIds"], false) } },

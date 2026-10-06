@@ -250,7 +250,8 @@ export async function repairVerificationBrief(root: string, review: number | str
     evidence: { id: c.evidence.id, witnessCommit: c.evidence.witnessCommit, baseCommit: c.evidence.baseCommit, fixCommit: c.evidence.fixCommit,
       checks: [...new Set(c.evidence.reproducer.map((x) => x.command))], regression: c.evidence.regression.map(({ command, commit }) => ({ command, commit })),
       inspected: c.evidence.inspected.map(({ source, commit }) => ({ source, commit })),
-      noCheckReason: c.evidence.noCheckReason, rulingIds: c.evidence.rulingIds, attribution: c.evidence.attribution },
+      noCheckReason: c.evidence.noCheckReason, rulingIds: c.evidence.rulingIds, attribution: c.evidence.attribution,
+      ...(c.evidence.siteBugs?.length ? { siteBugs: c.evidence.siteBugs } : {}) },
     rulingContext: c.rulingContext };
   return { requestId: request.id, capsuleHash: request.capsuleHash, capsule: neutral, launch,
     ...(job.role === "arbitrator" ? { runs } : {}),
@@ -260,7 +261,9 @@ export async function repairVerificationBrief(root: string, review: number | str
       + "you record both results. To refute (\"factually-refuted\", or \"invalid\" when the sort says the reviewer "
       + "assumed), first state in `basis` whether and why each pinned check actually tests the claim; if it does not, "
       + "you cannot refute on it. Then run it at the witness commit (the old code) and record it passing. If no check "
-      + "can be run, grade \"inspection\" with a no-check reason. A requirement or scope judgment is "
+      + "can be run, grade \"inspection\" with a no-check reason. For a pattern, give every sorted site a "
+      + "disposition: fixed, or — for a site the evidence lists under `siteBugs` — filed, with that bug id. "
+      + "A requirement or scope judgment is "
       + `decision-needed. Then call ${job.role === "verifier" ? "repair_verification" : "repair_arbitration"}. `
       + `To hand this job to a subagent instead, launch it with exactly: ${launch}` };
 }
@@ -271,7 +274,7 @@ export async function repairVerificationBrief(root: string, review: number | str
  * Checked by the op at submission and again at application; the fold sees only that the field
  * is there (R4's accepted gap — the bug lives in another scope).
  */
-async function siteBugRefusal(root: string, events: LogEvent[], results: RepairClaimVerdict[]): Promise<string | undefined> {
+export async function siteBugRefusal(root: string, events: LogEvent[], results: Pick<RepairClaimVerdict, "findingId" | "sites">[]): Promise<string | undefined> {
   const filed = (Array.isArray(results) ? results : []).flatMap((r) => (Array.isArray(r?.sites) ? r.sites : [])
     .filter((s) => s?.bug !== undefined).map((s) => ({ findingId: r.findingId, site: s.site, bug: s.bug! })));
   if (!filed.length) return undefined;

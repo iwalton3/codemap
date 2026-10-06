@@ -16,7 +16,7 @@ import type { RepairConnection } from "../verifier-boundary.js";
 import { earlierUnfavourableRuns, emptyRepairVerificationState, isRepairVerificationState, repairVerificationDecision, repairVerificationHash } from "../repair-verification.js";
 import { issueClaimHash } from "../ruling-application.js";
 import { decisionsView } from "./decision-holds.js";
-import { citedRulings } from "./repair-verification.js";
+import { citedRulings, siteBugRefusal } from "./repair-verification.js";
 import { findSkillRun, isUnverified, transcriptDir } from "../transcript.js";
 
 /** Reads the same scope/cache as canonical findings; no ordinary read parses the log. */
@@ -178,6 +178,15 @@ export async function recordRepairClaims(root: string, review: number | string,
 /** Commands are recorded verbatim as data. This operation never runs them. */
 export async function recordRepairEvidence(root: string, review: number | string, evidence: Omit<RepairEvidenceInput, "id">) {
   if (evidence && "id" in evidence) return callerId("evidence record");
+  if (Array.isArray(evidence?.siteBugs) && evidence.siteBugs.length) {
+    // The same check a verifier's report of these bugs meets, so the brief never hands it a dud.
+    const cfg = resolveSidecar(root);
+    if (!cfg) return { error: "repair records require a configured sidecar" };
+    const read = await readScopeChecked(cfg.path, findingScope(findingKeyScope(cfg, review)));
+    if (read.status === "blocked") return { error: "repair scope is blocked; records remain visible but cannot authorize a write" };
+    const refused = await siteBugRefusal(root, read.events, evidence.siteBugs.map(x => ({ findingId: x?.findingId, sites: [{ site: x?.site, bug: x?.bug }] })));
+    if (refused) return { error: refused };
+  }
   const actor = requireActor(root);
   if ("error" in actor) return actor;
   const id = contentId("re_", review, evidence, actor);

@@ -381,6 +381,31 @@ test("plan 3.4: a pattern closes only with every sorted site fixed or filed as a
   } finally { f.t.dispose(); }
 });
 
+test("I14: a site filed as a bug reaches the blind verifier through the evidence, and reporting it is accepted", async () => {
+  const f = await fixture(1, false, undefined, undefined, { kind: "pattern", predicate: "missing guard", sites: ["src/pay.ts"] });
+  try {
+    const anchor = (await readAnchorStore(f.root)).anchors.find((a) => a.file === "src/pay.ts")!;
+    const filed = await ops.fileSiteBug(f.root, f.ids[0]!, { site: "src/pay.ts", anchors: [anchor.id] }) as { id: string };
+    ok(filed);
+    const ghost = await recordRepairEvidence(f.root, 7, { ...f.evidence, siteBugs: [{ findingId: f.ids[0]!, site: "src/pay.ts", bug: "bug_nothing" }] });
+    assert.match(String((ghost as { error?: string }).error), /no bug bug_nothing/, "checked at the door, as a verifier's report is");
+    const offSite = await recordRepairEvidence(f.root, 7, { ...f.evidence, siteBugs: [{ findingId: f.ids[0]!, site: "src/other.ts", bug: filed.id }] });
+    assert.match(String((offSite as { error?: string }).error), /site/);
+    const recorded = await recordRepairEvidence(f.root, 7, { ...f.evidence, siteBugs: [{ findingId: f.ids[0]!, site: "src/pay.ts", bug: filed.id }] }) as { id: string };
+    ok(recorded);
+    await settle(f.t);
+    const requested = await requestRepairVerification(f.root, 7, { sortId: f.sortId, evidenceId: recorded.id }, new RepairConnection("owner@acme.test")) as any;
+    ok(requested);
+    const h = new RepairConnection("owner@acme.test"); assert.equal(h.claim().ok, true);
+    const brief = await repairVerificationBrief(f.root, 7, { requestId: requested.request.id, role: "verifier", slot: 1 }, h) as any;
+    ok(brief);
+    assert.deepEqual(brief.capsule.evidence.siteBugs, [{ findingId: f.ids[0]!, site: "src/pay.ts", bug: filed.id }]);
+    assert.match(brief.instruction, /siteBugs/);
+    ok(await submitRepairVerification(f.root, 7, { requestId: requested.request.id, slot: 1,
+      results: f.results().map((r) => ({ ...r, sites: [{ site: "src/pay.ts", bug: brief.capsule.evidence.siteBugs[0].bug }] })) }, h));
+  } finally { f.t.dispose(); }
+});
+
 test("K7: a finding confirmed after its site bug was filed closes through that bug once the site is re-filed", async () => {
   const f = await fixture(1, false, undefined, undefined, { kind: "pattern", predicate: "missing guard", sites: ["src/pay.ts"] });
   try {

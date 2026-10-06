@@ -14,6 +14,10 @@ export interface RepairEvidenceInput {
   coverage: (RepairCoverage & { result: "complete" | "partial" | "unknown"; reason: string; claimResults: { claimId: string; result: "complete" | "partial" | "unknown"; reason: string }[] })[];
   reproducer: RepairExecution[]; regression: RepairExecution[];
   patternEnumeration?: { expected: string[]; actual: string[]; method: string };
+  /** Pattern sites the fixer filed with `file_site_bug` instead of fixing. The blind verifier
+   *  must report such a site by its bug id and cannot look bugs up, so the brief carries these
+   *  (owner, I14 (a): it learns which sites were not fixed). */
+  siteBugs?: { findingId: string; site: string; bug: string }[];
   inspected: { source: string; commit: string; reasoning: string }[]; noCheckReason?: string;
   rulingIds: string[]; attribution: { file: string; hunk: string; claimIds: string[] }[];
 }
@@ -135,6 +139,11 @@ export function foldRepairRecords(input: LogEvent[]): RepairRecords {
         if (!error && pe && (!nonempty(pe.method) || !Array.isArray(pe.expected) || !Array.isArray(pe.actual)
           || !unique(pe.expected) || !unique(pe.actual) || [...pe.expected, ...pe.actual].some(x => !nonempty(x))))
           error = "pattern enumeration needs method and unique sites";
+        const sb = data.siteBugs;
+        if (!error && sb !== undefined && (!Array.isArray(sb) || sb.some(x => !x || ![x.findingId, x.site, x.bug].every(nonempty)
+          || !sort!.input.coverage.some(r => r.findingId === x.findingId) || !(sort!.input.sites ?? []).includes(x.site))
+          || !unique(sb.map(x => `${x.findingId}\0${x.site}`))))
+          error = "a site bug names a covered finding and one of the sort's sites, once";
         if (!error && data.noCheckReason !== undefined && !nonempty(data.noCheckReason)) error = "no-check reason must be explicit";
         if (!error && data.inspected.some(x => !nonempty(x.source) || !commit(x.commit) || !nonempty(x.reasoning))) error = "inspection needs pinned source and reasoning";
         if (!error) out.evidence.push({ ...record(e, data), staleReasons: [] });
