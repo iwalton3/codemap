@@ -78,9 +78,10 @@ Two ways, and only these two count.
 2. Launch a fresh subagent whose prompt is **exactly `launch`, with nothing added before or
    after**, and with `isolation: "worktree"` so its checkouts cannot move a live checkout (an
    isolated subagent's transcript still passes codemap's check, measured 2026-10-06). Use an agent
-   type that has the codemap tools. Never a fork: a fork inherits this session. The two may run in
-   parallel. Do not send either one anything else, and never relay one verifier's result to the
-   other.
+   type that has the codemap tools. Launch it from this session, never from inside another
+   subagent: codemap looks for the launch in this session's own transcript. Never a fork: a fork
+   inherits this session. The two may run in parallel. Do not send either one anything else, and
+   never relay one verifier's result to the other.
 3. The subagent reads its own brief, works in a scratch worktree at the pinned commits and calls
    `repair_verification`. That submission is **held** until you record it.
 4. Record it with `record_repair_verification`: the review, the request id, `role: "verifier"`, the
