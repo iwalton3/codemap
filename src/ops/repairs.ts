@@ -142,6 +142,8 @@ export async function postRepairSort(root: string, review: number | string, sort
   sort = structuredClone(sort);
   if (!sort || !Array.isArray(sort.assessments) || sort.assessments.some(a => !a || typeof a !== "object" || !a.identity || typeof a.identity !== "object")) return { error: "sort requires assessment records" };
   if ("id" in sort) return callerId("sort");
+  // Only release_held_sort writes a release, from two verified readers (owner, D2).
+  if ("release" in sort || sort.provenance === "released") return { error: "a held sort is released only by release_held_sort, after two readers; leave `release` out" };
   const identities = [...sort.assessments, ...(sort.arbitration?.identity ? [sort.arbitration] : [])].map(a => a.identity);
   if (identities.some(i => "session" in i)) return { error: "codemap fills each sorter's session from this connection; leave `session` out and name a subagent sorter by `child`, its agent id" };
   if (identities.length && !connection) return { error: "a sort with sorters is posted over MCP, whose connection is their session" };
@@ -154,6 +156,11 @@ export async function postRepairSort(root: string, review: number | string, sort
     if (!a || !a.verified || a.sourceAnswer || a.withdrawn || a.cancelled)
       return { error: `ruling ${String(sort.ruling)} is not a verified, standing answer in this universe's decisions log` };
   }
+  return recordSort(root, review, sort);
+}
+
+/** Appends a sort this module built or checked; the public door is `postRepairSort`. */
+export async function recordSort(root: string, review: number | string, sort: Omit<RepairSortInput, "id">) {
   const actor = requireActor(root);
   if ("error" in actor) return actor;
   const id = contentId("rs_", review, sort, actor);

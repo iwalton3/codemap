@@ -1,9 +1,11 @@
 import type { Actor, BugWitness } from "./schema.js";
+import { createHash } from "node:crypto";
+import { canonical } from "./canonical.js";
 import { sortEvents, type LogEvent } from "./eventlog.js";
 import { verifierIdentityKey, type VerifierIdentity } from "./verifier-boundary.js";
 
-export type { RepairClaim, RepairCoverage, ReportedSortReceipt, RepairAssessment, RepairSortInput } from "./repair-sort-types.js";
-import type { RepairClaim, RepairCoverage, ReportedSortReceipt, RepairSortInput } from "./repair-sort-types.js";
+export type { RepairClaim, RepairCoverage, ReportedSortReceipt, RepairAssessment, RepairSortInput, ReleaseRuling, ReleaseReceipt, RepairRelease } from "./repair-sort-types.js";
+import type { RepairClaim, RepairCoverage, ReportedSortReceipt, RepairSortInput, ReleaseRuling, ReleaseReceipt } from "./repair-sort-types.js";
 export interface RepairExecution {
   id: string; command: string; commit: string; environment: string;
   phase: "witness" | "fix" | "regression";
@@ -37,6 +39,22 @@ const unique = (xs: string[]) => new Set(xs).size === xs.length;
 const commit = (v: string) => /^[a-f0-9]{40,64}$/.test(v);
 const receiptValid = (v: ReportedSortReceipt | undefined) => v === undefined || !!v && [v.id, v.source, v.content].every(nonempty);
 
+/** A `restsOn` entry naming the question that decides the sort (owner, D2); anything else is a free label. */
+export const DECISION_ENTRY = "decision:";
+export const decisionOfEntry = (x: string): string | undefined => x.startsWith(DECISION_ENTRY) && x.length > DECISION_ENTRY.length ? x.slice(DECISION_ENTRY.length) : undefined;
+
+/**
+ * What a release reader reads: the held sort, its claims as filed, and the rulings — nothing of
+ * the fixer's (owner, D2). One builder for the op that issues the brief and the fold that checks
+ * the readers read it.
+ */
+export const releaseBriefContent = (prior: Pick<RepairSortInput, "id">, claims: Pick<RepairClaim, "id" | "findingId" | "text" | "asFiled">[], rulings: ReleaseRuling[]) => ({
+  purpose: "release-held-sort", sort: prior.id,
+  claims: claims.map(({ id, findingId, text, asFiled }) => ({ id, findingId, text, ...(asFiled ? { asFiled } : {}) })),
+  rulings: rulings.map(({ decision, answer, question, words }) => ({ decision, answer, question, words })),
+});
+export const releaseBriefHash = (content: unknown): string => "sha256:" + createHash("sha256").update(canonical(content)).digest("hex");
+
 /**
  * Kinds this fold does not read. RETIRED ones were removed from the design and are skipped, never
  * shown as rejected (plan 3.1: the fixer model went with the grant model, R2); the verification
@@ -68,9 +86,10 @@ export function foldRepairRecords(input: LogEvent[]): RepairRecords {
   // The log is linear, so corrections are sequential (plan 5.2): a correction names the CURRENT
   // sort of its claims as prior or is stale, and it supersedes that sort — except that removing
   // coverage the prior had needs a logged ruling on why those are not instances (owner, batch 5:
-  // "Narrowing needs a ruling"). Dropping a `restsOn` entry is narrowing too: it is what releases a
-  // held sort, so without this the hold defended nothing (I2). The fold checks the field is there;
-  // the op checks the answer, and the claimed verifiers judge whether it decides the claim.
+  // "Narrowing needs a ruling"). Dropping a `restsOn` entry is what releases a held sort, and only
+  // two readers do that (`releaseError`, owner D2); a ruling alone releases nothing, or every sort
+  // /triage-review holds on a free label could be freed by any ruling-cited reclassification. The
+  // one free move is RE-POINTING free labels at the decision that will answer them (owner, Q2).
   const sequenceError = (d: RepairSortInput): string | undefined => {
     const current = heads(), named = priorsOf(d);
     const stale = named.find(p => !current.some(s => s.input.id === p));
@@ -78,15 +97,46 @@ export function foldRepairRecords(input: LogEvent[]): RepairRecords {
       return `stale correction: ${stale} was already corrected by ${out.sorts.find(s => priorsOf(s.input).includes(stale))!.input.id}; name the current sort as prior`;
     const rival = current.find(s => !named.includes(s.input.id) && overlaps(s.input, d));
     if (rival) return `these claims are already sorted by ${rival.input.id}: correct it by naming it as prior`;
-    if (!named.length || nonempty(d.ruling)) return undefined;
     for (const prior of named.map(p => out.sorts.find(s => s.input.id === p)!.input)) {
       const claims = prior.coverage.flatMap(ref => ref.claimIds.filter(id => !d.coverage.some(own => own.findingId === ref.findingId && own.claimIds.includes(id))));
       const sites = (prior.sites ?? []).filter(site => !(d.sites ?? []).includes(site));
-      if (claims.length || sites.length)
+      if (!nonempty(d.ruling) && (claims.length || sites.length))
         return `a correction that removes ${[...claims, ...sites].join(", ")} from ${prior.id} needs a logged ruling citing why they are not instances`;
-      const settled = prior.restsOn.filter(x => !d.restsOn.includes(x));
-      if (settled.length) return `a correction that drops ${settled.join(", ")} from what ${prior.id} rests on needs a logged ruling that decides it`;
+      const dropped = prior.restsOn.filter(x => !d.restsOn.includes(x));
+      if (!dropped.length || d.provenance === "released") continue;
+      const repointed = dropped.every(x => !decisionOfEntry(x)) && d.restsOn.some(x => !!decisionOfEntry(x) && !prior.restsOn.includes(x));
+      if (!repointed) return `a correction that drops ${dropped.join(", ")} from what ${prior.id} rests on is released only by two readers (release_held_sort); a free label may be re-pointed to the decision:<id> that answers it`;
     }
+  };
+  // Owner, D2: "If two readers agree on a solid implementation direction approved by clear
+  // rulings, it gets unblocked for autonomous fixing" — and, unanimous, with no arbitrator.
+  const releaseError = (d: RepairSortInput): string | undefined => {
+    const r = d.release;
+    if (d.provenance !== "released") return r === undefined ? undefined : "a release belongs only to a released sort";
+    const named = priorsOf(d);
+    const prior = named.length === 1 ? out.sorts.find(s => s.input.id === named[0])?.input : undefined;
+    if (!prior || !r || typeof r !== "object") return "a released sort names the one held sort it releases, and carries the release";
+    if (!["mechanical", "implementation-defect"].includes(d.classification)) return "a release settles a sort only as mechanical or implementation-defect";
+    if (d.assessments.length || d.disagreements.length || d.arbitration || d.ruling !== undefined || d.refutationSubtype !== undefined)
+      return "a released sort's provenance is its two readers alone";
+    const shape = (s: RepairSortInput) => canonical({ coverage: s.coverage, kind: s.kind, predicate: s.predicate ?? null, sites: s.sites ?? null });
+    if (shape(d) !== shape(prior)) return "a release keeps the held sort's coverage, kind, predicate and sites";
+    if (!Array.isArray(r.rulings) || !r.rulings.length || r.rulings.some(x => !x || ![x.decision, x.answer, x.question, x.words].every(nonempty))
+      || !unique(r.rulings.map(x => x.decision))) return "a release names one ruling, with its question and words, for each decision it drops";
+    const dropped = prior.restsOn.filter(x => !d.restsOn.includes(x));
+    if (d.restsOn.some(x => !prior.restsOn.includes(x)) || !dropped.length || dropped.some(x => !decisionOfEntry(x)))
+      return "a release drops decision entries only, and adds nothing: re-point a free label to its decision first";
+    if (canonical(dropped.map(decisionOfEntry).sort()) !== canonical(r.rulings.map(x => x.decision).sort()))
+      return "a release carries exactly the rulings on the decision entries it drops";
+    const claims = out.claims.filter(c => prior.coverage.some(ref => ref.findingId === c.findingId && ref.claimIds.includes(c.id)));
+    const brief = releaseBriefHash(releaseBriefContent(prior, claims, r.rulings));
+    const readers = r.readers as ReleaseReceipt[];
+    if (!Array.isArray(readers) || readers.length !== 2 || readers.some(x => !x || ![x.id, x.request, x.principal, x.session, x.launch, x.rationale].every(nonempty)
+      || (x.verdict !== "yes" && x.verdict !== "no") || x.briefHash !== brief)) return "a release needs two readers' receipts on this exact brief";
+    const [a, b] = readers as [ReleaseReceipt, ReleaseReceipt];
+    const key = (x: ReleaseReceipt) => verifierIdentityKey({ principal: x.principal, session: x.session, child: x.launch });
+    if (key(a) === key(b) || a.launch === b.launch || a.id === b.id) return "the two release readers were not independently launched";
+    if (a.verdict !== "yes" || b.verdict !== "yes") return "a release needs both readers' yes; there is no arbitrator";
   };
   for (const e of events) {
     const d = e.data as any;
@@ -111,13 +161,15 @@ export function foldRepairRecords(input: LogEvent[]): RepairRecords {
         if (!error && data.arbitration && (!Array.isArray(data.arbitration.addresses) || data.arbitration.addresses.some(x => !nonempty(x)) || !nonempty(data.arbitration.reason) || !reported(data.arbitration.identity))) error = "arbitration needs addressed disagreements and provenance";
         if (!error && data.sites !== undefined && (!Array.isArray(data.sites) || data.sites.some(x => !nonempty(x)))) error = "sites must be explicit strings";
         if (!error && (data.assessments.some(a => !receiptValid(a.receipt)) || !receiptValid(data.arbitration?.receipt))) error = "reported receipt needs exact content and source";
-        if (!error && data.provenance !== "owner-reviewed" && data.provenance !== "dual-sorted") error = "unknown sort provenance";
+        if (!error && !["owner-reviewed", "dual-sorted", "released"].includes(data.provenance)) error = "unknown sort provenance";
+        if (!error && data.restsOn.some(x => x.startsWith(DECISION_ENTRY) && !decisionOfEntry(x))) error = "a decision entry names its decision: decision:<id>";
         if (!error && data.provenance === "dual-sorted" && data.assessments.length !== 2) error = "dual sorting needs two sorters";
         if (!error && data.provenance === "dual-sorted" && new Set(data.assessments.map(a => verifierIdentityKey(a.identity))).size < 2) error = "dual sorting needs two independent sorters: their identities (session and subagent) must differ";
         if (!error && data.priors !== undefined && (!Array.isArray(data.priors) || !data.priors.length || data.priors.some(p => !nonempty(p)) || !unique(priorsOf(data)))) error = "priors must name distinct sorts";
         if (!error && priorsOf(data).length && (!nonempty(data.reason) || priorsOf(data).some(p => !out.sorts.some(s => s.input.id === p)))) error = "correction needs predecessor and reason";
         if (!error && data.ruling !== undefined && (!nonempty(data.ruling) || !priorsOf(data).length)) error = "a cited ruling belongs to a correction: it names a logged answer and a prior sort";
         if (!error && data.kind === "pattern" && (!nonempty(data.predicate) || !data.sites?.length || !unique(data.sites))) error = "pattern needs predicate and original sites";
+        if (!error) error = releaseError(data);
         if (!error) error = sequenceError(data);
         if (!error) out.sorts.push({ ...record(e, data), eligible: false, current: true, holds: [] });
       } else if (e.kind === "repair.evidence-recorded") {
@@ -134,8 +186,11 @@ export function foldRepairRecords(input: LogEvent[]): RepairRecords {
         if (!error && data.regression.some(x => x.phase !== "regression")) error = "regression runs have a separate phase";
         if (!error && !unique(data.rulingIds)) error = "ruling IDs must be unique";
         if (!error && data.rulingIds.some(x => !nonempty(x))) error = "ruling IDs must be nonempty";
-        // So the blind brief always carries the ruling a release rests on (I2).
-        if (!error && nonempty(sort!.input.ruling) && !data.rulingIds.includes(sort!.input.ruling)) error = `evidence for a sort that cites ruling ${sort!.input.ruling} must list it in rulingIds`;
+        // So the blind brief carries every ruling the sort rests on, and verification re-checks
+        // their authority at request and at application (I2, D2).
+        const rests = [...(nonempty(sort?.input.ruling) ? [sort!.input.ruling] : []), ...(sort?.input.release?.rulings ?? []).map(x => x.answer)];
+        const unlisted = rests.find(x => !data.rulingIds.includes(x));
+        if (!error && unlisted) error = `evidence for a sort that rests on ruling ${unlisted} must list it in rulingIds`;
         if (!error && data.attribution.some(x => !nonempty(x.file) || !nonempty(x.hunk) || !Array.isArray(x.claimIds) || x.claimIds.some(id => !data.coverage.some(c => c.claimIds.includes(id))))) error = "attribution must cite covered claims";
         const pe = data.patternEnumeration;
         if (!error && pe && (!nonempty(pe.method) || !Array.isArray(pe.expected) || !Array.isArray(pe.actual)

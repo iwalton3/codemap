@@ -53,3 +53,38 @@ export async function signoffReferences(read: ScopeReader, e: LogEvent): Promise
       .some((a) => questionnaireAnswerId(x.id, String(a?.questionId)) === answerId)));
   return answered ? [] : refused(`no answer ${answerId} in ${sourceScope}`);
 }
+
+/**
+ * A repair sort's references into the decisions log (docs/sidecar-references.md A8): each
+ * `decision:<id>` entry in `restsOn` names a decision in `decisions/<u>`, and each release ruling
+ * an answer to its decision there (owner, D2). Existence only; whether the answer stands is the
+ * op's question, and verification re-checks it through the evidence's `rulingIds`.
+ */
+export async function repairSortReferences(read: ScopeReader, universe: string, e: LogEvent): Promise<Refusal[]> {
+  const d = e.data as Data | undefined;
+  const entries = (Array.isArray(d?.restsOn) ? d.restsOn : []).filter((x): x is string => typeof x === "string" && x.startsWith("decision:")).map((x) => x.slice("decision:".length));
+  const rulings = (((d?.release as Data | undefined)?.rulings as { decision?: unknown; answer?: unknown }[] | undefined) ?? [])
+    .filter((r) => typeof r?.decision === "string" && typeof r?.answer === "string") as { decision: string; answer: string }[];
+  if (!entries.length && !rulings.length) return [];
+  const at = `decisions/${universe}`;
+  const events = await read.read(at);
+  // A decision's id is `<round event id>:<its label>`, or a confirm's own event id.
+  const labelOf = (id: string): string | undefined => {
+    for (const x of events) {
+      if (x.kind === "decision.confirm.posted" && x.id === id) return id;
+      if (x.kind !== "decision.round.posted") continue;
+      const label = (((x.data as Data | undefined)?.decisions as { id?: unknown }[] | undefined) ?? []).map((q) => String(q?.id)).find((l) => `${x.id}:${l}` === id);
+      if (label !== undefined) return label;
+    }
+  };
+  const refused = (why: string): Refusal[] => [{ id: e.id, kind: e.kind, cls: "reference", why }];
+  for (const id of [...entries, ...rulings.map((r) => r.decision)]) if (labelOf(id) === undefined) return refused(`no decision ${id} in ${at}`);
+  for (const r of rulings) {
+    const label = labelOf(r.decision)!;
+    const answered = events.some((x) => ((x.kind === "decision.answer.recorded" || x.kind === "decision.answer.revised") && x.id === r.answer
+      && [r.decision, label].includes((x.data as Data | undefined)?.decision as string))
+      || (x.kind === "decision.questionnaire.submitted" && questionnaireAnswerId(x.id, label) === r.answer));
+    if (!answered) return refused(`no answer ${r.answer} to ${r.decision} in ${at}`);
+  }
+  return [];
+}

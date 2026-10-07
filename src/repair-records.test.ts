@@ -5,8 +5,9 @@ import { mkdtempSync, mkdirSync, writeFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { testChain } from "./test-events.js";
-import { foldRepairRecords, repairFindingCompleteness, type RepairSortInput, type RepairEvidenceInput } from "./repair-records.js";
+import { foldRepairRecords, repairFindingCompleteness, releaseBriefContent, releaseBriefHash, type ReleaseReceipt, type RepairSortInput, type RepairEvidenceInput } from "./repair-records.js";
 import { foldFindings } from "./shared-findings.js";
+import { referencesFor } from "./eventlog.js";
 import { findingsProjection } from "./shared-projections.js";
 import { readCached, scopeFingerprint, MATERIALIZER_VERSION } from "./materialize.js";
 import { db } from "./db.js";
@@ -106,19 +107,74 @@ test("D4: sorters are independent by identity key — a session and its subagent
   assert.match(blank.rejected[0]!.reason, /provenance/, "a child, when given, is an id");
 });
 
-test("I2: a correction that drops what a held sort rests on needs a ruling, and its evidence must cite it", () => {
-  const held = sort({ classification: "design-defect", restsOn: ["which guard"] });
-  const freed = (over: Partial<RepairSortInput>) => sort({ id: "next", prior: "s1", reason: "ruled", restsOn: [], ...over });
-  const unruled = foldRepairRecords(chain([sorted(held), sorted(freed({ classification: "implementation-defect" }))]));
-  assert.match(unruled.rejected[0]?.reason ?? "", /which guard.*needs a logged ruling/, "today the hold defends nothing");
-  const ruled = foldRepairRecords(chain([sorted(held), sorted(freed({ classification: "implementation-defect", ruling: "ans_1" }))]));
-  assert.equal(ruled.sorts.find(s => s.input.id === "next")!.eligible, true, ruled.sorts.map(s => s.holds).join());
-  const stillDesign = foldRepairRecords(chain([sorted(held), sorted(freed({ classification: "design-defect", ruling: "ans_1" }))]));
-  assert.equal(stillDesign.sorts.find(s => s.input.id === "next")!.eligible, false, "a ruling alone does not reclassify");
-  const bare = foldRepairRecords(chain([sorted(held), sorted(freed({ classification: "implementation-defect", ruling: "ans_1" })), proof(ev({ sortId: "next" }))]));
-  assert.match(bare.rejected[0]?.reason ?? "", /ans_1/, "the brief must carry the ruling the sort rests its release on");
-  const cited = foldRepairRecords(chain([sorted(held), sorted(freed({ classification: "implementation-defect", ruling: "ans_1" })), proof(ev({ sortId: "next", rulingIds: ["ans_1"] }))]));
-  assert.deepEqual(cited.rejected, []);
+test("C-2 (D2): a ruling no longer releases what a held sort rests on — a free label or a decision entry", () => {
+  for (const entry of ["D1", "decision:d1"]) {
+    const held = sort({ classification: "design-defect", restsOn: [entry] });
+    const freed = sort({ id: "next", prior: "s1", reason: "ruled", restsOn: [], classification: "implementation-defect", ruling: "ans1" });
+    const records = foldRepairRecords(chain([sorted(held), sorted(freed)]));
+    assert.match(records.rejected[0]?.reason ?? "", /released only by two readers/, entry);
+    assert.equal(records.sorts.find(s => s.input.id === "next"), undefined);
+  }
+});
+
+test("Q2: a free label is re-pointed to its decision for free, and stays held; dropping it any other way is refused", () => {
+  const held = sort({ classification: "design-defect", restsOn: ["D1"] });
+  const repointed = foldRepairRecords(chain([sorted(held), sorted(sort({ id: "next", prior: "s1", reason: "D1 is d1", classification: "design-defect", restsOn: ["decision:d1"] }))]));
+  assert.deepEqual(repointed.rejected, []);
+  assert.match(repointed.sorts.find(s => s.input.id === "next")!.holds.join(), /dependency remains/);
+  const dropped = foldRepairRecords(chain([sorted(held), sorted(sort({ id: "next", prior: "s1", reason: "gone", classification: "design-defect", restsOn: ["other"] }))]));
+  assert.match(dropped.rejected[0]?.reason ?? "", /released only by two readers/);
+  const bare = foldRepairRecords(chain([sorted(sort({ restsOn: ["decision:"] }))]));
+  assert.match(bare.rejected[0]?.reason ?? "", /names its decision/);
+});
+
+test("D2: two readers' yes on the exact brief release a held sort; anything less is refused", () => {
+  const held = sort({ classification: "design-defect", restsOn: ["decision:d1", "label"] });
+  const rulings = [{ decision: "d1", answer: "ans1", question: "D1: which guard?", words: "Both guards" }];
+  const claims = [{ id: "f1:original", findingId: "f1", text: created.data.text, asFiled: created.data }];
+  const briefHash = releaseBriefHash(releaseBriefContent(held, claims, rulings));
+  const reader = (n: number, over: Partial<ReleaseReceipt> = {}): ReleaseReceipt => ({ id: `rc${n}`, request: `rq${n}`, principal: "alice", session: "parent",
+    launch: `toolu_l${n}`, briefHash, verdict: "yes", rationale: "the ruling picks one direction", ...over });
+  const release = (readers: ReleaseReceipt[], over: Partial<RepairSortInput> = {}) => sort({ id: "next", prior: "s1", reason: "released",
+    classification: "implementation-defect", restsOn: ["label"], provenance: "released", release: { rulings, readers }, ...over });
+  const run = (s: RepairSortInput, rest: Parameters<typeof chain>[0] = []) => foldRepairRecords(chain([sorted(held), sorted(s, agent), ...rest]));
+  const ok = run(release([reader(1), reader(2)]));
+  assert.deepEqual(ok.rejected, []);
+  assert.deepEqual(ok.sorts.find(s => s.input.id === "next")!.holds, ["requirement or ruling dependency remains explicit"], "the free label still holds it");
+  const clean = foldRepairRecords(chain([sorted(sort({ classification: "design-defect", restsOn: ["decision:d1"] })),
+    sorted(sort({ id: "next", prior: "s1", reason: "released", classification: "implementation-defect", restsOn: [], provenance: "released", release: { rulings, readers: [reader(1), reader(2)] } }), agent)]));
+  assert.equal(clean.sorts.find(s => s.input.id === "next")!.eligible, true, clean.sorts.map(s => s.holds).join("|"));
+  const refused = (s: RepairSortInput, why: RegExp, rest: Parameters<typeof chain>[0] = []) => assert.match(run(s, rest).rejected[0]?.reason ?? "(accepted)", why);
+  refused(release([reader(1), reader(2, { verdict: "no" })]), /both readers' yes/);
+  refused(release([reader(1), reader(2, { launch: "toolu_l1" })]), /independently launched/);
+  refused(release([reader(1), reader(2, { briefHash: "sha256:other" })]), /exact brief/);
+  refused(release([reader(1), reader(2)], { restsOn: [] }), /drops decision entries only/, );
+  refused(release([reader(1), reader(2)], { classification: "design-defect" }), /mechanical or implementation-defect/);
+  refused(release([reader(1), reader(2)], { coverage: [] }), /coverage/);
+  refused(release([reader(1)]), /two readers/);
+  refused(sort({ id: "next", prior: "s1", reason: "r", restsOn: ["label"], classification: "implementation-defect", provenance: "released" }), /carries the release/);
+  refused(sort({ id: "next", prior: "s1", reason: "r", restsOn: ["decision:d1", "label"], release: { rulings, readers: [reader(1), reader(2)] } }), /only to a released sort/);
+  // Evidence carries the release's rulings, so verification re-checks their authority.
+  const ev2 = (rulingIds: string[]) => proof(ev({ id: "proof2", sortId: "next", rulingIds }));
+  const cleanChain = (rulingIds: string[]) => foldRepairRecords(chain([sorted(sort({ classification: "design-defect", restsOn: ["decision:d1"] })),
+    sorted(sort({ id: "next", prior: "s1", reason: "released", classification: "implementation-defect", restsOn: [], provenance: "released", release: { rulings, readers: [reader(1), reader(2)] } }), agent), ev2(rulingIds)]));
+  assert.match(cleanChain([]).rejected[0]?.reason ?? "", /ans1.*rulingIds/);
+  assert.deepEqual(cleanChain(["ans1"]).rejected, []);
+});
+
+test("A8 (D2): a decision entry and a release ruling must exist in the decisions log, checked at the door and on read", async () => {
+  const check = referencesFor("findings/acme/api/pr-7")!;
+  const decisions = testChain("w", [
+    { id: "r1", kind: "decision.round.posted", subject: "R1", actor, data: { decisions: [{ id: "d1" }] } },
+    { id: "ans1", kind: "decision.answer.recorded", subject: "r1:d1", actor, data: { decision: "r1:d1" } }]);
+  const read = { read: async (s: string) => (s === "decisions/acme/api" ? decisions : []), scopes: async () => ["decisions/acme/api"] };
+  const event = (data: Record<string, unknown>) => testChain("w", [{ id: "e1", kind: "repair.sort-recorded", subject: "s", actor, data }])[0]!;
+  const why = async (data: Record<string, unknown>) => (await check("findings/acme/api/pr-7", event(data), [], read)).map(r => r.why);
+  assert.deepEqual(await why({ restsOn: ["decision:r1:d1", "free label"] }), []);
+  assert.deepEqual(await why({ restsOn: ["decision:r1:d9"] }), ["no decision r1:d9 in decisions/acme/api"]);
+  const release = (answer: string) => ({ restsOn: [], release: { rulings: [{ decision: "r1:d1", answer }] } });
+  assert.deepEqual(await why(release("ans1")), []);
+  assert.deepEqual(await why(release("ans9")), ["no answer ans9 to r1:d1 in decisions/acme/api"]);
 });
 
 test("arbitration must address each disagreement and unresolved dependency holds", () => {

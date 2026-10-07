@@ -13,9 +13,15 @@ export interface RepairSortInput {
   priors?: string[];
   reason?: string; classification: string; kind: "isolated" | "pattern";
   coverage: RepairCoverage[]; predicate?: string; sites?: string[]; refutationSubtype?: "factual" | "scope" | "assumed";
-  restsOn: string[]; source: string; provenance: "owner-reviewed" | "dual-sorted";
+  /** What the sort waits on: a free label, or `decision:<decision id>` — the question that decides it (owner, D2). */
+  restsOn: string[]; source: string; provenance: "owner-reviewed" | "dual-sorted" | "released";
   assessments: RepairAssessment[]; disagreements: { id: string; text: string }[];
   arbitration?: { addresses: string[]; reason: string; identity: ReportedSorter; receipt?: ReportedSortReceipt };
   /** A logged decisions answer on why the sites or claims this correction removes are not instances (R5, plan 5.2). */
   ruling?: string;
+  /** Only on a `released` sort, built by `release_held_sort`: the rulings that answered its decision entries, and two readers who found them a solid direction (owner, D2). */
+  release?: RepairRelease;
 }
+export interface ReleaseRuling { decision: string; answer: string; question: string; words: string }
+export interface ReleaseReceipt { id: string; request: string; principal: string; session: string; launch: string; briefHash: string; verdict: "yes" | "no"; rationale: string }
+export interface RepairRelease { rulings: ReleaseRuling[]; readers: ReleaseReceipt[] }

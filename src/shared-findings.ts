@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { registerKinds, registerReferences, tipReader, type ScopeReader } from "./eventlog.js";
 import { RETIRED_REPAIR_KINDS } from "./repair-records.js";
 import { collector, foldJudged, registerReport, staleRevision, wasOf, type RefusalClass, type Refusal } from "./validation.js";
-import { rulingReferences } from "./ruling-references.js";
+import { repairSortReferences, rulingReferences } from "./ruling-references.js";
 import { foldRepairRecords, type RepairFindingMap } from "./repair-records.js";
 import { foldRepairVerification, type RepairVerificationApplication } from "./repair-verification.js";
 /**
@@ -1152,12 +1152,14 @@ function universeOfFindingScope(scope: string): string | null {
 /**
  * The references a findings event makes OUTSIDE its scope (docs/sidecar-references.md): a
  * promotion names a filed bug (row 23), a ruling application its round, decision and answer
- * (rows 29-31), and a verification result's sites the bugs they were filed as (row 51).
+ * (rows 29-31), a repair sort the decisions it rests on and the rulings that released it (A8),
+ * and a verification result's sites the bugs they were filed as (row 51).
  */
 async function outsideReferences(scope: string, e: LogEvent, _own: LogEvent[], read: ScopeReader): Promise<Refusal[]> {
   const universe = universeOfFindingScope(scope);
   if (!universe) return [];
   if (e.kind === "finding.rulingApplied") return rulingReferences(read, universe, e);
+  if (e.kind === "repair.sort-recorded") return repairSortReferences(read, universe, e);
   if (e.kind === "finding.created") {
     const bound = keyFieldProblem(scope, universe, e.data as Data | undefined);
     if (bound) return [{ id: e.id, kind: e.kind, cls: "reference", why: bound }];

@@ -412,7 +412,7 @@ test("I2: the blind brief tells the verifier to judge whether a cited ruling dec
     const h = new RepairConnection("owner@acme.test"); assert.equal(h.claim().ok, true);
     const brief = await repairVerificationBrief(f.root, 7, { requestId: f.requestId, role: "verifier", slot: 1 }, h) as any;
     ok(brief);
-    assert.match(brief.instruction, /cites a `ruling`.*judge whether that ruling decides the claim.*decision-needed/);
+    assert.match(brief.instruction, /cites a `ruling`.*release.rulings.*judge whether those rulings decide the claim.*decision-needed/);
   } finally { f.t.dispose(); }
 });
 

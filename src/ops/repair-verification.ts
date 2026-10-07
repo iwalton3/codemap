@@ -251,7 +251,7 @@ export async function repairVerificationBrief(root: string, review: number | str
     claims: c.claims.map(({ id, findingId, text, parentId, witness, asFiled }) => ({ id, findingId, text, parentId, witness, asFiled })),
     sort: { id: c.sort.id, classification: c.sort.classification, kind: c.sort.kind, coverage: c.sort.coverage,
       predicate: c.sort.predicate, sites: c.sort.sites, refutationSubtype: c.sort.refutationSubtype, restsOn: c.sort.restsOn,
-      ...(c.sort.ruling ? { ruling: c.sort.ruling } : {}) },
+      ...(c.sort.ruling ? { ruling: c.sort.ruling } : {}), ...(c.sort.release ? { release: { rulings: c.sort.release.rulings } } : {}) },
     evidence: { id: c.evidence.id, witnessCommit: c.evidence.witnessCommit, baseCommit: c.evidence.baseCommit, fixCommit: c.evidence.fixCommit,
       checks: [...new Set(c.evidence.reproducer.map((x) => x.command))], regression: c.evidence.regression.map(({ command, commit }) => ({ command, commit })),
       inspected: c.evidence.inspected.map(({ source, commit }) => ({ source, commit })),
@@ -260,9 +260,9 @@ export async function repairVerificationBrief(root: string, review: number | str
     rulingContext: c.rulingContext };
   return { requestId: request.id, capsuleHash: request.capsuleHash, capsule: neutral, launch,
     ...(job.role === "arbitrator" ? { runs } : {}),
-    instruction: "Independently assess only the original claims against the pinned code. Where the sort cites a `ruling` "
-      + "(its text is in `rulingContext`), first judge whether that ruling decides the claim as it is now classified; if it "
-      + "does not, the verdict is decision-needed. Work in a scratch worktree "
+    instruction: "Independently assess only the original claims against the pinned code. Where the sort cites a `ruling`, or was "
+      + "released on rulings (`release.rulings`; their text is in `rulingContext`), first judge whether those rulings decide the claim as it is now classified; if they "
+      + "do not, the verdict is decision-needed. Work in a scratch worktree "
       + "at the pinned commits (`git worktree add <scratch> <commit>`), never in anyone's live checkout. For \"fixed\", run each "
       + "check yourself: it must FAIL at the witness commit (phase witness) and PASS at the fix commit (phase fix), and "
       + "you record both results. To refute (\"factually-refuted\", or \"invalid\" when the sort says the reviewer "

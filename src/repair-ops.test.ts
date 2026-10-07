@@ -3,13 +3,14 @@ import assert from "node:assert/strict";
 import { team, settle } from "./oracle.js";
 import { shareFinding } from "./ops-shared.js";
 import { postRepairSort, recordRepairClaims, recordRepairEvidence, repairRecords } from "./ops/repairs.js";
+import { releaseReaderBrief, submitReleaseVerdict, releaseHeldSort } from "./ops/repair-release.js";
 import { RepairConnection } from "./verifier-boundary.js";
 import { repairFindingCompleteness, type RepairSortInput, type RepairEvidenceInput } from "./repair-records.js";
 import { readFinding } from "./store.js";
 import { rpc } from "./test-mcp.js";
 import { postRound, answerDirect } from "./ops/decisions.js";
 import { decisionsView } from "./ops/decision-holds.js";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -185,4 +186,67 @@ test("O19: one sort may replace several current sorts at once, and they all stop
     ok(merged);
     assert.deepEqual(merged.records.sorts.filter((s) => s.current).map((s) => s.input.id), [merged.id]);
   } finally { t.dispose(); }
+});
+
+/** A release reader subagent as the harness leaves it: launched with `prompt`, its own submit call and result. */
+function readerTranscript(dir: string, agentId: string, prompt: string, input: unknown, result: unknown) {
+  const session = "5e55a0a0-0000-0000-0000-00000000000" + agentId.slice(-1), launch = `launch_${agentId}`, callId = `toolu_${agentId}`;
+  mkdirSync(join(dir, session, "subagents"), { recursive: true });
+  writeFileSync(join(dir, session, "subagents", `agent-${agentId}.meta.json`), JSON.stringify({ agentType: "general-purpose", toolUseId: launch }));
+  writeFileSync(join(dir, session, "subagents", `agent-${agentId}.jsonl`), [
+    { type: "user", isSidechain: true, agentId, sessionId: session, message: { role: "user", content: prompt } },
+    { type: "assistant", isSidechain: true, agentId, sessionId: session, message: { content: [{ type: "tool_use", id: callId, name: "mcp__codemap__submit_release_verdict", input }] } },
+    { type: "user", isSidechain: true, agentId, sessionId: session, message: { content: [{ type: "tool_result", tool_use_id: callId, content: JSON.stringify(result) }] } },
+  ].map((x) => JSON.stringify(x)).join("\n") + "\n");
+  writeFileSync(join(dir, `${session}.jsonl`), [
+    { type: "assistant", isSidechain: false, timestamp: new Date().toISOString(), message: { content: [{ type: "tool_use", id: launch, name: "Agent", input: { prompt, subagent_type: "general-purpose" } }] } },
+    { type: "user", isSidechain: false, message: { content: [{ type: "tool_result", tool_use_id: launch, content: "launched" }] }, toolUseResult: { agentId } },
+  ].map((x) => JSON.stringify(x)).join("\n") + "\n");
+}
+
+test("D2 through the op: a held sort re-pointed to its decision is released by two readers' yes; a no keeps it held", async () => {
+  const t = await team(["alice@acme.test"]);
+  const dir = mkdtempSync(join(tmpdir(), "codemap-release-tx-"));
+  try {
+    const root = t.all[0]!.repo;
+    ok(await postRound(root, { round: { id: "R-dir", source: "the owner, on the guard" }, decisions: [{ id: "D-dir", round: "R-dir", ref: "D1", kind: "words",
+      payload: { question: "D1: which guard does transfer need?", options: [{ label: "Both" }, { label: "Neither" }] }, options: [{ label: "Both", effects: [] }, { label: "Neither", effects: [] }] }] }));
+    ok(await answerDirect(root, { decision: "D-dir", option: "Both" }));
+    const decision = (await decisionsView(root)).s.decisions.find((d) => (d.label ?? d.id) === "D-dir")!.id;
+    const heldFor = async (text: string) => {
+      const f = await shareFinding(root, 7, { targetKind: "anchor", targetId: `src/pay.ts#${text}`, text }) as { id: string };
+      ok(f);
+      const held = await postRepairSort(root, 7, { ...sort(f.id, []), classification: "design-defect", restsOn: ["D1"] }) as { id: string };
+      ok(held);
+      assert.match(String((await releaseReaderBrief(root, 7, { sort: held.id, slot: 1 }) as { error?: string }).error), /rests on no decision entry/);
+      const repointed = await postRepairSort(root, 7, { ...sort(f.id, []), classification: "design-defect", restsOn: [`decision:${decision}`], prior: held.id, reason: "D1 is this decision" }) as { id: string };
+      ok(repointed);
+      return repointed.id;
+    };
+    const read = async (sortId: string, verdicts: ["yes" | "no", "yes" | "no"], agents: [string, string]) => {
+      const refs = [];
+      for (const slot of [1, 2] as const) {
+        const brief = await releaseReaderBrief(root, 7, { sort: sortId, slot }) as { requestId: string; prompt: string };
+        ok(brief);
+        assert.match(brief.prompt, /which guard does transfer need/);
+        const verdict = { requestId: brief.requestId, verdict: verdicts[slot - 1]!, rationale: `slot ${slot}` };
+        const held = submitReleaseVerdict(root, verdict) as { receipt: string };
+        ok(held);
+        readerTranscript(dir, agents[slot - 1]!, brief.prompt, verdict, held);
+        refs.push({ requestId: brief.requestId, receipt: held.receipt });
+      }
+      return refs;
+    };
+    const yes = await heldFor("guarded");
+    const released = await releaseHeldSort(root, 7, { sort: yes, readers: await read(yes, ["yes", "yes"], ["a1111111", "a2222222"]) }, dir) as any;
+    ok(released);
+    const s = released.records.sorts.find((x: any) => x.input.id === released.id);
+    assert.equal(s.input.provenance, "released");
+    assert.deepEqual(s.input.restsOn, []);
+    assert.equal(s.eligible, true, s.holds.join());
+    const no = await heldFor("unguarded");
+    const refused = await releaseHeldSort(root, 7, { sort: no, readers: await read(no, ["yes", "no"], ["a3333333", "a4444444"]) }, dir) as { error?: string };
+    assert.match(String(refused.error), /stays held/);
+    assert.match(String((await postRepairSort(root, 7, { ...sort("x", []), provenance: "released" } as never) as { error?: string }).error), /release_held_sort/);
+  } finally { t.dispose(); rmSync(dir, { recursive: true, force: true }); }
 });
