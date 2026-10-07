@@ -1516,7 +1516,7 @@ const tools: Tool[] = [
     inputSchema: obj({
       decision: { type: "string" }, answer: { type: "string", description: "The ruling being retired; omit for an unanswered question. Only its principal's answers are withdrawn: a colleague's earlier answer stands." },
       reason: { type: "string" }, relay: { type: "string", description: "The report_ruling question the person answered." },
-      review: { type: "object", description: "{ readers: [ref, ref], arbitrator?: ref }" },
+      review: { type: "object", description: "{ readers: [ref, ref], arbitrator?: ref }, each ref { requestId, receipt } — the brief's request id and the receipt the reader reports. codemap finds the reader's call by its receipt." },
     }, ["decision", "reason"]),
     mutates: true,
     handler: (a, c) => ops.withdrawDecision(c.universe.path, a as never),

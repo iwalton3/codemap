@@ -24,7 +24,7 @@ import {
   type AnswerVia, type BriefEntry, type FoldedDecision, type Mapping, type SharedDecisions,
 } from "../shared-decisions.js";
 import { decisionsView } from "./decision-holds.js";
-import { findAskCalls, findMessages, findVerdictCalls, isUnverified, readCall, readMessage, readReader, readSubagentCall, sameQuestion, sessionHolding, transcriptDir, verdictGraceMs } from "../transcript.js";
+import { findAskCalls, findMessages, findVerdictCalls, isUnverified, readCall, readMessage, readReader, readReceiptCall, readSubagentCall, sameQuestion, sessionHolding, transcriptDir, verdictGraceMs } from "../transcript.js";
 import type { PersonMessage, Unverified } from "../transcript.js";
 import { saveReaderRequest, readerRequest, readerRequests, holdReaderReceipt, readerReceipts, settleReaderReceipt,
   legacyReaderRequest, legacyReaderVerdicts, holdLegacyReaderVerdict, pendingLegacyReaderAnswers,
@@ -1006,7 +1006,8 @@ export { decisionHash, CONFIRM_YES, CONFIRM_NO };
 
 /** Withdraw an unanswered question or this principal's answered ruling. The act is
  *  preserved in the decision log; the projection retires its authority and pending readings. */
-export interface WithdrawalReaderRef { requestId: string; receipt: string; agentId: string; callId: string }
+/** `agentId` and `callId` are optional: the reader's call is found by its receipt (I10, as I12). */
+export interface WithdrawalReaderRef { requestId: string; receipt: string; agentId?: string; callId?: string }
 
 /**
  * Withdraw a question or a ruling (owner, 2026-09-28: "Readers for unanswered, me for rulings,
@@ -1115,7 +1116,9 @@ function withdrawalReceipt(root: string, ref: WithdrawalReaderRef, dir: string):
   const held = readerReceipts(root, key).find((r) => r.receipt === ref.receipt);
   if (!prompt || !held || (held.state !== "pending" && held.state !== "recorded")) return { error: `no held withdrawal verdict ${ref?.receipt}` };
   const body = JSON.parse(held.body) as { verdict: "sound" | "unsound"; rationale: string };
-  const call = readSubagentCall(ref.agentId, ref.callId, /(^|__)submit_withdrawal_verdict$/, dir);
+  const tool = /(^|__)submit_withdrawal_verdict$/;
+  const call = ref.agentId && ref.callId ? readSubagentCall(ref.agentId, ref.callId, tool, dir) : readReceiptCall(tool, ref.receipt, held.heldAt, dir);
+  if ("pending" in call) return { error: `${call.pending}: its call is not on disk yet — withdraw again in a moment` };
   if (isUnverified(call)) return { error: call.unverified };
   if (call.reader.prompt !== prompt) return { error: "the reader was not launched with exactly the issued withdrawal brief" };
   if (call.input?.requestId !== ref.requestId || call.input?.verdict !== body.verdict || call.input?.rationale !== body.rationale || call.result?.receipt !== ref.receipt)

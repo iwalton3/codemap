@@ -1874,6 +1874,29 @@ test("an agent reports a ruling; only the person's \"Withdraw it\" lets it be re
   } finally { u.cleanup(); }
 });
 
+test("I10: a withdrawal reader is found by its receipt — the agent cannot see the reader's call id", async () => {
+  const u = await universe();
+  const dir = mkdtempSync(join(tmpdir(), "codemap-withdrawal-tx-"));
+  try {
+    const f = await withFinding(u);
+    await asAgent(async () => {
+      assert.equal((await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f)] }) as any).ok, true);
+      const reason = "the finding it asks about was filed twice";
+      const refs = [];
+      for (const [slot, agentId] of [[1, "a3333333"], [2, "a4444444"]] as const) {
+        const brief = await withdrawalReaderBrief(u.root, { decision: "d1", reason, slot }) as any;
+        const verdict = { requestId: brief.requestId, verdict: "sound" as const, rationale: `slot ${slot}: the duplicate makes it moot` };
+        const held = submitWithdrawalVerdict(u.root, verdict) as any;
+        readerTranscript(dir, agentId, brief.prompt, "submit_withdrawal_verdict", verdict, held);
+        refs.push({ requestId: brief.requestId, receipt: held.receipt });
+      }
+      const done = await withdrawDecision(u.root, { decision: "d1", reason, review: { readers: refs as never } }, {}, dir) as any;
+      assert.equal(done.ok, true, JSON.stringify(done));
+    });
+    assert.ok((await decisionsView(u.root)).s.decisions.find((x) => (x.label ?? x.id) === "d1")!.withdrawn);
+  } finally { discard(dir); u.cleanup(); }
+});
+
 test("an agent withdraws an unanswered question with two readers whose transcripts prove their verdicts", async () => {
   const u = await universe();
   const dir = mkdtempSync(join(tmpdir(), "codemap-withdrawal-tx-"));
