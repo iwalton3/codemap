@@ -250,10 +250,11 @@
 // `topic-walkthrough/`, with their tables; and findings learn a topic key. Its review round
 // (2026-10-05) tightened those folds and the findings scope binding before anything shipped, so
 // it rides this bump: no build carrying 56 left the branch between them. Same reason as 18 → 19.
-// 56 → 57 (plan 2026-10-06-codemap-skill-flows): the repair fold accepts a dual sort stamped as
-// /triage-review's from one session, evidence carries site-bug ids, and a correction that drops a
-// `restsOn` entry needs a ruling. Its review round (2026-10-06-codemap-flows-review) rides the same
-// bump, since no build carrying 57 left the branch: one reader-independence key in the withdrawal,
-// application and repair folds (the stamp goes); and a held sort's `restsOn` is dropped only by a
-// two-reader release, never by a ruling (owner, D2). Same reason as 18 → 19.
+// 56 → 57 (plans 2026-10-06-codemap-skill-flows and -flows-review, one bump: no build carrying 57
+// left the branch between them): one reader-independence key, `verifierIdentityKey`, in the
+// withdrawal, application and repair folds, so a dual sort's sorters may share a session when
+// their subagents differ; evidence carries site-bug ids and lists every ruling its sort rests on;
+// and a held sort's `restsOn` is dropped only by a two-reader release, provenance `released`
+// (owner, D2). Both refusals are new to main's events, a window the owner accepted (D3): land
+// with the team upgrading together. Same reason as 18 → 19.
 export const MATERIALIZER_VERSION = 57;

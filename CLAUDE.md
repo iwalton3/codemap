@@ -359,6 +359,15 @@ bug came from) are checked at the door AND on read, each against the log before 
 INHERITS (the filer, the corroborations) is a copy the fold trusts: an accepted gap, stated rather
 than hidden.
 
+**Reader independence is one key everywhere**, `verifierIdentityKey` `[principal, session, child]`
+— never a session comparison alone, since every subagent shares its parent's session. What stands
+behind `child` differs: a launch codemap verified for receipts, a reported agent id for sorters
+(I13 accepts sorts as written). **A held sort is released only by two blind readers**
+(`release_held_sort`, `docs/repair-records.md`; owner, D2), never by a ruling; re-pointing a free
+`restsOn` label to `decision:<id>` is the one free move. **A decision answer is read only from a
+session whose transcript carries that round** (`findCarriers`; `skills/codemap/references/asking.md`
+step 4) and only after the carrier.
+
 **A confirmation belongs to its confirmer** (R3): `rulerOf(a)` is who rules through an answer.
 Withdrawal, comparison, sign-off and the `ruler:` line key on it. Only a revision and a changed
 response key on the words' author, `a.by`.
