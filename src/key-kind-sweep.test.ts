@@ -12,7 +12,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { parserForPath } from "./grammars.js";
 
 const SWITCH = /\bisBranchKey\(|(?<![\w.])branchOf\((?!root\b)|startsWith\(["']branch:["']\)|\/\^\\d\+\$\/\.test\(|\/\^\[1-9\]\\d\*\$\/\.test\(|\/u\/\$\{[^}]+\}\/pr\/\$\{/g;
@@ -80,7 +80,7 @@ async function sites(): Promise<Map<string, { count: number; text: string }>> {
         const before = src.slice(0, m.index), row = before.split("\n").length - 1;
         const column = Buffer.byteLength(before.slice(before.lastIndexOf("\n") + 1), "utf8");
         const fn = functionOf(tree.rootNode.descendantForPosition({ row, column }) as unknown as Node);
-        const key = `${f}#${fn?.name ?? "<top level>"}`;
+        const key = `${f.split(sep).join("/")}#${fn?.name ?? "<top level>"}`;
         const s = out.get(key) ?? out.set(key, { count: 0, text: fn?.text ?? src }).get(key)!;
         s.count++;
       }
