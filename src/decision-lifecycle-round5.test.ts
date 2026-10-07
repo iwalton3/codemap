@@ -67,7 +67,7 @@ test("an agent withdraws an unanswered question only with two sound readers, or 
   const refused = (review: unknown) => damageOf([p, withdraw(review)]) ?? "";
   assert.equal(state({ readers: [reader(1, "sound"), reader(2, "sound")] })?.state, "applied");
   assert.match(refused({ readers: [reader(1, "sound")] }), /two readers/);
-  assert.match(refused({ readers: [reader(1, "sound"), { ...reader(2, "sound"), session: "s1" }] }), /independently/);
+  assert.match(refused({ readers: [reader(1, "sound"), { ...reader(2, "sound"), launch: "l1" }] }), /independently/);
   assert.match(refused({ readers: [reader(1, "sound"), reader(2, "sound", "sha256:other")] }), /this exact brief/);
   assert.match(refused({ readers: [reader(1, "sound"), reader(2, "unsound")] }), /third reader must arbitrate/);
   const arbHash = withdrawalBriefHash(withdrawalBriefContent(d1, reason, ["reason 1", "reason 2"]));

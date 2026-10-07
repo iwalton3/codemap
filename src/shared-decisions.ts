@@ -30,6 +30,7 @@ import { emitEventChecked } from "./write.js";
 import { foldJudged, shaped, type Refusal } from "./validation.js";
 import { decisionDevEra, decisionEventShape } from "./log-shape.js";
 import { isAgentActor } from "./identity.js";
+import { verifierIdentityKey } from "./verifier-boundary.js";
 import { questionnaireAnswerId } from "./ruling-application.js";
 import { canonicalIssueKey, type CanonicalIssueReference } from "./decision-issues.js";
 import { questionnaireVersion, stageSubmission, validateQuestionnaire, type Questionnaire, type QuestionnaireAnswer, type StagedSubmission } from "./questionnaire.js";
@@ -181,20 +182,22 @@ export const withdrawalBriefHash = (content: unknown): string => "sha256:" + cre
 
 /** Two blind readers who find the withdrawal sound, or a third who arbitrates their disagreement
  *  having read both rationales — the ruling-application shape (A6). */
-export function withdrawalReviewRefusal(d: Pick<FoldedDecision, "id" | "payload">, reason: string, review: unknown): string | null {
+export function withdrawalReviewRefusal(d: Pick<FoldedDecision, "id" | "payload">, reason: string, review: unknown, principal: string): string | null {
   const r = review as WithdrawalReview | undefined;
   const receipt = (x: WithdrawalReviewReceipt | undefined, hash: string) => !!x && [x.id, x.session, x.launch, x.rationale].every((v) => str(v))
     && (x.verdict === "sound" || x.verdict === "unsound") && x.briefHash === hash;
   const brief = withdrawalBriefHash(withdrawalBriefContent(d, reason));
+  // A receipt carries no principal: every reader is the withdrawing actor's subagent (D4).
+  const key = (x: WithdrawalReviewReceipt) => verifierIdentityKey({ principal, session: x.session, child: x.launch });
   if (!r || !Array.isArray(r.readers) || r.readers.length !== 2 || !r.readers.every((x) => receipt(x, brief)))
     return "an agent withdraws an unanswered question only with two readers' recorded verdicts on this exact brief";
   const [a, b] = r.readers as [WithdrawalReviewReceipt, WithdrawalReviewReceipt];
-  if (a.session === b.session || a.launch === b.launch || a.id === b.id) return "the two readers were not independently launched";
+  if (key(a) === key(b) || a.launch === b.launch || a.id === b.id) return "the two readers were not independently launched";
   if (a.verdict === "sound" && b.verdict === "sound") return r.arbitrator ? "no disagreement needs an arbitrator" : null;
   if (a.verdict === "unsound" && b.verdict === "unsound") return "both readers found the withdrawal unsound";
   const arb = r.arbitrator;
   if (!receipt(arb, withdrawalBriefHash(withdrawalBriefContent(d, reason, [a.rationale, b.rationale])))
-    || [a, b].some((x) => x.session === arb!.session || x.launch === arb!.launch))
+    || [a, b].some((x) => key(x) === key(arb!) || x.launch === arb!.launch))
     return "the readers disagree: a third reader must arbitrate, having read both rationales";
   return arb!.verdict === "sound" ? null : "the arbitrator found the withdrawal unsound";
 }
@@ -1364,7 +1367,7 @@ function foldOnce(events: LogEvent[], excludedPicks: ReadonlySet<string>): { val
           : !reads.saw(e.id, sourceEventId(latest.id)) ? "the withdrawal was written before the person's answer" : null;
         if (why) { refuseWithdrawal(why); continue; }
       } else {
-        const why = withdrawalReviewRefusal(d, data.reason, data.review);
+        const why = withdrawalReviewRefusal(d, data.reason, data.review, e.actor.principal);
         if (why) { refuseWithdrawal(why); continue; }
       }
     } else if (named && rulerAt(named, pos).principal !== e.actor.principal) { refuseWithdrawal("only the person who gave a ruling withdraws it"); continue; }

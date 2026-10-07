@@ -53,8 +53,8 @@ test("repair page retains original scope, separate evidence outcomes and the clo
       classification: "design", kind: "isolated", provenance: "owner-reviewed", source: "Owner-reviewed correction",
       coverage: [{ findingId: finding.id, claimIds: [original, negative, duplicate] }], restsOn: ["req-credit"], assessments: [],
       disagreements: [{ id: "conflict-scope", text: "The duplicate policy needs a ruling." }],
-      arbitration: { addresses: ["conflict-scope"], reason: "Keep the dependency until the owner rules.", identity: { principal: "Alice", session: "arbitrator-source" } },
-    });
+      arbitration: { addresses: ["conflict-scope"], reason: "Keep the dependency until the owner rules.", identity: { principal: "Alice" } as never },
+    }, new RepairConnection("Alice"));
     assert.ok("ok" in revised && revised.ok, JSON.stringify(revised));
     const evidence = await ops.recordRepairEvidence(root, 7, { sortId: sort.id,
       witnessCommit: commit, baseCommit: commit, fixCommit: commit,

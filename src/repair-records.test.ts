@@ -56,7 +56,7 @@ test("the skill's two-sorter sort, arbitrated where they disagree, makes a repai
   const unarbitrated = foldRepairRecords(chain([sorted({ ...input, arbitration: undefined })]));
   assert.match(unarbitrated.sorts[0]!.holds.join(), /requires arbitration/);
   const sameArbitrator = foldRepairRecords(chain([sorted({ ...input, arbitration: { ...input.arbitration!, identity: who } })]));
-  assert.match(sameArbitrator.sorts[0]!.holds.join(), /third session/);
+  assert.match(sameArbitrator.sorts[0]!.holds.join(), /third reader/);
 });
 
 test("original claim remains exact after canonical finding revision and decomposition", () => {
@@ -86,24 +86,24 @@ test("two sorters who agree make a sort eligible; one session sorting twice is r
   assert.equal(records.sorts.length, 1);
   assert.equal(records.sorts[0]!.eligible, true, records.sorts[0]!.holds.join());
   const repeated = foldRepairRecords(chain([sorted(sort({ provenance: "dual-sorted", assessments: [assessments[0]!, assessments[0]!] }))]));
-  assert.match(repeated.rejected[0]!.reason, /distinct sessions/);
+  assert.match(repeated.rejected[0]!.reason, /two independent sorters/);
 });
 
-test("I13: /triage-review's sorts, stamped as run, pass in one session — its sorters are subagents of it", () => {
-  // Owner: "Codemap just verifies /triage-review was actually run in the transcript, and, if it was
-  // it accepts the sorts as-written and assumes the agent didn't cheat."
-  const execution = { skill: "triage-review", session: "s1", entry: "e-1" };
-  const same = [who, who].map((identity, i) => ({ identity, classification: i ? "assumption" : "mechanical", reason: "read code" }));
-  const arbitrated = { disagreements: [{ id: "d", text: "which" }], arbitration: { addresses: ["d"], identity: who, reason: "the code says" } };
-  const stamped = foldRepairRecords(chain([sorted(sort({ provenance: "dual-sorted", assessments: same, ...arbitrated, execution } as never), agent)]));
-  assert.deepEqual(stamped.rejected, []);
-  assert.equal(stamped.sorts[0]!.eligible, true, stamped.sorts[0]!.holds.join());
-  const bare = foldRepairRecords(chain([sorted(sort({ provenance: "dual-sorted", assessments: same, ...arbitrated }), agent)]));
-  assert.match(bare.rejected[0]!.reason, /distinct sessions/, "without the stamp, today's rule");
-  const stranger = foldRepairRecords(chain([sorted(sort({ provenance: "dual-sorted", assessments: same, ...arbitrated, execution: { ...execution, session: "elsewhere" } } as never), agent)]));
-  assert.match(stranger.rejected[0]!.reason, /execution/, "a stamp names a session the sort names");
-  const one = foldRepairRecords(chain([sorted(sort({ provenance: "dual-sorted", assessments: [same[0]!], execution } as never), agent)]));
-  assert.match(one.rejected[0]!.reason, /two sorters/, "still two assessments");
+test("D4: sorters are independent by identity key — a session and its subagent, or two subagents, sort apart", () => {
+  // Owner, D4: one reader-independence key across withdrawal, application and repair sorts.
+  const mk = (child: string | undefined, classification = "mechanical") => ({ identity: { ...who, ...(child !== undefined ? { child } : {}) }, classification, reason: "read code" });
+  const pair = foldRepairRecords(chain([sorted(sort({ provenance: "dual-sorted", assessments: [mk(undefined), mk("a1234567")] }), agent)]));
+  assert.deepEqual(pair.rejected, []);
+  assert.equal(pair.sorts[0]!.eligible, true, pair.sorts[0]!.holds.join());
+  const twice = foldRepairRecords(chain([sorted(sort({ provenance: "dual-sorted", assessments: [mk(undefined), mk(undefined)] }), agent)]));
+  assert.match(twice.rejected[0]!.reason, /two independent sorters/, "one reader sorting twice");
+  const arbitrated = (child: string | undefined) => foldRepairRecords(chain([sorted(sort({ provenance: "dual-sorted",
+    assessments: [mk("a1"), mk("a2", "assumption")], disagreements: [{ id: "d", text: "which" }],
+    arbitration: { addresses: ["d"], identity: { ...who, ...(child ? { child } : {}) }, reason: "the code says" } }), agent)]));
+  assert.equal(arbitrated("a3").sorts[0]!.eligible, true, arbitrated("a3").sorts[0]!.holds.join());
+  assert.match(arbitrated("a1").sorts[0]!.holds.join(), /third reader/);
+  const blank = foldRepairRecords(chain([sorted(sort({ provenance: "dual-sorted", assessments: [mk(""), mk("a1")] }), agent)]));
+  assert.match(blank.rejected[0]!.reason, /provenance/, "a child, when given, is an id");
 });
 
 test("I2: a correction that drops what a held sort rests on needs a ruling, and its evidence must cite it", () => {

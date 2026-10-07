@@ -18,7 +18,8 @@ export interface VerifierIdentity {
 
 export type BoundaryResult = { ok: true } | { ok: false; error: string };
 
-export function verifierIdentityKey(identity: VerifierIdentity): string {
+/** The one reader-independence key (owner, D4): two participants are independent when theirs differ. */
+export function verifierIdentityKey(identity: Pick<VerifierIdentity, "principal" | "session" | "child">): string {
   return JSON.stringify([identity.principal, identity.session, identity.child ?? null]);
 }
 

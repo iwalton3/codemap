@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import type { Actor } from "./schema.js";
 import { codeUnitOrder } from "./canonical.js";
 import { topicHex } from "./shared-topics.js";
+import { verifierIdentityKey } from "./verifier-boundary.js";
 
 export type ApplicationIssueRef =
   | { kind: "finding"; universe: string; id: string; scope: string; review: string }
@@ -217,7 +218,9 @@ export function validateApplicationCapsule(
     return { error: "direct target mention was not shown with the ruling" };
   if (direct && readers.length !== 1) return { error: "direct application requires one reader" };
   if (!direct && readers.length !== 2) return { error: "indirect application requires two readers" };
-  if (new Set(readers.map((x) => x.session)).size !== readers.length
+  // Independent by the one key (owner, D4): the reader's session and its verified launch.
+  const key = (x: ApplicationReaderReceipt) => verifierIdentityKey({ principal: x.by.principal, session: x.session, child: x.launch });
+  if (new Set(readers.map(key)).size !== readers.length
     || new Set(readers.map((x) => x.launch)).size !== readers.length
     || new Set(readers.map((x) => x.id)).size !== readers.length)
     return { error: "application readers are not independently launched" };
@@ -229,7 +232,7 @@ export function validateApplicationCapsule(
   if (!direct && sound === 1) {
     const arb = c.evidence.arbitrator;
     if (!receipt(arb, c.issue.claimHash, r.displayHash) || arb.verdict !== "sound"
-      || readers.some((x) => x.session === arb.session || x.launch === arb.launch || x.id === arb.id))
+      || readers.some((x) => key(x) === key(arb) || x.launch === arb.launch || x.id === arb.id))
       return { error: "reader disagreement lacks an independent sound arbitrator" };
     // Bound here, not only in the op: the arbitrator read THESE two receipts (plan 1.1).
     if (JSON.stringify(arb.readerReceipts) !== JSON.stringify(readers.map((x) => x.id)))

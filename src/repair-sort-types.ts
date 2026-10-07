@@ -2,8 +2,9 @@ import type { Actor, BugWitness } from "./schema.js";
 
 export interface RepairClaim { id: string; findingId: string; text: string; parentId?: string; eventId: string; actor: Actor; at: string; reason?: string; witness?: BugWitness; asFiled?: Record<string, unknown> }
 export interface RepairCoverage { findingId: string; claimIds: string[] }
-/** Who sorted, as the skill's own sort record reports it. Provenance to read, not a credential. */
-export interface ReportedSorter { principal: string; session: string }
+/** Who sorted, as the skill's own sort record reports it. Provenance to read, not a credential:
+ *  `session` is the posting MCP connection's, `child` the subagent id the caller reports (D4). */
+export interface ReportedSorter { principal: string; session: string; child?: string }
 export interface ReportedSortReceipt { id: string; source: string; content: string }
 export interface RepairAssessment { identity: ReportedSorter; classification: string; reason: string; receipt?: ReportedSortReceipt }
 export interface RepairSortInput {
@@ -17,9 +18,4 @@ export interface RepairSortInput {
   arbitration?: { addresses: string[]; reason: string; identity: ReportedSorter; receipt?: ReportedSortReceipt };
   /** A logged decisions answer on why the sites or claims this correction removes are not instances (R5, plan 5.2). */
   ruling?: string;
-  /** Stamped by `post_repair_sort`, never the caller: the transcript entry where /triage-review ran
-   *  in a session this sort names. Its sorters are subagents of that one session, so the fold
-   *  trusts the stamp in place of distinct sessions (owner, I13: "assumes the agent didn't cheat"). */
-  execution?: RepairExecutionStamp;
 }
-export interface RepairExecutionStamp { skill: "triage-review"; session: string; entry: string }

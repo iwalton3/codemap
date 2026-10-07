@@ -52,9 +52,10 @@ export const SIDECAR_PROTOCOL = 2;
 // 1 → 2: `finding.created` carries `topic` (review topics). An older build folds an unknown
 // data field silently, which mis-keyed a topic finding as a pull request — measured, §7 of
 // docs/review-topics.md — so it must class these as newer instead.
-// 2 → 3 (plan 2026-10-06-codemap-skill-flows): a repair sort carries `execution`, the stamp that
-// lets /triage-review's one-session sort pass, and repair evidence carries `siteBugs`. An older
-// build would refuse the first as one session sorting twice — damage, which locks its clone.
+// 2 → 3 (plans 2026-10-06-codemap-skill-flows and -flows-review): a repair sorter carries
+// `child`, so /triage-review's sorters, all subagents of one session, are told apart, and repair
+// evidence carries `siteBugs`. An older build would refuse the first as one session sorting
+// twice — damage, which locks its clone.
 export const EVENT_SCHEMA = 3;
 
 /**

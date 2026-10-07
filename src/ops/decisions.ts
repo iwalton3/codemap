@@ -1033,7 +1033,7 @@ export async function withdrawDecision(root: string, input: { decision: string; 
   let review: WithdrawalReview | undefined;
   if (isAgentActor(b.actor) && !input.answer) {
     if (!input.review) return { error: "an agent withdraws an unanswered question with two readers' verdicts (withdrawal_reader_brief)" };
-    const checked = verifiedWithdrawalReview(root, d, reason, input.review, dir);
+    const checked = verifiedWithdrawalReview(root, d, reason, input.review, b.actor.principal, dir);
     if ("error" in checked) return checked;
     review = checked;
   }
@@ -1128,7 +1128,7 @@ function withdrawalReceipt(root: string, ref: WithdrawalReaderRef, dir: string):
   return { id: ref.receipt, session: call.reader.session, launch: call.reader.toolUseId, briefHash: withdrawalBriefHash(brief), verdict: body.verdict, rationale: body.rationale };
 }
 
-function verifiedWithdrawalReview(root: string, d: FoldedDecision, reason: string, input: { readers: WithdrawalReaderRef[]; arbitrator?: WithdrawalReaderRef }, dir: string): WithdrawalReview | { error: string } {
+function verifiedWithdrawalReview(root: string, d: FoldedDecision, reason: string, input: { readers: WithdrawalReaderRef[]; arbitrator?: WithdrawalReaderRef }, principal: string, dir: string): WithdrawalReview | { error: string } {
   if (!Array.isArray(input?.readers)) return { error: "review needs its readers" };
   const readers = input.readers.map((ref) => withdrawalReceipt(root, ref, dir));
   const bad = readers.find((r) => "error" in r);
@@ -1136,7 +1136,7 @@ function verifiedWithdrawalReview(root: string, d: FoldedDecision, reason: strin
   const arbitrator = input.arbitrator ? withdrawalReceipt(root, input.arbitrator, dir) : undefined;
   if (arbitrator && "error" in arbitrator) return arbitrator;
   const review: WithdrawalReview = { readers: readers as WithdrawalReviewReceipt[], ...(arbitrator ? { arbitrator } : {}) };
-  const why = withdrawalReviewRefusal(d, reason, review);
+  const why = withdrawalReviewRefusal(d, reason, review, principal);
   return why ? { error: why } : review;
 }
 

@@ -278,3 +278,13 @@ test("the fold binds an arbitrator to the two reader receipts it read, not only 
     assert.equal(f.fold([f.created, f.app("02", bad)]).get(f.id)!.state, "issued");
   }
 });
+
+test("D4: indirect readers launched from one session are independent by their launches", () => {
+  const f = fixture("finding");
+  const c = f.make();
+  delete c.evidence.directMention;
+  c.evidence.readers.push({ ...c.evidence.readers[0]!, id: "receipt_2", request: "request_2", launch: "launch_2" });
+  assert.equal(c.evidence.readers[0]!.session, c.evidence.readers[1]!.session);
+  const v = validateApplicationCapsule(c, "finding", f.id);
+  assert.ok("capsule" in v, JSON.stringify(v));
+});

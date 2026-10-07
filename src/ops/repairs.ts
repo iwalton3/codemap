@@ -17,7 +17,6 @@ import { earlierUnfavourableRuns, emptyRepairVerificationState, isRepairVerifica
 import { issueClaimHash } from "../ruling-application.js";
 import { decisionsView } from "./decision-holds.js";
 import { citedRulings, siteBugRefusal } from "./repair-verification.js";
-import { findSkillRun, isUnverified, transcriptDir } from "../transcript.js";
 
 /** Reads the same scope/cache as canonical findings; no ordinary read parses the log. */
 export async function repairRecords(root: string, review: number | string) {
@@ -134,20 +133,19 @@ const contentId = (prefix: string, review: number | string, data: unknown, actor
     by: { principal: actor.principal, agent: isAgentActor(actor as import("../schema.js").Actor) } })).digest("hex").slice(0, 20);
 const callerId = (what: string) => ({ error: `codemap assigns a ${what}'s id; leave \`id\` out and use the id it returns` });
 
-export async function postRepairSort(root: string, review: number | string, sort: Omit<RepairSortInput, "id">, dir: string = transcriptDir()) {
+/**
+ * A sorter's `session` is the posting connection's, filled here: the agent cannot see its own
+ * session id (I11). It names a subagent sorter by `child`, the agent id its Agent result shows.
+ * Both are reported, never verified (owner, I13: "accepts the sorts as-written").
+ */
+export async function postRepairSort(root: string, review: number | string, sort: Omit<RepairSortInput, "id">, connection?: Pick<RepairConnection, "session">) {
   sort = structuredClone(sort);
-  if (!sort || !Array.isArray(sort.assessments) || sort.assessments.some(a => !a || typeof a !== "object")) return { error: "sort requires assessment records" };
+  if (!sort || !Array.isArray(sort.assessments) || sort.assessments.some(a => !a || typeof a !== "object" || !a.identity || typeof a.identity !== "object")) return { error: "sort requires assessment records" };
   if ("id" in sort) return callerId("sort");
-  // The fold trusts the stamp, so only this op may write it (I13).
-  if ("execution" in sort) return { error: "codemap stamps a sort's execution from the transcript; leave `execution` out" };
-  let stampedBecause: string | undefined;
-  if (sort.provenance === "dual-sorted") {
-    const sessions = [...new Set([...sort.assessments, ...(sort.arbitration ? [sort.arbitration] : [])].map(a => a.identity?.session).filter((s): s is string => typeof s === "string"))];
-    const runs = sessions.map(s => findSkillRun(s, "triage-review", dir));
-    const run = runs.find(r => !isUnverified(r));
-    if (run && !isUnverified(run)) sort.execution = { skill: "triage-review", ...run };
-    else stampedBecause = runs.map(r => isUnverified(r) ? r.unverified : "").filter(Boolean).join("; ") || "the sort names no session";
-  }
+  const identities = [...sort.assessments, ...(sort.arbitration?.identity ? [sort.arbitration] : [])].map(a => a.identity);
+  if (identities.some(i => "session" in i)) return { error: "codemap fills each sorter's session from this connection; leave `session` out and name a subagent sorter by `child`, its agent id" };
+  if (identities.length && !connection) return { error: "a sort with sorters is posted over MCP, whose connection is their session" };
+  for (const i of identities) i.session = connection!.session;
   if (sort.ruling !== undefined) {
     // The cross-scope half of R5 (a correction that removes coverage cites a ruling): the answer is
     // a verified, standing ruling in the decisions log.
@@ -159,8 +157,7 @@ export async function postRepairSort(root: string, review: number | string, sort
   const actor = requireActor(root);
   if ("error" in actor) return actor;
   const id = contentId("rs_", review, sort, actor);
-  const out = await append(root, review, "repair.sort-recorded", id, { ...sort, id }, (r) => r.sorts.some(s => s.input.id === id));
-  return stampedBecause ? { ...out, unstamped: `no /triage-review run was found, so the sorters' sessions must differ: ${stampedBecause}` } : out;
+  return append(root, review, "repair.sort-recorded", id, { ...sort, id }, (r) => r.sorts.some(s => s.input.id === id));
 }
 
 export async function recordRepairClaims(root: string, review: number | string,

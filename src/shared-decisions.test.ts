@@ -14,7 +14,7 @@ import { isLogDamage } from "./log-damage.js";
 import {
   foldDecisions as foldPublished, decisionHash, checkDecision, heldFindings, standing, standingForFinding, waitingOnMe, readingsInDispute, ruledNotCarriedOut, awaitingReading, parked,
   possiblySuperseded, confirmPayload, confirmState, supersededFindings, readerBrief, briefManifest, briefListing, readingRefusal, intentCandidates, CONFIRM_YES, CONFIRM_NO, withdrawalQuestion, WITHDRAW_IT, KEEP_IT, rulerOf,
-  decisionsDoor, type FoldedDecision, type SharedDecisions, type Mapping,
+  decisionsDoor, withdrawalBriefContent, withdrawalBriefHash, withdrawalReviewRefusal, type FoldedDecision, type SharedDecisions, type Mapping,
 } from "./shared-decisions.js";
 
 /**
@@ -1592,4 +1592,12 @@ test("plan 2.1: her own ruling against another person's confirmed reading of her
   const byHer = fold(linked([P0, W, C, ...callBy(agent, C.data.decision, CONFIRM_YES)].map((e) => ({ ...e }))));
   assert.equal(rulerOf(standing(byHer.b.d1!)!).principal, "izzie", "one person: her later word stands");
   assert.ok(!held(byHer.out, "F3", "comparison"));
+});
+
+test("D4: two withdrawal readers launched from one session are independent; one launch twice is not", () => {
+  const d = { id: "d1", payload: { question: "D1: Continue?", options: [{ label: "Yes" }, { label: "No" }], multiSelect: false } } as Pick<FoldedDecision, "id" | "payload">;
+  const reason = "Already decided", briefHash = withdrawalBriefHash(withdrawalBriefContent(d, reason));
+  const readers = [1, 2].map((n) => ({ id: "r" + n, launch: "l" + n, session: "parent", briefHash, verdict: "sound" as const, rationale: reason }));
+  assert.equal(withdrawalReviewRefusal(d, reason, { readers }, "alice"), null);
+  assert.match(String(withdrawalReviewRefusal(d, reason, { readers: [readers[0]!, { ...readers[1]!, launch: "l1" }] }, "alice")), /not independently launched/);
 });

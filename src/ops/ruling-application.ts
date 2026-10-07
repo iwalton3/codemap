@@ -17,6 +17,7 @@ import {
   type ApplicationCapsuleV1, type ApplicationReaderReceipt, type ApplicationOutcome,
 } from "../ruling-application.js";
 import { materializeBugs } from "../bugs-publish.js";
+import { verifierIdentityKey } from "../verifier-boundary.js";
 import { lookupFinding } from "../store.js";
 
 const PURPOSE = "issue-application" as const;
@@ -161,7 +162,8 @@ export async function applicationReaderBrief(root: string, input: { issue: Issue
     const pair = checked as Exclude<(typeof checked)[number], { error: string }>[];
     if (pair.some((x) => x.brief.role !== "reader" || x.brief.issueKey !== c.target.key || x.brief.answerId !== c.answer.id
       || x.brief.claimHash !== c.claimHash || x.brief.displayHash !== c.displayHash)
-      || new Set(pair.map((x) => x.call.session)).size !== 2
+      // Both readers are this one caller's, so the principal is the same and left out.
+      || new Set(pair.map((x) => verifierIdentityKey({ principal: "", session: x.call.session, child: x.call.launch }))).size !== 2
       || new Set(pair.map((x) => x.call.launch)).size !== 2
       || pair.filter((x) => x.body.verdict === "sound").length !== 1)
       return { error: "arbitration requires independent current readers in disagreement" };
@@ -290,7 +292,8 @@ export async function applyRuling(root: string, input: { issue: IssueReference; 
         return { error: "application reader brief belongs to another issue/ruling version" };
       verified.push(v);
     }
-    if (new Set(verified.map((x) => x.call.session)).size !== verified.length || new Set(verified.map((x) => x.call.launch)).size !== verified.length)
+    if (new Set(verified.map((x) => verifierIdentityKey({ principal: actor.principal, session: x.call.session, child: x.call.launch }))).size !== verified.length
+      || new Set(verified.map((x) => x.call.launch)).size !== verified.length)
       return { error: "application readers were not independently launched" };
     if (verified.slice(0, input.readers.length).some((x) => x.brief.role !== "reader")
       || (input.arbitrator && verified.at(-1)?.brief.role !== "arbitrator")) return { error: "application reader roles do not match their requests" };

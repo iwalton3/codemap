@@ -252,5 +252,7 @@
 // it rides this bump: no build carrying 56 left the branch between them. Same reason as 18 → 19.
 // 56 → 57 (plan 2026-10-06-codemap-skill-flows): the repair fold accepts a dual sort stamped as
 // /triage-review's from one session, evidence carries site-bug ids, and a correction that drops a
-// `restsOn` entry needs a ruling. Same reason as 18 → 19.
+// `restsOn` entry needs a ruling. Its review round (2026-10-06-codemap-flows-review) rides the same
+// bump, since no build carrying 57 left the branch: one reader-independence key in the withdrawal,
+// application and repair folds (the stamp goes). Same reason as 18 → 19.
 export const MATERIALIZER_VERSION = 57;

@@ -1,8 +1,8 @@
 import type { Actor, BugWitness } from "./schema.js";
 import { sortEvents, type LogEvent } from "./eventlog.js";
-import type { VerifierIdentity } from "./verifier-boundary.js";
+import { verifierIdentityKey, type VerifierIdentity } from "./verifier-boundary.js";
 
-export type { RepairClaim, RepairCoverage, ReportedSortReceipt, RepairAssessment, RepairSortInput, RepairExecutionStamp } from "./repair-sort-types.js";
+export type { RepairClaim, RepairCoverage, ReportedSortReceipt, RepairAssessment, RepairSortInput } from "./repair-sort-types.js";
 import type { RepairClaim, RepairCoverage, ReportedSortReceipt, RepairSortInput } from "./repair-sort-types.js";
 export interface RepairExecution {
   id: string; command: string; commit: string; environment: string;
@@ -31,13 +31,10 @@ export type RepairFindingMap<T> = Map<string, T> & { repairRecords?: RepairRecor
 export const emptyRepairRecords = (): RepairRecords => ({ claims: [], sorts: [], evidence: [], rejected: [] });
 const nonempty = (v: unknown): v is string => typeof v === "string" && v.trim().length > 0;
 const identity = (v: VerifierIdentity | undefined): boolean => !!v && v.harness === "mcp" && v.child === undefined && [v.principal, v.session].every(nonempty);
-const reported = (v: { principal: string; session: string } | undefined): boolean => !!v && nonempty(v.principal) && nonempty(v.session);
+const reported = (v: { principal: string; session: string; child?: string } | undefined): boolean => !!v && nonempty(v.principal) && nonempty(v.session)
+  && (v.child === undefined || nonempty(v.child));
 const unique = (xs: string[]) => new Set(xs).size === xs.length;
 const commit = (v: string) => /^[a-f0-9]{40,64}$/.test(v);
-/** A stamp names a session the sort itself names: it vouches for those sorters, no others. */
-const stampValid = (d: RepairSortInput): boolean => d.execution === undefined || (!!d.execution && d.execution.skill === "triage-review"
-  && nonempty(d.execution.session) && nonempty(d.execution.entry)
-  && [...d.assessments, ...(d.arbitration ? [d.arbitration] : [])].some(a => a.identity.session === d.execution!.session));
 const receiptValid = (v: ReportedSortReceipt | undefined) => v === undefined || !!v && [v.id, v.source, v.content].every(nonempty);
 
 /**
@@ -115,9 +112,8 @@ export function foldRepairRecords(input: LogEvent[]): RepairRecords {
         if (!error && data.sites !== undefined && (!Array.isArray(data.sites) || data.sites.some(x => !nonempty(x)))) error = "sites must be explicit strings";
         if (!error && (data.assessments.some(a => !receiptValid(a.receipt)) || !receiptValid(data.arbitration?.receipt))) error = "reported receipt needs exact content and source";
         if (!error && data.provenance !== "owner-reviewed" && data.provenance !== "dual-sorted") error = "unknown sort provenance";
-        if (!error && !stampValid(data)) error = "an execution stamp is codemap's, for /triage-review in a session the sort names";
         if (!error && data.provenance === "dual-sorted" && data.assessments.length !== 2) error = "dual sorting needs two sorters";
-        if (!error && data.provenance === "dual-sorted" && !data.execution && new Set(data.assessments.map(a => a.identity.session)).size < 2) error = "dual sorting needs two sorters in distinct sessions";
+        if (!error && data.provenance === "dual-sorted" && new Set(data.assessments.map(a => verifierIdentityKey(a.identity))).size < 2) error = "dual sorting needs two independent sorters: their identities (session and subagent) must differ";
         if (!error && data.priors !== undefined && (!Array.isArray(data.priors) || !data.priors.length || data.priors.some(p => !nonempty(p)) || !unique(priorsOf(data)))) error = "priors must name distinct sorts";
         if (!error && priorsOf(data).length && (!nonempty(data.reason) || priorsOf(data).some(p => !out.sorts.some(s => s.input.id === p)))) error = "correction needs predecessor and reason";
         if (!error && data.ruling !== undefined && (!nonempty(data.ruling) || !priorsOf(data).length)) error = "a cited ruling belongs to a correction: it names a logged answer and a prior sort";
@@ -167,7 +163,7 @@ export function foldRepairRecords(input: LogEvent[]): RepairRecords {
       if (disagreement && !d.disagreements.length) sort.holds.push("sorter classification disagreement is not recorded");
       if (!disagreement && d.assessments.some(a => a.classification !== d.classification)) sort.holds.push("sort classification does not match the sorters' classification");
       if (disagreement && !d.arbitration) sort.holds.push("sorter classification disagreement requires arbitration");
-      if (d.arbitration && !d.execution && d.assessments.some(a => a.identity.session === d.arbitration!.identity.session)) sort.holds.push("the arbitrator must be a third session");
+      if (d.arbitration && d.assessments.some(a => verifierIdentityKey(a.identity) === verifierIdentityKey(d.arbitration!.identity))) sort.holds.push("the arbitrator must be a third reader");
     }
     if (d.provenance === "owner-reviewed" && (!nonempty(d.source) || sort.actor.via?.kind === "agent")) sort.holds.push("owner worklist requires principal authorship and exact source");
     // A reviewer's refuted assumption ("invalid, assumed") closes through verification too (R4); an
