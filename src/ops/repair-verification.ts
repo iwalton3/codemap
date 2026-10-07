@@ -98,12 +98,16 @@ async function rulingContext(root: string, review: number | string, findings: Sh
   return { value: JSON.stringify({ rulings: citedRulings(state, rulingIds) }) };
 }
 
-/** What a capsule freezes about each ruling it cites: the exact answer to the exact question. */
-export function citedRulings(state: { decisions: { id: string; hash: string; answers: { id: string; responseHash: string }[] }[] }, ids: readonly string[]) {
+/**
+ * What a capsule freezes about each ruling it cites: the exact answer to the exact question, and
+ * their text — the verifier judges whether the ruling decides the claim, so it must read it (I5).
+ */
+export function citedRulings(state: { decisions: { id: string; hash: string; payload: { question: string }; answers: { id: string; responseHash: string; words: string }[] }[] }, ids: readonly string[]) {
   return [...ids].sort().map((id) => {
     const d = state.decisions.find((x) => x.answers.some((a) => a.id === id));
     const a = d?.answers.find((x) => x.id === id);
-    return { id, decision: d?.id ?? null, questionHash: d?.hash ?? null, responseHash: a?.responseHash ?? null };
+    return { id, decision: d?.id ?? null, questionHash: d?.hash ?? null, responseHash: a?.responseHash ?? null,
+      question: d?.payload.question ?? null, words: a?.words ?? null };
   });
 }
 

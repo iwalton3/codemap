@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { team, settle } from "./oracle.js";
 import { shareFinding, reviseFinding, reassignFinding, corroborateFinding } from "./ops-shared.js";
 import { postRepairSort, recordRepairClaims, recordRepairEvidence } from "./ops/repairs.js";
-import { requestRepairVerification, pendingRepairJobs, repairVerificationBrief, submitRepairVerification, arbitrateRepairVerification, applyRepairVerification, repairVerificationRecords, recordRepairVerification } from "./ops/repair-verification.js";
+import { citedRulings, requestRepairVerification, pendingRepairJobs, repairVerificationBrief, submitRepairVerification, arbitrateRepairVerification, applyRepairVerification, repairVerificationRecords, recordRepairVerification } from "./ops/repair-verification.js";
 import { repairRecords } from "./ops/repairs.js";
 import { RepairConnection } from "./verifier-boundary.js";
 import { headCommit } from "./git.js";
@@ -414,6 +414,13 @@ test("I2: the blind brief tells the verifier to judge whether a cited ruling dec
     ok(brief);
     assert.match(brief.instruction, /cites a `ruling`.*judge whether that ruling decides the claim.*decision-needed/);
   } finally { f.t.dispose(); }
+});
+
+test("I5: the capsule freezes each cited ruling's question and words, so the verifier can judge it", () => {
+  const state = { decisions: [{ id: "d", hash: "qh", payload: { question: "D1: is the guard required?" },
+    answers: [{ id: "a", responseHash: "ah", words: "The guard is required" }] }] };
+  assert.deepEqual(citedRulings(state, ["a"]), [{ id: "a", decision: "d", questionHash: "qh", responseHash: "ah",
+    question: "D1: is the guard required?", words: "The guard is required" }]);
 });
 
 test("K7: a finding confirmed after its site bug was filed closes through that bug once the site is re-filed", async () => {
