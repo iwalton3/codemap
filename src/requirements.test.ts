@@ -847,3 +847,28 @@ test("an agent may not withdraw a spec", async () => {
     ok(await withdrawSpec(root, specId, { reason: "tidy" }));
   } finally { discard(root); }
 });
+
+/**
+ * L2 (plan 2026-10-07-ladder-support): an interim rule is IN FORCE. It audits, counts in
+ * conformance and queues exactly like a firm one; only its label differs.
+ */
+test("an interim rule audits and conforms exactly like a firm one", async () => {
+  const { root } = await universe();
+  try {
+    const standing = { level: 4, authority: "the CEO, via the Business", lapsesWhen: "the Business changes its mind" };
+    const firm = (await adoptRule(root, standing)).rule;
+    const interim = (await adoptRule(root, { ...standing, interim: true, title: "Other", section: "Credit/Other" })).rule;
+    assert.equal(interim.interim, true, "the fixture is interim");
+    for (const r of [firm, interim]) {
+      ok(await recordAudit(root, { requirementId: r.id, outcome: "indeterminate", finding: "could not reach the handler", ...AGENT } as any));
+    }
+    const { conformance } = await import("./audits.js");
+    const { auditQueue } = await import("./pointers.js");
+    const c = await conformance(root);
+    const of = (id: string) => c.find((x) => x.requirement.id === id)!;
+    assert.deepEqual(of(interim.id).conformance, of(firm.id).conformance);
+    assert.equal(of(interim.id).lastAudit?.outcome, of(firm.id).lastAudit?.outcome);
+    const q = JSON.stringify(await auditQueue(root));
+    assert.equal(q.includes(interim.id), q.includes(firm.id), "both queue, or neither does");
+  } finally { discard(root); }
+});

@@ -95,6 +95,7 @@ const operation = record({
   fromSection: opt(string), toSection: opt(string), provenance: opt(string), criterion: opt(string),
   falsifier: opt(string), evidenceKind: opt(string), targetOperationId: opt(string), rationale: opt(string),
   evidence: opt(string), context: opt(record({ requirementId: string, statement: string })),
+  level: opt((v) => typeof v === "number"), interim: opt(bool), authority: opt(string), lapsesWhen: opt(string),
   revisions: opt(list(anyObj)), removed: opt(record({ reason: opt(string) })),
 });
 

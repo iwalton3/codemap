@@ -16,6 +16,23 @@ import { Component, defineComponent, html, when, each } from './vendor/vdx/frame
 import { api, attestedPost, pageShell, nav, href, errText, taskError, isErr, copyIdButton } from './core.js';
 
 /**
+ * A rule's standing on the solidity ladder, as a badge. `interim` is the owner's
+ * "provisional"; a leveled rule without it is firm.
+ * @param {{ level?: number, interim?: boolean }} r
+ */
+const standingBadge = (r) => r.level
+  ? html`<span class="qbadge ${r.interim ? 'drift' : ''}" title="level ${r.level} on the ladder; ${r.interim ? 'provisional — expected to lose ground when its falsifier fires' : 'firm — its falsifier firing goes to the owner'}">L${r.level} · ${r.interim ? 'provisional' : 'firm'}</span>`
+  : html`<span class="qbadge mute" title="no level recorded">unleveled</span>`;
+
+/**
+ * Authority and falsifier, when the rule carries them.
+ * @param {{ authority?: string, lapsesWhen?: string }} r
+ */
+const standingLines = (r) => html`
+  ${when(!!r.authority, () => html`<div class="fs dim prose">authority: ${r.authority}</div>`)}
+  ${when(!!r.lapsesWhen, () => html`<div class="fs dim prose">falsifier: ${r.lapsesWhen}</div>`)}`;
+
+/**
  * The API contract, so a page's state is typed from the ops functions themselves.
  *
  * Without it `@typedef {{ d: any }}` is the easy default, and `any` is how this module
@@ -508,7 +525,9 @@ class SpecPage extends Component {
    * form offering `toSection` on an `amend_statement` would only ever produce a refusal.
    */
   opFields(kind) {
-    if (kind === 'add_requirement') return [['title', 'title'], ['section', 'section'], ['statement', 'statement', 3], ['provenance', 'provenance']];
+    const standing = [['level', 'level (1-4)'], ['authority', 'authority'], ['lapsesWhen', 'falsifier — what would make it stop applying', 2]];
+    if (kind === 'add_requirement') return [['title', 'title'], ['section', 'section'], ['statement', 'statement', 3], ['provenance', 'provenance'], ...standing];
+    if (kind === 'amend_standing') return standing;
     if (kind === 'amend_statement') return [['statement', 'new statement', 3]];
     if (kind === 'add_criterion') return [['criterion', 'criterion', 2], ['falsifier', 'falsifier', 2]];
     if (kind === 'move_section') return [['fromSection', 'from'], ['toSection', 'to']];
@@ -601,6 +620,9 @@ class SpecPage extends Component {
   opForm() {
     const out = {};
     for (const k of Object.keys(this.state.form)) if (!k.startsWith('_')) out[k] = this.state.form[k];
+    // The form holds strings; the op takes a number and a boolean.
+    if (out.level !== undefined) out.level = out.level === '' ? undefined : Number(out.level);
+    if (out.interim !== undefined) out.interim = out.interim === 'true';
     return out;
   }
 
@@ -667,6 +689,7 @@ class SpecPage extends Component {
     }
     if (op.kind === 'move_section') return `${op.fromSection} → ${op.toSection}`;
     const rule = o.before ? o.before.title : 'the rule';
+    if (op.kind === 'amend_standing') return `standing: ${rule}`;
     return op.kind === 'retire_requirement' ? `retire: ${rule}` : `amend: ${rule}`;
   }
 
@@ -693,6 +716,14 @@ class SpecPage extends Component {
       return html`<div class="op-body">
         <div class="op-after prose">${op.statement}</div>
         <div class="fs dim prose">${op.provenance}</div>
+        <div class="fs">${standingBadge(op)}</div>
+        ${standingLines(op)}
+      </div>`;
+    }
+    if (op.kind === 'amend_standing') {
+      return html`<div class="op-body">
+        ${when(!!o.before, () => html`<div class="op-before"><span class="dim">now</span> ${standingBadge(o.before)} ${standingLines(o.before)}</div>`)}
+        <div class="op-after"><span class="dim">becomes</span> ${standingBadge(op)} ${standingLines(op)}</div>
       </div>`;
     }
     return html`<div class="op-body">
@@ -729,6 +760,8 @@ class SpecPage extends Component {
             title: o.operation.title, section: o.operation.section, statement: o.operation.statement,
             provenance: o.operation.provenance, criterion: o.operation.criterion, falsifier: o.operation.falsifier,
             fromSection: o.operation.fromSection, toSection: o.operation.toSection, rationale: o.operation.rationale,
+            level: o.operation.level === undefined ? '' : String(o.operation.level), interim: o.operation.interim ? 'true' : 'false',
+            authority: o.operation.authority, lapsesWhen: o.operation.lapsesWhen,
           })}">correct</button>`)}
       </div>
       ${when(!!o.blockedBy, () => html`<div class="op-blocked">${o.blockedBy}</div>`)}
@@ -756,6 +789,8 @@ class SpecPage extends Component {
       ${when(!reading && draft, () => this.movedNote(o))}
       ${when(editing, () => html`<div class="op-move">
         ${each(this.opFields(k), (f) => this.field(f[0], f[1], f[2]), (f) => f[0])}
+        ${when(k === 'add_requirement' || k === 'amend_standing', () => html`<label class="fs"><input type="checkbox" checked="${this.state.form.interim === 'true'}"
+          on-change="${(e) => this.set('interim', e.target.checked ? 'true' : 'false')}"> provisional — expected to lose ground when its falsifier fires</label>`)}
         ${this.field('rationale', 'why the rule exists — this survives adoption and is read years from now', 2)}
         ${this.field('_reason', 'why you are CORRECTING it — kept on the revision, never on the rule', 2)}
         <div class="op-edit">
@@ -936,6 +971,8 @@ class RequirementPage extends Component {
         </div>
         <div class="fs">${d.requirement.statement}</div>
         <div class="fs dim">provenance: ${d.requirement.provenance}</div>
+        <div class="fs">${standingBadge(d.requirement)}</div>
+        ${standingLines(d.requirement)}
         <div class="fs dim">a rule cites no code — it is upstream of the code, and where the code is lives in the pointers below</div>
       </div>
 
@@ -1320,7 +1357,7 @@ class RulesPage extends Component {
       ${when(!!this.state.rules, () => html`
         <div class="sec">${chosen} (${this.state.rules.requirements.length})</div>
         ${each(this.state.rules.requirements, (r) => html`<a class="spec-card" href="${href(requirementUrl(u, r.id))}">
-          <div class="ft">${r.title}
+          <div class="ft">${r.title} ${standingBadge(r)}
             ${when(r.recheckDue, () => html`<span class="qbadge drift">recheck due</span>`)}
             ${when(r.status === 'retired', () => html`<span class="qbadge">retired</span>`)}
           </div>

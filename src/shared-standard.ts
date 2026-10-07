@@ -47,7 +47,7 @@ import type {
   AcceptanceCriterion, Acknowledgement, Actor, Audit, BugWitness, Operation, Pointer,
   PopulationPredicate, Problem, ProposalWitness, Requirement, ScrubPolicy, Spec, VacuityCheck,
 } from "./schema.js";
-import { criterionIdFor, movedSection, normalizeSection, requirementIdFor, EVIDENCE_KINDS, AUDIT_TRIGGERS, COVERING_TRIGGERS, PROBLEM_DISPOSITIONS, ACK_PRIORITIES, ISO_DATE, auditClaimStands, contentDiff, framingContent, operationContent, witnessHash } from "./schema.js";
+import { criterionIdFor, movedSection, normalizeSection, operationStandingRefusal, requirementIdFor, standingFromOperation, withStanding, EVIDENCE_KINDS, AUDIT_TRIGGERS, COVERING_TRIGGERS, PROBLEM_DISPOSITIONS, ACK_PRIORITIES, ISO_DATE, auditClaimStands, contentDiff, framingContent, operationContent, witnessHash } from "./schema.js";
 import type { LogEvent } from "./eventlog.js";
 import { readSets, readScope, registerDoor, scopesOnDisk, sortEvents, type DoorFold } from "./eventlog.js";
 import { emitEvent } from "./write.js";
@@ -451,6 +451,8 @@ function foldStandardWithRefusals(events: LogEvent[]): { value: SharedStandard; 
         // may simply not have arrived, the same allowance `spec.ratified` makes above.
         const sp = specs.get(op.specId);
         if (sp && sp.status !== "draft") { refuse(e, "the spec is no longer a draft"); break; }
+        const badStanding = operationStandingRefusal(op);
+        if (badStanding) { refuse(e, badStanding); break; }
         operations.set(op.id, { ...op, origin: "sync" });
         break;
       }
@@ -513,6 +515,8 @@ function foldStandardWithRefusals(events: LogEvent[]): { value: SharedStandard; 
           break;
         }
         if (cur.removed) { refuse(e, "the operation was pulled from the draft"); break; }
+        const badStanding = operationStandingRefusal(next);
+        if (badStanding) { refuse(e, badStanding); break; }
         // A rewrite and a revision entry must arrive TOGETHER. Either alone misdescribes
         // what happened, in opposite directions:
         //
@@ -1254,13 +1258,14 @@ function applyOperation(
     // fold then fails on every subsequent read — permanently, from an append-only log
     // nobody can edit. Refusing here refuses the whole ratification instead.
     if (!op.title?.trim() || !op.section?.trim() || !op.statement?.trim() || !op.provenance?.trim()) return false;
+    if (operationStandingRefusal(op)) return false;
     // The operation event was published when the operation was ADDED, before anything
     // bound a requirement to it — so the id is derived here rather than read off a field
     // that is legitimately absent. This is the whole reason it is a function of `op.id`.
     const id = requirementIdFor(op.id);
     requirements.set(id, {
       id, title: op.title!, section: op.section!, statement: op.statement!,
-      provenance: op.provenance!, status: "ratified",
+      provenance: op.provenance!, status: "ratified", ...standingFromOperation(op),
       author: sp.author, createdAt: at, introducedBy: sp.id,
       ratifiedBy: who, ratifiedAt: at, origin: "sync",
     });
@@ -1285,6 +1290,12 @@ function applyOperation(
   if (!r) return false;
   if (op.kind === "retire_requirement") {
     requirements.set(r.id, { ...r, status: "retired", retiredBy: who, retiredAt: at });
+    return true;
+  }
+  // Ahead of the amend arm, which every kind not named above falls into.
+  if (op.kind === "amend_standing") {
+    if (r.status === "retired" || operationStandingRefusal(op)) return false;
+    requirements.set(r.id, { ...withStanding(r, op), amendedBy: [...(r.amendedBy ?? []), sp.id] });
     return true;
   }
   // Same gap on the amend arm, and it BLANKS a standing rule rather than creating a junk

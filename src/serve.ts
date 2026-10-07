@@ -533,6 +533,7 @@ async function serveRequest(req: IncomingMessage, res: ServerResponse): Promise<
             criterion: body.criterion, falsifier: body.falsifier, evidenceKind: body.evidenceKind,
             targetOperationId: body.targetOperationId,
             fromSection: body.fromSection, toSection: body.toSection,
+            level: body.level, interim: body.interim, authority: body.authority, lapsesWhen: body.lapsesWhen,
           });
         }
         // The review loop. `review` pulls and shows what moved since this person last

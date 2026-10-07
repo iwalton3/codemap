@@ -81,7 +81,8 @@ describe("the standard UI", { skip: pw ? false : "playwright not resolvable (set
     await ops.addOperation(root, {
       specId: base.id, kind: "add_requirement", rationale: "policy §4 was never written down",
       reversibility: "reversible", title: "Credit line currency", section: "Credit/Limits",
-      statement: "All credit lines are in USD.", provenance: "credit policy §4", ...AGENT,
+      statement: "All credit lines are in USD.", provenance: "credit policy §4",
+      level: 4, authority: "Treasury, via credit policy §4", lapsesWhen: "we lend in a second currency", ...AGENT,
     } as any);
     // Fail LOUDLY if the fixture stops building. A `before` hook that throws reports
     // `fail 0` with every test CANCELLED, which reads like a pass at a glance — this
@@ -124,7 +125,8 @@ describe("the standard UI", { skip: pw ? false : "playwright not resolvable (set
       // `evidence` and, on the criterion below, `assertedBy`: both are hashed into a
       // sign-off, and a fixture without them lets "every signed field renders" pass on
       // absence — which is the vacuity this subsystem names as the standing risk.
-      evidence: "treasury minute 2026-04-11", ...AGENT,
+      evidence: "treasury minute 2026-04-11",
+      level: 3, interim: true, authority: "NACHA operating rules", lapsesWhen: "NACHA same-day settlement becomes mandatory", ...AGENT,
     } as any) as any;
     opId = o.id;
     await ops.acknowledgeGap(root, {
@@ -311,6 +313,7 @@ describe("the standard UI", { skip: pw ? false : "playwright not resolvable (set
       section: "the Area / Topic headings the card sits under, split on `/`",
       targetOperationId: "shown by nesting the criterion under the rule it tests",
       against: "the `now` block, which is what a base statement is",
+      interim: "the `provisional` badge",
     };
     let checked = 0;
     const seen = new Set<string>();
@@ -327,6 +330,7 @@ describe("the standard UI", { skip: pw ? false : "playwright not resolvable (set
         const mine = cards.filter((c) => c.includes(o.operation.rationale));
         assert.equal(mine.length, 1, `no single card for ${o.operation.id} (${o.operation.kind})`);
         for (const [field, value] of Object.entries(operationContent(o.operation) as Record<string, string>)) {
+          if (field === "interim") assert.ok(mine[0]!.includes("provisional"), "an interim rule is labelled provisional");
           if (STRUCTURAL[field]) continue;
           seen.add(field);
           checked++;
@@ -342,7 +346,7 @@ describe("the standard UI", { skip: pw ? false : "playwright not resolvable (set
     // Could this pass on absence? Only with a fixture carrying none of the fields the
     // defect was about — which is what made the original rendering look correct.
     assert.ok(checked >= 15, `only ${checked} signed fields reached the assertion`);
-    for (const f of ["evidence", "reversibility", "requirementId"]) {
+    for (const f of ["evidence", "reversibility", "requirementId", "level", "authority", "lapsesWhen"]) {
       assert.ok(seen.has(f), `no fixture operation carries \`${f}\`, so this says nothing about it`);
     }
   });
@@ -661,6 +665,9 @@ describe("the standard UI", { skip: pw ? false : "playwright not resolvable (set
     assert.match(text!, /no currency check on entry/, "the finding, not just a verdict");
     assert.match(text!, /the conversion happens here/, "the pointer — where to look");
     assert.match(text!, /fix scheduled for Q4/, "and the debt that is keeping it quiet");
+    assert.match(text!, /L4 · firm/, "its standing");
+    assert.match(text!, /authority: Treasury, via credit policy §4/);
+    assert.match(text!, /falsifier: we lend in a second currency/);
     // Branch work is on the page, and it is on a different part of it. The reviewer of a
     // branch could not see this at all before, and it must not read as the codebase's
     // record — which is the whole reason it has a section of its own.

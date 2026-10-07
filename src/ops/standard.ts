@@ -72,7 +72,7 @@ import {
 } from "../scrub.js";
 import { standardScopeWarning, type StandardScope } from "../standard-publish.js";
 import type {
-  AcknowledgementPriority, AuditEvidence, AuditOutcome, AuditTrigger, EvidenceKind, OperationKind,
+  AcknowledgementPriority, AuditEvidence, AuditOutcome, AuditTrigger, EvidenceKind, OperationKind, RuleLevel,
   PopulationMember, ProblemDisposition, Requirement, Reversibility, SignOffAxis, VacuityCheck,
 } from "../schema.js";
 
@@ -280,6 +280,7 @@ export const addOperation = (
     criterion?: string; falsifier?: string; evidenceKind?: EvidenceKind;
     targetOperationId?: string;
     fromSection?: string; toSection?: string;
+    level?: RuleLevel; interim?: boolean; authority?: string; lapsesWhen?: string;
   } & ActorInput,
 ) => addOperationRec(root, input);
 

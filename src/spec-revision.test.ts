@@ -697,3 +697,83 @@ test("a correction travels: a teammate's clone folds the corrected text, not the
     assert.deepEqual(served.removed.map((o) => o.id), [second.id]);
   } finally { u.cleanup(); }
 });
+
+// --- standing (plan 2026-10-07-ladder-support, A1-A2) -------------------------------------
+
+const STANDING = { level: 2, interim: true, authority: "IATA RP 1600", lapsesWhen: "IATA withdraws RP 1600" } as const;
+
+test("a rule's standing goes in through a ratified spec and reads back", async () => {
+  const u = await universe();
+  try {
+    const sp = ok(await draftSpec(u.root, { title: "Ladder", ...AGENT }));
+    ok(await addOperation(u.root, {
+      specId: sp.id, kind: "add_requirement", rationale: "from docs/rules", reversibility: "reversible",
+      title: "Goods title", section: "Goods", statement: "We never take title to the goods.", provenance: "INDEX.md",
+      ...STANDING, ...AGENT,
+    }));
+    ok(await ratifyReviewed(u.root, sp.id));
+    const r = (await listRequirements(u.root, {}))[0]!;
+    assert.deepEqual({ level: r.level, interim: r.interim, authority: r.authority, lapsesWhen: r.lapsesWhen }, STANDING);
+  } finally { u.cleanup(); }
+});
+
+/**
+ * The revisable-field list is copied in five places (`OperationRevision.was`, `merged`, the
+ * candidate's reset, `changedFields`, `operationContent`); a field one of them misses is a
+ * revision that answers "nothing to change", or one an earlier sign-off still covers.
+ */
+test("each standing field is revisable, and revising it voids an earlier sign-off", async () => {
+  for (const [field, to] of [
+    ["level", 3], ["interim", false], ["authority", "IATA RP 1601"], ["lapsesWhen", "IATA merges RP 1600"],
+  ] as const) {
+    const u = await universe();
+    try {
+      const sp = ok(await draftSpec(u.root, { title: "Ladder", ...AGENT }));
+      const op = ok(await addOperation(u.root, {
+        specId: sp.id, kind: "add_requirement", rationale: "from docs/rules", reversibility: "reversible",
+        title: "Goods title", section: "Goods", statement: "We never take title to the goods.", provenance: "INDEX.md",
+        ...STANDING, ...AGENT,
+      }));
+      ok(await signOffEverything(u.root, sp.id));
+      assert.equal(ok(await getSpec(u.root, sp.id)).signedOff, true, `${field}: the fixture signs off`);
+      const revised = ok(await reviseOperation(u.root, { operationId: op.id, [field]: to, ...AGENT }));
+      assert.equal(revised.operation[field], to === false ? undefined : to, `${field} changed`);
+      assert.ok(field in revised.operation.revisions!.at(-1)!.was, `${field} is recorded as what changed`);
+      assert.equal(ok(await getSpec(u.root, sp.id)).signedOff, false, `${field}: the earlier sign-off no longer covers it`);
+    } finally { u.cleanup(); }
+  }
+});
+
+test("the tool refuses a standing the fold would refuse, and amend_standing changes only the standing", async () => {
+  const u = await universe();
+  try {
+    const sp = ok(await draftSpec(u.root, { title: "Ladder", ...AGENT }));
+    const base = {
+      specId: sp.id, kind: "add_requirement" as const, rationale: "from docs/rules", reversibility: "reversible" as const,
+      title: "Goods title", section: "Goods", statement: "We never take title to the goods.", provenance: "INDEX.md", ...AGENT,
+    };
+    assert.match(err(await addOperation(u.root, { ...base, ...STANDING, level: 5 as never })), /1-4/);
+    assert.match(err(await addOperation(u.root, { ...base, ...STANDING, authority: " " })), /authority/);
+    const added = ok(await addOperation(u.root, { ...base, ...STANDING }));
+    assert.match(err(await reviseOperation(u.root, { operationId: added.id, level: 6 as never, ...AGENT })), /1-4/);
+    ok(await ratifyReviewed(u.root, sp.id));
+    const rid = requirementIdFor(added.id);
+
+    const sp2 = ok(await draftSpec(u.root, { title: "Firm it up", ...AGENT }));
+    const amend = { specId: sp2.id, kind: "amend_standing" as const, requirementId: rid, rationale: "confirmed", reversibility: "reversible" as const, ...AGENT };
+    assert.match(err(await addOperation(u.root, { ...amend, ...STANDING })), /identical/);
+    assert.match(err(await addOperation(u.root, { ...amend, authority: "x", lapsesWhen: "y" })), /needs a `level`/);
+    assert.match(err(await addOperation(u.root, { ...amend, ...STANDING, kind: "amend_statement", statement: "Changed." })), /carries no standing/);
+    ok(await addOperation(u.root, { ...amend, level: 2, authority: "IATA RP 1600", lapsesWhen: "IATA withdraws RP 1600" }));
+    ok(await ratifyReviewed(u.root, sp2.id));
+    const r = (await listRequirements(u.root, {}))[0]!;
+    assert.equal(r.interim, undefined, "firm now");
+    assert.equal(r.statement, "We never take title to the goods.");
+
+    const sp3 = ok(await draftSpec(u.root, { title: "Retire", ...AGENT }));
+    ok(await addOperation(u.root, { specId: sp3.id, kind: "retire_requirement", requirementId: rid, rationale: "gone", reversibility: "reversible", ...AGENT }));
+    ok(await ratifyReviewed(u.root, sp3.id));
+    const sp4 = ok(await draftSpec(u.root, { title: "Too late", ...AGENT }));
+    assert.match(err(await addOperation(u.root, { ...amend, specId: sp4.id, ...STANDING, level: 1 })), /retired/);
+  } finally { u.cleanup(); }
+});

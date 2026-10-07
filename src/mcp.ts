@@ -23,7 +23,7 @@ import { analyzeMarten } from "./analyzers/marten.js";
 import { enableAnalyzer } from "./analyzers/run.js";
 import { markReviewed, markReviewedBatch, unmarkReviewed } from "./reviews.js";
 import { withLock } from "./lock.js";
-import { SIGN_OFF_AXES, EVIDENCE_KINDS } from "./schema.js";
+import { SIGN_OFF_AXES, EVIDENCE_KINDS, OPERATION_KINDS } from "./schema.js";
 import { applicationReaderBrief, submitApplicationVerdict, recordApplicationVerdict, applyRuling } from "./ops/ruling-application.js";
 import { questionnaireStatus, waitQuestionnaireStatus } from "./ops/questionnaire-status.js";
 import { comparisonDetail, requestComparison, comparisonBrief, submitComparisonJudgment, recordComparisonJudgment, comparisonResolutionBrief, resolveComparison } from "./ops/comparisons.js";
@@ -2063,10 +2063,10 @@ const tools: Tool[] = [
   },
   {
     name: "add_operation",
-    description: "Add one operation to a draft spec: `add_requirement`, `amend_statement`, `retire_requirement`, `add_criterion`, or `move_section`. A requirement CITES NOTHING — a rule is upstream of code, so where the code is goes in a `declare_pointer`, which names one universe and carries its own baseline. Operations are the operative content — the before/after a reviewer reads is rendered FROM them. Amending replaces one statement rather than reprinting a section, so nothing unnamed by an operation is ever touched. `rationale` and `reversibility` are per operation, not per spec, so there is no free-floating prose to drift from what lands.",
+    description: "Add one operation to a draft spec: `add_requirement`, `amend_statement`, `retire_requirement`, `add_criterion`, `move_section`, or `amend_standing` (a rule's level, interim, authority and lapsesWhen, stated whole). A requirement CITES NOTHING — a rule is upstream of code, so where the code is goes in a `declare_pointer`, which names one universe and carries its own baseline. Operations are the operative content — the before/after a reviewer reads is rendered FROM them. Amending replaces one statement rather than reprinting a section, so nothing unnamed by an operation is ever touched. `rationale` and `reversibility` are per operation, not per spec, so there is no free-floating prose to drift from what lands.",
     inputSchema: obj({
       specId: { type: "string" },
-      kind: { type: "string", enum: ["add_requirement", "amend_statement", "retire_requirement", "add_criterion", "move_section"] },
+      kind: { type: "string", enum: [...OPERATION_KINDS] },
       rationale: { type: "string", description: "What provoked this operation." },
       reversibility: { type: "string", enum: ["reversible", "irreversible", "unknown"], description: "Whether SATISFYING this can be undone. Declared before ratification because it changes the decision, and because it makes the rule harder to amend later." },
       requirementId: { type: "string", description: "The rule being amended or retired." },
@@ -2080,6 +2080,10 @@ const tools: Tool[] = [
       evidenceKind: { type: "string", enum: [...EVIDENCE_KINDS], description: "`add_criterion`: how it gets discharged. A closed list. An invariant — anything phrased always/never/every, and \"writes zero rows\" counts — wants `lint-test`, because a green suite at merge does not prove nobody reintroduces the thing next quarter. `attestation` is the last resort and weak by construction: reaching for it for anything that can be rendered, captured or run is skipping the evidence rather than choosing a type." },
       fromSection: { type: "string", description: "`move_section`: the section path to move, WITH its subtree — moving \"Credit\" takes \"Credit/Limits\" with it. Sections are derived from the rules filed in them, so this must be a path something files under." },
       toSection: { type: "string", description: "`move_section`: where it lands. Renaming and re-parenting are one act on a path tree. A destination an untouched rule already occupies is refused: that merges two headings, and the index is how a reader finds the rule governing an area. Fixing a case split (\"credit\" -> \"Credit\") IS a legal move." },
+      level: { type: "integer", enum: [1, 2, 3, 4], description: "`add_requirement` / `amend_standing`: the rule's solidity level — 1 natural law, 2 law or regulation, 3 industry or vendor rule, 4 business rule. Levels 5-8 are never stored. A level needs `authority` and `lapsesWhen`; `amend_standing` requires one." },
+      interim: { type: "boolean", description: "`add_requirement` / `amend_standing`: true for a provisional rule — in force, and expected to lose ground when `lapsesWhen` fires. Absent is firm, so an `amend_standing` without it makes the rule firm." },
+      authority: { type: "string", description: "`add_requirement` / `amend_standing`: the citation for levels 1-3, or who holds the rule for level 4." },
+      lapsesWhen: { type: "string", description: "`add_requirement` / `amend_standing`: the rule falsifier — what would make it stop applying. Not `falsifier`, which is a criterion's." },
       targetOperationId: { type: "string", description: "`add_criterion` attaching to a rule THIS SAME SPEC creates: the `add_requirement` operation, since the rule has no id until ratification. Use instead of `requirementId`." },
       model: { type: "string", description: "YOUR model id. Never guess it." },
       harness: { type: "string" },
@@ -2120,6 +2124,10 @@ const tools: Tool[] = [
       targetOperationId: { type: "string" },
       fromSection: { type: "string" },
       toSection: { type: "string" },
+      level: { type: "integer", enum: [1, 2, 3, 4] },
+      interim: { type: "boolean", description: "false makes it firm." },
+      authority: { type: "string" },
+      lapsesWhen: { type: "string" },
       reason: { type: "string", description: "Why you are correcting it. Goes on the revision, where a reader looking for the draft's history will find it — NOT into `rationale`." },
       model: { type: "string", description: "YOUR model id. Never guess it." },
       harness: { type: "string" },

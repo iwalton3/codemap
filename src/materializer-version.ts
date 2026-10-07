@@ -257,4 +257,7 @@
 // and a held sort's `restsOn` is dropped only by a two-reader release, provenance `released`
 // (owner, D2). Both refusals are new to main's events, a window the owner accepted (D3): land
 // with the team upgrading together. Same reason as 18 → 19.
-export const MATERIALIZER_VERSION = 57;
+// 57 → 58 (plan 2026-10-07-ladder-support): the standard fold carries a rule's standing and
+// learned `amend_standing`; the rests-on links ride this same bump (phase C). Same reason as
+// 18 → 19.
+export const MATERIALIZER_VERSION = 58;

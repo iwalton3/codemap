@@ -1766,3 +1766,101 @@ test("O11: a ratification that leaves a live operation unpinned is refused", asy
     assert.equal((await fold(root)).specs[0]!.status, "ratified");
   } finally { discard(root); }
 });
+
+// --- standing (plan 2026-10-07-ladder-support, A1-A3) -------------------------------------
+
+const LEVELED: Operation = {
+  ...ADD, level: 2, interim: true, authority: "IATA RP 1600", lapsesWhen: "IATA withdraws RP 1600",
+};
+const standingOf = (r: object) => {
+  const { level, interim, authority, lapsesWhen } = r as Operation;
+  return { level, interim, authority, lapsesWhen };
+};
+
+test("a ratified rule carries its standing", async () => {
+  const root = await log("standing");
+  try {
+    await publishSpecDrafted(root, SCOPE, opus, SPEC);
+    await publishOperation(root, SCOPE, opus, LEVELED);
+    await ratifyWithReview(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1"]);
+    assert.deepEqual(standingOf((await fold(root)).requirements[0]!),
+      { level: 2, interim: true, authority: "IATA RP 1600", lapsesWhen: "IATA withdraws RP 1600" });
+  } finally { discard(root); }
+});
+
+test("the door refuses a standing the tool would refuse", async () => {
+  for (const [what, bad] of [
+    ["level 5", { ...LEVELED, level: 5 }],
+    ["a level with no authority", { ...LEVELED, authority: " " }],
+    ["a level with no lapsesWhen", { ...LEVELED, lapsesWhen: undefined }],
+    ["interim that is not true", { ...LEVELED, interim: false }],
+    ["standing on an amend_statement", { ...LEVELED, kind: "amend_statement", requirementId: "r_x" }],
+    ["an amend_standing with no level", { ...LEVELED, kind: "amend_standing", requirementId: "r_x", level: undefined }],
+  ] as const) {
+    const root = await log("standing-door");
+    try {
+      await publishSpecDrafted(root, SCOPE, opus, SPEC);
+      await damage(probe.publishOperation(root, SCOPE, opus, bad as unknown as Operation), what);
+    } finally { discard(root); }
+  }
+});
+
+test("a revision cannot set a standing an add could not", async () => {
+  for (const [what, change] of [
+    ["level 5", { level: 5 }],
+    ["a blank authority", { authority: "" }],
+  ] as const) {
+    const root = await log("standing-revise");
+    try {
+      await publishSpecDrafted(root, SCOPE, opus, SPEC);
+      await publishOperation(root, SCOPE, opus, LEVELED);
+      await damage(probe.publishOperationRevised(root, SCOPE, opus, {
+        ...LEVELED, ...change,
+        revisions: [{ at: "2026-08-02T00:00:00.000Z", by: opus, was: standingOf(LEVELED) }],
+      } as unknown as Operation), what);
+    } finally { discard(root); }
+  }
+});
+
+/** Spec `id` with one operation against op_1's rule, signed off but not ratified. */
+async function against(root: string, id: string, op: Partial<Operation>) {
+  const rid = requirementIdFor("op_1");
+  await publishSpecDrafted(root, SCOPE, opus, { ...SPEC, id, title: id });
+  await publishOperation(root, SCOPE, opus, {
+    id: `op_${id}`, specId: id, ord: 0, requirementId: rid, rationale: "x", reversibility: "reversible",
+    context: { requirementId: rid, statement: ADD.statement! }, ...op,
+  } as Operation);
+}
+
+test("amend_standing replaces the whole standing and leaves the statement alone", async () => {
+  const root = await log("amend-standing");
+  try {
+    await publishSpecDrafted(root, SCOPE, opus, SPEC);
+    await publishOperation(root, SCOPE, opus, LEVELED);
+    await ratifyWithReview(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1"]);
+    await against(root, "sp_firm", { kind: "amend_standing", level: 3, authority: "IATA RP 1600 §2", lapsesWhen: "IATA withdraws it" });
+    await ratifyWithReview(root, SCOPE, izzie, "sp_firm", "2026-08-03T00:00:00.000Z", {}, ["op_sp_firm"]);
+    const r = (await fold(root)).requirements[0]!;
+    assert.deepEqual(standingOf(r), { level: 3, interim: undefined, authority: "IATA RP 1600 §2", lapsesWhen: "IATA withdraws it" },
+      "interim absent from the new standing makes the rule firm");
+    assert.equal(r.statement, ADD.statement);
+    assert.deepEqual(r.amendedBy, ["sp_firm"]);
+  } finally { discard(root); }
+});
+
+test("amend_standing on a retired rule, or against a statement amended since, does not ratify", async () => {
+  for (const [what, first] of [
+    ["retired", { kind: "retire_requirement" }],
+    ["amended since", { kind: "amend_statement", statement: "All credit lines are in EUR." }],
+  ] as const) {
+    const root = await log("amend-standing-race");
+    try {
+      await ratified(root);
+      await against(root, "sp_a", first);
+      await against(root, "sp_b", { kind: "amend_standing", level: 4, authority: "the CEO", lapsesWhen: "the CEO says so" });
+      await ratifyWithReview(root, SCOPE, izzie, "sp_a", "2026-08-03T00:00:00.000Z", {}, ["op_sp_a"]);
+      await signOff(root, izzie, "sp_b", ["op_sp_b"], "2026-08-04T00:00:00.000Z");
+      await damage(probe.publishSpecRatified(root, SCOPE, izzie, "sp_b", "2026-08-04T00:00:00.000Z", {}, ["op_sp_b"]), what);
+    } finally { discard(root); }
+  }
+});

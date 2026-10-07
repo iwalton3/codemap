@@ -56,7 +56,10 @@ export const SIDECAR_PROTOCOL = 2;
 // `child`, so /triage-review's sorters, all subagents of one session, are told apart; repair
 // evidence carries `siteBugs`; and a `released` sort carries its `release`. An older build would
 // refuse the first as one session sorting twice — damage, which locks its clone.
-export const EVENT_SCHEMA = 3;
+// 3 → 4 (plan 2026-10-07-ladder-support): a requirement carries its standing (`level`,
+// `interim`, `authority`, `lapsesWhen`) and `amend_standing` changes it. An older build would
+// fold the rule without its standing and an `amend_standing` into a no-op.
+export const EVENT_SCHEMA = 4;
 
 /**
  * The one file per scope that every write since the linear log goes to

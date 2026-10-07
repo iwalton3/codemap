@@ -1058,7 +1058,89 @@ export type OperationKind =
    * by, so re-filing a binding rule is laundering one field over, and the only way the
    * standard changes is a ratified spec.
    */
-  | "move_section";
+  | "move_section"
+  /**
+   * Change a rule's STANDING — level, interim, authority, lapsesWhen — and nothing else.
+   * The payload is the whole new standing, not a patch: `interim` absent means firm, so a
+   * patch could never make an interim rule firm. Ids, pointers and audits stay attached,
+   * which is why this is not a retire-and-re-add.
+   */
+  | "amend_standing";
+
+/** Every operation kind, for the closed-vocabulary checks and the MCP enum. */
+export const OPERATION_KINDS: readonly OperationKind[] = [
+  "add_requirement", "amend_statement", "retire_requirement", "add_criterion", "move_section", "amend_standing",
+];
+
+/**
+ * A rule's place on the owner's solidity ladder. Only 1-4 are stored: 1-3 are outside law
+ * (natural, legal, industry), 4 a business rule. 5-8 are design and below, and never become
+ * standard (ladder-support plan, L3).
+ */
+export type RuleLevel = 1 | 2 | 3 | 4;
+
+/** The standing fields an `add_requirement` or `amend_standing` carries onto the rule. */
+export interface Standing {
+  level?: RuleLevel;
+  /**
+   * The owner's "provisional": in force, and expected to lose ground when `lapsesWhen`
+   * fires, where a firm rule's falsifier firing goes to the owner instead. Not a
+   * `RequirementStatus` (status answers "in force?"), and not named `provisional`, which
+   * already means "observed on somebody's branch" here.
+   */
+  interim?: true;
+  /** The citation for levels 1-3; who holds it for level 4. */
+  authority?: string;
+  /**
+   * What would make the rule stop applying. Not `falsifier`: that is the CRITERION's field
+   * on the same operation payload.
+   */
+  lapsesWhen?: string;
+}
+
+/** The standing an operation or a rule carries, and nothing else. */
+export const standingFromOperation = (s: Standing): Standing => ({
+  ...(s.level !== undefined ? { level: s.level } : {}),
+  ...(s.interim ? { interim: true as const } : {}),
+  ...(s.authority?.trim() ? { authority: s.authority } : {}),
+  ...(s.lapsesWhen?.trim() ? { lapsesWhen: s.lapsesWhen } : {}),
+});
+
+/** Copy a standing onto a requirement, clearing whatever it does not state. */
+export const withStanding = (r: Requirement, s: Standing): Requirement => {
+  const { level: _l, interim: _i, authority: _a, lapsesWhen: _w, ...rest } = r;
+  return { ...rest, ...standingFromOperation(s) };
+};
+
+/**
+ * Why a standing cannot be stored, or nothing. ONE function for the tool and the fold, so
+ * the door and every clone refuse the same thing.
+ */
+export function standingRefusal(s: { level?: unknown; interim?: unknown; authority?: string; lapsesWhen?: string }): string | undefined {
+  if (s.interim !== undefined && s.interim !== true) return "`interim` is `true` or absent";
+  if (s.level === undefined) return undefined;
+  if (s.level !== 1 && s.level !== 2 && s.level !== 3 && s.level !== 4) {
+    return "a rule's `level` is 1-4. Levels 5-8 are design and below, and are never stored in the standard";
+  }
+  if (!s.authority?.trim()) return "a leveled rule needs `authority` — the citation (levels 1-3) or who holds it (level 4)";
+  if (!s.lapsesWhen?.trim()) return "a leveled rule needs `lapsesWhen` — what would make it stop applying";
+  return undefined;
+}
+
+/** `standingRefusal` plus which kinds may carry a standing at all. Tool and fold both call it. */
+export function operationStandingRefusal(op: Standing & { kind: OperationKind }): string | undefined {
+  const bad = standingRefusal(op);
+  if (bad) return bad;
+  const carries = op.level !== undefined || op.interim !== undefined || !!op.authority?.trim() || !!op.lapsesWhen?.trim();
+  if (carries && op.kind !== "add_requirement" && op.kind !== "amend_standing") {
+    return `\`${op.kind}\` carries no standing — set it with \`add_requirement\` or \`amend_standing\``;
+  }
+  // The whole new standing, so a level is required: a rule found to be level 5+ is retired.
+  if (op.kind === "amend_standing" && op.level === undefined) {
+    return "`amend_standing` states the rule's whole new standing and needs a `level` (1-4); a rule that is not level 1-4 is retired instead";
+  }
+  return undefined;
+}
 
 /**
  * A section is a `/`-delimited path, normalized so trivially different spellings of one
@@ -1165,6 +1247,11 @@ export interface Operation {
   fromSection?: string;
   toSection?: string;
   provenance?: string;
+  /** Standing, for `add_requirement` and `amend_standing`. See `Standing`. */
+  level?: RuleLevel;
+  interim?: true;
+  authority?: string;
+  lapsesWhen?: string;
   /** Payload for `add_criterion`. See `AcceptanceCriterion` for what each one is. */
   criterion?: string;
   falsifier?: string;
@@ -1213,7 +1300,8 @@ export interface OperationRevision {
   was: Partial<Pick<Operation,
     "title" | "section" | "statement" | "provenance" | "rationale" | "evidence" | "reversibility"
     | "criterion" | "falsifier" | "evidenceKind" | "requirementId"
-    | "targetOperationId" | "fromSection" | "toSection" | "context">>;
+    | "targetOperationId" | "fromSection" | "toSection" | "context"
+    | "level" | "interim" | "authority" | "lapsesWhen">>;
   /**
    * Why the correction was made, in the corrector's words. NOT part of the rule.
    *
@@ -1231,7 +1319,7 @@ export interface OperationRevision {
   reason?: string;
 }
 
-export interface Requirement {
+export interface Requirement extends Standing {
   id: string;
   /**
    * A short name for the rule — what a queue row, an index and a cross-reference show.
@@ -1855,6 +1943,10 @@ export function operationContent(op: Operation): Record<string, string> {
   put("targetOperationId", op.targetOperationId);
   put("fromSection", op.fromSection);
   put("toSection", op.toSection);
+  put("level", op.level === undefined ? undefined : String(op.level));
+  put("interim", op.interim ? "true" : undefined);
+  put("authority", op.authority);
+  put("lapsesWhen", op.lapsesWhen);
   // The base it was written against, which the rendering shows as "now". A moved base is
   // already refused by the context check at ratification; carrying it here as well costs
   // nothing and keeps the witness over the whole rendering rather than most of it.

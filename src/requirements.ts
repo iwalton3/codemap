@@ -34,11 +34,12 @@
 import { randomBytes } from "node:crypto";
 import type {
   AcceptanceCriterion, Acknowledgement, Actor, Audit, BugWitness, EvidenceKind, Operation,
-  OperationKind, Pointer, Problem, ProposalWitness, Requirement, Reversibility, SignOffAxis, Spec,
+  OperationKind, Pointer, Problem, ProposalWitness, Requirement, Reversibility, RuleLevel, SignOffAxis, Spec,
+  Standing,
 } from "./schema.js";
 import {
   contentDiff, criterionIdFor, EVIDENCE_KINDS, framingContent, movedSection, normalizeSection,
-  operationContent, requirementIdFor, SIGN_OFF_AXES, witnessHash,
+  operationContent, requirementIdFor, operationStandingRefusal, SIGN_OFF_AXES, standingFromOperation, withStanding, witnessHash,
 } from "./schema.js";
 import { resolveSidecar, universeKey } from "./sidecar-config.js";
 import {
@@ -298,6 +299,18 @@ export interface OperationInput {
   criterion?: string; falsifier?: string; evidenceKind?: EvidenceKind;
   targetOperationId?: string;
   fromSection?: string; toSection?: string;
+  level?: RuleLevel; interim?: boolean; authority?: string; lapsesWhen?: string;
+}
+
+/** The standing an input states, trimmed, with absent and blank alike dropped. */
+function standingOf(input: OperationInput): Standing {
+  const authority = input.authority?.trim(), lapsesWhen = input.lapsesWhen?.trim();
+  return {
+    ...(input.level !== undefined ? { level: input.level } : {}),
+    ...(input.interim ? { interim: true as const } : {}),
+    ...(authority ? { authority } : {}),
+    ...(lapsesWhen ? { lapsesWhen } : {}),
+  };
 }
 
 /**
@@ -324,6 +337,11 @@ async function operationPayload(
         + "implementation cannot be undone is also a rule that is harder to amend later.",
     };
   }
+  // Standing is checked for every kind, so a stray `level: 7` on any operation is refused
+  // here rather than signed and dropped. The fold runs the same function.
+  const standing = standingOf(input);
+  const badStanding = operationStandingRefusal({ kind: input.kind, ...standing, level: input.level });
+  if (badStanding) return { error: badStanding };
   const siblings = (await readOperations(root, { specId: sp.id })).filter((o) => o.id !== excluding);
   const statement = input.statement?.trim();
   let payload: Partial<Operation> = {};
@@ -366,7 +384,7 @@ async function operationPayload(
           + "rise for re-audit when the code moves. See docs/cross-universe-standard.md.",
       };
     }
-    payload = { title, section, statement, provenance };
+    payload = { title, section, statement, provenance, ...standing };
   } else if (input.kind === "add_criterion") {
     const criterion = input.criterion?.trim();
     const falsifier = input.falsifier?.trim();
@@ -456,6 +474,13 @@ async function operationPayload(
       if (!statement) return { error: "`amend_statement` needs the new `statement`" };
       if (statement === r.statement) return { error: "the proposed statement is identical to the current one" };
       payload = { statement };
+    }
+    if (input.kind === "amend_standing") {
+      const cur = { level: r.level, interim: r.interim, authority: r.authority, lapsesWhen: r.lapsesWhen };
+      if (JSON.stringify(cur) === JSON.stringify({ level: standing.level, interim: standing.interim, authority: standing.authority, lapsesWhen: standing.lapsesWhen })) {
+        return { error: "the proposed standing is identical to the current one" };
+      }
+      payload = { ...standing };
     }
     // The state this was written against. Verified at ratification, so an operation
     // drafted before another spec changed the same rule is refused rather than applied
@@ -645,6 +670,10 @@ export async function reviseOperation(
     targetOperationId: input.targetOperationId ?? op.targetOperationId,
     fromSection: blank(input.fromSection ?? op.fromSection),
     toSection: blank(input.toSection ?? op.toSection),
+    level: input.level ?? op.level,
+    interim: input.interim ?? op.interim,
+    authority: blank(input.authority ?? op.authority),
+    lapsesWhen: blank(input.lapsesWhen ?? op.lapsesWhen),
   };
   const built = await operationPayload(root, sp, merged, op.id);
   if (isErr(built)) return built;
@@ -657,6 +686,7 @@ export async function reviseOperation(
     title: undefined, section: undefined, statement: undefined, provenance: undefined,
     criterion: undefined, falsifier: undefined, evidenceKind: undefined,
     requirementId: undefined, targetOperationId: undefined, fromSection: undefined, toSection: undefined,
+    level: undefined, interim: undefined, authority: undefined, lapsesWhen: undefined,
     ...built.payload,
     rationale: merged.rationale.trim(),
     evidence: merged.evidence,
@@ -666,7 +696,7 @@ export async function reviseOperation(
   const was = changedFields(op, candidate, [
     "title", "section", "statement", "provenance", "rationale", "evidence", "reversibility",
     "criterion", "falsifier", "evidenceKind", "requirementId", "targetOperationId",
-    "fromSection", "toSection", "context",
+    "fromSection", "toSection", "context", "level", "interim", "authority", "lapsesWhen",
   ]);
   if (!Object.keys(was).length) return { error: "nothing to change" };
 
@@ -1318,6 +1348,7 @@ export async function ratifySpec(
       const r: Requirement = {
         id: requirementIdFor(op.id), title: op.title!, section: op.section!, statement: op.statement!,
         provenance: op.provenance!, status: "ratified",
+        ...standingFromOperation(op),
         author: sp.author, createdAt: at,
         introducedBy: sp.id, ratifiedBy: who, ratifiedAt: at,
       };
@@ -1356,7 +1387,9 @@ export async function ratifySpec(
       const r = (await readRequirement(root, op.requirementId!))!;
       const next: Requirement = op.kind === "retire_requirement"
         ? { ...r, status: "retired", retiredBy: who, retiredAt: at }
-        : {
+        : op.kind === "amend_standing"
+          ? { ...withStanding(r, op), amendedBy: [...(r.amendedBy ?? []), sp.id] }
+          : {
           ...r, statement: op.statement!, ratifiedBy: who, ratifiedAt: at,
           amendedBy: [...(r.amendedBy ?? []), sp.id],
         };
@@ -1801,7 +1834,7 @@ export async function getSpec(
     operations.push({
       operation: op,
       ...(before ? { before } : {}),
-      ...(op.kind === "retire_requirement" || op.kind === "move_section" ? {} : { after: op.statement }),
+      ...(op.kind === "retire_requirement" || op.kind === "move_section" || op.kind === "amend_standing" ? {} : { after: op.statement }),
       ...(moves ? { moves } : {}),
       contextMoved,
       ...(blockedBy ? { blockedBy } : {}),
