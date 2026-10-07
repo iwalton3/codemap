@@ -60,7 +60,8 @@ unverified, which only unblocks. Then:
   - `unclear`: `confirm_reading` refuses it; re-ask the original question itself.
 
   A confirm is answered in the session: ask it verbatim with `AskUserQuestion` and `log_question`
-  it with its round. Never add one to a questionnaire round — the page cannot answer it.
+  it with its round. `confirm_reading` posts it into the words' own round, a questionnaire's
+  included, and the questionnaire page cannot answer it — so ask it here even then.
 - A ruling that looks wrong, or conflicts with another: `report_ruling` asks its principal whether
   to withdraw it. Only their "Withdraw it" lets `withdraw_decision` retire it.
 - A ruling is not a close. A settle holds its finding until it is carried out (below).
