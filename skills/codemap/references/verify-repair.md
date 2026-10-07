@@ -30,8 +30,7 @@ fix never closes the whole finding.
 
 - **There is none:** the sort comes from `/triage-review`, which posts a `dual-sorted` sort — two
   sorters, an arbitrator where they disagreed — when codemap is attached. Run it over these
-  findings. Its sorters are subagents of one session; codemap accepts that because it finds
-  /triage-review's run in that session's transcript. An `owner-reviewed` sort needs a person's
+  findings. An `owner-reviewed` sort needs a person's
   authorship and their exact source: one an agent posts is held, and then stands in the way of the
   next sort.
 - **It has holds:** read them. Three shapes are eligible: `implementation-defect` or `mechanical`;
@@ -39,13 +38,16 @@ fix never closes the whole finding.
   (`invalid` with `refutationSubtype: "assumed"`). A non-empty `restsOn` always holds. A design
   defect, an assumption in the code, a scope judgment or a dependency on a requirement is a
   person's decision first (`references/asking.md`), not something a verifier can settle.
-- **The person has ruled on a held sort:** rerun `/triage-review` on the held claims with the
-  ruling in hand. Where the ruling decides them, the sorters reclassify — a design defect the
-  ruling has decided becomes an implementation defect. Post that as a correction: the held sort as
-  prior, `ruling` = the answer id, and `restsOn` without what the ruling decided. Dropping a
-  `restsOn` entry without a ruling is refused. Then evidence as usual, listing the ruling in
-  `rulingIds`. The blind verifiers judge whether the ruling really decides each claim, and answer
-  `decision-needed` if it does not.
+- **The person has ruled on a held sort:** its `restsOn` must name the decision —
+  `decision:<id>`. If it still holds a free label, re-point it first: a correction with the held
+  sort as prior and the label replaced by the decision entry. Then release it with two readers:
+  `release_reader_brief` for slot 1 and slot 2, each launched as a fresh background subagent from
+  this session with exactly its prompt; each calls `submit_release_verdict`; then
+  `release_held_sort` with both refs. Both must say yes. codemap writes the correction itself,
+  `implementation-defect`, with the rulings in it; evidence lists them in `rulingIds`, and the
+  blind verifiers still answer `decision-needed` where a ruling does not decide a claim. A `no` or
+  a split leaves the sort held: it needs a person-led `/ez-plan` over it, whose sharper answers
+  start a new release. Dropping a `restsOn` entry any other way is refused.
 - **The sort is wrong:** a correction is a whole new sort. Re-sort with `/triage-review`, naming
   the current sort as `prior`, with a reason. Adding sites or claims is free; dropping one needs a
   logged ruling (a decisions answer id) on why it is not an instance.

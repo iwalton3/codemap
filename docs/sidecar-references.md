@@ -311,7 +311,7 @@ sometimes a local reference, and nothing in the event says which.
 | A5 | graph.published | d.nodeId (= E.subject) | the source node; only human nodes' edges travel, but the node itself may be unpublished | subject agreement only shared-graph.ts:64 |
 | A6 | graph.published | d.edges[].to | frequently an **analyzer** node (e.g. an aggregate) that never travels; `calls_api` edges carry a cross-universe qualified `to` (`api::handler`, schema.ts:368) | none (edge dropped only if malformed or `generatedBy`, :69-74) |
 | A7 | pointer.declared | d.pointer.target.id when target.kind = `node` | same as A1 | none |
-| A8 | repair.sort-recorded | d.restsOn[] | "requirement or ruling dependency" (repair-records.ts:149); free labels (e2e uses `"req-credit"`), no declared target kind | non-empty only :75 |
+| A8 | repair.sort-recorded | d.restsOn[], d.release.rulings[] | a `decision:<id>` entry names a decision in `decisions/<u>`, and a release ruling an answer to it (owner, D2); other entries are free labels (e2e uses `"req-credit"`) with no target | `repairSortReferences` (ruling-references.ts), door and read |
 | A9 | round.posted / answer.* | E.subject vs `d.decision` / `d.round.id` | subject is a label, not an id, for round/confirm/answer/reading/question kinds; nothing checks it | not checked |
 
 Also note-worthy but **not event-log references** (excluded, but a reviewer may expect them):
@@ -364,7 +364,7 @@ receipt store), external tracker refs, content hashes (they bind content, not an
 | walkthrough.published | walkthrough.pr, walkthrough.head (commit), chapters[].blocks[].anchorId, chapters[].witnesses[]; E.subject `pr-<n>` |
 | decision.round.posted | round.pr; round.branch; round.prevalidated.{record,sortedBy} (skill record — new posts refuse it, ops/decisions.ts:136); round.universe (a name) |
 | decision.question.logged | session; toolUseId (= E.subject); answeredAt; transcript |
-| decision.answer.recorded | via.session/entryId/at/text (message); relayedBy (a session id, mcp.ts:1167); hash (content hash of the decision — **checked** equal to the decision's hash :878) |
+| decision.answer.recorded | via.session/entryId/at/text (message); relayedBy (the verified message's session, set by `relay_answer`; no longer an input); hash (content hash of the decision — **checked** equal to the decision's hash :878) |
 | decision.answer.revised | via.proof.{session,toolUseId,entryId,answeredAt,question,answer}; list.* (questionnaire list items, intra-decision) |
 | decision.questionnaire.submitted | staged.attemptId, payloadHash, listApprovals |
 | decision.comparison.requested | request.contextHash; left/right.version (response hash — checked current) |

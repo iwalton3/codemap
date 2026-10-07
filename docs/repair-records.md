@@ -24,23 +24,37 @@ or a fresh sort of claims another current sort covers, is refused as stale (plan
 Adding sites or claims is free. A correction that REMOVES a site or claim its prior
 had is refused unless it cites a logged ruling on why those are not instances: a
 decisions answer, named in `ruling` (R5, narrowed by the owner's batch 5: "Narrowing
-needs a ruling"). Dropping an entry the prior `restsOn` is narrowing too, and needs one
-the same way: it is what releases a held sort. Evidence against a sort that cites a
-ruling must list it in `rulingIds`, so the blind brief carries the ruling's text, and
-the brief tells the verifiers to judge whether it decides the claim — that, not the
-correction, is where the release is checked (plan 2026-10-06-codemap-skill-flows, I2).
-The op checks that the ruling is a verified, standing answer; the fold checks only that
-the field is there. An agent cannot turn its own report into an owner-reviewed worklist.
+needs a ruling"). Evidence against a sort that cites a ruling must list it in
+`rulingIds`, so the blind brief carries the ruling's text and verification re-checks its
+authority. The op checks that the ruling is a verified, standing answer; the fold checks
+only that the field is there. An agent cannot turn its own report into an owner-reviewed
+worklist.
+
+`restsOn` is what holds a sort: a free label, or `decision:<decision id>` — the question that
+decides it, a cross-scope reference checked at the door and on read (owner, D2: "restsOn names
+the question itself, by decision id, and an answer to that question satisfies it"). A ruling
+alone drops nothing. A correction may re-point free labels to decision entries, because
+/triage-review posts the held sort before /ez-plan posts the question (Q2); any other drop
+is a **release**: `release_reader_brief` issues two blind briefs (the held claims as filed and
+the rulings, nothing of the fixer's), each reader calls `submit_release_verdict`, and
+`release_held_sort` checks both readers' transcripts and, on two `yes`, writes the correction
+itself — provenance `released`, `implementation-defect`, the decision entries dropped. The
+fold recomputes the brief hash with the same builder (`releaseBriefContent`), requires two
+independent readers and two `yes` (owner, D2: unanimous, so no arbitrator), and refuses a
+release that changes anything else. Evidence for a released sort lists its rulings in
+`rulingIds`. A `no` stays local to the clone that holds it, like a withdrawal reader's (Q5);
+the sort stays held for a person-led /ez-plan. One side door remains, accepted (Q3): a held
+sort with an EMPTY `restsOn` leaves its hold through any fresh dual-sorted reclassification.
 
 A `dual-sorted` sort is the skill's own two-sorter sort, posted with the round: two
-assessments from distinct sessions, and an arbitration from a third when they
-disagree — unless the sort carries `execution`. /triage-review's blind sorter and
-arbitrator are subagents of the posting session and share its id, so `post_repair_sort`
-looks for /triage-review's run in a session the sort names and stamps it; a stamped sort
-skips both session rules (owner, I13: "it accepts the sorts as-written and assumes the
-agent didn't cheat"). The fold cannot read a transcript and trusts the stamp, so the op
-refuses one a caller supplies. The sorter identities are reported provenance (the owner:
-"2 blind isn't needed for the skill's findings sort"); there is no sorter role to claim.
+assessments by independent sorters, and an arbitration by a third when they disagree.
+Independence is `verifierIdentityKey` — principal, session, child — the one key withdrawal
+and ruling-application readers use too (owner, D4). /triage-review's sorters are subagents
+of the posting session, so `post_repair_sort` fills every sorter's session from the MCP
+connection (it refuses one a caller supplies) and the caller names each subagent by its
+agent id as `child`. The identities are reported provenance, never verified (owner, I13: "it
+accepts the sorts as-written and assumes the agent didn't cheat"); there is no sorter role
+to claim.
 
 Original claim IDs and exact text come from `finding.created`, with the complete
 as-filed payload and witness retained. `record_repair_claims` adds decomposed

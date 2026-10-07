@@ -18,9 +18,12 @@ they were shown and their own words. A summary of what they said is not one.
 3. **Ask.** Ask with `AskUserQuestion`, using the returned `ask` payload **verbatim**. A paraphrase
    cannot be matched. For a questionnaire, see *Waiting on a questionnaire*.
 4. **Log it.** After every `AskUserQuestion`, `log_question` with the round. codemap finds the call
-   in this session's transcript itself — you cannot see its id — and reads the question and the
-   answer from there. Two unlogged calls asking that round's questions are refused, naming both: log
-   each by the `toolUseId` the refusal gives. Retrying is safe.
+   itself — you cannot see its id — and reads the question and the answer from the transcript. It
+   looks only in a session that posted the round, was handed its question (`confirm_reading`,
+   `report_ruling`), or read it with `decision_round`, and only after that. In a new session (after
+   `/clear`, or resuming a round), call `decision_round` on the round before you ask. A round
+   handled only by a subagent cannot be logged. Two unlogged calls asking that round's questions are
+   refused, naming both: log each by the `toolUseId` the refusal gives. Retrying is safe.
 
 ## Waiting on a questionnaire
 
@@ -38,8 +41,9 @@ on the team may answer it under their own name.
 ## Typed answers
 
 When the person types instead of picking ("D2 B", or free words), `relay_answer` with their whole
-message as `words`, exactly as typed. codemap finds the message whose whole text is those words and
-copies it from the transcript; it parses nothing. If no message matches, the words are recorded as
+message as `words`, exactly as typed. codemap finds the message whose whole text is those words —
+typed after this session posted, was handed or read the round, as in step 4 — and copies it from the
+transcript; it parses nothing. If no message matches, the words are recorded as
 unverified, which only unblocks. Then:
 
 - **A `words` decision**: the typed answer IS the answer. There is nothing to read, and

@@ -66,17 +66,19 @@ any claim. A partial fix cannot erase the other claims.
 Use the existing category definitions and owner authority. Preserve the informed first/blind second
 arrangement: the blind second starts before blame and receives only the raw findings, permitted
 purpose and artifact, never the first reading. Post the skill's own sort with the round through
-`post_repair_sort`: `dual-sorted`, with both sorters' classifications and reasons (each sorter named
-by its session) and the arbitrator's reasons where they disagreed, or `owner-reviewed` for a genuine
-owner-approved worklist — never fabricate owner approval. The blind sorter and the arbitrator are
-subagents, so all three carry this session's id: post from the session /triage-review ran in, and
-codemap finds that run in its transcript and stamps the sort, which is what lets one session's
-sorters pass. An answer carrying `unstamped` found no run, and the sort is refused as one session
-sorting twice. Read `repair_records` for eligibility and holds. A correction names the current sort as prior and supersedes it; a correction naming an older
-sort is refused as stale. Adding sites or claims, or rewording, is free. A correction that REMOVES a
-site or claim, or drops something the prior `restsOn`, is refused unless it cites a logged ruling
-(its ruling field, a decisions answer id) — ask the person, log their answer, then post the
-correction citing it. Evidence for such a sort lists that ruling in `rulingIds`.
+`post_repair_sort`: `dual-sorted`, with both sorters' classifications and reasons and the
+arbitrator's reasons where they disagreed, or `owner-reviewed` for a genuine owner-approved
+worklist — never fabricate owner approval. Name each subagent sorter by its agent id (`child`, as
+its Agent result shows it) and leave it out for this session's own reading; codemap fills the
+session. Two sorters, and the arbitrator, must differ. Read `repair_records` for eligibility and
+holds. A correction names the current sort as prior and supersedes it; a correction naming an
+older sort is refused as stale. Adding sites or claims, or rewording, is free. A correction that
+REMOVES a site or claim is refused unless it cites a logged ruling (its ruling field, a decisions
+answer id) on why it is not an instance — ask the person, log their answer, then post the
+correction citing it. `restsOn` names what holds a sort: a free label at sort time, re-pointed with
+a correction to `decision:<id>` once /ez-plan has posted the question that decides it. Nothing else
+drops a `restsOn` entry: once the person has answered, `release_held_sort` releases the sort with
+two readers (`references/verify-repair.md` in the codemap skill).
 
 A requirement/scope choice is the owner's. Design defects, assumptions and suggestions remain held
 for their relevant ruling. A pattern is held only when its fix forks the design (`triage-review`'s

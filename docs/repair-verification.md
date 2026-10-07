@@ -86,8 +86,9 @@ fold checks only that every site has a disposition, because the bug lives in ano
 verifier learns a filed site's bug id from the evidence's `siteBugs`, which the brief carries — it
 cannot look bugs up, so this tells it which sites the fixer did not fix (owner, I14 (a)). A
 correction of a sort supersedes it and may add sites or claims freely; one that drops a site or
-claim is refused unless it cites a logged ruling on why it is not an instance (R5, plan 5.2), and
-so is one that drops an entry its prior `restsOn` (I2).
+claim is refused unless it cites a logged ruling on why it is not an instance (R5, plan 5.2). A
+held sort's `restsOn` is dropped only by a two-reader release (`docs/repair-records.md`, owner
+D2), and the verifier brief carries the release's rulings with their words.
 
 Any bug made from a finding (`defer_finding`, `file_site_bug`) keeps the finding's filer and
 the verdicts that stood behind it (plan 3.5). An agent deferring a person's confirmed finding

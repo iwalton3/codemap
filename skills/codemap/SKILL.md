@@ -72,6 +72,8 @@ still holds. Ask instead (`references/asking.md`).
   held submission…` or `reader receipt is …` means that receipt is settled for good.
 - **A successful `pull` can still be `blocked`** (`materialized.blocked`, `pushBlocked`), and a
   blocked read serves stored rows that may be old. Report it rather than act on them.
+- **A question is logged only in a session that posted its round, was handed its question, or read
+  the round**, and only after that; in a new session, `decision_round` it first.
 - **Unknown is an honest verdict.** A verification that comes back `unknown` closes nothing. A new
   request on the same fix shows the earlier runs that did not come back fixed, so asking again
   cannot bury them.

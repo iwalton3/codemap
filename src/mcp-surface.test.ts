@@ -45,7 +45,7 @@ const SKILL_VOCAB = new Set([
   "result", "fixed", "answered", "declined", "withdraw", "drive_by", "mechanical",
   "retained", "lost", "live", "moved", "unjudgeable", "due", "woken",
   "verified", "checked", "invalid",                          // review trust levels, a sort classification
-  "changed", "blocked", "words", "state", "maps", "arbitrator", "ruling", "unstamped", // asking / repair fields
+  "changed", "blocked", "words", "state", "maps", "arbitrator", "ruling", "child",     // asking / repair fields
   "unread", "disputed", "unclear",                           // possiblySuperseded states
 ]);
 
