@@ -1,7 +1,7 @@
 /** Plan §9 application paths through real ops and transcript-backed reader receipts. */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -86,9 +86,9 @@ async function fixture(kind: "finding" | "bug", direct = false) {
 }
 
 function writeTranscript(dir: string, prompt: string, requestId: string,
-  verdict: "sound" | "unsound", rationale: string, receipt: string, slot: number): ApplicationReceiptRef {
+  verdict: "sound" | "unsound", rationale: string, receipt: string, slot: number,
+  session = `5e55a0a0-0000-0000-0000-00000000000${slot}`): ApplicationReceiptRef {
   const agentId = `a1234567${slot}`;
-  const session = `5e55a0a0-0000-0000-0000-00000000000${slot}`;
   const sub = join(dir, session, "subagents");
   mkdirSync(sub, { recursive: true });
   const launch = `toolu_launch_${agentId}`, call = `toolu_submit_${agentId}`;
@@ -102,7 +102,8 @@ function writeTranscript(dir: string, prompt: string, requestId: string,
       { type: "tool_result", tool_use_id: call, content: JSON.stringify({ ok: true, held: true, receipt }) },
     ] } },
   ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
-  writeFileSync(join(dir, `${session}.jsonl`), [
+  // Appended: one parent session may launch every reader (owner, D4).
+  appendFileSync(join(dir, `${session}.jsonl`), [
     { type: "assistant", isSidechain: false, timestamp: new Date().toISOString(), message: { content: [
       { type: "tool_use", id: launch, name: "Agent", input: { prompt, subagent_type: "general-purpose" } },
     ] } },
@@ -114,14 +115,14 @@ function writeTranscript(dir: string, prompt: string, requestId: string,
 }
 
 async function reader(u: Awaited<ReturnType<typeof fixture>>, slot: number,
-  verdict: "sound" | "unsound", rationale: string, readers?: ApplicationReceiptRef[]) {
+  verdict: "sound" | "unsound", rationale: string, readers?: ApplicationReceiptRef[], session?: string) {
   const brief = await applicationReaderBrief(u.root, { issue: u.issue, answerId: u.answer,
     slot, ...(slot === 3 ? { role: "arbitrator" as const, readers } : {}) }, u.transcripts) as any;
   assert.equal(brief.ok, true, JSON.stringify(brief));
   assert.equal(brief.directMention, false, "the issue ID was not shown as an exact mention");
   const held = submitApplicationVerdict(u.root, { requestId: brief.requestId, verdict, rationale }) as any;
   assert.equal(held.held, true, JSON.stringify(held));
-  const ref = writeTranscript(u.transcripts, brief.prompt, brief.requestId, verdict, rationale, held.receipt, slot);
+  const ref = writeTranscript(u.transcripts, brief.prompt, brief.requestId, verdict, rationale, held.receipt, slot, session);
   const recorded = recordApplicationVerdict(u.root, ref, u.transcripts) as any;
   assert.equal(recorded.recorded, true, JSON.stringify(recorded));
   return { brief, ref };
@@ -195,6 +196,23 @@ test("disagreeing indirect readers need an independently launched arbitrator who
       assert.equal(applied.ok, true, JSON.stringify(applied));
       assert.equal((await issueRow(u))?.state, "invalid");
       assert.equal((await applicationEvents(u)).length, 1);
+    });
+  } finally { u.cleanup(); }
+});
+
+test("D4: two readers and their arbitrator, all launched from one session, apply a ruling", async () => {
+  const u = await fixture("finding");
+  try {
+    assert.equal(u.posted.ok, true, JSON.stringify(u.posted));
+    const parent = "5e55a0a0-0000-0000-0000-0000000000aa";
+    await withActor(true, async () => {
+      const first = await reader(u, 1, "sound", "The doubling is intended.", undefined, parent);
+      const second = await reader(u, 2, "unsound", "The claim still describes an error.", undefined, parent);
+      const arbitration = await reader(u, 3, "sound", "The policy supports the intended doubling.", [first.ref, second.ref], parent);
+      const applied = await applyRuling(u.root, { issue: u.issue, answerId: u.answer,
+        readers: [first.ref, second.ref], arbitrator: arbitration.ref }, u.transcripts) as any;
+      assert.equal(applied.ok, true, JSON.stringify(applied));
+      assert.equal((await issueRow(u))?.state, "invalid");
     });
   } finally { u.cleanup(); }
 });

@@ -21,6 +21,7 @@ import { readerReceipts, readerRequests } from "./reader-local.js";
 import type { State } from "./schema.js";
 import { shareFinding, closeFinding, bindDecisions, reassignFinding, sharedFindings, sharedSync } from "./ops-shared.js";
 import { reviewQueue } from "./ops/annotations.js";
+import { readerTranscript as sharedReaderTranscript } from "./test-transcripts.js";
 import { postRound as postRoundOp, logQuestion, relayAnswer, answerDirect, decisionRounds, decisionRound, nominateComparison, readerBrief, recordReading, submitVerdict as submitVerdictOp, confirmReading, parseVerdict, confirmId, withdrawDecision, reportRuling as reportRulingOp, withdrawalReaderBrief, submitWithdrawalVerdict, reviseDecision, revisionRelayBrief as revisionRelayBriefOp, reviseDecisionRelayed, interpretationRequestId } from "./ops/decisions.js";
 import { discard, moveAside } from "./test-tmp.js";
 import { decisionsView, holdBuilds } from "./ops/decision-holds.js";
@@ -1948,6 +1949,28 @@ test("I10: a withdrawal reader is found by its receipt — the agent cannot see 
       assert.equal(done.ok, true, JSON.stringify(done));
     });
     assert.ok((await decisionsView(u.root)).s.decisions.find((x) => (x.label ?? x.id) === "d1")!.withdrawn);
+  } finally { discard(dir); u.cleanup(); }
+});
+
+test("D4: both withdrawal readers launched from one session are independent by their launches", async () => {
+  const u = await universe();
+  const dir = mkdtempSync(join(tmpdir(), "codemap-withdrawal-tx-"));
+  try {
+    const f = await withFinding(u);
+    await asAgent(async () => {
+      assert.equal((await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f)] }) as any).ok, true);
+      const reason = "the finding it asks about was filed twice";
+      const refs = [];
+      for (const [slot, agentId] of [[1, "a5555555"], [2, "a6666666"]] as const) {
+        const brief = await withdrawalReaderBrief(u.root, { decision: "d1", reason, slot }) as any;
+        const verdict = { requestId: brief.requestId, verdict: "sound" as const, rationale: `slot ${slot}: the duplicate makes it moot` };
+        const held = submitWithdrawalVerdict(u.root, verdict) as any;
+        sharedReaderTranscript(dir, SESSION, agentId, brief.prompt, "submit_withdrawal_verdict", verdict, held);
+        refs.push({ requestId: brief.requestId, receipt: held.receipt });
+      }
+      const done = await withdrawDecision(u.root, { decision: "d1", reason, review: { readers: refs as never } }, {}, dir) as any;
+      assert.equal(done.ok, true, JSON.stringify(done));
+    });
   } finally { discard(dir); u.cleanup(); }
 });
 

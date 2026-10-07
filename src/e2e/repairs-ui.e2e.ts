@@ -14,6 +14,7 @@ import { repairVerificationHash, type RepairVerificationCapsule } from "../repai
 import { emitEvent } from "../write.js";
 import { requireActor } from "../identity.js";
 import { issueClaimHash } from "../ruling-application.js";
+import { readerTranscript } from "../test-transcripts.js";
 
 const pw = resolvePlaywright();
 test("repair page retains original scope, separate evidence outcomes and the closure gate", {
@@ -207,4 +208,56 @@ test("repair page retains original scope, separate evidence outcomes and the clo
     assert.equal(existsSync(marker), false, "reading evidence must not execute it");
     assert.equal((await readFinding(root, finding.id))?.state, initialState, "repair evidence cannot close the finding");
   } finally { await browser?.close(); server?.stop(); discard(root); discard(side); }
+});
+
+test("a released sort shows the rulings it was released on and both readers' verdicts", {
+  skip: pw ? false : "playwright not resolvable (set CODEMAP_E2E_PLAYWRIGHT)",
+}, async () => {
+  const root = mkdtempSync(join(tmpdir(), "codemap-release-ui-"));
+  const side = mkdtempSync(join(tmpdir(), "codemap-release-ui-side-"));
+  const tx = mkdtempSync(join(tmpdir(), "codemap-release-ui-tx-"));
+  let browser: any, server: Awaited<ReturnType<typeof startServer>> | undefined;
+  try {
+    const git = (...args: string[]) => assert.equal(spawnSync("git", args, { cwd: root }).status, 0);
+    git("init", "-q", "-b", "main"); git("config", "user.email", "alice@x.test"); git("config", "user.name", "Alice");
+    mkdirSync(join(root, ".codemap")); mkdirSync(join(root, "src"));
+    writeFileSync(join(root, ".codemap", "sidecar"), side);
+    writeFileSync(join(root, "src", "credits.ts"), "export function credit(n: number) { return n; }\n");
+    git("add", "-A"); git("commit", "-qm", "seed");
+    await ops.init(root);
+    const search = await ops.search(root, "credit") as any;
+    const finding = await shareFinding(root, 7, { targetKind: "anchor", targetId: search.anchors[0].id, text: "Negative credits are accepted." }) as any;
+    assert.ok(finding.id, JSON.stringify(finding));
+    const ok = (v: any) => assert.equal(v?.error, undefined, JSON.stringify(v));
+    ok(await ops.postRound(root, { round: { id: "R-guard", source: "the owner" }, decisions: [{ id: "D-guard", round: "R-guard", ref: "D1", kind: "words",
+      payload: { question: `D1: must credit() reject negatives for ${finding.id}?`, options: [{ label: "Reject them" }, { label: "Allow them" }] },
+      options: [{ label: "Reject them", effects: [] }, { label: "Allow them", effects: [] }] }] } as any));
+    ok(await ops.answerDirect(root, { decision: "D-guard", option: "Reject them" }));
+    const decision = ((await ops.decisionRound(root, "R-guard")) as any).decisions[0].id;
+    const held = await ops.postRepairSort(root, 7, { classification: "design-defect", kind: "isolated", coverage: [{ findingId: finding.id, claimIds: [`${finding.id}:original`] }],
+      restsOn: [`decision:${decision}`], source: "owner worklist", provenance: "owner-reviewed", assessments: [], disagreements: [] }) as any;
+    ok(held);
+    const readers = [];
+    for (const slot of [1, 2] as const) {
+      const brief = await ops.releaseReaderBrief(root, 7, { sort: held.id, slot }) as any;
+      ok(brief);
+      const verdict = { requestId: brief.requestId, verdict: "yes" as const, rationale: `reader ${slot}: rejecting negatives is the direction` };
+      const receipt = ops.submitReleaseVerdict(root, verdict) as any;
+      readerTranscript(tx, "5e55a0a0-0000-0000-0000-0000000000f1", `a${slot}${slot}${slot}${slot}${slot}${slot}${slot}`, brief.prompt, "submit_release_verdict", verdict, receipt);
+      readers.push({ requestId: brief.requestId, receipt: receipt.receipt });
+    }
+    const released = await ops.releaseHeldSort(root, 7, { sort: held.id, readers }, tx) as any;
+    ok(released);
+    server = await startServer(root); browser = await launchPlaywright(pw);
+    const universe = (await (await fetch(`${server.url}/api/universes`)).json() as any).primary;
+    const page = await browser.newPage(), errors: string[] = [];
+    page.on("pageerror", (error: Error) => errors.push(error.message));
+    await page.goto(`${server.url}/#/u/${universe}/repairs/7/`, { waitUntil: "networkidle" });
+    await page.waitForSelector(".sort-release", { timeout: 10_000 });
+    const card = await page.locator(".sort-version").filter({ hasText: released.id }).textContent();
+    for (const expected of ["released", "sort eligible", `must credit() reject negatives for ${finding.id}?`, "answered “Reject them”",
+      "reader 1: rejecting negatives is the direction", "reader 2: rejecting negatives is the direction", "· yes:"])
+      assert.ok(card.includes(expected), `${expected} missing from ${card}`);
+    assert.deepEqual(errors, []);
+  } finally { await browser?.close(); server?.stop(); discard(root); discard(side); discard(tx); }
 });

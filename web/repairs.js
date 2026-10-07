@@ -118,6 +118,11 @@ class RepairsPage extends Component {
           ${each(record.input.assessments, (assessment) => html`<div class="fs">Sorter ${identityText(assessment.identity)} · ${assessment.classification}: ${assessment.reason}${when(!!assessment.receipt, () => html`<details><summary>Reported receipt ${assessment.receipt.id} · ${assessment.receipt.source}</summary><pre>${assessment.receipt.content}</pre></details>`)}</div>`, (assessment, i) => i)}
           ${each(record.input.disagreements, (disagreement) => html`<div class="fs">Disagreement ${disagreement.id}: ${disagreement.text}</div>`, (disagreement) => disagreement.id)}
           ${when(!!record.input.arbitration, () => html`<div class="fs">Arbitration by ${identityText(record.input.arbitration.identity)} · addresses ${record.input.arbitration.addresses.join(', ')}: ${record.input.arbitration.reason}${when(!!record.input.arbitration.receipt, () => html`<details><summary>Reported arbitration receipt</summary><pre>${record.input.arbitration.receipt.content}</pre></details>`)}</div>`)}
+          ${when(!!record.input.release, () => html`<div class="sort-release">
+            <div class="fs">Released by two readers on the person's rulings — both had to say yes.</div>
+            ${each(record.input.release?.rulings || [], (r) => html`<div class="fs">Ruling ${r.answer} on ${r.decision}: “${r.question}” — answered “${r.words}”</div>`, (r) => r.answer)}
+            ${each(record.input.release?.readers || [], (r) => html`<div class="fs">Reader ${r.principal} · subagent ${r.launch}, launched on session ${r.session} · ${r.verdict}: ${r.rationale}</div>`, (r) => r.id)}
+          </div>`)}
         </div>`, (record) => record.eventId)}
         <div class="sec">Structured repair evidence (${detail.records.evidence.length})</div>
         <div class="fs dim">Commands below are evidence data. This page does not execute them. Regression runs alone do not demonstrate a repair.</div>
