@@ -4,13 +4,14 @@ import { team, settle } from "./oracle.js";
 import { shareFinding } from "./ops-shared.js";
 import { postRepairSort, recordRepairClaims, recordRepairEvidence, repairRecords } from "./ops/repairs.js";
 import { releaseReaderBrief, submitReleaseVerdict, releaseHeldSort } from "./ops/repair-release.js";
+import { readerTranscript } from "./test-transcripts.js";
 import { RepairConnection } from "./verifier-boundary.js";
 import { repairFindingCompleteness, type RepairSortInput, type RepairEvidenceInput } from "./repair-records.js";
 import { readFinding } from "./store.js";
 import { rpc } from "./test-mcp.js";
 import { postRound, answerDirect } from "./ops/decisions.js";
 import { decisionsView } from "./ops/decision-holds.js";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -188,22 +189,6 @@ test("O19: one sort may replace several current sorts at once, and they all stop
   } finally { t.dispose(); }
 });
 
-/** A release reader subagent as the harness leaves it: launched with `prompt`, its own submit call and result. */
-function readerTranscript(dir: string, agentId: string, prompt: string, input: unknown, result: unknown) {
-  const session = "5e55a0a0-0000-0000-0000-00000000000" + agentId.slice(-1), launch = `launch_${agentId}`, callId = `toolu_${agentId}`;
-  mkdirSync(join(dir, session, "subagents"), { recursive: true });
-  writeFileSync(join(dir, session, "subagents", `agent-${agentId}.meta.json`), JSON.stringify({ agentType: "general-purpose", toolUseId: launch }));
-  writeFileSync(join(dir, session, "subagents", `agent-${agentId}.jsonl`), [
-    { type: "user", isSidechain: true, agentId, sessionId: session, message: { role: "user", content: prompt } },
-    { type: "assistant", isSidechain: true, agentId, sessionId: session, message: { content: [{ type: "tool_use", id: callId, name: "mcp__codemap__submit_release_verdict", input }] } },
-    { type: "user", isSidechain: true, agentId, sessionId: session, message: { content: [{ type: "tool_result", tool_use_id: callId, content: JSON.stringify(result) }] } },
-  ].map((x) => JSON.stringify(x)).join("\n") + "\n");
-  writeFileSync(join(dir, `${session}.jsonl`), [
-    { type: "assistant", isSidechain: false, timestamp: new Date().toISOString(), message: { content: [{ type: "tool_use", id: launch, name: "Agent", input: { prompt, subagent_type: "general-purpose" } }] } },
-    { type: "user", isSidechain: false, message: { content: [{ type: "tool_result", tool_use_id: launch, content: "launched" }] }, toolUseResult: { agentId } },
-  ].map((x) => JSON.stringify(x)).join("\n") + "\n");
-}
-
 test("D2 through the op: a held sort re-pointed to its decision is released by two readers' yes; a no keeps it held", async () => {
   const t = await team(["alice@acme.test"]);
   const dir = mkdtempSync(join(tmpdir(), "codemap-release-tx-"));
@@ -232,7 +217,7 @@ test("D2 through the op: a held sort re-pointed to its decision is released by t
         const verdict = { requestId: brief.requestId, verdict: verdicts[slot - 1]!, rationale: `slot ${slot}` };
         const held = submitReleaseVerdict(root, verdict) as { receipt: string };
         ok(held);
-        readerTranscript(dir, agents[slot - 1]!, brief.prompt, verdict, held);
+        readerTranscript(dir, "5e55a0a0-0000-0000-0000-00000000000" + agents[slot - 1]!.slice(-1), agents[slot - 1]!, brief.prompt, "submit_release_verdict", verdict, held);
         refs.push({ requestId: brief.requestId, receipt: held.receipt });
       }
       return refs;
