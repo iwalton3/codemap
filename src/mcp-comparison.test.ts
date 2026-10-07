@@ -47,10 +47,10 @@ test("comparison tools expose exact reader and human routes without an agent web
       { name: "request_comparison", arguments: { answers: ["a", "b"] } },
       { name: "comparison_reader_brief", arguments: { id: "missing" } },
       { name: "resolve_comparison", arguments: { request: "missing", preserve: "a", rationale: "x",
-        shownHash: "x", executionsHash: "x", session: "s", toolUseId: "t", source: "web" } },
+        shownHash: "x", executionsHash: "x", toolUseId: "t", source: "web" } },
       { name: "withdraw_decision", arguments: { decision: "missing", reason: "retract" } },
       { name: "decision_revision_relay_brief", arguments: { decision: "missing", revises: ["a"], findings: [] } },
-      { name: "record_relayed_decision_revision", arguments: { decision: "missing", revises: ["a"], findings: [], session: "s", toolUseId: "t" } },
+      { name: "record_relayed_decision_revision", arguments: { decision: "missing", revises: ["a"], findings: [], toolUseId: "t" } },
     ]);
     assert.match(out[0]!, /no comparison missing/);
     assert.match(out[1]!, /not a current independent comparison candidate/);
