@@ -16,10 +16,9 @@ conversation, the one before `/ez-plan` ran included (`references/contract.md` Z
 unambiguously ruled it.
 
 Draft the batch, check it against Z10's four checks and `references/shared.md` Q1-Q3, then ask it
-where the owner is (`references/codemap-workflow.md`, *Asking*): in codemap when it is open, and
-otherwise with `AskUserQuestion` (under Codex, `references/shared.md` X2), at most four per call, the
-ones that shape the plan first. The owner may defer a batch into a codemap questionnaire that anyone
-on the team may answer. Each option carries
+with `AskUserQuestion` (under Codex, `references/shared.md` X2; in shared mode,
+`references/codemap-workflow.md` *Asking* says how the answer is recorded), at most four per call,
+the ones that shape the plan first. Each option carries
 its consequences and what choosing it covers up. Write every question and answer verbatim to
 `RECORD/owner.md`, and say what you decided instead of asking.
 

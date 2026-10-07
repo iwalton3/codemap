@@ -6,7 +6,8 @@ rules; this is the lifecycle they fit into.
 
 ## Before filing
 
-- `search` for it, closed records included. A refuted finding usually holds the reasoning.
+- `search` for it, closed records included. A hit carries its state, not why: a closed finding's
+  reasoning is in `shared_findings` for its pull request. Only a person's direct close carries none.
 - On a pull request, `shared_findings` (the team's view) and `inbound_replies` (what the submitter
   said back). They may already have explained why it is not a defect.
 
@@ -20,7 +21,10 @@ rules; this is the lifecycle they fit into.
 - `drive_by`, with a rationale → a bug, which outlives the branch.
 
 A defect is never an `annotate` (pointer, question or note). A pointer that turns out to be a
-defect moves with `promote_annotation`, which keeps its id and history.
+defect moves with `promote_annotation` — on a pull request only: it needs the pull request's
+number, which an annotation does not carry, and refuses any other scope. It keeps the id and the
+creation fields only: revisions, outcome, posting and assignment are lost, so replies to the
+promoted finding on the pull request are not matched to it.
 
 ## Working one
 
@@ -28,7 +32,9 @@ defect moves with `promote_annotation`, which keeps its id and history.
   spans one file; declining a wider one, with what it would take, is the right answer.
 - **Somebody else's**: `corroborate` with a rationale. Disagreement is the signal, so refute
   plainly.
-- **Wrong wording, target or severity**: `revise_finding`. It appends; the old text stays. A
+- **Wrong wording or severity**: `revise_finding`. It appends; the old text stays. It has no target
+  input: a missing symbol is relocated (below), and a finding filed against the wrong but still
+  present symbol has no route — report it. A
   confirmed finding's severity is not yours to re-rate. A finding already posted to the pull
   request is refused unless you pass `allowPostEdit`, which changes the map and not the posted
   comment; usually, reply on the pull request instead.
@@ -48,7 +54,7 @@ A finding leaves through one of these. Pick the one that is true.
 | It is | Exit | Who |
 | --- | --- | --- |
 | fixed | repair verification (`verify-repair.md`) | agent, with blind verifiers |
-| not a defect | a person's ruling: `close_finding` with a closing state records the ask, or `post_round` with a settle effect | a person decides |
+| not a defect | a person's ruling: `close_finding` with a closing state records the ask, or `post_round` with a settle effect, which closes it once carried out (`asking.md`, *Carrying out a settle*) | a person decides |
 | real, and somebody intends to fix it | `defer_finding` — the only route from a finding to a bug | agent, one at a time |
 | one site of a pattern that will not be fixed now | `file_site_bug` | agent |
 | real, not now, must come back | the backlog: carried with a deadline, on the web | a person only |

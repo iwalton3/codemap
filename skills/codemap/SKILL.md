@@ -49,18 +49,18 @@ still holds. Ask instead (`references/asking.md`).
 
 | The ask | Do this |
 | --- | --- |
-| "Were these findings actually fixed?" | `references/verify-repair.md` |
+| "Were these findings actually fixed?" / verify a repair | `references/verify-repair.md` (it names `/codemap-verify`, the session a person starts as a verifier) |
 | "What is open / what was I asked to do?" | `review_queue` (assigned to you), `findings` with `tier: "unconfirmed"` (nobody has looked), `finding_backlog` (open on merged work), `list_bugs` with `queue: true`, `decision_rounds` (waiting on the person) |
-| "Was this ever reported?" | `search` — closed findings match on purpose; a refuted one carries the reasoning |
+| "Was this ever reported?" | `search` — closed findings match on purpose. Why one was closed is in `shared_findings` for its pull request (`hit.pr`), not in the hit |
 | File, investigate, correct or dispose of a finding or bug | `references/findings.md` |
 | Put a decision to the person, or record their answer | `references/asking.md` |
 | Sort a pile of review findings | `/triage-review` (posts its sort here in shared mode) |
 | Plan the work that a review or a discussion left | `/ez-plan` |
-| Review a branch or pull request | `/codemap-review` where it is installed; otherwise `pr_packet` for the changed symbols at the head (never `get_anchor` without `at`, which reads the working tree), `shared_findings` and `inbound_replies` before filing, `report_defect` with a pull-request or branch context to file, `pr_walkthrough` for the reading guide |
+| Review a branch or pull request | `/codemap-review` where it is installed; otherwise `pr_packet` for a pull request's changed symbols at the head, or `diff` for a branch (never `get_anchor` without `at`, which reads the working tree), `shared_findings` and `inbound_replies` before filing, `report_defect` with a pull-request or branch context to file, `pr_walkthrough` for the reading guide |
 | Understand how some code works | the `codemap-explore` agent, or `context` / `search` before reading code |
 | Docs went stale after a change | `check_stale`, then per doc `confirm`, `update_node` or `ack_hole` (the server's instructions, *Review docs after a change*) |
-| Requirements, audits, scrubs | `/codemap-audit` |
-| More than one write | `begin`, the writes, then `sync` — all or none; a refused write comes back with why: `drop_staged` it and every later write that depended on it, redo them, `sync` again. Not across a `repair_request`: sync that as soon as it is made, or no verifier outside this session can see it |
+| "Does the code meet this requirement?" — audits, scrubs, the standard's queues | `/codemap-audit` |
+| More than one write | `begin`, the writes, then `sync` — all or none; a refused write comes back with why. Read it with `staged` first (it may be a dead session's write this one adopted, whose content you never saw), then `drop_staged` it and every later write that depended on it, redo them, `sync` again. **Sync before anything another session or a browser must read** — a `repair_request` a verifier picks up, a questionnaire link: a staged write is invisible outside this session |
 
 ## Reading the answers
 
@@ -68,7 +68,10 @@ still holds. Ask instead (`references/asking.md`).
   the acts above. Do not look for a second tool that gets the same effect.
 - **`ok: false`, `refused` and `held` are results**, not noise to retry past. Report them. The one
   thing to call again is a `pending` from a record call (`record_repair_verification`,
-  `record_reading`, …): its call is not on disk yet. An error after that is final.
+  `record_reading`, …): its call is not on disk yet. After an error, record once more; `no pending
+  held submission…` or `reader receipt is …` means that receipt is settled for good.
+- **A successful `pull` can still be `blocked`** (`materialized.blocked`, `pushBlocked`), and a
+  blocked read serves stored rows that may be old. Report it rather than act on them.
 - **Unknown is an honest verdict.** A verification that comes back `unknown` closes nothing. A new
   request on the same fix shows the earlier runs that did not come back fixed, so asking again
   cannot bury them.

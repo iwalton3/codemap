@@ -41,10 +41,19 @@ request/verdict/application and operation IDs in `RECORD/codemap.md`; do not red
 labels. A failed/partial write records what actually succeeded and where to resume.
 
 Every independent participant starts with no inherited history, on the model `shared.md` A names
-(X1 under Codex); a model label is not independence. Never relay one verifier's conclusion to
-another. Only grants verify a repair: a fresh session the person starts with the `codemap-verify`
-skill, or a subagent launched with exactly the prompt `repair_brief` returns. The session that asks
-for verification never fills a slot of its own request.
+(X1 for an ordinary participant under Codex; never a verifier, below); a model label is not
+independence. Never relay one verifier's conclusion to another. Only grants verify a repair: a fresh
+session the person starts with the `codemap-verify` skill, or a subagent launched with exactly the
+prompt `repair_brief` returns. The session that asks for verification never fills a slot of its own
+request.
+
+**Every transcript-verified act is Claude Code only.** codemap checks a verifier's launch, a sort's
+/triage-review run, a logged question and a reader's verdict against Claude Code's own transcripts,
+which a Codex run does not leave in a form it can read. So a Codex subagent never posts a sort,
+records a verifier, logs a question or withdraws one: the Claude Code session that launched it does.
+A Codex verifier does not count: a verifier is a session the person starts with `/codemap-verify`, or
+the item stays pending and the report says so. Codex never puts a question to the owner. A Codex
+host is not supported for these acts.
 
 ## Findings and sort
 
@@ -59,14 +68,20 @@ arrangement: the blind second starts before blame and receives only the raw find
 purpose and artifact, never the first reading. Post the skill's own sort with the round through
 `post_repair_sort`: `dual-sorted`, with both sorters' classifications and reasons (each sorter named
 by its session) and the arbitrator's reasons where they disagreed, or `owner-reviewed` for a genuine
-owner-approved worklist — never fabricate owner approval. Read `repair_records` for eligibility and
-holds. A correction names the current sort as prior and supersedes it; a correction naming an older
+owner-approved worklist — never fabricate owner approval. The blind sorter and the arbitrator are
+subagents, so all three carry this session's id: post from the session /triage-review ran in, and
+codemap finds that run in its transcript and stamps the sort, which is what lets one session's
+sorters pass. An answer carrying `unstamped` found no run, and the sort is refused as one session
+sorting twice. Read `repair_records` for eligibility and holds. A correction names the current sort as prior and supersedes it; a correction naming an older
 sort is refused as stale. Adding sites or claims, or rewording, is free. A correction that REMOVES a
-site or claim is refused unless it cites a logged ruling on why those are not instances (its ruling
-field, a decisions answer id) — ask the person, log their answer, then post the correction citing it.
+site or claim, or drops something the prior `restsOn`, is refused unless it cites a logged ruling
+(its ruling field, a decisions answer id) — ask the person, log their answer, then post the
+correction citing it. Evidence for such a sort lists that ruling in `rulingIds`.
 
-A requirement/scope choice is the owner's. Design defects, assumptions, suggestions and patterns
-remain held for their relevant ruling. Adoption of a suggestion authorizes work; it does not mean
+A requirement/scope choice is the owner's. Design defects, assumptions and suggestions remain held
+for their relevant ruling. A pattern is held only when its fix forks the design (`triage-review`'s
+`prompts/sorter.md`, *Defect patterns*): an agreed mechanical or implementation-defect pattern with
+its predicate and sites is eligible like any other. Adoption of a suggestion authorizes work; it does not mean
 that work was fixed. Explicit human acceptance/decline is a human disposition, not factual
 refutation. A real not-now item uses the existing principal-granted dated backlog with witnesses;
 a deadline is required. No agent backlog shortcut.
@@ -74,19 +89,19 @@ a deadline is required. No agent backlog shortcut.
 ## Questions and answers
 
 Whenever the ordinary route records a batch in `owner.md`, post it first through `post_round` when
-shared capability is available. Put all operative items/full list inside the actual question or
-questionnaire; for issue-action questions include exact finding IDs/effects. A preview, label or
+shared capability is available. Put all operative items/full list inside the actual question; for
+issue-action questions include exact finding IDs/effects. A preview, label or
 linked file is insufficient. Diagnosis criterion questions remain effect-free and use artifact
 vocabulary without finding IDs, site lists or quoted review framing, under `triage-review`'s `references/diagnose.md`. Keep
 canonical associations only in unshown `codemap.md` metadata, never in the owner.md supplied to
 blind lens readers; do not attach issue-closing/unblocking effects to those criterion questions.
 Keep full questions and returned IDs in markdown. Frozen questions never mutate; a later `follows`
 question adds context and does not supersede authority. Use explicit revision/withdrawal routes
-when needed. A questionnaire may be answered by a different principal; retain the actual answerer.
+when needed.
 
-Ask the exact returned payload with `AskUserQuestion` and record it with `log_question`, or give the
-published questionnaire link for its separate browser submission. Do not submit browser attestations
-as the person, forge transcripts or pass a summary as the source response. Unanswered and partial
+Ask the exact returned payload with `AskUserQuestion` and record it with `log_question` and the
+round: codemap finds the call itself. Do not submit browser attestations as the person, forge
+transcripts or pass a summary as the source response. Unanswered and partial
 items stay pending; a partial batch unblocks only what was answered. When `post_round` answers with
 `alreadyRuled`, the issue already has a standing ruling: tell the owner rather than asking again as
 if it were new. A ruling that looks wrong or conflicts with another is reported with `report_ruling`,
@@ -110,16 +125,12 @@ holds, partial replies, revisions and executed history; sync/retry retains ident
 
 ## Asking
 
-Where questions go, in order:
-
-- **Codemap is open** (`questionnaire_list` answers `codemapOpen.open: true`): post the batch as a
-  questionnaire (`post_round` with `round.questionnaire`, every operative word in the questions),
-  give the owner its link, and wait with `questionnaire_wait`; read the answers back with
-  `questionnaire_detail` and write them to `owner.md` verbatim.
-- **Otherwise** ask with `AskUserQuestion` (under Codex, `shared.md` X2: a fork question ends the
-  turn; the rest go to a markdown file the owner marks).
-- **The owner may defer** any batch into a questionnaire instead, open or not: post it, give the link,
-  and end the turn. Anyone on the team may answer it, under their own name. Resume from its answers.
+Ask with `AskUserQuestion`, or on `ez-plan`'s Plan with Artifact page (below). A codemap
+questionnaire is not a planning instrument for now (owner, 2026-10-06: "leave questionnaires out as
+a planning instrument for now and keep all the other codemap integration until codemap catches
+up"): do not post a round with one, and do not defer a batch into one. Everything else here stays:
+`post_round` first, then `log_question` or `relay_answer`, and readers — that is the durable record.
+Under Codex there is no verified answer to record, so shared-mode rulings stay pending (above).
 
 A fork question — the opening's choice of route — is asked in the session, never deferred.
 

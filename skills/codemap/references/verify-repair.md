@@ -29,15 +29,23 @@ fix never closes the whole finding.
 `repair_request` needs a sort that is current (nothing superseded it) and eligible (no holds).
 
 - **There is none:** the sort comes from `/triage-review`, which posts a `dual-sorted` sort — two
-  sorters in distinct sessions, an arbitrator where they disagreed — when codemap is attached.
-  Run it over these findings. An `owner-reviewed` sort needs a person's authorship and their exact
-  source: one an agent posts is held, and then stands in the way of the next sort.
+  sorters, an arbitrator where they disagreed — when codemap is attached. Run it over these
+  findings. Its sorters are subagents of one session; codemap accepts that because it finds
+  /triage-review's run in that session's transcript. An `owner-reviewed` sort needs a person's
+  authorship and their exact source: one an agent posts is held, and then stands in the way of the
+  next sort.
 - **It has holds:** read them. Three shapes are eligible: `implementation-defect` or `mechanical`;
   a factual refutation (`refutationSubtype: "factual"`); and a reviewer's refuted assumption
   (`invalid` with `refutationSubtype: "assumed"`). A non-empty `restsOn` always holds. A design
   defect, an assumption in the code, a scope judgment or a dependency on a requirement is a
-  person's decision first
-  (`references/asking.md`), not something a verifier can settle.
+  person's decision first (`references/asking.md`), not something a verifier can settle.
+- **The person has ruled on a held sort:** rerun `/triage-review` on the held claims with the
+  ruling in hand. Where the ruling decides them, the sorters reclassify — a design defect the
+  ruling has decided becomes an implementation defect. Post that as a correction: the held sort as
+  prior, `ruling` = the answer id, and `restsOn` without what the ruling decided. Dropping a
+  `restsOn` entry without a ruling is refused. Then evidence as usual, listing the ruling in
+  `rulingIds`. The blind verifiers judge whether the ruling really decides each claim, and answer
+  `decision-needed` if it does not.
 - **The sort is wrong:** a correction is a whole new sort. Re-sort with `/triage-review`, naming
   the current sort as `prior`, with a reason. Adding sites or claims is free; dropping one needs a
   logged ruling (a decisions answer id) on why it is not an instance.
@@ -50,13 +58,17 @@ fix never closes the whole finding.
   this clone. `repair_request` refuses one it cannot read: fetch it and request again.
 - **reproducer runs** with `phase: "witness"` and `phase: "fix"`: the same command, the actual
   exit code and output — it **fails at the witness and passes at the fix**. Run them yourself
-  before recording. Commands are data; codemap runs nothing, so a result you did not observe is
+  before recording. A **refutation** inverts this: its check **passes at the witness**, because the
+  old code never had the defect; pin base and fix to the commit you examined, so the request
+  freezes no diff. Commands are data; codemap runs nothing, so a result you did not observe is
   `outcome: "unknown"` with the reason.
 - **regression runs** in their own phase. A passing suite is not a reproducer and closes nothing.
 - **coverage**: per finding, the claims covered and a result with a reason for each claim.
   **attribution**: which file and hunk serve which claim.
 - **A pattern** lists its sites in `patternEnumeration`. It closes site by site from the SORT's
-  list: each site is fixed, or filed as its own bug with `file_site_bug`.
+  list: each site is fixed, or filed as its own bug with `file_site_bug`. List each filed site in
+  `siteBugs` with the id `file_site_bug` returned: the blind verifier cannot look bugs up, and
+  reports those sites by these ids.
 - **No runnable check**: `noCheckReason` and `inspected` — the source, the commit and your
   reasoning. Inspection is a visibly weaker grade.
 
@@ -71,7 +83,9 @@ every verifier outside this session.
 
 Two ways, and only these two count.
 
-**A. Subagents you launch.** For slot 1 and slot 2:
+**A. Subagents you launch** — Claude Code subagents only: codemap checks them against Claude Code's
+transcripts, so a Codex subagent never counts as a verifier (use B, or leave the request pending
+and say so). For slot 1 and slot 2:
 
 1. `repair_brief` with the review, the request id, `role: "verifier"` and the slot. It returns
    `launch`, a one-line prompt.
@@ -88,9 +102,11 @@ Two ways, and only these two count.
    slot and the `receipt` the subagent got back, which it reports. codemap finds the subagent's
    call that returned that receipt, and checks that its transcript shows the exact prompt and the
    exact held submission. `pending` means the call is not on disk yet: record again in a moment
-   (for up to a minute). An error means the run will never count — a fork, a message sent to it
-   after launch, or a call this machine's transcripts do not show. Say so, and launch a new verifier
-   rather than resubmitting.
+   (for up to a minute). After an error, record once more: some failures (writing to the sidecar,
+   say) leave the receipt usable. If the second answer is `no pending held submission…`, the run
+   will never count — a fork, a message sent to it after launch, or a call this machine's
+   transcripts do not show. Say so, and launch a new verifier rather than resubmitting. Any other
+   error that repeats, report as it is.
 
 **B. Sessions a person starts.** The request must be on the remote first (`sync`, step 4). Ask the
 person to open two fresh sessions and run `/codemap-verify <review>` in each. They claim the role,
@@ -103,9 +119,10 @@ when subagents cannot reach the codemap tools, or when the person prefers it.
 
 ## 6. Apply
 
-`repair_apply_verification` per finding, with a reason. It rechecks the claim, epoch, sort,
-evidence and ruling context, and refuses a stale request. A verifier cannot apply its own verdict;
-the requester can.
+`repair_apply_verification` per finding whose verdict closes it (the first three rows below), with
+a reason. It rechecks the claim, epoch, sort, evidence and ruling context, and refuses a stale
+request. A verifier cannot apply its own verdict; the requester can. Do not apply the rest — the op
+refuses `decision-needed`, `unknown` and an incomplete verdict: they go straight to the report.
 
 | Verdict | The finding becomes |
 | --- | --- |
