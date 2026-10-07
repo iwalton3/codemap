@@ -71,7 +71,7 @@ export {
   pinPopulation, declareNotExpressible, populationFor, brokenPins,
   setScrubPolicy, scrubPlan, scrubsFor, baselinePlan,
   raiseProblem, adjudicate, listProblems, awaitingAdjudication, actionableProblems,
-  settledWithoutAdjudication,
+  settledWithoutAdjudication, writeRulesProjection,
 } from "./ops/standard.js";
 
 export {

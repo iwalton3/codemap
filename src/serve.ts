@@ -26,6 +26,7 @@ import { resolveActor } from "./identity.js";
 import { comparisonDetail, comparisonResolutionBrief, resolveComparison } from "./ops/comparisons.js";
 import { asLockout, foldDefectGate, lockoutGate } from "./lockout-gate.js";
 import type { LockedOut } from "./lockout.js";
+import { projectRulesOnOpen } from "./rules-projection.js";
 
 /** The routes a locked store still answers: sync and pull fetch, re-check, and clear a lock. */
 const RUNS_WHILE_LOCKED = new Set(["/api/shared/sync", "/api/shared/pull", "/api/shared/staged", "/api/shared/discard", "/api/shared/drop"]);
@@ -399,6 +400,7 @@ const server = createServer((req, res) => {
 void shared.attemptGoneSessions(ws.universes.map((u) => u.path));
 setInterval(() => { void shared.attemptGoneSessions(ws.universes.map((u) => u.path)); }, 30_000).unref();
 shared.startPullLoop(ws.universes.map((u) => u.path), () => lastRequest);
+void projectRulesOnOpen(ws.universes.map((u) => u.path), (msg) => console.error(msg));
 
 async function serveRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
   try {

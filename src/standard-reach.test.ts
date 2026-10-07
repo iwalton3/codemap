@@ -110,6 +110,7 @@ const WEB_EXEMPT: Record<string, string> = {
   addOperation: "an agent act",
   acknowledgeGap: "minted against a draft operation; the ratifier's power over it is refusal, which the spec page has",
   setScrubPolicy: "a policy an agent sets and the plan renders; no browser form yet",
+  writeRulesProjection: "a file write into the working tree, not an act: `codemap rules`, and on sync and server start where docs/rules/ is ignored",
 };
 
 /** Ops MCP may skip. Ratification is the shape of the whole list: an agent cannot. */
@@ -122,6 +123,7 @@ const MCP_EXEMPT: Record<string, string> = {
   adjudicate: "PRINCIPAL only",
   acknowledgeDebt: "PRINCIPAL only",
   releaseAcknowledgement: "open to any actor, but it is the reader of the queue who notices",
+  writeRulesProjection: "a file write into the working tree, not an act: `codemap rules`, and on sync and server start where docs/rules/ is ignored",
 };
 
 test("the standard surface has more than a handful of ops, or this sweep is vacuous", () => {

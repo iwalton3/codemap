@@ -439,7 +439,11 @@ export async function sharedSync(root: string) {
   if (damaged) return damaged;
   rememberSidecar(root, b.cfg, !!r.joined);
   const arrived = await settleArrivals(root, b.cfg);
-  return { ...arrived, ok: true, universe: b.cfg.universe, sidecar: b.cfg.path, ...r };
+  // The generated docs/rules/ follows the standard the sync just brought, where the repository
+  // has been cut over to it; anywhere else it is skipped.
+  const { writeRulesProjection } = await import("./rules-projection.js");
+  const rules = await writeRulesProjection(root, { when: "sync" }).catch((e: Error) => ({ error: e.message }));
+  return { ...arrived, ok: true, universe: b.cfg.universe, sidecar: b.cfg.path, ...r, ...("skipped" in rules ? {} : { rules }) };
 }
 
 /**

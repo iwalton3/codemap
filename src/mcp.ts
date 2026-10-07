@@ -30,6 +30,7 @@ import { comparisonDetail, requestComparison, comparisonBrief, submitComparisonJ
 import { RepairConnection } from "./verifier-boundary.js";
 import { asLockout, foldDefectGate, lockoutGate } from "./lockout-gate.js";
 import { setProcessSessionKind } from "./sync-session.js";
+import { projectRulesOnOpen } from "./rules-projection.js";
 
 /** The tools a locked store still runs: they fetch, re-check, and are how a lock clears. */
 const RUNS_WHILE_LOCKED = new Set(["sync", "pull", "staged", "discard", "drop_staged"]);
@@ -2561,6 +2562,7 @@ setProcessSessionKind("mcp");
 void shared.attemptGoneSessions(ws.universes.map((u) => u.path));
 let lastCall = Date.now();
 shared.startPullLoop(ws.universes.map((u) => u.path), () => lastCall);
+void projectRulesOnOpen(ws.universes.map((u) => u.path), (msg) => process.stderr.write(`codemap-mcp: ${msg}\n`));
 
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => {

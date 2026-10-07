@@ -699,7 +699,7 @@ async function cmdCheck(root: string): Promise<void> {
 }
 
 
-const { positionals, values } = parseArgs({ allowPositionals: true, options: { verbose: { type: "boolean" }, emit: { type: "boolean" }, repo: { type: "string" }, "no-fetch": { type: "boolean" }, json: { type: "boolean" }, limit: { type: "string" }, offset: { type: "string" }, "dry-run": { type: "boolean" }, confirm: { type: "boolean" }, viewed: { type: "boolean" }, all: { type: "boolean" }, "min-severity": { type: "string" }, force: { type: "boolean" }, "max-prs": { type: "string" }, summary: { type: "string" }, approve: { type: "boolean" }, "request-changes": { type: "boolean" }, pull: { type: "boolean" }, anyone: { type: "boolean" }, only: { type: "string" }, queue: { type: "boolean" }, tier: { type: "string" }, locate: { type: "boolean" }, "show-elsewhere": { type: "boolean" }, principal: { type: "string" }, cursor: { type: "string" }, "wait-ms": { type: "string" }, apply: { type: "boolean" }, assign: { type: "string", multiple: true }, ref: { type: "string" }, title: { type: "string" }, path: { type: "string", multiple: true }, symbol: { type: "string", multiple: true }, node: { type: "string", multiple: true }, base: { type: "string" }, head: { type: "string" }, whole: { type: "boolean" }, walk: { type: "string" } } });
+const { positionals, values } = parseArgs({ allowPositionals: true, options: { verbose: { type: "boolean" }, emit: { type: "boolean" }, repo: { type: "string" }, "no-fetch": { type: "boolean" }, json: { type: "boolean" }, limit: { type: "string" }, offset: { type: "string" }, "dry-run": { type: "boolean" }, confirm: { type: "boolean" }, viewed: { type: "boolean" }, all: { type: "boolean" }, "min-severity": { type: "string" }, force: { type: "boolean" }, "max-prs": { type: "string" }, summary: { type: "string" }, approve: { type: "boolean" }, "request-changes": { type: "boolean" }, pull: { type: "boolean" }, anyone: { type: "boolean" }, only: { type: "string" }, queue: { type: "boolean" }, tier: { type: "string" }, locate: { type: "boolean" }, "show-elsewhere": { type: "boolean" }, principal: { type: "string" }, cursor: { type: "string" }, "wait-ms": { type: "string" }, apply: { type: "boolean" }, assign: { type: "string", multiple: true }, ref: { type: "string" }, title: { type: "string" }, path: { type: "string", multiple: true }, symbol: { type: "string", multiple: true }, node: { type: "string", multiple: true }, base: { type: "string" }, head: { type: "string" }, whole: { type: "boolean" }, walk: { type: "string" }, out: { type: "string" } } });
 
 // Damage in the shared log locks every command but the ones that fetch and re-check, and the
 // read-only check itself (plan 1.2). Which store a command is about varies, so every store named
@@ -843,6 +843,14 @@ if (positionals[0] === "analyze") {
       process.exit(1);
     }
     console.log(JSON.stringify(result, null, 2));
+  } else if (positionals[0] === "rules") {
+    // codemap rules [repo] [--out dir] — the in-force standard as docs/rules/ markdown.
+    const r = await ops.writeRulesProjection(resolve((values.repo as string | undefined) ?? positionals[1] ?? "."),
+      { out: values.out as string | undefined });
+    if ("error" in r) { console.error(r.error); process.exit(1); }
+    if (r.scope) console.error(`warning: the standard here is ${r.scope.status} — these files may not be the team's`);
+    if ("skipped" in r) console.log(r.skipped);
+    else console.log(`${r.rules} rule(s) into ${r.dir}: ${r.written.length} file(s) written, ${r.removed.length} removed`);
   } else if (positionals[0] === "sync") {
     await cmdSync(resolve((values.repo as string | undefined) ?? positionals[1] ?? "."));
   } else if (positionals[0] === "sidecar" && positionals[1] === "check") {

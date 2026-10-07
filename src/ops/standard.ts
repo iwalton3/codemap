@@ -268,6 +268,8 @@ export const conformance = async (
 
 // --- specs and their operations ----------------------------------------------
 
+import { writeRulesProjection as writeRulesProjectionRec, type RulesWhen } from "../rules-projection.js";
+
 export const draftSpec = (root: string, input: { title: string; narrative?: string } & ActorInput) =>
   draftSpecRec(root, input);
 
@@ -499,3 +501,9 @@ export const adjudicate = (
 
 export const listProblems = async (root: string, input: { requirementId?: string } = {}) =>
   served(root, async () => ({ problems: await listProblemsRec(root, input) }));
+
+/** Render the in-force standard as `docs/rules/` markdown. See `rules-projection.ts`. */
+// Through `served` like every read: the files present the standard as settled, so a blocked
+// or stale scope has to reach whoever asked for them.
+export const writeRulesProjection = (root: string, opts: { out?: string; when?: RulesWhen } = {}) =>
+  served(root, () => writeRulesProjectionRec(root, opts));
