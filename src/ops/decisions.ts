@@ -24,7 +24,7 @@ import {
   type AnswerVia, type BriefEntry, type FoldedDecision, type Mapping, type SharedDecisions,
 } from "../shared-decisions.js";
 import { decisionsView } from "./decision-holds.js";
-import { findAskCalls, findMessages, findVerdictCalls, isUnverified, readCall, readMessage, readReader, readReceiptCall, readSubagentCall, sameQuestion, sessionHolding, soleAskCall, transcriptDir, verdictGraceMs } from "../transcript.js";
+import { carriedBefore, codemapTool, findAskCalls, findCarriers, findMessages, findVerdictCalls, isUnverified, readCall, readMessage, readReader, readReceiptCall, readSubagentCall, sameQuestion, soleAskCall, transcriptDir, verdictGraceMs, type CarrierSpec } from "../transcript.js";
 import type { PersonMessage, Unverified } from "../transcript.js";
 import { saveReaderRequest, readerRequest, readerRequests, holdReaderReceipt, readerReceipts, settleReaderReceipt,
   legacyReaderRequest, legacyReaderVerdicts, holdLegacyReaderVerdict, pendingLegacyReaderAnswers,
@@ -486,14 +486,24 @@ function confirmOutcome(s: SharedDecisions, c: FoldedDecision, a: FoldedDecision
   return "not the latest pick on those words, or they were bound another way: this binds nothing";
 }
 
+const NO_CARRIER = "a round is logged only from a session that posted it, was handed one of its questions, or read it with decision_round, and only after that: in a new session, call decision_round on the round first. A round handled only by a subagent cannot be logged";
+
+/** What hands a session round `id` (owner, D1; Q1, Q4): posting it, an op that handed out one of
+ *  its questions, or `decision_round` on it — never the `decision_rounds` survey. */
+export const roundCarriers = (id: string): CarrierSpec[] => [
+  ...["post_round", "confirm_reading", "report_ruling"].map((t) => ({ key: id, tool: codemapTool(t), carries: (r: any) => r.round === id })),
+  { key: id, tool: codemapTool("decision_round"), carries: (r: any) => r.round?.id === id },
+];
+
 /**
- * Log an `AskUserQuestion` call from this session's transcript, and record it as the answer to
- * every decision whose exact payload it carries, in the rounds it was asked for. The default
+ * Log an `AskUserQuestion` call from a session that holds one of the rounds' carriers, asked after
+ * it, and record it as the answer to every decision whose exact payload it carries, in the rounds
+ * it was asked for. The default
  * path for relaying the person's answers (owner, R13). An unverifiable call writes nothing and
  * says why. A confirm is a posted decision like any other, so it is answered here too. With no
  * `toolUseId` the call is found by the rounds' payloads; an ambiguous find is refused, not guessed.
  */
-export async function logQuestion(root: string, input: { session?: string; toolUseId?: string; round: string | string[] }, via: Via = {}, dir: string = transcriptDir()) {
+export async function logQuestion(root: string, input: { toolUseId?: string; round: string | string[] }, via: Via = {}, dir: string = transcriptDir()) {
   const b = bindDecisions(root, via);
   if ("error" in b) return b;
   await recordHeld(root, b, dir);
@@ -504,25 +514,36 @@ export async function logQuestion(root: string, input: { session?: string; toolU
   const w = await writable(root);
   if ("error" in w) return w;
   const before = w.s;
-  let toolUseId = input.toolUseId, session: string | Unverified | undefined = input.session;
+  // A logged call names its round by id or, from older builds, by label.
+  const boundTo = (bound: string | undefined, d: FoldedDecision) => bound === d.round
+    || (bound !== undefined && roundMatches(before, bound).length === 1 && roundMatches(before, bound)[0]!.id === d.round);
+  const asked = named.map((id) => roundMatches(before, id));
+  const miss = asked.findIndex((m) => m.length !== 1);
+  if (miss >= 0) return { error: asked[miss]!.length ? ambiguous("round", named[miss]!, asked[miss]!) : `no round ${named[miss]}` };
+  const rs = asked.map((m) => m[0]!);
+  // Only a session holding one of the rounds' carriers, and only after it (owner, D1).
+  const since = rs.map((r) => r.at).sort()[0]!;
+  const carried = findCarriers(rs.flatMap((r) => roundCarriers(r.id)), since, dir, input.toolUseId);
+  if (isUnverified(carried)) return { ok: false, unverified: carried.unverified, note: NO_CARRIER };
+  let toolUseId = input.toolUseId, session: string, after: string[];
   if (toolUseId === undefined) {
     // The agent cannot see its call's id (I12), so the call is found by what it asked.
-    const asked = named.map((id) => roundMatches(before, id));
-    const hit = asked.findIndex((m) => m.length !== 1);
-    if (hit >= 0) return { error: asked[hit]!.length ? ambiguous("round", named[hit]!, asked[hit]!) : `no round ${named[hit]}` };
-    const rs = asked.map((m) => m[0]!);
-    const since = rs.map((r) => r.at).sort()[0]!;
-    const found = findAskCalls(before.decisions.filter((d) => rs.some((r) => r.id === d.round)).map((d) => d.payload), since, dir, input.session);
+    const found = findAskCalls(before.decisions.filter((d) => rs.some((r) => r.id === d.round)).map((d) => d.payload), carried, since, dir);
     if (isUnverified(found)) return { ok: false, unverified: found.unverified, note: "nothing was written" };
     const fresh = found.filter((c) => !before.questions.some((q) => loggedQuestionOnce(q) === loggedQuestionOnce(c)));
-    // Every candidate already logged: the newest is a retry, which records only what is missing.
-    const pick = fresh.length ? fresh : found.slice(-1);
-    if (!pick.length) return { ok: false, unverified: `no AskUserQuestion call after ${named.join(", ")} was posted asks any of its questions`, note: "nothing was written: ask with the `ask` payloads post_round returned, verbatim" };
-    if (pick.length > 1) return { error: `${pick.length} unlogged AskUserQuestion calls ask questions of ${named.join(", ")}: ${pick.map((c) => c.toolUseId).join(", ")}. Which one is meant cannot be told; log each by its toolUseId (nothing was written)` };
-    ({ toolUseId, session } = pick[0]!);
-  }
-  session ??= sessionHolding(toolUseId, dir);
-  if (isUnverified(session)) return { ok: false, unverified: session.unverified, note: "nothing was written" };
+    // Every candidate already logged: a retry, which records only what is missing (H6.1). The one
+    // still missing an answer is meant; two such cannot be told apart (I3).
+    const stranded = fresh.length ? [] : found.filter((c) => {
+      const q = before.questions.find((x) => loggedQuestionOnce(x) === loggedQuestionOnce(c));
+      return !!q && before.decisions.some((d) => d.answers.every((a) => a.once !== loggedQuestionOnce(c))
+        && boundTo(q.bound[d.payload.question], d) && q.answers[d.payload.question] !== undefined
+        && Date.parse(q.answeredAt) > Date.parse(d.postedAt));
+    });
+    const pick = fresh.length ? fresh : stranded.length ? stranded : found.slice(-1);
+    if (!pick.length) return { ok: false, unverified: `no AskUserQuestion call after this session's carrier of ${named.join(", ")} asks any of its questions`, note: `nothing was written: ask with the \`ask\` payloads post_round returned, verbatim. ${NO_CARRIER}` };
+    if (pick.length > 1) return { error: `${pick.length} ${fresh.length ? "unlogged" : "logged but unrecorded"} AskUserQuestion calls ask questions of ${named.join(", ")}: ${pick.map((c) => c.toolUseId).join(", ")}. Which one is meant cannot be told; log each by its toolUseId (nothing was written)` };
+    ({ toolUseId, session, after } = pick[0]!);
+  } else ({ session, after } = { session: carried[0]!.session, after: carriedBefore(carried[0]!, carried[0]!.hit!) });
   const call = readCall(session, toolUseId, dir);
   if (isUnverified(call)) return { ok: false, unverified: call.unverified, note: "nothing was written; relay_answer can still record the words as an unverified answer, which only unblocks" };
   const refused: { question: string; why: string }[] = [];
@@ -534,6 +555,7 @@ export async function logQuestion(root: string, input: { session?: string; toolU
     const r = matches[0];
     if (!r) return { error: `no round ${id}` };
     if (!(Date.parse(call.at) > Date.parse(r.at))) refused.push({ question: `(round ${id})`, why: `the call was answered at ${call.at}, and round ${id} was posted at ${r.at}: an answer binds only to a question posted before it` });
+    else if (!after.includes(r.id)) refused.push({ question: `(round ${id})`, why: `this session was handed round ${id} only after the call (${NO_CARRIER})` });
     else rounds.push(r);
   }
   // A retry of a call already logged records whichever of its answers are missing — a crash
@@ -560,10 +582,7 @@ export async function logQuestion(root: string, input: { session?: string; toolU
   for (const d of before.decisions) {
     // A replaced question is answered too: the fold keeps an answer given before the
     // later question was posted, whenever it is recorded.
-    const bound = binding[d.payload.question];
-    const boundRound = bound === d.round || (bound !== undefined && roundMatches(before, bound).length === 1
-      && roundMatches(before, bound)[0]!.id === d.round);
-    if (!boundRound || !call.questions.some((q) => sameQuestion(q, d.payload)) || call.answers[d.payload.question] === undefined) continue;
+    if (!boundTo(binding[d.payload.question], d) || !call.questions.some((q) => sameQuestion(q, d.payload)) || call.answers[d.payload.question] === undefined) continue;
     // Judged per decision: a round can grow after it is posted.
     if (!(Date.parse(call.at) > Date.parse(d.postedAt))) { refused.push({ question: d.payload.question, why: `the call was answered at ${call.at}, and ${d.ref} was posted at ${d.postedAt || "an unknown time"}: an answer binds only to a question posted before it` }); continue; }
     const had = d.answers.find((a) => a.once === once);
@@ -583,7 +602,7 @@ export async function logQuestion(root: string, input: { session?: string; toolU
  * words or named by its entry id, so a relay can never carry part of it. A message the transcript cannot confirm is recorded only
  * from `words`, as unverified: it unblocks and settles nothing (C8).
  */
-export async function relayAnswer(root: string, input: { round: string; decision: string; session?: string; entryId?: string; words?: string; relayedBy?: string }, via: Via = {}, dir: string = transcriptDir()) {
+export async function relayAnswer(root: string, input: { round: string; decision: string; entryId?: string; words?: string }, via: Via = {}, dir: string = transcriptDir()) {
   const b = bindDecisions(root, via);
   if ("error" in b) return b;
   await recordHeld(root, b, dir);
@@ -597,27 +616,27 @@ export async function relayAnswer(root: string, input: { round: string; decision
   if (input.round !== d.round && input.round !== w.s.rounds.find((r) => r.id === d.round)?.label)
     return { error: `decision ${d.id} is in round ${d.round}, not ${String(input.round)}: say which round and question you asked` };
   let m: PersonMessage | Unverified;
-  if (input.entryId === undefined) {
-    if (!input.words?.trim()) return { error: "relay_answer needs the person's words (their whole message, as typed)" };
+  if (input.entryId === undefined && !input.words?.trim()) return { error: "relay_answer needs the person's words (their whole message, as typed)" };
+  // Only a session holding one of the round's carriers, and only after it (owner, D1).
+  const since = w.s.rounds.find((r) => r.id === d.round)?.at ?? d.postedAt;
+  const carried = findCarriers(roundCarriers(d.round), since, dir, input.entryId);
+  if (isUnverified(carried)) m = { unverified: `${carried.unverified} (${NO_CARRIER})` };
+  else if (input.entryId === undefined) {
     // The agent can quote the message but not name it (I12): find it by its whole words.
-    const since = w.s.rounds.find((r) => r.id === d.round)?.at ?? d.postedAt;
-    const hits = findMessages(input.words, since, dir, input.session);
-    if (!isUnverified(hits) && hits.length > 1) return { error: `${hits.length} messages typed after ${d.round} was posted are exactly these words: ${hits.map((x) => x.entryId).join(", ")}. Which one is meant cannot be told; pass its entryId (nothing was written)` };
-    m = isUnverified(hits) ? hits : hits[0] ?? { unverified: `no message typed after ${d.round} was posted is exactly these words, whole` };
-  } else {
-    const session = input.session ?? sessionHolding(input.entryId, dir);
-    m = isUnverified(session) ? session : readMessage(session, input.entryId, dir);
-  }
+    const hits = findMessages(input.words!, carried, since, dir);
+    if (hits.length > 1) return { error: `${hits.length} messages typed after this session was handed ${d.round} are exactly these words: ${hits.map((x) => x.entryId).join(", ")}. Which one is meant cannot be told; pass its entryId (nothing was written)` };
+    m = hits[0] ?? { unverified: `no message typed after this session was handed ${d.round} is exactly these words, whole (${NO_CARRIER})` };
+  } else m = readMessage(carried[0]!.session, input.entryId, dir);
   if (isUnverified(m)) {
     if (!input.words?.trim()) return { ok: false, unverified: m.unverified, note: "nothing was written; pass the words to record them as an unverified answer, which only unblocks" };
-    return { ok: true, ...(await record(root, b, d, { kind: "unverified", words: input.words }, input.relayedBy)), unverifiedBecause: m.unverified };
+    return { ok: true, ...(await record(root, b, d, { kind: "unverified", words: input.words })), unverifiedBecause: m.unverified };
   }
   if (!(Date.parse(m.at) > Date.parse(d.postedAt))) {
     return { error: `the message was typed at ${m.at}, and ${d.ref} was posted at ${d.postedAt || "an unknown time"}: words bind only to a question posted before them (nothing was written)` };
   }
   const had = d.answers.find((a) => a.once === `m:${m.session}\0${m.entryId}`);
   if (had) return { ok: true, decision: d.id, ref: d.ref, recorded: false as const, already: had.id, note: "this message already answers this decision" };
-  return { ok: true, ...(await record(root, b, d, { kind: "message", session: m.session, entryId: m.entryId, text: m.text, at: m.at, round: d.round }, input.relayedBy ?? m.session)) };
+  return { ok: true, ...(await record(root, b, d, { kind: "message", session: m.session, entryId: m.entryId, text: m.text, at: m.at, round: d.round }, m.session)) };
 }
 
 const ARROW = /^\s*(D\d+)\s*(?:→|->)\s*(.+?)\s*$/;
@@ -1166,7 +1185,7 @@ export async function revisionRelayBrief(root: string,
  * recording machine pulled other events after the person answered. */
 export async function reviseDecisionRelayed(root: string,
   input: { decision: string; revises: string[]; findings: string[]; issues?: CanonicalIssueReference[];
-    session?: string; toolUseId?: string }, via: Via = {}, dir: string = transcriptDir()) {
+    toolUseId?: string }, via: Via = {}, dir: string = transcriptDir()) {
   const b = bindDecisions(root, via);
   if ("error" in b) return b;
   if (!isAgentActor(b.actor)) return { error: "a relay revision is recorded by the verifying agent" };
@@ -1181,12 +1200,11 @@ export async function reviseDecisionRelayed(root: string,
     return { error: "relay revision needs exact current verified source answers" };
   const scope = { findings: input.findings ?? [], ...(input.issues?.length ? { issues: input.issues } : {}) };
   const expected = revisionRelayQuestion(d, sources as NonNullable<typeof sources[number]>[], b.actor.principal, scope);
-  // The agent cannot see the call's id (I12): find the call that asked `expected`, which names
-  // the source answers and so was asked after the last of them was recorded.
-  const at = input.toolUseId ? { session: input.session ?? sessionHolding(input.toolUseId, dir), toolUseId: input.toolUseId }
-    : soleAskCall(expected, sources.map((a) => a!.at).sort().at(-1)!, dir, input.session);
+  // The agent cannot see the call's id (I12): find the call that asked `expected`, in a session
+  // decision_revision_relay_brief handed it to, after that (owner, D1, Q1).
+  const at = soleAskCall(expected, [{ key: "brief", tool: codemapTool("decision_revision_relay_brief"),
+    carries: (r: any) => sameQuestion(r.question, expected) }], sources.map((a) => a!.at).sort().at(-1)!, dir, input.toolUseId);
   if ("error" in at) return at;
-  if (isUnverified(at.session)) return { error: at.session.unverified };
   const call = readCall(at.session, at.toolUseId, dir);
   if (isUnverified(call)) return { error: call.unverified };
   if (call.questions.length !== 1 || !sameQuestion(call.questions[0]!, expected))

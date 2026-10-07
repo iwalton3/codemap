@@ -9,7 +9,7 @@ import { emitEventChecked } from "../write.js";
 import { isAgentActor } from "../identity.js";
 import { saveReaderRequest, readerRequest, holdReaderReceipt, readerReceipts,
   settleReaderReceipt } from "../reader-local.js";
-import { findComparisonCalls, isUnverified, readCall, readReader, sameQuestion, sessionHolding,
+import { codemapTool, findComparisonCalls, isUnverified, readCall, readReader, sameQuestion,
   soleAskCall, transcriptDir } from "../transcript.js";
 import { rulingApplicationsForAnswer } from "../store.js";
 import { comparisonContextHash, deriveComparison, type CanonicalIssue,
@@ -194,7 +194,7 @@ export async function comparisonResolutionBrief(root: string, id: string) {
 export async function resolveComparison(root: string,
   input: { request: string; preserve: string; rationale: string; shownHash: string; executionsHash: string;
     revises?: string; shownResolution?: HumanResolution["shownResolution"];
-    source: "web" | "question"; session?: string; toolUseId?: string },
+    source: "web" | "question"; toolUseId?: string },
   via: Via = {}, dir: string = transcriptDir()) {
   const bound = bindDecisions(root, via);
   if ("error" in bound) return bound;
@@ -212,13 +212,12 @@ export async function resolveComparison(root: string,
     if (isAgentActor(bound.actor)) return { error: "web resolution needs the principal's own act" };
     session = "web"; request = input.request; receipt = randomUUID();
   } else if (input.source === "question") {
-    // The agent cannot see the call's id (I12): find the call that asked the brief's question,
-    // which shows the judgments and so was asked after the last of them.
+    // The agent cannot see the call's id (I12): find the call that asked the brief's question, in
+    // a session comparison_resolution_brief handed it to, after that (owner, D1, Q1).
     const since = comparison.projection.acceptedJudgments.map((j) => j.at).sort().at(-1) ?? new Date(0).toISOString();
-    const at = input.toolUseId ? { session: input.session ?? sessionHolding(input.toolUseId, dir), toolUseId: input.toolUseId }
-      : soleAskCall(brief.question, since, dir, input.session);
+    const at = soleAskCall(brief.question, [{ key: "brief", tool: codemapTool("comparison_resolution_brief"),
+      carries: (r: any) => sameQuestion(r.question, brief.question) }], since, dir, input.toolUseId);
     if ("error" in at) return at;
-    if (isUnverified(at.session)) return { error: at.session.unverified };
     const call = readCall(at.session, at.toolUseId, dir);
     if (isUnverified(call)) return { error: call.unverified };
     if (call.questions.length !== 1 || !sameQuestion(call.questions[0]!, brief.question)

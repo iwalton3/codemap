@@ -295,14 +295,18 @@ test("a list relay shows source corrections and records only the person's exact 
       const toolUseId = "list-relay-call";
       const when = new Date(Date.now() + 5000).toISOString();
       const questions = [brief.question];
+      const shown = [{ type: "text", text: JSON.stringify(brief) }];
       writeFileSync(join(transcripts, `${session}.jsonl`), [
+        // The brief's result is the carrier: the call is looked for only after it (owner, D1, Q1).
+        { type: "assistant", uuid: "brief", message: { content: [{ type: "tool_use", id: "brief-call", name: "mcp__codemap__decision_revision_relay_brief", input: scope }] } },
+        { type: "user", uuid: "brief-result", message: { content: [{ type: "tool_result", tool_use_id: "brief-call", content: shown }] }, toolUseResult: shown },
         { type: "assistant", uuid: "asked", timestamp: when,
           message: { content: [{ type: "tool_use", id: toolUseId, name: "AskUserQuestion", input: { questions } }] } },
         { type: "user", uuid: "answered", timestamp: when, sourceToolAssistantUUID: "asked",
           message: { content: [{ type: "tool_result", tool_use_id: toolUseId, content: "answered" }] },
           toolUseResult: { questions, answers: { [brief.question.question]: answer } } },
       ].map((line) => JSON.stringify(line)).join("\n") + "\n");
-      const revised = await reviseDecisionRelayed(u.root, { ...scope, session, toolUseId }, {}, transcripts) as any;
+      const revised = await reviseDecisionRelayed(u.root, { ...scope, toolUseId }, {}, transcripts) as any;
       assert.equal(revised.ok, true, JSON.stringify(revised));
       const current = (await decisionsView(u.root)).s.decisions.find((item) => item.id === d.id)!;
       const recorded = current.answers.find((item) => item.id === revised.revision)!;

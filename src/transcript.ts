@@ -63,72 +63,112 @@ function entries(session: string, dir: string): Record<string, any>[] | Unverifi
   return out;
 }
 
-/**
- * The session whose own transcript holds `id` (a tool-use id or an entry id), newest first —
- * for an agent that knows what it asked but not its session id. Top-level files only, so a
- * subagent's transcript is never the answer.
- */
-export function sessionHolding(id: string, dir: string = transcriptDir()): string | Unverified {
-  if (!/^[A-Za-z0-9_-]{1,128}$/.test(id)) return { unverified: `not an id: ${JSON.stringify(id)}` };
-  let files: { name: string; at: number }[];
-  try {
-    files = readdirSync(dir).filter((f) => f.endsWith(".jsonl") && SESSION.test(f.slice(0, -6)))
-      .map((f) => ({ name: f, at: statSync(join(dir, f)).mtimeMs })).sort((a, b) => b.at - a.at);
-  } catch { return { unverified: `no transcripts in ${dir}` }; }
-  for (const f of files) {
-    try { if (readFileSync(join(dir, f.name), "utf8").includes(`"${id}"`)) return f.name.slice(0, -6); } catch { /* unreadable: not this one */ }
-  }
-  return { unverified: `no session in ${dir} holds ${id}` };
-}
+// --- carriers (owner, D1) --------------------------------------------------------------------
 
-/** Top-level transcripts (never a subagent's) written to at or after `since`, or only `session`'s. */
-function sessionsSince(since: string, dir: string, session?: string): string[] | Unverified {
-  if (session !== undefined) return SESSION.test(session) ? [session] : { unverified: `not a session id: ${JSON.stringify(session)}` };
+/**
+ * A codemap tool result that hands a session a round or a question: `post_round` and the other
+ * ops that give the agent a question to ask (Q1), and `decision_round` on the round (Q4). `key`
+ * names what is carried; `carries` tests the parsed result. The agent cannot see its session id
+ * (I11), so the carrier is how codemap knows which session may log for a round — and from where.
+ */
+export interface CarrierSpec { key: string; tool: RegExp; carries: (result: any) => boolean }
+/** A top-level session holding carriers: each key's FIRST carrier position, and `hit`, where
+ *  the id the caller named sits, when one was named. */
+export interface Carried { session: string; floors: Record<string, number>; hit?: number }
+
+export const codemapTool = (name: string) => new RegExp(`(^|__)${name}$`);
+/** The keys whose carrier precedes position `at` in `c`'s session. */
+export const carriedBefore = (c: Carried, at: number): string[] => Object.keys(c.floors).filter((k) => c.floors[k]! < at);
+
+/**
+ * Every top-level session (never a subagent's file) holding a carrier from `specs`, written at or
+ * after `since`. With `id` (a tool-use or entry id a refusal named), only the session holding it
+ * after a carrier, or unverified — an id is never looked up machine-wide.
+ */
+export function findCarriers(specs: CarrierSpec[], since: string, dir: string, id?: string): Carried[] | Unverified {
+  if (id !== undefined && !/^[A-Za-z0-9_-]{1,128}$/.test(id)) return { unverified: `not an id: ${JSON.stringify(id)}` };
   // Only saves scans. A file's mtime comes from a coarser clock than Date.now(), so one written
-  // just after `since` can read as older; each entry's own timestamp is what decides.
+  // just after `since` can read as older; the carrier's position is what decides.
   const floor = Date.parse(since) - 60_000;
+  let names: string[];
   try {
-    return readdirSync(dir).filter((f) => f.endsWith(".jsonl") && SESSION.test(f.slice(0, -6)))
-      .filter((f) => { try { return !(statSync(join(dir, f)).mtimeMs < floor); } catch { return false; } })
-      .map((f) => f.slice(0, -6));
+    names = readdirSync(dir).filter((f) => f.endsWith(".jsonl") && SESSION.test(f.slice(0, -6)))
+      .filter((f) => { try { return !(statSync(join(dir, f)).mtimeMs < floor); } catch { return false; } });
   } catch { return { unverified: `no transcripts in ${dir}` }; }
+  const out: Carried[] = [];
+  for (const name of names) {
+    const session = name.slice(0, -6), all = entries(session, dir);
+    if (isUnverified(all)) continue;
+    const floors: Record<string, number> = {}, pending = new Map<string, CarrierSpec[]>();
+    let hit: number | undefined;
+    all.forEach((e, i) => {
+      if (e.isSidechain === true) return;
+      if (id !== undefined && hit === undefined && Object.keys(floors).length
+        && (e.uuid === id || (Array.isArray(e.message?.content) && e.message.content.some((b: any) => b?.type === "tool_use" && b.id === id)))) hit = i;
+      if (!Array.isArray(e.message?.content)) return;
+      for (const b of e.message.content) {
+        if (e.type === "assistant" && b?.type === "tool_use" && typeof b.id === "string" && typeof b.name === "string") {
+          const tools = specs.filter((s) => s.tool.test(b.name));
+          if (tools.length) pending.set(b.id, tools);
+        }
+        if (e.type === "user" && b?.type === "tool_result" && pending.has(b.tool_use_id)) {
+          const single = e.message.content.filter((x: any) => x?.type === "tool_result").length === 1;
+          const result = (single ? resultObject(e.toolUseResult) : undefined) ?? resultObject(b.content);
+          for (const s of pending.get(b.tool_use_id)!) {
+            let carries = false;
+            try { carries = !!result && s.carries(result); } catch { /* a shape it does not read */ }
+            if (carries && floors[s.key] === undefined) floors[s.key] = i;
+          }
+          pending.delete(b.tool_use_id);
+        }
+      }
+    });
+    if (!Object.keys(floors).length || (id !== undefined && hit === undefined)) continue;
+    out.push({ session, floors, ...(hit !== undefined ? { hit } : {}) });
+  }
+  if (id !== undefined && !out.length) return { unverified: `${id} is not in a session holding this round's carrier, after it` };
+  return out;
 }
 
 /**
- * Every `AskUserQuestion` call sent after `since` that asks at least one of `questions` — how
- * `log_question` finds a call the agent cannot name: the tool_use id is in the transcript file and
- * not in what the model sees (measured 2026-10-06). The caller refuses more than one.
+ * Every `AskUserQuestion` call after a carrier in `carried`, and sent after `since`, that asks at least one of `questions` —
+ * how `log_question` finds a call the agent cannot name: the tool_use id is in the transcript file
+ * and not in what the model sees (measured 2026-10-06). `after` is the keys whose carrier precedes
+ * the call. The caller refuses more than one.
  */
-export function findAskCalls(questions: AskedQuestion[], since: string, dir: string = transcriptDir(), session?: string):
-  { session: string; toolUseId: string; at: string }[] | Unverified {
-  const sessions = sessionsSince(since, dir, session);
-  if (isUnverified(sessions)) return sessions;
-  const out: { session: string; toolUseId: string; at: string }[] = [];
-  for (const s of sessions) {
-    const all = entries(s, dir);
+export function findAskCalls(questions: AskedQuestion[], carried: Carried[], since: string, dir: string = transcriptDir()):
+  { session: string; toolUseId: string; at: string; after: string[] }[] | Unverified {
+  const out: { session: string; toolUseId: string; at: string; after: string[] }[] = [];
+  for (const c of carried) {
+    const all = entries(c.session, dir);
     if (isUnverified(all)) continue;
-    for (const e of all) {
-      if (e.type !== "assistant" || e.isSidechain === true || !Array.isArray(e.message?.content)) continue;
+    all.forEach((e, i) => {
+      const after = carriedBefore(c, i);
+      if (!after.length || e.type !== "assistant" || e.isSidechain === true || !Array.isArray(e.message?.content)) return;
       const at = stampOf(e);
-      if (isUnverified(at) || !(Date.parse(at) > Date.parse(since))) continue;
+      if (isUnverified(at) || !(Date.parse(at) > Date.parse(since))) return;
       for (const b of e.message.content) {
         if (b?.type !== "tool_use" || b.name !== "AskUserQuestion" || typeof b.id !== "string" || !Array.isArray(b.input?.questions)) continue;
-        if (b.input.questions.some((q: unknown) => isQuestion(q) && questions.some((p) => sameQuestion(q, p)))) out.push({ session: s, toolUseId: b.id, at });
+        if (b.input.questions.some((q: unknown) => isQuestion(q) && questions.some((p) => sameQuestion(q, p)))) out.push({ session: c.session, toolUseId: b.id, at, after });
       }
-    }
+    });
   }
   return out.sort((a, b) => a.at.localeCompare(b.at));
 }
 
 /**
- * The one `AskUserQuestion` call after `since` that asked exactly `question`, for an op that built
- * the question itself and so knows it exactly. None, or several, is an error naming them.
+ * The one `AskUserQuestion` call that asked exactly `question` after one of `carriers` — for an op
+ * that built the question itself (its brief is the carrier), so knows it exactly. With `toolUseId`,
+ * that call, if it sits after a carrier. None, or several, is an error naming them.
  */
-export function soleAskCall(question: AskedQuestion, since: string, dir: string = transcriptDir(), session?: string):
+export function soleAskCall(question: AskedQuestion, carriers: CarrierSpec[], since: string, dir: string = transcriptDir(), toolUseId?: string):
   { session: string; toolUseId: string } | { error: string } {
-  const found = findAskCalls([question], since, dir, session);
+  const carried = findCarriers(carriers, since, dir, toolUseId);
+  if (isUnverified(carried)) return { error: carried.unverified };
+  if (toolUseId !== undefined) return { session: carried[0]!.session, toolUseId };
+  const found = findAskCalls([question], carried, since, dir);
   if (isUnverified(found)) return { error: found.unverified };
-  if (!found.length) return { error: "no AskUserQuestion call asked this exact question: ask it verbatim, then call this again" };
+  if (!found.length) return { error: "no AskUserQuestion call after this session was handed the question asked it exactly: ask it verbatim, then call this again" };
   if (found.length > 1) return { error: `${found.length} AskUserQuestion calls asked this exact question: ${found.map((c) => c.toolUseId).join(", ")}. Which one is meant cannot be told; pass its toolUseId` };
   return { session: found[0]!.session, toolUseId: found[0]!.toolUseId };
 }
@@ -414,23 +454,21 @@ export function readMessage(session: string, entryId: string, dir: string = tran
 }
 
 /**
- * Every message the person typed after `since` whose WHOLE text is `words` (edge whitespace
- * aside) — how `relay_answer` finds a message the agent can quote but not name. Part of a
- * message never matches, for the reason `readMessage` copies whole ones. The caller refuses
- * more than one.
+ * Every message the person typed after a carrier in `carried`, and after `since`, whose WHOLE text is `words` (edge
+ * whitespace aside) — how `relay_answer` finds a message the agent can quote but not name. Part of
+ * a message never matches, for the reason `readMessage` copies whole ones. The caller refuses more
+ * than one.
  */
-export function findMessages(words: string, since: string, dir: string = transcriptDir(), session?: string): PersonMessage[] | Unverified {
-  const sessions = sessionsSince(since, dir, session);
-  if (isUnverified(sessions)) return sessions;
+export function findMessages(words: string, carried: Carried[], since: string, dir: string = transcriptDir()): PersonMessage[] {
   const out: PersonMessage[] = [];
-  for (const s of sessions) {
-    const all = entries(s, dir);
+  for (const c of carried) {
+    const all = entries(c.session, dir);
     if (isUnverified(all)) continue;
-    for (const e of all) {
-      if (typeof e.uuid !== "string") continue;
-      const m = messageOf(s, e.uuid, e);
+    all.forEach((e, i) => {
+      if (typeof e.uuid !== "string" || !carriedBefore(c, i).length) return;
+      const m = messageOf(c.session, e.uuid, e);
       if (!isUnverified(m) && m.text.trim() === words.trim() && Date.parse(m.at) > Date.parse(since)) out.push(m);
-    }
+    });
   }
   return out.sort((a, b) => a.at.localeCompare(b.at));
 }

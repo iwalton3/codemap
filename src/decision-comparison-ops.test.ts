@@ -141,7 +141,11 @@ test("I12 sibling: a question resolution finds its AskUserQuestion call from the
         { type: "user", uuid: `r-${toolUseId}`, isSidechain: false, timestamp: when, sourceToolAssistantUUID: `a-${toolUseId}`, message: { content: [{ type: "tool_result", tool_use_id: toolUseId, content: "…" }] }, toolUseResult: { questions: [brief.question], answers: { [brief.question.question]: pick } } }];
     };
     const file = join(u.transcripts, `${SESSION}.jsonl`);
-    writeFileSync(file, call("toolu_r1", `Preserve ${u.alice}`).map((l) => JSON.stringify(l)).join("\n") + "\n");
+    // The brief's result is the carrier: the call is looked for only after it (owner, D1, Q1).
+    const shown = [{ type: "text", text: JSON.stringify(brief) }];
+    const carrier = [{ type: "assistant", uuid: "a-brief", isSidechain: false, message: { content: [{ type: "tool_use", id: "toolu_brief", name: "mcp__codemap__comparison_resolution_brief", input: { id } }] } },
+      { type: "user", uuid: "r-brief", isSidechain: false, message: { content: [{ type: "tool_result", tool_use_id: "toolu_brief", content: shown }] }, toolUseResult: shown }];
+    writeFileSync(file, [...carrier, ...call("toolu_r1", `Preserve ${u.alice}`)].map((l) => JSON.stringify(l)).join("\n") + "\n");
     await env("resolver", true, async () => {
       const input = { request: id, preserve: u.alice, rationale: "the person chose Alice's ruling",
         shownHash: brief.shownHash, executionsHash: brief.executionsHash, source: "question" as const };

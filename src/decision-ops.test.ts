@@ -21,7 +21,7 @@ import { readerReceipts, readerRequests } from "./reader-local.js";
 import type { State } from "./schema.js";
 import { shareFinding, closeFinding, bindDecisions, reassignFinding, sharedFindings, sharedSync } from "./ops-shared.js";
 import { reviewQueue } from "./ops/annotations.js";
-import { postRound, logQuestion, relayAnswer, answerDirect, decisionRounds, decisionRound, nominateComparison, readerBrief, recordReading, submitVerdict as submitVerdictOp, confirmReading, parseVerdict, confirmId, withdrawDecision, reportRuling, withdrawalReaderBrief, submitWithdrawalVerdict, reviseDecision, revisionRelayBrief, reviseDecisionRelayed, interpretationRequestId } from "./ops/decisions.js";
+import { postRound as postRoundOp, logQuestion, relayAnswer, answerDirect, decisionRounds, decisionRound, nominateComparison, readerBrief, recordReading, submitVerdict as submitVerdictOp, confirmReading, parseVerdict, confirmId, withdrawDecision, reportRuling as reportRulingOp, withdrawalReaderBrief, submitWithdrawalVerdict, reviseDecision, revisionRelayBrief as revisionRelayBriefOp, reviseDecisionRelayed, interpretationRequestId } from "./ops/decisions.js";
 import { discard, moveAside } from "./test-tmp.js";
 import { decisionsView, holdBuilds } from "./ops/decision-holds.js";
 import { confirmPayload, CONFIRM_YES, decisionScope, foldDecisions, foldDecisionsReport, postRoundEvent, logQuestionEvent, postConfirmEvent, recordReadingEvent } from "./shared-decisions.js";
@@ -55,6 +55,7 @@ async function universe() {
   const side = mkdtempSync(join(tmpdir(), "codemap-decisions-side-"));
   writeFileSync(join(root, ".codemap", "sidecar"), side, "utf8");
   const transcripts = mkdtempSync(join(tmpdir(), "codemap-decisions-tx-"));
+  transcriptsOf.set(root, transcripts);
   return { root, side, transcripts, anchor: anchors[0]!.id, cleanup: () => {
     try { assertEveryWriteAdmitted(side); } finally { discard(root); discard(side); discard(transcripts); }
   } };
@@ -118,6 +119,31 @@ const submitVerdict: typeof submitVerdictOp = async (root, input, via, dir) => {
   }
   return result;
 };
+/**
+ * The ops that hand the session a round also write their carrier into its transcript (owner, D1):
+ * log_question and relay_answer read only a session holding one, after it. A `transcript()`
+ * made later starts from the carriers already written; a live one has them appended in order.
+ */
+const transcriptsOf = new Map<string, string>();
+const carriersIn = new Map<string, object[]>();
+const live = new Map<string, { lines: object[]; write: () => void }>();
+let carrierN = 0;
+function carry(root: string, tool: string, out: unknown, session = SESSION) {
+  const dir = transcriptsOf.get(root);
+  if (!dir || !out || typeof out !== "object" || "error" in out) return;
+  const file = join(dir, `${session}.jsonl`), id = `toolu_carrier_${++carrierN}`, at = new Date().toISOString();
+  const content = [{ type: "text", text: JSON.stringify(out) }];
+  const entries = [{ type: "assistant", uuid: `c-${id}`, isSidechain: false, timestamp: at, message: { content: [{ type: "tool_use", id, name: `mcp__codemap__${tool}`, input: {} }] } },
+    { type: "user", uuid: `cr-${id}`, isSidechain: false, timestamp: at, message: { content: [{ type: "tool_result", tool_use_id: id, content }] }, toolUseResult: content }];
+  carriersIn.set(file, [...(carriersIn.get(file) ?? []), ...entries]);
+  const t = live.get(file);
+  if (t) { t.lines.push(...entries); t.write(); }
+  else writeFileSync(file, [...(carriersIn.get(file) ?? [])].map((l) => JSON.stringify(l)).join("\n") + "\n");
+}
+const postRound: typeof postRoundOp = async (root, input, ...rest) => { const out = await postRoundOp(root, input, ...rest); carry(root, "post_round", out); return out; };
+const revisionRelayBrief: typeof revisionRelayBriefOp = async (root, input, ...rest) => { const out = await revisionRelayBriefOp(root, input, ...rest); carry(root, "decision_revision_relay_brief", out); return out; };
+const reportRuling: typeof reportRulingOp = async (root, input, ...rest) => { const out = await reportRulingOp(root, input, ...rest); carry(root, "report_ruling", out); return out; };
+
 /** What the person is shown names its ref and the finding it acts on (H5). */
 const payloadFor = (f: string, ref = "D1") => ({ question: `${ref}: is ${f} a real defect?`, header: "F", options: [{ label: "Not a defect", description: "close as refuted" }, { label: "Real, fix it", description: "fix work" }] });
 const decision = (id: string, f: string, extra: Record<string, unknown> = {}, ref = "D1", round = "R1") => ({
@@ -167,9 +193,10 @@ test("remaining work P0: answering every decision authorizes work without comple
  * launch, sidechain and hand-back.
  */
 function transcript(dir: string, session = SESSION) {
-  const lines: object[] = [];
-  const sentInto = (text: string, uuid: string) => ({ type: "user", uuid, isSidechain: true, agentId: "", sessionId: session, origin: { kind: "coordinator" }, message: { role: "user", content: `The coordinator sent a message while you were working:\n${text}` } });
   const file = join(dir, `${session}.jsonl`);
+  const lines: object[] = [...(carriersIn.get(file) ?? [])];
+  live.set(file, { lines, write: () => write() });
+  const sentInto = (text: string, uuid: string) => ({ type: "user", uuid, isSidechain: true, agentId: "", sessionId: session, origin: { kind: "coordinator" }, message: { role: "user", content: `The coordinator sent a message while you were working:\n${text}` } });
   const write = () => {
     let prior: any[] = [];
     try { prior = readFileSync(file, "utf8").trim().split("\n").map((x) => JSON.parse(x)); } catch { /* first write */ }
@@ -319,7 +346,7 @@ test("GATE (closed unseen): a logged answer is a ruling, never a close — the f
       assert.ok(round.held.some((h: any) => h.finding === f && h.held.some((x: any) => x.why === "ruled")));
 
       // A retry is safe: it records nothing new (H6.1).
-      const again = await logQuestion(u.root, { session: SESSION, toolUseId: "toolu_1", round: "R1" }, {}, u.transcripts) as any;
+      const again = await logQuestion(u.root, { toolUseId: "toolu_1", round: "R1" }, {}, u.transcripts) as any;
       assert.equal(again.retried, true, JSON.stringify(again));
       assert.equal(again.answered[0].recorded, false);
       assert.equal((await decisionRound(u.root, "R1") as any).decisions[0].answers.length, 1);
@@ -344,6 +371,7 @@ test("historical prevalidated replay retains provenance and its answer closes no
         { id: "R1", source: "triage", universe: binding.cfg.universe, prevalidated: { record: "rec", sortedBy: "two sorters and an arbitrator" } },
         [decision("d1", f)]);
       assert.ok(!("error" in r) && r.id);
+      carry(u.root, "post_round", { round: r.id });
       transcript(u.transcripts).ask("toolu_1", [payloadFor(f)], { [payloadFor(f).question]: "Not a defect" });
       assert.equal(((await logQuestion(u.root, { toolUseId: "toolu_1", round: "R1" }, {}, u.transcripts)) as any).ok, true);
       assert.equal((await readFinding(u.root, f))?.state, "issued");
@@ -364,10 +392,34 @@ test("H6.1: a call that crashed after it was logged records its answers on the r
       // The crash: the call is in the log, and no answer followed it.
       await logQuestionEvent(b.cfg.path, b.cfg.universe, b.actor, { session: SESSION, toolUseId: "toolu_1", questions: [payloadFor(f)], answers: { [payloadFor(f).question]: "Not a defect" }, transcript: SESSION, rounds: ["R1"], bound: { [payloadFor(f).question]: "R1" }, answeredAt: when });
       assert.equal((await decisionRound(u.root, "R1") as any).decisions[0].answers.length, 0, "the check could fail: nothing is answered yet");
-      const r = await logQuestion(u.root, { session: SESSION, toolUseId: "toolu_1", round: "R1" }, {}, u.transcripts) as any;
+      const r = await logQuestion(u.root, { toolUseId: "toolu_1", round: "R1" }, {}, u.transcripts) as any;
       assert.equal(r.retried, true, JSON.stringify(r));
       assert.equal(r.answered[0].recorded, true);
       assert.ok((await decisionRounds(u.root) as any).ruledNotCarriedOut.some((x: any) => x.finding === f));
+    });
+  } finally { u.cleanup(); }
+});
+
+test("I3: a retry reaches an older logged call whose answers a crash stranded, past a newer one", async () => {
+  const u = await universe();
+  try {
+    const [f, g] = [await withFinding(u), await withFinding(u)];
+    await asAgent(async () => {
+      await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f), decision("d2", g, {}, "D2")] });
+      const t = transcript(u.transcripts), whenA = later(1);
+      const qsA = [payloadFor(f), payloadFor(g, "D2")], ansA = { [qsA[0]!.question]: "Not a defect", [qsA[1]!.question]: "Real, fix it" };
+      t.ask("toolu_A", qsA, ansA, whenA);
+      const b = bindDecisions(u.root) as any;
+      // The H6.1 crash: A is logged, and none of its answers followed.
+      await logQuestionEvent(b.cfg.path, b.cfg.universe, b.actor, { session: SESSION, toolUseId: "toolu_A", questions: qsA, answers: ansA, transcript: SESSION,
+        rounds: ["R1"], bound: { [qsA[0]!.question]: "R1", [qsA[1]!.question]: "R1" }, answeredAt: whenA });
+      t.ask("toolu_B", [payloadFor(g, "D2")], { [payloadFor(g, "D2").question]: "Real, fix it" }, later(2));
+      const first = await logQuestion(u.root, { round: "R1" }, {}, u.transcripts) as any;
+      assert.equal(first.logged !== undefined && !first.retried, true, JSON.stringify(first));
+      const second = await logQuestion(u.root, { round: "R1" }, {}, u.transcripts) as any;
+      assert.equal(second.retried, true, JSON.stringify(second));
+      const d1 = (await decisionRound(u.root, "R1") as any).decisions.find((d: any) => hasDecisionLabel(d.id, "d1"));
+      assert.equal(d1.answers.length, 1, "d1's answer from A is no longer stranded");
     });
   } finally { u.cleanup(); }
 });
@@ -377,12 +429,13 @@ test("B1.4: a call binds to the round it was asked for, posted before it was ans
   try {
     const f = await withFinding(u);
     await asAgent(async () => {
-      transcript(u.transcripts).ask("toolu_1", [payloadFor(f)], { [payloadFor(f).question]: "Not a defect" }, new Date(Date.now() - 60_000).toISOString());
+      // After the carrier in the file, but stamped before the round: the time still refuses it.
       await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f)] });
-      const early = await logQuestion(u.root, { session: SESSION, toolUseId: "toolu_1", round: "R1" }, {}, u.transcripts) as any;
+      transcript(u.transcripts).ask("toolu_1", [payloadFor(f)], { [payloadFor(f).question]: "Not a defect" }, new Date(Date.now() - 60_000).toISOString());
+      const early = await logQuestion(u.root, { toolUseId: "toolu_1", round: "R1" }, {}, u.transcripts) as any;
       assert.match(String(err(early)), /answered at .* posted at .*: an answer binds only to a question posted before it/);
       assert.equal((await decisionRound(u.root, "R1") as any).decisions[0].answers.length, 0);
-      assert.match(String(err(await logQuestion(u.root, { session: SESSION, toolUseId: "toolu_1", round: "R9" }, {}, u.transcripts))), /no round R9/);
+      assert.match(String(err(await logQuestion(u.root, { toolUseId: "toolu_1", round: "R9" }, {}, u.transcripts))), /no round R9/);
     });
   } finally { u.cleanup(); }
 });
@@ -412,7 +465,7 @@ test("an unverifiable call writes nothing", async () => {
     await asAgent(async () => {
       await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f)] });
       transcript(u.transcripts).ask("toolu_1", [payloadFor(f)], { [payloadFor(f).question]: "Not a defect" });
-      const r = await logQuestion(u.root, { session: SESSION, toolUseId: "toolu_other", round: "R1" }, {}, u.transcripts) as any;
+      const r = await logQuestion(u.root, { toolUseId: "toolu_other", round: "R1" }, {}, u.transcripts) as any;
       assert.equal(r.ok, false);
       assert.ok(r.unverified);
       assert.equal((await decisionRound(u.root, "R1") as any).decisions[0].answers.length, 0);
@@ -515,8 +568,8 @@ test("H5: a relayed reply is the whole message, bound by the reader, never parse
       await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f), decision("d2", g, {}, "D2")] });
       const t = transcript(u.transcripts);
       t.typed("m1", "D1 B");
-      assert.match(String(err(await relayAnswer(u.root, { round: "R9", decision: "d1", session: SESSION, entryId: "m1" }, {}, u.transcripts))), /not R9/);
-      const r = await relayAnswer(u.root, { round: "R1", decision: "d1", session: SESSION, entryId: "m1" }, {}, u.transcripts) as any;
+      assert.match(String(err(await relayAnswer(u.root, { round: "R9", decision: "d1", entryId: "m1" }, {}, u.transcripts))), /not R9/);
+      const r = await relayAnswer(u.root, { round: "R1", decision: "d1", entryId: "m1" }, {}, u.transcripts) as any;
       assert.equal(r.verified, true, JSON.stringify(r));
       assert.equal(r.awaitsReading, true, "\"D1 B\" is words for the reader, not a pick");
       assert.deepEqual(r.ruled, []);
@@ -525,12 +578,12 @@ test("H5: a relayed reply is the whole message, bound by the reader, never parse
       assert.equal(read.agree, true, JSON.stringify(read));
       const round = await decisionRound(u.root, "R1") as any;
       assert.ok(round.decisions[0].standing.ruled.some((x: any) => x.finding === f && x.on === "unblock"));
-      const twice = await relayAnswer(u.root, { round: "R1", decision: "d1", session: SESSION, entryId: "m1" }, {}, u.transcripts) as any;
+      const twice = await relayAnswer(u.root, { round: "R1", decision: "d1", entryId: "m1" }, {}, u.transcripts) as any;
       assert.equal(twice.recorded, false, "a message answers a decision once");
 
-      const un = await relayAnswer(u.root, { round: "R1", decision: "d2", session: SESSION, entryId: "nope", words: "D2 A", relayedBy: "sess-x" }, {}, u.transcripts) as any;
+      const un = await relayAnswer(u.root, { round: "R1", decision: "d2", entryId: "nope", words: "D2 A" }, {}, u.transcripts) as any;
       assert.equal(un.verified, false);
-      const none = await relayAnswer(u.root, { round: "R1", decision: "d2", session: SESSION, entryId: "nope" }, {}, u.transcripts) as any;
+      const none = await relayAnswer(u.root, { round: "R1", decision: "d2", entryId: "nope" }, {}, u.transcripts) as any;
       assert.equal(none.ok, false, "no words, nothing written");
     });
   } finally { u.cleanup(); }
@@ -541,9 +594,9 @@ test("a message typed before its round was posted is refused, with both times", 
   try {
     const f = await withFinding(u);
     await asAgent(async () => {
-      transcript(u.transcripts).typed("m1", "D1 B", new Date(Date.now() - 60_000).toISOString());
       await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f)] });
-      assert.match(String(err(await relayAnswer(u.root, { round: "R1", decision: "d1", session: SESSION, entryId: "m1" }, {}, u.transcripts))), /typed at .* posted at .*: words bind only to a question posted before them/);
+      transcript(u.transcripts).typed("m1", "D1 B", new Date(Date.now() - 60_000).toISOString());
+      assert.match(String(err(await relayAnswer(u.root, { round: "R1", decision: "d1", entryId: "m1" }, {}, u.transcripts))), /typed at .* posted at .*: words bind only to a question posted before them/);
     });
   } finally { u.cleanup(); }
 });
@@ -570,7 +623,7 @@ test("GATE (overwritten): after a click, an agent's unconfirmed relay and the pe
     await asAgent(async () => { await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f)] }); });
     await asPerson(async () => { await answerDirect(u.root, { decision: "d1", option: "Not a defect" }); });
     await asAgent(async () => {
-      const un = await relayAnswer(u.root, { round: "R1", decision: "d1", session: SESSION, entryId: "nope", words: "D1 B, fix it", relayedBy: "sess-x" }, {}, u.transcripts) as any;
+      const un = await relayAnswer(u.root, { round: "R1", decision: "d1", entryId: "nope", words: "D1 B, fix it" }, {}, u.transcripts) as any;
       assert.match(String(un.note), /unconfirmed, after a verified ruling/, JSON.stringify(un));
       assert.equal(un.standing, false);
       let view = await decisionRounds(u.root) as any;
@@ -581,7 +634,7 @@ test("GATE (overwritten): after a click, an agent's unconfirmed relay and the pe
       assert.match(String(err(await readerBrief(u.root, { answer: un.answer, maps: [{ decision: "d1", option: "Real, fix it" }] }))), /never read/);
 
       t.typed("m1", "D1 hmm, actually maybe it is real", later(1));
-      const m = await relayAnswer(u.root, { round: "R1", decision: "d1", session: SESSION, entryId: "m1" }, {}, u.transcripts) as any;
+      const m = await relayAnswer(u.root, { round: "R1", decision: "d1", entryId: "m1" }, {}, u.transcripts) as any;
       assert.equal(m.recorded, true, JSON.stringify(m));
       view = await decisionRounds(u.root) as any;
       assert.ok(view.ruledNotCarriedOut.some((x: any) => x.finding === f && x.on === "settle"), "unread, the words do not displace it");
@@ -601,8 +654,8 @@ test("B1 + B2 (Q2.2): the reader's verdict is its own submit_verdict call — on
       const t = transcript(u.transcripts);
       t.typed("m1", "not a defect, but log why", later(1));
       t.typed("m2", "D2 is real", later(1));
-      const a1 = (await relayAnswer(u.root, { round: "R1", decision: "d1", session: SESSION, entryId: "m1" }, {}, u.transcripts) as any).answer;
-      const a2 = (await relayAnswer(u.root, { round: "R1", decision: "d2", session: SESSION, entryId: "m2" }, {}, u.transcripts) as any).answer;
+      const a1 = (await relayAnswer(u.root, { round: "R1", decision: "d1", entryId: "m1" }, {}, u.transcripts) as any).answer;
+      const a2 = (await relayAnswer(u.root, { round: "R1", decision: "d2", entryId: "m2" }, {}, u.transcripts) as any).answer;
       const mine = [{ decision: "d1", option: "Not a defect" }];
 
       assert.match(String((await submitVerdict(u.root, { answer: a1, verdict: "D1 → Not a defect" }, {}, u.transcripts) as any).refused), /no reader_brief was issued/);
@@ -638,7 +691,7 @@ async function wordsWithBrief(u: Awaited<ReturnType<typeof universe>>) {
   await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f)] });
   const t = transcript(u.transcripts);
   t.typed("m1", "hmm, that one", later(1));
-  const a = (await relayAnswer(u.root, { round: "R1", decision: "d1", session: SESSION, entryId: "m1" }, {}, u.transcripts) as any).answer as string;
+  const a = (await relayAnswer(u.root, { round: "R1", decision: "d1", entryId: "m1" }, {}, u.transcripts) as any).answer as string;
   const mine = [{ decision: "d1", option: "Not a defect" }];
   return { f, t, a, mine, prompt: await briefOf(u.root, a, mine) };
 }
@@ -760,7 +813,7 @@ test("R5 (P2.1 (3)): an empty session reading is refused before anything is writ
       await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f)] });
       const t = transcript(u.transcripts);
       t.typed("m1", "whatever", later(1));
-      const a = (await relayAnswer(u.root, { round: "R1", decision: "d1", session: SESSION, entryId: "m1" }, {}, u.transcripts) as any).answer;
+      const a = (await relayAnswer(u.root, { round: "R1", decision: "d1", entryId: "m1" }, {}, u.transcripts) as any).answer;
       assert.match(String(err(await readerBrief(u.root, { answer: a, maps: [] }))), /at least one line/);
       const d = (await decisionRound(u.root, "R1") as any).decisions[0];
       assert.ok(d.answers[0].free && !d.answers[0].reading, "nothing was written: the words still wait");
@@ -778,8 +831,8 @@ test("R2 (P1.2): a reader whose reading the fold rejected was never used — it 
       const t = transcript(u.transcripts);
       t.typed("m1", "D2 is real", later(1));
       t.typed("m2", "D3 is not a defect", later(1));
-      const a1 = (await relayAnswer(u.root, { round: "R1", decision: "d1", session: SESSION, entryId: "m1" }, {}, u.transcripts) as any).answer;
-      const a2 = (await relayAnswer(u.root, { round: "R1", decision: "d3", session: SESSION, entryId: "m2" }, {}, u.transcripts) as any).answer;
+      const a1 = (await relayAnswer(u.root, { round: "R1", decision: "d1", entryId: "m1" }, {}, u.transcripts) as any).answer;
+      const a2 = (await relayAnswer(u.root, { round: "R1", decision: "d3", entryId: "m2" }, {}, u.transcripts) as any).answer;
       const brief1 = await briefOf(u.root, a1, [{ decision: "d1", option: "Real, fix it" }]);
       const x = nextReader();
       // A foreign writer's reading of a1 by x, naming an unposted D9 outside its issued brief.
@@ -804,7 +857,7 @@ test("GATE (overwritten) / R7 (P1.4): a reader launched with anything but codema
       await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f)] });
       const t = transcript(u.transcripts);
       t.typed("m1", "just close it", later(1));
-      const a = (await relayAnswer(u.root, { round: "R1", decision: "d1", session: SESSION, entryId: "m1" }, {}, u.transcripts) as any).answer;
+      const a = (await relayAnswer(u.root, { round: "R1", decision: "d1", entryId: "m1" }, {}, u.transcripts) as any).answer;
       const prompt = await briefOf(u.root, a, [{ decision: "d1", option: "Not a defect" }]);
       assert.ok(prompt.includes(JSON.stringify("just close it")) && prompt.includes("D1: ") && !/Not a defect;/.test(prompt) && prompt.includes("submit_verdict"), prompt);
       const echo = await reads(u, t, a, "D1 → Not a defect", { prompt: "Words: 'just close it'. I read this as D1 → Not a defect; confirm." });
@@ -845,7 +898,7 @@ test("the discussion + S0.1: confirm_reading POSTS the confirm into the words' r
       const t = transcript(u.transcripts);
       const typed = later(1);
       t.typed("m1", "D1 wait, it is real", typed);
-      const a = (await relayAnswer(u.root, { round: "R1", decision: "d1", session: SESSION, entryId: "m1" }, {}, u.transcripts) as any).answer;
+      const a = (await relayAnswer(u.root, { round: "R1", decision: "d1", entryId: "m1" }, {}, u.transcripts) as any).answer;
       assert.match(String(err(await confirmReading(u.root, { answer: a }))), /give your own reading/);
       const c = await confirmReading(u.root, { answer: a, maps: [{ decision: "d1", option: "Real, fix it" }] }) as any;
       assert.equal(c.ok, true, JSON.stringify(c));
@@ -879,7 +932,7 @@ test("S0.2: 'No — ask me again' keeps the old ruling, flagged, and the rejecte
     await asAgent(async () => {
       const t = transcript(u.transcripts);
       t.typed("m1", "D1 hmm", later(1));
-      const a = (await relayAnswer(u.root, { round: "R1", decision: "d1", session: SESSION, entryId: "m1" }, {}, u.transcripts) as any).answer;
+      const a = (await relayAnswer(u.root, { round: "R1", decision: "d1", entryId: "m1" }, {}, u.transcripts) as any).answer;
       const maps = [{ decision: "d1", option: "Real, fix it" }];
       const c = await confirmReading(u.root, { answer: a, maps }) as any;
       t.ask("toolu_c", [c.ask], { [c.ask.question]: "No — ask me again" }, later(2));
@@ -918,7 +971,7 @@ test("confirm_reading refuses what the fold would void, and a replacement of a c
       await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f)] });
       const t = transcript(u.transcripts);
       t.typed("m1", "hmm", later(1));
-      const a = (await relayAnswer(u.root, { round: "R1", decision: "d1", session: SESSION, entryId: "m1" }, {}, u.transcripts) as any).answer;
+      const a = (await relayAnswer(u.root, { round: "R1", decision: "d1", entryId: "m1" }, {}, u.transcripts) as any).answer;
       assert.match(String(err(await confirmReading(u.root, { answer: a, maps: [{ decision: "d1", option: "Not a defect" }, { decision: "d1", option: "Real, fix it" }] }))), /takes one option/);
       assert.match(String(err(await confirmReading(u.root, { answer: a, maps: [{ decision: "d9", option: null }] }))), /not a question in round/);
       const c = await confirmReading(u.root, { answer: a, maps: [{ decision: "d1", option: "Real, fix it" }] }) as any;
@@ -936,7 +989,7 @@ test("round five: withdrawn words cannot gain a new reading or confirmation", as
       await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f)] });
       const t = transcript(u.transcripts);
       t.typed("m1", "close it", later(0.02));
-      const a = (await relayAnswer(u.root, { round: "R1", decision: "d1", session: SESSION, entryId: "m1" }, {}, u.transcripts) as any).answer;
+      const a = (await relayAnswer(u.root, { round: "R1", decision: "d1", entryId: "m1" }, {}, u.transcripts) as any).answer;
       await asPerson(async () => { assert.equal((await withdrawDecision(u.root, { decision: "d1", answer: a, reason: "I retract these words" }) as any).ok, true); });
       const view = await decisionRounds(u.root) as any;
       assert.ok(!view.awaitingReading.some((x: any) => x.answer === a));
@@ -998,7 +1051,7 @@ test("Q14 / H7.14: a decisions log that cannot be read is blocked, not 'nothing 
       assert.equal(view.status, "blocked", JSON.stringify(view).slice(0, 300));
       assert.match(String(err(await postRound(u.root, { round: { id: "R2", source: "x" }, decisions: [{ ...decision("d2", f), round: "R2" }] }))), /blocked/);
       transcript(u.transcripts).ask("toolu_1", [payloadFor(f)], { [payloadFor(f).question]: "Not a defect" });
-      assert.match(String(err(await logQuestion(u.root, { session: SESSION, toolUseId: "toolu_1", round: "R1" }, {}, u.transcripts))), /blocked/);
+      assert.match(String(err(await logQuestion(u.root, { toolUseId: "toolu_1", round: "R1" }, {}, u.transcripts))), /blocked/);
     });
   } finally { u.cleanup(); }
 });
@@ -1129,7 +1182,7 @@ async function flaggedRuling(u: Awaited<ReturnType<typeof universe>>, f: string,
   let a = "";
   await asAgent(async () => {
     transcript(u.transcripts).typed("m1", text, later(1));
-    a = (await relayAnswer(u.root, { round: "R1", decision: "d1", session: SESSION, entryId: "m1" }, {}, u.transcripts) as any).answer;
+    a = (await relayAnswer(u.root, { round: "R1", decision: "d1", entryId: "m1" }, {}, u.transcripts) as any).answer;
   });
   return a;
 }
@@ -1154,7 +1207,7 @@ test("round five: a differently worded confirmation is refused at the door", asy
     await asAgent(async () => {
       const t = transcript(u.transcripts);
       t.typed("m1", "D1 wait, it is real", later(1));
-      const a = (await relayAnswer(u.root, { round: "R1", decision: "d1", session: SESSION, entryId: "m1" }, {}, u.transcripts) as any).answer;
+      const a = (await relayAnswer(u.root, { round: "R1", decision: "d1", entryId: "m1" }, {}, u.transcripts) as any).answer;
       const maps = [{ decision: "d1", option: "Real, fix it" }];
       const c = await confirmReading(u.root, { answer: a, maps }) as any;
       assert.equal(c.ok, true, JSON.stringify(c));
@@ -1227,7 +1280,7 @@ test("GATE (impl-2, held offered as work): an open confirm withholds its finding
       assert.ok((await reviewQueue(u.root) as any).queue.some((x: any) => x.id === f), "released and assigned by a person: offered");
       const t = transcript(u.transcripts);
       t.typed("m1", "D1 wait — not a defect after all", later(1));
-      a = (await relayAnswer(u.root, { round: "R1", decision: "d1", session: SESSION, entryId: "m1" }, {}, u.transcripts) as any).answer;
+      a = (await relayAnswer(u.root, { round: "R1", decision: "d1", entryId: "m1" }, {}, u.transcripts) as any).answer;
       assert.ok((await reviewQueue(u.root) as any).queue.some((x: any) => x.id === f), "flagged only: a mark never withholds");
       const c = await confirmReading(u.root, { answer: a, maps: [{ decision: "d1", option: "Not a defect" }] }) as any;
       assert.equal(c.ok, true, JSON.stringify(c));
@@ -1235,7 +1288,7 @@ test("GATE (impl-2, held offered as work): an open confirm withholds its finding
       assert.ok(!q.queue.some((x: any) => x.id === f), "the confirm's hold began after the assignment: withheld");
 
       t.typed("m2", "D2 both, I guess", later(1));
-      const b2 = (await relayAnswer(u.root, { round: "R1", decision: "d2", session: SESSION, entryId: "m2" }, {}, u.transcripts) as any).answer;
+      const b2 = (await relayAnswer(u.root, { round: "R1", decision: "d2", entryId: "m2" }, {}, u.transcripts) as any).answer;
       await briefOf(u.root, b2, [{ decision: "d2", option: "Not a defect" }]);
       const read = await submitVerdict(u.root, { answer: b2, verdict: "D2 → Not a defect\nD2 → Real, fix it" }, {}, u.transcripts) as any;
       assert.match(String(read.refused), /takes one option, and the reading picks 2/, JSON.stringify(read));
@@ -1253,7 +1306,7 @@ test("round five: rejected readings strand nothing and withdrawal cancels a pend
       await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f)] });
       const t = transcript(u.transcripts);
       t.typed("m1", "not a defect", later(5));   // typed after a replacement another clone posts below
-      const a = (await relayAnswer(u.root, { round: "R1", decision: "d1", session: SESSION, entryId: "m1" }, {}, u.transcripts) as any).answer;
+      const a = (await relayAnswer(u.root, { round: "R1", decision: "d1", entryId: "m1" }, {}, u.transcripts) as any).answer;
       const prompt = await briefOf(u.root, a, [{ decision: "d1", option: "Not a defect" }]);
       const b = bindDecisions(u.root) as any;
       // A foreign writer's reading of the words, one that could never bind, and an empty one.
@@ -1352,7 +1405,7 @@ test("round five: a (none) confirm holds, related questions keep independent hol
     await asPerson(async () => { await answerDirect(u.root, { decision: "d1", option: "Real, fix it" }); });
     await asAgent(async () => {
       transcript(u.transcripts).typed("m1", "hmm, not those", later(1));
-      const a = (await relayAnswer(u.root, { round: "R1", decision: "d1", session: SESSION, entryId: "m1" }, {}, u.transcripts) as any).answer;
+      const a = (await relayAnswer(u.root, { round: "R1", decision: "d1", entryId: "m1" }, {}, u.transcripts) as any).answer;
       assert.equal((await heldOn(u.root, f)).length, 0, "released by the ruling, only flagged");
       const c = await confirmReading(u.root, { answer: a, maps: [{ decision: "d1", option: null }] }) as any;
       assert.ok((await heldOn(u.root, f)).some((h: any) => h.decision === c.confirm), "the (none) confirm holds");
@@ -1407,7 +1460,7 @@ test("Round five replaces vanishing gate: cancelled replies remain visible; miss
     let a = "", c: any;
     await asAgent(async () => {
       t.typed("m1", "fix D2 after all", later(0));
-      a = (await relayAnswer(u.root, { round: "R1", decision: "d1", session: SESSION, entryId: "m1" }, {}, u.transcripts) as any).answer;
+      a = (await relayAnswer(u.root, { round: "R1", decision: "d1", entryId: "m1" }, {}, u.transcripts) as any).answer;
     });
     await tick();
     await asAgent(async () => {
@@ -1443,7 +1496,7 @@ test("F4 (run 2026-09-24-decision-rounds-2-codex-round-review): a multi-select r
     await asAgent(async () => {
       await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [multi] });
       transcript(u.transcripts).typed("m1", "both of them", later(1));
-      const a = (await relayAnswer(u.root, { round: "R1", decision: "d1", session: SESSION, entryId: "m1" }, {}, u.transcripts) as any).answer;
+      const a = (await relayAnswer(u.root, { round: "R1", decision: "d1", entryId: "m1" }, {}, u.transcripts) as any).answer;
       const c = await confirmReading(u.root, { answer: a, maps: [{ decision: "d1", option: "Real, fix it" }, { decision: "d1", option: "Not a defect" }] }) as any;
       assert.equal(c.ok, true, JSON.stringify(c));
     });
@@ -1459,7 +1512,7 @@ test("Q4: confirmReading refuses a ref shared by two posted questions", async ()
       await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f)] });
       const t = transcript(u.transcripts);
       t.typed("m-shared", "hmm", later(2));
-      const a = (await relayAnswer(u.root, { round: "R1", decision: "d1", session: SESSION, entryId: "m-shared" }, {}, u.transcripts) as any).answer;
+      const a = (await relayAnswer(u.root, { round: "R1", decision: "d1", entryId: "m-shared" }, {}, u.transcripts) as any).answer;
       const first = await confirmReading(u.root, { answer: a, maps: [{ decision: "d1", option: "Not a defect" }] }) as any;
       assert.equal(first.ok, true);
       // Another agent, which had not seen that confirm, posts its own reading of the same words
@@ -1481,7 +1534,7 @@ test("Q4: confirmReading refuses a ref shared by two posted questions", async ()
       assert.equal((await decisionRound(u.root, "R1") as any).decisions.filter((x: any) => x.ref === "D2").length, 2, "the race put two D2s in the round");
       // New words, read onto one of the D2 confirms: a line naming D2 could mean either.
       t.typed("m-later", "D2 yes", later(4));
-      const b2 = (await relayAnswer(u.root, { round: "R1", decision: "d1", session: SESSION, entryId: "m-later" }, {}, u.transcripts) as any).answer;
+      const b2 = (await relayAnswer(u.root, { round: "R1", decision: "d1", entryId: "m-later" }, {}, u.transcripts) as any).answer;
       const again = await confirmReading(u.root, { answer: b2, maps: [{ decision: theirs.id, option: CONFIRM_YES }] }) as any;
       assert.match(String(again.error), /two questions.*ambiguous/);
     });
@@ -1496,7 +1549,7 @@ test("round five: changed response cancels a completed reading and its pending c
       await postRound(u.root, { round: { id: "R1", source: "round-five" }, decisions: [decision("d1", f)] });
       const t = transcript(u.transcripts);
       t.typed("original", "not a defect, keep the explanation", later(1));
-      const original = await relayAnswer(u.root, { round: "R1", decision: "d1", session: SESSION, entryId: "original" }, {}, u.transcripts) as any;
+      const original = await relayAnswer(u.root, { round: "R1", decision: "d1", entryId: "original" }, {}, u.transcripts) as any;
       const maps = [{ decision: "d1", option: "Not a defect" }];
       const prompt = await briefOf(u.root, original.answer, maps);
       const read = await reads(u, t, original.answer, "D1 → Real, fix it", { prompt });
@@ -1506,7 +1559,7 @@ test("round five: changed response cancels a completed reading and its pending c
       const confirmation = await confirmReading(u.root, { answer: original.answer }, {}, u.transcripts) as any;
       assert.equal(confirmation.ok, true, JSON.stringify(confirmation));
       t.typed("correction", "leave it open; the premise was right", later(20));
-      const correction = await relayAnswer(u.root, { round: "R1", decision: "d1", session: SESSION, entryId: "correction" }, {}, u.transcripts) as any;
+      const correction = await relayAnswer(u.root, { round: "R1", decision: "d1", entryId: "correction" }, {}, u.transcripts) as any;
       assert.equal(correction.recorded, true);
       const view = await decisionRound(u.root, "R1") as any;
       const d = view.decisions.find((x: any) => (x.label ?? x.id) === "d1");
@@ -1788,7 +1841,7 @@ test("round five: real relay revision verifies exact shown source and human give
       const t = transcript(u.transcripts);
       const wrong = { ...brief.question, question: brief.question.question.replace(first.answer, "wrong-source") };
       t.ask("toolu_wrong_source", [wrong], { [wrong.question]: "Real, fix it" }, later(1));
-      const refused = await reviseDecisionRelayed(u.root, { ...input, session: SESSION, toolUseId: "toolu_wrong_source" }, {}, u.transcripts) as any;
+      const refused = await reviseDecisionRelayed(u.root, { ...input, toolUseId: "toolu_wrong_source" }, {}, u.transcripts) as any;
       assert.match(String(refused.error), /exact predecessor/);
       t.ask("toolu_exact_revision", [brief.question], { [brief.question.question]: "Real, fix it" }, later(2));
       assert.equal((await postRound(u.root, { round: { id: "R2", source: "recorder later context" }, decisions: [decision("d2", f, {}, "D2", "R2")] }) as any).ok, true);

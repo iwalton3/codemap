@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { classifyAnswer, isUnverified, readCall, readMessage, transcriptDir } from "./transcript.js";
+import { classifyAnswer, findAskCalls, findCarriers, findMessages, isUnverified, readCall, readMessage, transcriptDir } from "./transcript.js";
 import type { AskedQuestion } from "./schema.js";
 
 const S = "0f0e0d0c-aaaa-bbbb-cccc-000000000001";
@@ -127,18 +127,73 @@ test("the transcript directory is the cwd with every non-alphanumeric turned int
   }
 });
 
-test("the session holding an id is found among top-level transcripts only", async () => {
-  const { sessionHolding } = await import("./transcript.js");
-  const { mkdirSync } = await import("node:fs");
-  const dir = transcript([call("tx", [Q1])]);
-  mkdirSync(join(dir, S, "subagents"), { recursive: true });
-  writeFileSync(join(dir, S, "subagents", "agent-1.jsonl"), JSON.stringify(call("only-in-subagent", [Q1])) + "\n");
-  assert.equal(sessionHolding("tx", dir), S);
-  assert.ok(isUnverified(sessionHolding("only-in-subagent", dir)), "a subagent's transcript is never the session");
-  assert.ok(isUnverified(sessionHolding("nowhere", dir)));
-  assert.ok(isUnverified(sessionHolding("../x", dir)), "an id that is not an id");
+// --- carriers (owner, D1; Q1, Q4) ---------------------------------------------------------------
+
+const QD: AskedQuestion = { question: "D1: fix?", options: [{ label: "Yes" }, { label: "No" }] };
+const ask = (id: string, ts: string) => ({ type: "assistant", uuid: `a-${id}`, timestamp: ts, message: { content: [{ type: "tool_use", name: "AskUserQuestion", id, input: { questions: [QD] } }] } });
+const said = (uuid: string, ts: string, text = "D1 B") => ({ type: "user", uuid, origin: { kind: "human" }, timestamp: ts, message: { content: text } });
+/** A codemap tool call and its MCP result, as a top-level transcript holds it (measured: `[{type:"text", text:<JSON>}]`). */
+const tool = (name: string, id: string, ts: string, out: unknown) => {
+  const content = [{ type: "text", text: JSON.stringify(out) }];
+  return [{ type: "assistant", uuid: `t-${id}`, timestamp: ts, message: { content: [{ type: "tool_use", name: `mcp__codemap__${name}`, id, input: {} }] } },
+    { type: "user", uuid: `tr-${id}`, timestamp: ts, message: { content: [{ type: "tool_result", tool_use_id: id, content }] }, toolUseResult: content }];
+};
+const files = (sessions: Record<string, unknown[]>) => {
+  const dir = mkdtempSync(join(tmpdir(), "codemap-carriers-"));
+  for (const [s, lines] of Object.entries(sessions)) writeFileSync(join(dir, `${s}.jsonl`), lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
+  return dir;
+};
+const SINCE = "2026-10-06T12:00:00Z";
+const carriersOf = async (round: string) => (await import("./ops/decisions.js")).roundCarriers(round);
+const asked = async (dir: string, round = "ev1") => {
+  const c = findCarriers(await carriersOf(round), SINCE, dir);
+  return isUnverified(c) ? c : { calls: (findAskCalls([QD], c, SINCE, dir) as { toolUseId: string }[]).map((x) => x.toolUseId), messages: findMessages("D1 B", c, SINCE, dir).map((m) => m.entryId) };
+};
+
+test("A-1 (D1): a session never handed the round is not searched — its call and its person's words are not found", async () => {
+  const dir = files({ other: [ask("other-call", "2026-10-06T12:01:00Z"), said("m1", "2026-10-06T12:02:00Z")] });
+  assert.deepEqual(findCarriers(await carriersOf("ev1"), SINCE, dir), []);
+  const posted = files({ other: [ask("other-call", "2026-10-06T12:01:00Z"), said("m1", "2026-10-06T12:02:00Z")],
+    mine: [...tool("post_round", "p1", "2026-10-06T12:00:30Z", { ok: true, round: "ev1" }), ask("mine-call", "2026-10-06T12:03:00Z"), said("m2", "2026-10-06T12:04:00Z")] });
+  assert.deepEqual(await asked(posted), { calls: ["mine-call"], messages: ["m2"] }, "the session that posted it is, and it alone");
 });
 
+test("A-3 (Q4): reading the round with decision_round carries it — only for what comes after the read", async () => {
+  const dir = files({ resumed: [ask("before-read", "2026-10-06T12:01:00Z"),
+    ...tool("decision_round", "dr1", "2026-10-06T12:02:00Z", { round: { id: "ev1", label: "R1" } }), ask("after-read", "2026-10-06T12:03:00Z")] });
+  assert.deepEqual((await asked(dir) as { calls: string[] }).calls, ["after-read"]);
+  const other = files({ s: [...tool("decision_round", "dr1", "2026-10-06T12:02:00Z", { round: { id: "ev2", label: "R2" } }), ask("after", "2026-10-06T12:03:00Z")] });
+  assert.deepEqual(findCarriers(await carriersOf("ev1"), SINCE, other), [], "a read of another round carries nothing");
+  const survey = files({ s: [...tool("decision_rounds", "drs", "2026-10-06T12:02:00Z", { round: { id: "ev1" } }), ask("after", "2026-10-06T12:03:00Z")] });
+  assert.deepEqual(findCarriers(await carriersOf("ev1"), SINCE, survey), [], "the decision_rounds survey is not a read of one round");
+});
+
+test("D1: a carrier only in a subagent's file fails closed; carriers in two sessions find the call in the one that has it", async () => {
+  const { mkdirSync } = await import("node:fs");
+  const dir = files({ parent: [ask("call", "2026-10-06T12:03:00Z")] });
+  mkdirSync(join(dir, "parent", "subagents"), { recursive: true });
+  writeFileSync(join(dir, "parent", "subagents", "agent-a1234567.jsonl"), tool("post_round", "p1", "2026-10-06T12:01:00Z", { round: "ev1" }).map((l) => JSON.stringify(l)).join("\n") + "\n");
+  assert.deepEqual(findCarriers(await carriersOf("ev1"), SINCE, dir), []);
+  const two = files({ a: [...tool("post_round", "p1", "2026-10-06T12:01:00Z", { round: "ev1" }), ask("in-a", "2026-10-06T12:03:00Z")],
+    b: [...tool("decision_round", "d1", "2026-10-06T12:01:00Z", { round: { id: "ev1" } })] });
+  assert.deepEqual((await asked(two) as { calls: string[] }).calls, ["in-a"]);
+});
+
+test("Q1: confirm_reading in this session carries the words' round, though another session posted it", async () => {
+  const dir = files({ a: [...tool("post_round", "p1", "2026-10-06T12:01:00Z", { round: "ev1" })],
+    b: [...tool("confirm_reading", "c1", "2026-10-06T12:05:00Z", { ok: true, confirm: "x", round: "ev1" }), ask("confirm-call", "2026-10-06T12:06:00Z")] });
+  assert.deepEqual((await asked(dir) as { calls: string[] }).calls, ["confirm-call"]);
+});
+
+test("D1: a named id is checked inside the carried scope, never machine-wide", async () => {
+  const dir = files({ a: [ask("before", "2026-10-06T12:00:40Z"), ...tool("post_round", "p1", "2026-10-06T12:01:00Z", { round: "ev1" }), ask("after", "2026-10-06T12:03:00Z")],
+    elsewhere: [ask("stranger", "2026-10-06T12:03:00Z")] });
+  const c = findCarriers(await carriersOf("ev1"), SINCE, dir, "after");
+  assert.ok(!isUnverified(c) && c[0]!.session === "a" && c[0]!.hit !== undefined);
+  assert.ok(isUnverified(findCarriers(await carriersOf("ev1"), SINCE, dir, "stranger")), "another session's call");
+  assert.ok(isUnverified(findCarriers(await carriersOf("ev1"), SINCE, dir, "before")), "a call before the carrier");
+  assert.ok(isUnverified(findCarriers(await carriersOf("ev1"), SINCE, dir, "../x")), "an id that is not an id");
+});
 
 test("old structured successful-held results remain eligible for unique legacy rows", async () => {
   const { findVerdictCalls } = await import("./transcript.js");
