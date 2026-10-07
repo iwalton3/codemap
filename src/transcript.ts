@@ -121,6 +121,19 @@ export function findAskCalls(questions: AskedQuestion[], since: string, dir: str
 }
 
 /**
+ * The one `AskUserQuestion` call after `since` that asked exactly `question`, for an op that built
+ * the question itself and so knows it exactly. None, or several, is an error naming them.
+ */
+export function soleAskCall(question: AskedQuestion, since: string, dir: string = transcriptDir(), session?: string):
+  { session: string; toolUseId: string } | { error: string } {
+  const found = findAskCalls([question], since, dir, session);
+  if (isUnverified(found)) return { error: found.unverified };
+  if (!found.length) return { error: "no AskUserQuestion call asked this exact question: ask it verbatim, then call this again" };
+  if (found.length > 1) return { error: `${found.length} AskUserQuestion calls asked this exact question: ${found.map((c) => c.toolUseId).join(", ")}. Which one is meant cannot be told; pass its toolUseId` };
+  return { session: found[0]!.session, toolUseId: found[0]!.toolUseId };
+}
+
+/**
  * The latest entry in `session`'s own transcript where the skill `skill` ran: the model's `Skill`
  * call, or the person typing `/<skill>` — the two shapes measured 2026-10-06. Evidence the skill
  * was run, never of what it concluded.

@@ -1792,7 +1792,8 @@ test("round five: real relay revision verifies exact shown source and human give
       assert.match(String(refused.error), /exact predecessor/);
       t.ask("toolu_exact_revision", [brief.question], { [brief.question.question]: "Real, fix it" }, later(2));
       assert.equal((await postRound(u.root, { round: { id: "R2", source: "recorder later context" }, decisions: [decision("d2", f, {}, "D2", "R2")] }) as any).ok, true);
-      const revised = await reviseDecisionRelayed(u.root, { ...input, session: SESSION, toolUseId: "toolu_exact_revision" }, {}, u.transcripts) as any;
+      // I12's sibling: the agent cannot see the call's id, so the op finds the call that asked it.
+      const revised = await reviseDecisionRelayed(u.root, input, {}, u.transcripts) as any;
       assert.equal(revised.ok, true, JSON.stringify(revised));
       assert.equal(revised.standing, true, JSON.stringify(revised));
       assert.equal((await decisionRound(u.root, "R1") as any).decisions[0].currentByFinding[f], revised.revision);

@@ -9,8 +9,8 @@ import { emitEventChecked } from "../write.js";
 import { isAgentActor } from "../identity.js";
 import { saveReaderRequest, readerRequest, holdReaderReceipt, readerReceipts,
   settleReaderReceipt } from "../reader-local.js";
-import { findComparisonCalls, isUnverified, readCall, readReader, sameQuestion,
-  transcriptDir } from "../transcript.js";
+import { findComparisonCalls, isUnverified, readCall, readReader, sameQuestion, sessionHolding,
+  soleAskCall, transcriptDir } from "../transcript.js";
 import { rulingApplicationsForAnswer } from "../store.js";
 import { comparisonContextHash, deriveComparison, type CanonicalIssue,
   type ComparisonVerdict, type HumanResolution, type ReaderJudgment } from "../decision-comparison.js";
@@ -212,8 +212,14 @@ export async function resolveComparison(root: string,
     if (isAgentActor(bound.actor)) return { error: "web resolution needs the principal's own act" };
     session = "web"; request = input.request; receipt = randomUUID();
   } else if (input.source === "question") {
-    if (!input.session || !input.toolUseId) return { error: "a question resolution needs exact session and AskUserQuestion call" };
-    const call = readCall(input.session, input.toolUseId, dir);
+    // The agent cannot see the call's id (I12): find the call that asked the brief's question,
+    // which shows the judgments and so was asked after the last of them.
+    const since = comparison.projection.acceptedJudgments.map((j) => j.at).sort().at(-1) ?? new Date(0).toISOString();
+    const at = input.toolUseId ? { session: input.session ?? sessionHolding(input.toolUseId, dir), toolUseId: input.toolUseId }
+      : soleAskCall(brief.question, since, dir, input.session);
+    if ("error" in at) return at;
+    if (isUnverified(at.session)) return { error: at.session.unverified };
+    const call = readCall(at.session, at.toolUseId, dir);
     if (isUnverified(call)) return { error: call.unverified };
     if (call.questions.length !== 1 || !sameQuestion(call.questions[0]!, brief.question)
       || call.answers[brief.question.question] !== `Preserve ${input.preserve}`)
@@ -229,7 +235,7 @@ export async function resolveComparison(root: string,
   };
   const proof = { purpose: "human-comparison", source: input.source, principal: bound.actor.principal,
     contextHash: comparison.request.contextHash, shownHash: input.shownHash,
-    receipt, session, toolUseId: input.toolUseId, shown: brief.shown,
+    receipt, session, ...(input.source === "question" ? { toolUseId: request } : {}), shown: brief.shown,
     executionsHash: brief.executionsHash };
   const event = await emitEventChecked(bound.cfg.path, decisionScope(bound.cfg.universe), bound.actor, async (events) => {
     const current = foldDecisions(events).comparisons.find((x) => x.request.id === input.request);

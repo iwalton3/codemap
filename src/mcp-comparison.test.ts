@@ -35,13 +35,13 @@ test("comparison tools expose exact reader and human routes without an agent web
     const tools = await toolsList(root);
     for (const name of names) assert.equal(tools.filter((x) => x.name === name).length, 1, name);
     const resolution = tools.find((x) => x.name === "resolve_comparison")!;
-    assert.ok(resolution.inputSchema.required.includes("toolUseId"));
+    assert.ok(!resolution.inputSchema.required.includes("toolUseId"), "an agent cannot see the call's id (I12)");
     assert.equal(resolution.inputSchema.properties.source, undefined);
     const withdrawal = tools.find((x) => x.name === "withdraw_decision")!;
     assert.deepEqual(withdrawal.inputSchema.required, ["decision", "reason"]);
     assert.equal(withdrawal.inputSchema.properties.approval, undefined, "no human-approval shortcut");
     assert.deepEqual(tools.find((x) => x.name === "record_relayed_decision_revision")?.inputSchema.required,
-      ["decision", "revises", "findings", "session", "toolUseId"]);
+      ["decision", "revises", "findings"]);
     const out = await rpc(root, [
       { name: "comparison_detail", arguments: { id: "missing" } },
       { name: "request_comparison", arguments: { answers: ["a", "b"] } },

@@ -24,7 +24,7 @@ import {
   type AnswerVia, type BriefEntry, type FoldedDecision, type Mapping, type SharedDecisions,
 } from "../shared-decisions.js";
 import { decisionsView } from "./decision-holds.js";
-import { findAskCalls, findMessages, findVerdictCalls, isUnverified, readCall, readMessage, readReader, readReceiptCall, readSubagentCall, sameQuestion, sessionHolding, transcriptDir, verdictGraceMs } from "../transcript.js";
+import { findAskCalls, findMessages, findVerdictCalls, isUnverified, readCall, readMessage, readReader, readReceiptCall, readSubagentCall, sameQuestion, sessionHolding, soleAskCall, transcriptDir, verdictGraceMs } from "../transcript.js";
 import type { PersonMessage, Unverified } from "../transcript.js";
 import { saveReaderRequest, readerRequest, readerRequests, holdReaderReceipt, readerReceipts, settleReaderReceipt,
   legacyReaderRequest, legacyReaderVerdicts, holdLegacyReaderVerdict, pendingLegacyReaderAnswers,
@@ -1166,7 +1166,7 @@ export async function revisionRelayBrief(root: string,
  * recording machine pulled other events after the person answered. */
 export async function reviseDecisionRelayed(root: string,
   input: { decision: string; revises: string[]; findings: string[]; issues?: CanonicalIssueReference[];
-    session: string; toolUseId: string }, via: Via = {}, dir: string = transcriptDir()) {
+    session?: string; toolUseId?: string }, via: Via = {}, dir: string = transcriptDir()) {
   const b = bindDecisions(root, via);
   if ("error" in b) return b;
   if (!isAgentActor(b.actor)) return { error: "a relay revision is recorded by the verifying agent" };
@@ -1181,7 +1181,13 @@ export async function reviseDecisionRelayed(root: string,
     return { error: "relay revision needs exact current verified source answers" };
   const scope = { findings: input.findings ?? [], ...(input.issues?.length ? { issues: input.issues } : {}) };
   const expected = revisionRelayQuestion(d, sources as NonNullable<typeof sources[number]>[], b.actor.principal, scope);
-  const call = readCall(input.session, input.toolUseId, dir);
+  // The agent cannot see the call's id (I12): find the call that asked `expected`, which names
+  // the source answers and so was asked after the last of them was recorded.
+  const at = input.toolUseId ? { session: input.session ?? sessionHolding(input.toolUseId, dir), toolUseId: input.toolUseId }
+    : soleAskCall(expected, sources.map((a) => a!.at).sort().at(-1)!, dir, input.session);
+  if ("error" in at) return at;
+  if (isUnverified(at.session)) return { error: at.session.unverified };
+  const call = readCall(at.session, at.toolUseId, dir);
   if (isUnverified(call)) return { error: call.unverified };
   if (call.questions.length !== 1 || !sameQuestion(call.questions[0]!, expected))
     return { error: "human was not shown the exact predecessor, affected scope and new action" };

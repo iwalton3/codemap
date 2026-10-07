@@ -130,6 +130,27 @@ test("real comparison request and independent transcript equivalence release onl
   } finally { u.cleanup(); }
 });
 
+test("I12 sibling: a question resolution finds its AskUserQuestion call from the brief's exact question", async () => {
+  const u = await fixture();
+  try {
+    const id = await requestAndJudge(u, "incompatible");
+    const brief = await comparisonResolutionBrief(u.root, id) as any;
+    const call = (toolUseId: string, pick: string) => {
+      const when = new Date(Date.now() + 1000).toISOString();
+      return [{ type: "assistant", uuid: `a-${toolUseId}`, isSidechain: false, timestamp: when, message: { content: [{ type: "tool_use", id: toolUseId, name: "AskUserQuestion", input: { questions: [brief.question] } }] } },
+        { type: "user", uuid: `r-${toolUseId}`, isSidechain: false, timestamp: when, sourceToolAssistantUUID: `a-${toolUseId}`, message: { content: [{ type: "tool_result", tool_use_id: toolUseId, content: "…" }] }, toolUseResult: { questions: [brief.question], answers: { [brief.question.question]: pick } } }];
+    };
+    const file = join(u.transcripts, `${SESSION}.jsonl`);
+    writeFileSync(file, call("toolu_r1", `Preserve ${u.alice}`).map((l) => JSON.stringify(l)).join("\n") + "\n");
+    await env("resolver", true, async () => {
+      const input = { request: id, preserve: u.alice, rationale: "the person chose Alice's ruling",
+        shownHash: brief.shownHash, executionsHash: brief.executionsHash, source: "question" as const };
+      const resolved = await resolveComparison(u.root, input, {}, u.transcripts) as any;
+      assert.equal(resolved.ok, true, JSON.stringify(resolved));
+    });
+  } finally { u.cleanup(); }
+});
+
 test("incompatible real judgment requires shown human resolution; third answer and stale revision remain restricted", async () => {
   const u = await fixture();
   try {
