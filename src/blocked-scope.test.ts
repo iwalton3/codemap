@@ -14,7 +14,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { appendFileSync, mkdtempSync, mkdirSync, writeFileSync, readdirSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync, readdirSync, readFileSync } from "node:fs";
 import { SIDECAR_PROTOCOL } from "./eventlog.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -280,4 +280,27 @@ test("every read on the standard ops surface goes through the scope marker", () 
   // And every name in WRITES still exists, so the exemption list cannot outlive its reason.
   const stale = [...WRITES].filter((w) => !exported.includes(w));
   assert.deepEqual(stale, [], "an exemption naming an export that is gone");
+});
+
+test("an automatic docs/rules/ write waits out a blocked standard; an explicit one warns", async () => {
+  const u = await universeWithRule();
+  const out = tmp("rules-out");
+  try {
+    writeFileSync(join(u.root, ".gitignore"), "docs/rules/\n");
+    const index = join(u.root, "docs/rules/INDEX.md");
+    assert.ok("ok" in await ops.writeRulesProjection(u.root, { when: "sync" }), "healthy: a sync writes");
+    const before = readFileSync(index, "utf8");
+    blockTheLog(u.side);
+    const sync = await ops.writeRulesProjection(u.root, { when: "sync" });
+    assert.ok("skipped" in sync && /blocked/.test(sync.skipped), JSON.stringify(sync));
+    assert.equal(readFileSync(index, "utf8"), before, "the team's rules are left as they were");
+    // `open` writes only into an absent directory, so that is the case to block.
+    rmSync(join(u.root, "docs/rules"), { recursive: true });
+    const open = await ops.writeRulesProjection(u.root, { when: "open" });
+    assert.ok("skipped" in open && /blocked/.test(open.skipped), JSON.stringify(open));
+    assert.ok(!existsSync(index), "a server start does not generate rules from a blocked standard");
+    const explicit = await ops.writeRulesProjection(u.root, { out });
+    assert.ok("ok" in explicit, "the command still writes where it was told");
+    assert.equal(explicit.scope?.status, "blocked", "and says the files may not be the team's");
+  } finally { u.cleanup(); discard(out); }
 });

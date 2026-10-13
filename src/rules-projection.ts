@@ -192,6 +192,14 @@ export async function writeRulesProjection(
       };
     }
     if (when === "open" && existsSync(dir)) return { skipped: `${RULES_DIR}/ already exists` };
+    // Generated files read as settled, which a blocked or stale scope is not (the `served`
+    // rule). An explicit write still happens and carries the warning; an automatic one waits
+    // for the next sync rather than overwrite the team's rules with a non-authoritative copy.
+    if (when !== "command") {
+      const { standardScopeWarning } = await import("./standard-publish.js");
+      const scope = await standardScopeWarning(root);
+      if (scope) return { skipped: `the standard here is ${scope.status}, so ${RULES_DIR}/ is left as it was` };
+    }
   }
   const rules = await projectedRules(root);
   const files = renderRules(rules);
