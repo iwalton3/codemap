@@ -906,6 +906,50 @@ lint that CLAIMS 47 members and examined none is a self-report that only a reade
 the mechanical layer catches the empty case and the auditor layer is the other half, by
 design. See the bet stated in `docs/population-predicate.md`.
 
+## A rule's standing on the ladder — BUILT
+
+Plan record: `.git/plan/2026-10-07-ladder-support/` (`plan.md`, and `spike.md` for what the spike
+measured). A rule carries its place on the owner's solidity ladder: `level` 1-4 (natural law,
+law, industry rule, business rule — 5-8 are design and are never standard), `interim` (the
+owner's "provisional"), `authority` (the citation, or who holds a level-4 rule) and `lapsesWhen`
+(its falsifier). A level needs the other two. `interim` is not a status: `status` answers "in
+force?", and an interim rule is in force until its falsifier fires — then it loses ground, where a
+firm rule's falsifier firing goes to the owner.
+
+- **`amend_standing` restates the whole standing**, never a patch, because `interim` absent means
+  firm and a patch could never make a rule firm. Ids, pointers and audits stay attached.
+- **`restsOnRules`** (requirement ids) is part of the standing, so `amend_standing` restates it
+  too: absent means no links. It exists so that "this rule's falsifier fired" can find what
+  rests on it (`rests_on`, the rule page's "rested on by", the projection's `Rested on by:`). A
+  link names a rule that exists (a retired one included — the tombstone keeps it resolving) or an
+  `add_requirement` in the same draft, which an author names by its operation id and the log
+  stores as the requirement id it will get. No self-links, and a draft operation another one
+  rests on cannot be pulled.
+- **One refusal per rule, called by the tool and the fold** (`standingRefusal`,
+  `operationStandingRefusal`, `restsOnRefusal` in `schema.ts`). Links point at requirements, which
+  the standard's own fold holds, so the fold's refusal is both the door and the read check — a
+  planted bad link is damage, without a `registerReferences` check.
+- **Every standing field is signed content** (`operationContent`), so revising one voids an
+  earlier sign-off. The revisable-field list is copied in five places (`OperationRevision.was`,
+  `merged`, the candidate's reset, `changedFields`, `operationContent`); `spec-revision.test.ts`
+  revises each field to catch a sixth copy going stale.
+
+### `docs/rules/` is a projection of the standard
+
+`codemap rules [repo] [--out dir]` renders the in-force rules in the format a repository's
+hand-written `docs/rules/` uses (`rules-projection.ts`). It is never a second authority: every
+file's first line says it is generated, a write removes only files carrying that line, and it
+**refuses to write over a `docs/rules/` git tracks** — a repository keeps its committed rules
+until it is cut over (ratified into the standard, `docs/rules/` ignored). A sync and a server
+start write it automatically only where it is ignored, and **not while the standard is blocked or
+stale**: generated files read as settled, which a non-authoritative scope is not. An explicit
+`codemap rules` still writes and warns.
+
+*Not built* (owner decisions pending): an act for "the falsifier fired"; refusing an
+`amend_standing` whose standing moved since it was drafted (two of them against one rule race
+today, last ratified wins); where "Applies at" sites that are not code live once they are not
+pointers.
+
 ## Backout is two problems, and only one of them is ours
 
 ITIL requires every change to say how it is undone. Here that question splits, and the two
