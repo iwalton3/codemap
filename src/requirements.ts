@@ -39,7 +39,7 @@ import type {
 } from "./schema.js";
 import {
   contentDiff, criterionIdFor, EVIDENCE_KINDS, framingContent, movedSection, normalizeSection,
-  operationContent, requirementIdFor, operationStandingRefusal, SIGN_OFF_AXES, standingFromOperation, withStanding, witnessHash,
+  operationContent, requirementIdFor, operationStandingRefusal, restsOnRefusal, standingRefusal, SIGN_OFF_AXES, standingFromOperation, withStanding, witnessHash,
 } from "./schema.js";
 import { resolveSidecar, universeKey } from "./sidecar-config.js";
 import {
@@ -299,17 +299,21 @@ export interface OperationInput {
   criterion?: string; falsifier?: string; evidenceKind?: EvidenceKind;
   targetOperationId?: string;
   fromSection?: string; toSection?: string;
-  level?: RuleLevel; interim?: boolean; authority?: string; lapsesWhen?: string;
+  level?: RuleLevel; interim?: boolean; authority?: string; lapsesWhen?: string; restsOnRules?: string[];
 }
 
 /** The standing an input states, trimmed, with absent and blank alike dropped. */
 function standingOf(input: OperationInput): Standing {
   const authority = input.authority?.trim(), lapsesWhen = input.lapsesWhen?.trim();
+  // An empty list is no links, like a blank string; anything else is kept as given so the
+  // shape check can refuse it rather than this quietly repairing it.
+  const restsOnRules = Array.isArray(input.restsOnRules) && !input.restsOnRules.length ? undefined : input.restsOnRules;
   return {
     ...(input.level !== undefined ? { level: input.level } : {}),
     ...(input.interim ? { interim: true as const } : {}),
     ...(authority ? { authority } : {}),
     ...(lapsesWhen ? { lapsesWhen } : {}),
+    ...(restsOnRules !== undefined ? { restsOnRules: restsOnRules.map((x) => typeof x === "string" ? x.trim() : x) } : {}),
   };
 }
 
@@ -343,6 +347,23 @@ async function operationPayload(
   const badStanding = operationStandingRefusal({ kind: input.kind, ...standing, level: input.level });
   if (badStanding) return { error: badStanding };
   const siblings = (await readOperations(root, { specId: sp.id })).filter((o) => o.id !== excluding);
+  // A rule this draft creates has no id yet, so its author names the `add_requirement`
+  // operation; the log only ever holds the requirement id it will get.
+  if (standing.restsOnRules) {
+    standing.restsOnRules = standing.restsOnRules.map((id) =>
+      siblings.some((o) => o.id === id && o.kind === "add_requirement") ? requirementIdFor(id) : id);
+    const twice = standingRefusal(standing);
+    if (twice) return { error: twice };
+  }
+  // The fold resolves links against the same two things: a rule that exists (any status), or
+  // one an `add_requirement` in this draft creates.
+  const linkRefusal = async (self: string | undefined) => {
+    const known = new Set<string>();
+    for (const id of standing.restsOnRules ?? []) if (await readRequirement(root, id)) known.add(id);
+    for (const o of siblings) if (o.kind === "add_requirement" && !o.removed) known.add(requirementIdFor(o.id));
+    const bad = restsOnRefusal(standing.restsOnRules, self, (id) => known.has(id));
+    return bad ? { error: bad } : undefined;
+  };
   const statement = input.statement?.trim();
   let payload: Partial<Operation> = {};
   let context: Operation["context"];
@@ -384,6 +405,10 @@ async function operationPayload(
           + "rise for re-audit when the code moves. See docs/cross-universe-standard.md.",
       };
     }
+    // `excluding` is this operation on a revision; a fresh one has no id yet and so no rule
+    // to rest on itself.
+    const badLink = await linkRefusal(excluding ? requirementIdFor(excluding) : undefined);
+    if (badLink) return badLink;
     payload = { title, section, statement, provenance, ...standing };
   } else if (input.kind === "add_criterion") {
     const criterion = input.criterion?.trim();
@@ -476,10 +501,11 @@ async function operationPayload(
       payload = { statement };
     }
     if (input.kind === "amend_standing") {
-      const cur = { level: r.level, interim: r.interim, authority: r.authority, lapsesWhen: r.lapsesWhen };
-      if (JSON.stringify(cur) === JSON.stringify({ level: standing.level, interim: standing.interim, authority: standing.authority, lapsesWhen: standing.lapsesWhen })) {
+      if (JSON.stringify(standingFromOperation(r)) === JSON.stringify(standingFromOperation(standing))) {
         return { error: "the proposed standing is identical to the current one" };
       }
+      const badLink = await linkRefusal(r.id);
+      if (badLink) return badLink;
       payload = { ...standing };
     }
     // The state this was written against. Verified at ratification, so an operation
@@ -674,6 +700,7 @@ export async function reviseOperation(
     interim: input.interim ?? op.interim,
     authority: blank(input.authority ?? op.authority),
     lapsesWhen: blank(input.lapsesWhen ?? op.lapsesWhen),
+    restsOnRules: input.restsOnRules ?? op.restsOnRules,
   };
   const built = await operationPayload(root, sp, merged, op.id);
   if (isErr(built)) return built;
@@ -686,7 +713,7 @@ export async function reviseOperation(
     title: undefined, section: undefined, statement: undefined, provenance: undefined,
     criterion: undefined, falsifier: undefined, evidenceKind: undefined,
     requirementId: undefined, targetOperationId: undefined, fromSection: undefined, toSection: undefined,
-    level: undefined, interim: undefined, authority: undefined, lapsesWhen: undefined,
+    level: undefined, interim: undefined, authority: undefined, lapsesWhen: undefined, restsOnRules: undefined,
     ...built.payload,
     rationale: merged.rationale.trim(),
     evidence: merged.evidence,
@@ -696,7 +723,7 @@ export async function reviseOperation(
   const was = changedFields(op, candidate, [
     "title", "section", "statement", "provenance", "rationale", "evidence", "reversibility",
     "criterion", "falsifier", "evidenceKind", "requirementId", "targetOperationId",
-    "fromSection", "toSection", "context", "level", "interim", "authority", "lapsesWhen",
+    "fromSection", "toSection", "context", "level", "interim", "authority", "lapsesWhen", "restsOnRules",
   ]);
   if (!Object.keys(was).length) return { error: "nothing to change" };
 
@@ -817,6 +844,18 @@ export async function removeOperation(
   // drops it. Same shape as the reliance count, inside one draft.
   const dependents = (await readOperations(root, { specId: sp.id }))
     .filter((o) => o.targetOperationId === op.id);
+  // Same for a rule in this draft that rests on the one this operation creates.
+  const resting = op.kind === "add_requirement"
+    ? (await readOperations(root, { specId: sp.id }))
+      .filter((o) => !o.removed && o.restsOnRules?.includes(requirementIdFor(op.id)))
+    : [];
+  if (resting.length) {
+    return {
+      error:
+        `${resting.map((o) => o.id).join(", ")} in this same spec rest${resting.length === 1 ? "s" : ""} on the rule `
+        + `${op.id} creates, so removing it would leave a link to nothing. Drop the link first.`,
+    };
+  }
   if (dependents.length) {
     return {
       error:
@@ -1745,6 +1784,11 @@ export interface RenderedOperation {
    */
   silencedBy: Acknowledgement[];
   /**
+   * The rules `restsOnRules` names, by title: the signed text is ids, which nobody can judge.
+   * A rule this same draft adds reads `proposed`.
+   */
+  restsOn?: RuleLink[];
+  /**
    * What is watching the rule this operation changes — the DOWNWARD half of the pointer
    * relation, and the reason it is one relation and not two.
    *
@@ -1831,9 +1875,18 @@ export async function getSpec(
         })),
       };
     }
+    const restsOn: RuleLink[] = [];
+    for (const id of op.restsOnRules ?? []) {
+      const r = await readRequirement(root, id);
+      const sib = r ? undefined : ops.find((o) => o.kind === "add_requirement" && requirementIdFor(o.id) === id);
+      restsOn.push(r ? ruleLink(r)
+        : sib ? { id, title: sib.title ?? id, section: sib.section ?? "", status: "proposed" }
+        : { id, title: "(not in this store)", section: "", status: "missing" });
+    }
     operations.push({
       operation: op,
       ...(before ? { before } : {}),
+      ...(restsOn.length ? { restsOn } : {}),
       ...(op.kind === "retire_requirement" || op.kind === "move_section" || op.kind === "amend_standing" ? {} : { after: op.statement }),
       ...(moves ? { moves } : {}),
       contextMoved,
@@ -1920,4 +1973,38 @@ export async function pendingSpecs(
     });
   }
   return out;
+}
+
+/** One end of a rests-on link, as a reader needs it to judge what a lapse takes with it. */
+export interface RuleLink {
+  id: string; title: string; section: string; status: Requirement["status"] | "missing" | "proposed";
+  level?: RuleLevel; interim?: true;
+}
+
+/**
+ * What a rule rests on, and what rests on it (ladder-support C2). The second half is the
+ * point: when a rule's falsifier fires, `restedOnBy` is the list that goes to the owner with
+ * it, instead of a "Built on it" line somebody has to remember to read.
+ */
+const ruleLink = (r: Requirement): RuleLink => ({
+  id: r.id, title: r.title, section: r.section, status: r.status,
+  ...(r.level !== undefined ? { level: r.level } : {}), ...(r.interim ? { interim: true as const } : {}),
+});
+
+export async function restsOnFor(
+  root: string, requirementId: string,
+): Promise<{ rule: RuleLink; restsOn: RuleLink[]; restedOnBy: RuleLink[] } | Err> {
+  const all = (await readRequirements(root)).requirements;
+  const link = ruleLink;
+  const r = all.find((x) => x.id === requirementId);
+  if (!r) return { error: `no requirement "${requirementId}"` };
+  const byId = new Map(all.map((x) => [x.id, x]));
+  return {
+    rule: link(r),
+    // The fold refuses a link that does not resolve, so a miss here is a row this store has
+    // not folded yet; it is shown by id rather than dropped.
+    restsOn: (r.restsOnRules ?? []).map((id) => byId.get(id)
+      ? link(byId.get(id)!) : { id, title: "(not in this store)", section: "", status: "missing" as const }),
+    restedOnBy: all.filter((x) => x.restsOnRules?.includes(r.id)).map(link),
+  };
 }

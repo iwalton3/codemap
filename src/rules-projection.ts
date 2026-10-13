@@ -25,18 +25,23 @@ const LEVEL_NAMES: Record<number, string> = { 1: "natural law", 2: "law", 3: "in
 export interface ProjectedRule {
   rule: Requirement;
   appliesAt: string[];
+  /** Each linked rule, worded (phase C). Optional so a rule with no links needs nothing. */
+  restsOn?: string[];
+  restedOnBy?: string[];
 }
 
 const slug = (area: string) =>
   area.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "area";
 
-function renderRule({ rule: r, appliesAt }: ProjectedRule): string {
+function renderRule({ rule: r, appliesAt, restsOn = [], restedOnBy = [] }: ProjectedRule): string {
   const lines = [`### ${r.title} — ${r.interim ? "provisional" : "ratified"}`, `Rule: ${r.statement}`];
   if (r.level) lines.push(`Level: ${r.level} ${LEVEL_NAMES[r.level]}`);
   if (r.authority) lines.push(`Authority: ${r.authority}`);
   lines.push(`Source: ${r.provenance}`);
   if (appliesAt.length) lines.push(`Applies at: ${appliesAt.join("; ")}`);
   if (r.lapsesWhen) lines.push(`Falsifier: ${r.lapsesWhen}`);
+  if (restsOn.length) lines.push(`Rests on: ${restsOn.join("; ")}`);
+  if (restedOnBy.length) lines.push(`Rested on by: ${restedOnBy.join("; ")}`);
   lines.push(`Id: ${r.id}`);
   return lines.join("\n");
 }
@@ -119,7 +124,14 @@ function pointerText(p: Pointer, anchors: Map<string, Anchor>, universe?: string
 
 /** The in-force standard, in print order: by section, then the order the specs added them. */
 export async function projectedRules(root: string): Promise<ProjectedRule[]> {
-  const { requirements } = await readRequirements(root, { status: "ratified" });
+  const { requirements: every } = await readRequirements(root);
+  const requirements = every.filter((r) => r.status === "ratified");
+  const byId = new Map(every.map((r) => [r.id, r]));
+  // A retired target stays linked and says so; the projection prints in-force rules only.
+  const worded = (id: string) => {
+    const t = byId.get(id);
+    return t ? `"${t.title}" (${t.status === "retired" ? "retired" : t.interim ? "provisional" : "ratified"})` : id;
+  };
   const ord = new Map<string, number>();
   for (const op of await readOperations(root, {}) as Operation[]) {
     if (op.kind === "add_requirement" && op.requirementId) ord.set(op.requirementId, op.ord);
@@ -134,7 +146,11 @@ export async function projectedRules(root: string): Promise<ProjectedRule[]> {
   const out: ProjectedRule[] = [];
   for (const rule of sorted) {
     const pointers = await readPointers(root, { requirementId: rule.id, state: "active" });
-    out.push({ rule, appliesAt: pointers.map((p) => pointerText(p, anchors, universe)).sort() });
+    out.push({
+      rule, appliesAt: pointers.map((p) => pointerText(p, anchors, universe)).sort(),
+      restsOn: (rule.restsOnRules ?? []).map(worded).sort(),
+      restedOnBy: requirements.filter((x) => x.restsOnRules?.includes(rule.id)).map((x) => worded(x.id)).sort(),
+    });
   }
   return out;
 }

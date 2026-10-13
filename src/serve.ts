@@ -330,6 +330,8 @@ async function api(path: string, q: URLSearchParams): Promise<unknown> {
       });
     case "/api/standard/requirement":
       return ops.getRequirement(root, { id: q.get("id") ?? "" });
+    case "/api/standard/rests-on":
+      return ops.restsOn(root, { requirementId: q.get("id") ?? "" });
     case "/api/standard/conformance":
       return ops.conformance(root, q.get("about") === "branch" ? { about: "branch" } : {});
     // The rows behind the six counts `standardStatus` reports, and the five reads that say
@@ -536,6 +538,7 @@ async function serveRequest(req: IncomingMessage, res: ServerResponse): Promise<
             targetOperationId: body.targetOperationId,
             fromSection: body.fromSection, toSection: body.toSection,
             level: body.level, interim: body.interim, authority: body.authority, lapsesWhen: body.lapsesWhen,
+            restsOnRules: body.restsOnRules,
           });
         }
         // The review loop. `review` pulls and shows what moved since this person last

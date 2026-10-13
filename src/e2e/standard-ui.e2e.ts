@@ -92,6 +92,16 @@ describe("the standard UI", { skip: pw ? false : "playwright not resolvable (set
     const seeded = (await ops.listRequirements(root) as any).requirements;
     assert.equal(seeded.length, 1, "the fixture must have a ratified rule or every test below is vacuous");
     ruleId = seeded[0].id;
+    // A second rule resting on it, so the rule page has a "rested on by" to show (phase C).
+    const dep = await ops.draftSpec(root, { title: "Fees follow the line", ...AGENT }) as any;
+    ok(await ops.addOperation(root, {
+      specId: dep.id, kind: "add_requirement", rationale: "fees are billed in the line's currency",
+      reversibility: "reversible", title: "Fees are in the line's currency", section: "Credit/Fees",
+      statement: "A credit line's fees are billed in its currency.", provenance: "credit policy §5",
+      level: 4, authority: "Treasury", lapsesWhen: "fees are billed separately", restsOnRules: [ruleId], ...AGENT,
+    } as any));
+    await approve(root, dep.id);
+    ok(await ops.ratifySpec(root, { specId: dep.id }));
     await ops.recordAudit(root, {
       requirementId: ruleId, outcome: "nonconformant", finding: "no currency check on entry",
       evidence: { read: [anchor] }, ...AGENT,
@@ -126,7 +136,8 @@ describe("the standard UI", { skip: pw ? false : "playwright not resolvable (set
       // sign-off, and a fixture without them lets "every signed field renders" pass on
       // absence — which is the vacuity this subsystem names as the standing risk.
       evidence: "treasury minute 2026-04-11",
-      level: 3, interim: true, authority: "NACHA operating rules", lapsesWhen: "NACHA same-day settlement becomes mandatory", ...AGENT,
+      level: 3, interim: true, authority: "NACHA operating rules", lapsesWhen: "NACHA same-day settlement becomes mandatory",
+      restsOnRules: [ruleId], ...AGENT,
     } as any) as any;
     opId = o.id;
     await ops.acknowledgeGap(root, {
@@ -331,6 +342,7 @@ describe("the standard UI", { skip: pw ? false : "playwright not resolvable (set
         assert.equal(mine.length, 1, `no single card for ${o.operation.id} (${o.operation.kind})`);
         for (const [field, value] of Object.entries(operationContent(o.operation) as Record<string, string>)) {
           if (field === "interim") assert.ok(mine[0]!.includes("provisional"), "an interim rule is labelled provisional");
+          if (field === "restsOnRules") assert.ok(mine[0]!.includes("↳ Credit line currency"), "a link reads as the rule's title, not only its id");
           if (STRUCTURAL[field]) continue;
           seen.add(field);
           checked++;
@@ -346,7 +358,7 @@ describe("the standard UI", { skip: pw ? false : "playwright not resolvable (set
     // Could this pass on absence? Only with a fixture carrying none of the fields the
     // defect was about — which is what made the original rendering look correct.
     assert.ok(checked >= 15, `only ${checked} signed fields reached the assertion`);
-    for (const f of ["evidence", "reversibility", "requirementId", "level", "authority", "lapsesWhen"]) {
+    for (const f of ["evidence", "reversibility", "requirementId", "level", "authority", "lapsesWhen", "restsOnRules"]) {
       assert.ok(seen.has(f), `no fixture operation carries \`${f}\`, so this says nothing about it`);
     }
   });
@@ -668,6 +680,7 @@ describe("the standard UI", { skip: pw ? false : "playwright not resolvable (set
     assert.match(text!, /L4 · firm/, "its standing");
     assert.match(text!, /authority: Treasury, via credit policy §4/);
     assert.match(text!, /falsifier: we lend in a second currency/);
+    assert.match(text!, /rested on by\s*Fees are in the line's currency/, "what goes to the owner with it if it lapses");
     // Branch work is on the page, and it is on a different part of it. The reviewer of a
     // branch could not see this at all before, and it must not read as the codebase's
     // record — which is the whole reason it has a section of its own.

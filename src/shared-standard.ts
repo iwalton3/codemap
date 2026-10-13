@@ -47,7 +47,7 @@ import type {
   AcceptanceCriterion, Acknowledgement, Actor, Audit, BugWitness, Operation, Pointer,
   PopulationPredicate, Problem, ProposalWitness, Requirement, ScrubPolicy, Spec, VacuityCheck,
 } from "./schema.js";
-import { criterionIdFor, movedSection, normalizeSection, operationStandingRefusal, requirementIdFor, standingFromOperation, withStanding, EVIDENCE_KINDS, AUDIT_TRIGGERS, COVERING_TRIGGERS, PROBLEM_DISPOSITIONS, ACK_PRIORITIES, ISO_DATE, auditClaimStands, contentDiff, framingContent, operationContent, witnessHash } from "./schema.js";
+import { criterionIdFor, movedSection, normalizeSection, operationStandingRefusal, requirementIdFor, restsOnRefusal, standingFromOperation, withStanding, EVIDENCE_KINDS, AUDIT_TRIGGERS, COVERING_TRIGGERS, PROBLEM_DISPOSITIONS, ACK_PRIORITIES, ISO_DATE, auditClaimStands, contentDiff, framingContent, operationContent, witnessHash } from "./schema.js";
 import type { LogEvent } from "./eventlog.js";
 import { readSets, readScope, registerDoor, scopesOnDisk, sortEvents, type DoorFold } from "./eventlog.js";
 import { emitEvent } from "./write.js";
@@ -412,6 +412,14 @@ function foldStandardWithRefusals(events: LogEvent[]): { value: SharedStandard; 
   const acknowledgements = new Map<string, Acknowledgement>();
   const audits = new Map<string, Audit>();
   const problems = new Map<string, Problem>();
+  // A draft operation's links, against the log before it: a rule that exists, or one a live
+  // `add_requirement` in the same draft creates. `addOperation` asks the same question.
+  const draftLinkRefusal = (op: Operation) => restsOnRefusal(
+    op.restsOnRules,
+    op.kind === "add_requirement" ? requirementIdFor(op.id) : op.requirementId,
+    (id) => requirements.has(id) || [...operations.values()].some((o) =>
+      o.specId === op.specId && o.id !== op.id && !o.removed && o.kind === "add_requirement" && requirementIdFor(o.id) === id),
+  );
   const reads = readSets(events);
   // The ratification that adopted each spec: withdrawing a ratified spec retires law, so a
   // withdrawal written without having seen the adoption was a withdrawal of a draft, and is
@@ -451,7 +459,7 @@ function foldStandardWithRefusals(events: LogEvent[]): { value: SharedStandard; 
         // may simply not have arrived, the same allowance `spec.ratified` makes above.
         const sp = specs.get(op.specId);
         if (sp && sp.status !== "draft") { refuse(e, "the spec is no longer a draft"); break; }
-        const badStanding = operationStandingRefusal(op);
+        const badStanding = operationStandingRefusal(op) ?? draftLinkRefusal(op);
         if (badStanding) { refuse(e, badStanding); break; }
         operations.set(op.id, { ...op, origin: "sync" });
         break;
@@ -506,6 +514,9 @@ function foldStandardWithRefusals(events: LogEvent[]): { value: SharedStandard; 
           const dependents = [...operations.values()]
             .some((o) => o.specId === cur.specId && !o.removed && o.targetOperationId === cur.id);
           if (dependents) { refuse(e, "a criterion in this draft targets it"); break; }
+          const resting = cur.kind === "add_requirement" && [...operations.values()]
+            .some((o) => o.specId === cur.specId && !o.removed && o.restsOnRules?.includes(requirementIdFor(cur.id)));
+          if (resting) { refuse(e, "a rule in this draft rests on it"); break; }
           operations.set(cur.id, { ...cur, removed: next.removed, origin: "sync" });
           for (const [id, ack] of acknowledgements) {
             if (ack.operationId === cur.id && ack.state !== "released") {
@@ -515,7 +526,7 @@ function foldStandardWithRefusals(events: LogEvent[]): { value: SharedStandard; 
           break;
         }
         if (cur.removed) { refuse(e, "the operation was pulled from the draft"); break; }
-        const badStanding = operationStandingRefusal(next);
+        const badStanding = operationStandingRefusal(next) ?? draftLinkRefusal({ ...next, specId: cur.specId });
         if (badStanding) { refuse(e, badStanding); break; }
         // A rewrite and a revision entry must arrive TOGETHER. Either alone misdescribes
         // what happened, in opposite directions:
@@ -1204,6 +1215,14 @@ function moveApplicable(
   });
 }
 
+/**
+ * A link that does not resolve at ratification: neither a rule now (any status) nor one this
+ * ratification creates. Restated where it binds, as the standing is: the draft arms already
+ * refuse it and refuse pulling a linked sibling, so no well-formed log reaches this today.
+ */
+const linkMissing = (requirements: Map<string, Requirement>, creating: Set<string>, ids: string[] | undefined, self: string) =>
+  !!restsOnRefusal(ids, self, (id) => requirements.has(id) || [...creating].some((o) => requirementIdFor(o) === id));
+
 function applyOperation(
   requirements: Map<string, Requirement>, criteria: Map<string, AcceptanceCriterion>,
   op: Operation, sp: Spec, who: Actor, at: string, witnesses: BugWitness[],
@@ -1258,7 +1277,7 @@ function applyOperation(
     // fold then fails on every subsequent read — permanently, from an append-only log
     // nobody can edit. Refusing here refuses the whole ratification instead.
     if (!op.title?.trim() || !op.section?.trim() || !op.statement?.trim() || !op.provenance?.trim()) return false;
-    if (operationStandingRefusal(op)) return false;
+    if (operationStandingRefusal(op) || linkMissing(requirements, siblings, op.restsOnRules, requirementIdFor(op.id))) return false;
     // The operation event was published when the operation was ADDED, before anything
     // bound a requirement to it — so the id is derived here rather than read off a field
     // that is legitimately absent. This is the whole reason it is a function of `op.id`.
@@ -1294,7 +1313,7 @@ function applyOperation(
   }
   // Ahead of the amend arm, which every kind not named above falls into.
   if (op.kind === "amend_standing") {
-    if (r.status === "retired" || operationStandingRefusal(op)) return false;
+    if (r.status === "retired" || operationStandingRefusal(op) || linkMissing(requirements, siblings, op.restsOnRules, r.id)) return false;
     requirements.set(r.id, { ...withStanding(r, op), amendedBy: [...(r.amendedBy ?? []), sp.id] });
     return true;
   }

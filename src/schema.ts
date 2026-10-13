@@ -1060,7 +1060,7 @@ export type OperationKind =
    */
   | "move_section"
   /**
-   * Change a rule's STANDING — level, interim, authority, lapsesWhen — and nothing else.
+   * Change a rule's STANDING — level, interim, authority, lapsesWhen, restsOnRules — and nothing else.
    * The payload is the whole new standing, not a patch: `interim` absent means firm, so a
    * patch could never make an interim rule firm. Ids, pointers and audits stay attached,
    * which is why this is not a retire-and-re-add.
@@ -1096,6 +1096,13 @@ export interface Standing {
    * on the same operation payload.
    */
   lapsesWhen?: string;
+  /**
+   * The rules this one rests on, as requirement ids (ladder-support phase C). Not `restsOn`,
+   * which a repair sort already uses (`repair-sort-types.ts`). Part of the standing, so an
+   * `amend_standing` restates it like the rest: absent means none. A retired target stays
+   * linked — the tombstone is what keeps the citation resolving.
+   */
+  restsOnRules?: string[];
 }
 
 /** The standing an operation or a rule carries, and nothing else. */
@@ -1104,11 +1111,12 @@ export const standingFromOperation = (s: Standing): Standing => ({
   ...(s.interim ? { interim: true as const } : {}),
   ...(s.authority?.trim() ? { authority: s.authority } : {}),
   ...(s.lapsesWhen?.trim() ? { lapsesWhen: s.lapsesWhen } : {}),
+  ...(s.restsOnRules?.length ? { restsOnRules: [...s.restsOnRules] } : {}),
 });
 
 /** Copy a standing onto a requirement, clearing whatever it does not state. */
 export const withStanding = (r: Requirement, s: Standing): Requirement => {
-  const { level: _l, interim: _i, authority: _a, lapsesWhen: _w, ...rest } = r;
+  const { level: _l, interim: _i, authority: _a, lapsesWhen: _w, restsOnRules: _o, ...rest } = r;
   return { ...rest, ...standingFromOperation(s) };
 };
 
@@ -1116,8 +1124,15 @@ export const withStanding = (r: Requirement, s: Standing): Requirement => {
  * Why a standing cannot be stored, or nothing. ONE function for the tool and the fold, so
  * the door and every clone refuse the same thing.
  */
-export function standingRefusal(s: { level?: unknown; interim?: unknown; authority?: string; lapsesWhen?: string }): string | undefined {
+export function standingRefusal(s: { level?: unknown; interim?: unknown; authority?: string; lapsesWhen?: string; restsOnRules?: unknown }): string | undefined {
   if (s.interim !== undefined && s.interim !== true) return "`interim` is `true` or absent";
+  if (s.restsOnRules !== undefined) {
+    const ids = s.restsOnRules;
+    if (!Array.isArray(ids) || !ids.length || ids.some((x) => typeof x !== "string" || !x.trim())) {
+      return "`restsOnRules` is a non-empty list of requirement ids, or absent";
+    }
+    if (new Set(ids).size !== ids.length) return "`restsOnRules` names a rule twice";
+  }
   if (s.level === undefined) return undefined;
   if (s.level !== 1 && s.level !== 2 && s.level !== 3 && s.level !== 4) {
     return "a rule's `level` is 1-4. Levels 5-8 are design and below, and are never stored in the standard";
@@ -1131,13 +1146,28 @@ export function standingRefusal(s: { level?: unknown; interim?: unknown; authori
 export function operationStandingRefusal(op: Standing & { kind: OperationKind }): string | undefined {
   const bad = standingRefusal(op);
   if (bad) return bad;
-  const carries = op.level !== undefined || op.interim !== undefined || !!op.authority?.trim() || !!op.lapsesWhen?.trim();
+  const carries = op.level !== undefined || op.interim !== undefined || !!op.authority?.trim() || !!op.lapsesWhen?.trim()
+    || op.restsOnRules !== undefined;
   if (carries && op.kind !== "add_requirement" && op.kind !== "amend_standing") {
     return `\`${op.kind}\` carries no standing — set it with \`add_requirement\` or \`amend_standing\``;
   }
   // The whole new standing, so a level is required: a rule found to be level 5+ is retired.
   if (op.kind === "amend_standing" && op.level === undefined) {
     return "`amend_standing` states the rule's whole new standing and needs a `level` (1-4); a rule that is not level 1-4 is retired instead";
+  }
+  return undefined;
+}
+
+/**
+ * Why a rule's `restsOnRules` cannot stand, or nothing: a link to itself, or to a rule that
+ * does not exist. `resolves` answers for an existing requirement (any status) or one this same
+ * spec creates. Tool and fold both call it — the fold against the log before the event, which
+ * is what makes a planted bad link damage rather than a dangling row.
+ */
+export function restsOnRefusal(ids: readonly string[] | undefined, self: string | undefined, resolves: (id: string) => boolean): string | undefined {
+  for (const id of ids ?? []) {
+    if (id === self) return "a rule cannot rest on itself";
+    if (!resolves(id)) return `\`restsOnRules\` names "${id}", which is neither a rule nor one this spec adds`;
   }
   return undefined;
 }
@@ -1252,6 +1282,7 @@ export interface Operation {
   interim?: true;
   authority?: string;
   lapsesWhen?: string;
+  restsOnRules?: string[];
   /** Payload for `add_criterion`. See `AcceptanceCriterion` for what each one is. */
   criterion?: string;
   falsifier?: string;
@@ -1301,7 +1332,7 @@ export interface OperationRevision {
     "title" | "section" | "statement" | "provenance" | "rationale" | "evidence" | "reversibility"
     | "criterion" | "falsifier" | "evidenceKind" | "requirementId"
     | "targetOperationId" | "fromSection" | "toSection" | "context"
-    | "level" | "interim" | "authority" | "lapsesWhen">>;
+    | "level" | "interim" | "authority" | "lapsesWhen" | "restsOnRules">>;
   /**
    * Why the correction was made, in the corrector's words. NOT part of the rule.
    *
@@ -1947,6 +1978,7 @@ export function operationContent(op: Operation): Record<string, string> {
   put("interim", op.interim ? "true" : undefined);
   put("authority", op.authority);
   put("lapsesWhen", op.lapsesWhen);
+  put("restsOnRules", op.restsOnRules?.join(", "));
   // The base it was written against, which the rendering shows as "now". A moved base is
   // already refused by the context check at ratification; carrying it here as well costs
   // nothing and keeps the witness over the whole rendering rather than most of it.

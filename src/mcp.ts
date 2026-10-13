@@ -2029,6 +2029,12 @@ const tools: Tool[] = [
     handler: (a, c) => ops.pointersFor(c.universe.path, a),
   },
   {
+    name: "rests_on",
+    description: "What a rule rests on, and what rests on IT. When a rule's falsifier fires, `restedOnBy` is what goes to the owner with it: each of those rules was ratified on the assumption the lapsed one held. Links are set by `add_requirement` / `amend_standing` (`restsOnRules`).",
+    inputSchema: obj({ requirementId: { type: "string" } }, ["requirementId"]),
+    handler: (a, c) => ops.restsOn(c.universe.path, a),
+  },
+  {
     name: "audit_queue",
     description: "What to audit next, ordered by what actually MOVED. This is the payoff of the whole relation: without it, re-checking the standard is a sweep of every rule against the whole tree, which is the cost that makes an auditor agent unaffordable and its output noise.\n\n`firing` — rules whose watched address changed, each with the pointers that fired, so the audit starts from an assembled backtrace rather than from a rule and a codebase. `unwatched` — rules with NO pointer, which matters just as much: a rule with nothing watching it can never rise, so its silence must not read as calm. It is the requirement-side twin of `unknown`. `broken` — pointers whose address no longer resolves; those fire never, which also reads as coverage.\n\nA firing pointer is a PRIOR, never a verdict. Even a failing test proves only that the invariant broke; whether the RULE broke depends on whether the check faithfully encodes it, so `conformant` still needs a code-backed audit.",
     inputSchema: obj({}),
@@ -2064,7 +2070,7 @@ const tools: Tool[] = [
   },
   {
     name: "add_operation",
-    description: "Add one operation to a draft spec: `add_requirement`, `amend_statement`, `retire_requirement`, `add_criterion`, `move_section`, or `amend_standing` (a rule's level, interim, authority and lapsesWhen, stated whole). A requirement CITES NOTHING — a rule is upstream of code, so where the code is goes in a `declare_pointer`, which names one universe and carries its own baseline. Operations are the operative content — the before/after a reviewer reads is rendered FROM them. Amending replaces one statement rather than reprinting a section, so nothing unnamed by an operation is ever touched. `rationale` and `reversibility` are per operation, not per spec, so there is no free-floating prose to drift from what lands.",
+    description: "Add one operation to a draft spec: `add_requirement`, `amend_statement`, `retire_requirement`, `add_criterion`, `move_section`, or `amend_standing` (a rule's level, interim, authority, lapsesWhen and restsOnRules, stated whole). A requirement CITES NOTHING — a rule is upstream of code, so where the code is goes in a `declare_pointer`, which names one universe and carries its own baseline. Operations are the operative content — the before/after a reviewer reads is rendered FROM them. Amending replaces one statement rather than reprinting a section, so nothing unnamed by an operation is ever touched. `rationale` and `reversibility` are per operation, not per spec, so there is no free-floating prose to drift from what lands.",
     inputSchema: obj({
       specId: { type: "string" },
       kind: { type: "string", enum: [...OPERATION_KINDS] },
@@ -2085,6 +2091,7 @@ const tools: Tool[] = [
       interim: { type: "boolean", description: "`add_requirement` / `amend_standing`: true for a provisional rule — in force, and expected to lose ground when `lapsesWhen` fires. Absent is firm, so an `amend_standing` without it makes the rule firm." },
       authority: { type: "string", description: "`add_requirement` / `amend_standing`: the citation for levels 1-3, or who holds the rule for level 4." },
       lapsesWhen: { type: "string", description: "`add_requirement` / `amend_standing`: the rule falsifier — what would make it stop applying. Not `falsifier`, which is a criterion's." },
+      restsOnRules: { type: "array", items: { type: "string" }, description: "`add_requirement` / `amend_standing`: requirement ids of the rules this one rests on — so when one of them lapses, `rests_on` finds what goes with it. A rule another `add_requirement` in this same spec creates has no id yet: name that operation's id and it is stored as the rule's. Retired rules may be named. `amend_standing` states the whole standing: omit it and the links go." },
       targetOperationId: { type: "string", description: "`add_criterion` attaching to a rule THIS SAME SPEC creates: the `add_requirement` operation, since the rule has no id until ratification. Use instead of `requirementId`." },
       model: { type: "string", description: "YOUR model id. Never guess it." },
       harness: { type: "string" },
@@ -2129,6 +2136,7 @@ const tools: Tool[] = [
       interim: { type: "boolean", description: "false makes it firm." },
       authority: { type: "string" },
       lapsesWhen: { type: "string" },
+      restsOnRules: { type: "array", items: { type: "string" }, description: "Replaces the list; [] removes every link." },
       reason: { type: "string", description: "Why you are correcting it. Goes on the revision, where a reader looking for the draft's history will find it — NOT into `rationale`." },
       model: { type: "string", description: "YOUR model id. Never guess it." },
       harness: { type: "string" },

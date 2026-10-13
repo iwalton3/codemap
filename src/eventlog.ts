@@ -57,8 +57,9 @@ export const SIDECAR_PROTOCOL = 2;
 // evidence carries `siteBugs`; and a `released` sort carries its `release`. An older build would
 // refuse the first as one session sorting twice — damage, which locks its clone.
 // 3 → 4 (plan 2026-10-07-ladder-support): a requirement carries its standing (`level`,
-// `interim`, `authority`, `lapsesWhen`) and `amend_standing` changes it. An older build would
-// fold the rule without its standing and an `amend_standing` into a no-op.
+// `interim`, `authority`, `lapsesWhen`, and from phase C `restsOnRules`) and `amend_standing`
+// changes it. An older build would fold the rule without its standing and an `amend_standing`
+// into a no-op. Phase C rides this bump: nothing at 4 had shipped.
 export const EVENT_SCHEMA = 4;
 
 /**

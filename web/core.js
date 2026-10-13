@@ -182,6 +182,7 @@ async function lockedOut(r) {
  *   '/api/standard/sections':   Awaited<ReturnType<Ops['requirementSections']>>,
  *   '/api/standard/requirements': Awaited<ReturnType<Ops['listRequirements']>>,
  *   '/api/standard/requirement': Awaited<ReturnType<Ops['getRequirement']>>,
+ *   '/api/standard/rests-on': Awaited<ReturnType<Ops['restsOn']>>,
  *   '/api/standard/conformance': Awaited<ReturnType<Ops['conformance']>>,
  *   '/api/standard/attest':     { notice: string, nonce: string },
  *   '/api/standard/queues':     Awaited<ReturnType<Ops['standardQueues']>>,

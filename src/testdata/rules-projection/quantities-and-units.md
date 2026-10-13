@@ -11,6 +11,7 @@ Authority: NIST Handbook 44
 Source: owner, 2026-09-30
 Applies at: src/units.ts Gallon
 Falsifier: the system stops using US customary units.
+Rests on: "A rule in a sub-section" (ratified)
 Id: r_gal
 
 ## Density
@@ -21,4 +22,5 @@ Level: 1 natural law
 Authority: arithmetic
 Source: owner, 2026-09-30
 Falsifier: no mass-to-volume conversion.
+Rested on by: "US customary units are fixed definitions" (ratified)
 Id: r_sub

@@ -30,7 +30,7 @@ import {
   reviseOperation as reviseOperationRec, removeOperation as removeOperationRec,
   type OperationInput,
   reorganizeRequirement as reorganizeRec, requirementSections as requirementSectionsRec,
-  listRequirements as listRequirementsRec, getRequirement as getRequirementRec,
+  listRequirements as listRequirementsRec, getRequirement as getRequirementRec, restsOnFor as restsOnForRec,
   getSpec as getSpecRec, pendingSpecs as pendingSpecsRec,
 } from "../requirements.js";
 import {
@@ -282,7 +282,7 @@ export const addOperation = (
     criterion?: string; falsifier?: string; evidenceKind?: EvidenceKind;
     targetOperationId?: string;
     fromSection?: string; toSection?: string;
-    level?: RuleLevel; interim?: boolean; authority?: string; lapsesWhen?: string;
+    level?: RuleLevel; interim?: boolean; authority?: string; lapsesWhen?: string; restsOnRules?: string[];
   } & ActorInput,
 ) => addOperationRec(root, input);
 
@@ -476,6 +476,10 @@ export const restatePointer = (root: string, input: { id: string } & ActorInput)
 
 export const retirePointer = (root: string, input: { id: string; reason: string } & ActorInput) =>
   retirePointerRec(root, input);
+
+/** What a rule rests on and what rests on it — the lookup a lapsed rule needs. */
+export const restsOn = async (root: string, input: { requirementId: string }) =>
+  served(root, () => restsOnForRec(root, input.requirementId));
 
 export const pointersFor = async (root: string, input: { requirementId: string }) =>
   served(root, async () => ({ pointers: await pointersForRec(root, input.requirementId) }));

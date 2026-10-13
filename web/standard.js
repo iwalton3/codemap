@@ -25,12 +25,16 @@ const standingBadge = (r) => r.level
   : html`<span class="qbadge mute" title="no level recorded">unleveled</span>`;
 
 /**
- * Authority and falsifier, when the rule carries them.
- * @param {{ authority?: string, lapsesWhen?: string }} r
+ * Authority, falsifier and rests-on links, when the rule carries them. `links` names them:
+ * the signed text is ids, so the ids stay verbatim and the titles go under them.
+ * @param {{ authority?: string, lapsesWhen?: string, restsOnRules?: string[] }} r
+ * @param {{ id: string, title: string, status: string }[]} [links]
  */
-const standingLines = (r) => html`
+const standingLines = (r, links = []) => html`
   ${when(!!r.authority, () => html`<div class="fs dim prose">authority: ${r.authority}</div>`)}
-  ${when(!!r.lapsesWhen, () => html`<div class="fs dim prose">falsifier: ${r.lapsesWhen}</div>`)}`;
+  ${when(!!r.lapsesWhen, () => html`<div class="fs dim prose">falsifier: ${r.lapsesWhen}</div>`)}
+  ${when(!!(r.restsOnRules || []).length, () => html`<div class="fs dim mono">rests on: ${(r.restsOnRules || []).join(', ')}</div>`)}
+  ${each(links, (l) => html`<div class="fs prose">↳ ${l.title}${l.status === 'ratified' ? '' : html` <span class="qbadge">${l.status}</span>`}</div>`, (l) => l.id)}`;
 
 /**
  * The API contract, so a page's state is typed from the ops functions themselves.
@@ -525,7 +529,8 @@ class SpecPage extends Component {
    * form offering `toSection` on an `amend_statement` would only ever produce a refusal.
    */
   opFields(kind) {
-    const standing = [['level', 'level (1-4)'], ['authority', 'authority'], ['lapsesWhen', 'falsifier — what would make it stop applying', 2]];
+    const standing = [['level', 'level (1-4)'], ['authority', 'authority'], ['lapsesWhen', 'falsifier — what would make it stop applying', 2],
+      ['restsOnRules', 'rests on — rule ids, comma-separated (an add_requirement in this spec by its operation id)']];
     if (kind === 'add_requirement') return [['title', 'title'], ['section', 'section'], ['statement', 'statement', 3], ['provenance', 'provenance'], ...standing];
     if (kind === 'amend_standing') return standing;
     if (kind === 'amend_statement') return [['statement', 'new statement', 3]];
@@ -623,6 +628,7 @@ class SpecPage extends Component {
     // The form holds strings; the op takes a number and a boolean.
     if (out.level !== undefined) out.level = out.level === '' ? undefined : Number(out.level);
     if (out.interim !== undefined) out.interim = out.interim === 'true';
+    if (out.restsOnRules !== undefined) out.restsOnRules = out.restsOnRules.split(',').map((s) => s.trim()).filter(Boolean);
     return out;
   }
 
@@ -717,13 +723,13 @@ class SpecPage extends Component {
         <div class="op-after prose">${op.statement}</div>
         <div class="fs dim prose">${op.provenance}</div>
         <div class="fs">${standingBadge(op)}</div>
-        ${standingLines(op)}
+        ${standingLines(op, o.restsOn)}
       </div>`;
     }
     if (op.kind === 'amend_standing') {
       return html`<div class="op-body">
         ${when(!!o.before, () => html`<div class="op-before"><span class="dim">now</span> ${standingBadge(o.before)} ${standingLines(o.before)}</div>`)}
-        <div class="op-after"><span class="dim">becomes</span> ${standingBadge(op)} ${standingLines(op)}</div>
+        <div class="op-after"><span class="dim">becomes</span> ${standingBadge(op)} ${standingLines(op, o.restsOn)}</div>
       </div>`;
     }
     return html`<div class="op-body">
@@ -762,6 +768,7 @@ class SpecPage extends Component {
             fromSection: o.operation.fromSection, toSection: o.operation.toSection, rationale: o.operation.rationale,
             level: o.operation.level === undefined ? '' : String(o.operation.level), interim: o.operation.interim ? 'true' : 'false',
             authority: o.operation.authority, lapsesWhen: o.operation.lapsesWhen,
+            restsOnRules: (o.operation.restsOnRules || []).join(', '),
           })}">correct</button>`)}
       </div>
       ${when(!!o.blockedBy, () => html`<div class="op-blocked">${o.blockedBy}</div>`)}
@@ -921,7 +928,8 @@ const auditCard = (a, branch) => html`<div class="op-card ${branch ? 'moved' : '
  * Narrowing here rather than at every use is what makes the field access checked.
  *
  * @typedef {Extract<ApiMap['/api/standard/requirement'], { requirement: unknown }>} ReqData
- * @typedef {{ d: ReqData | null, busy: string|null, err: string|null, form: Record<string,string> }} ReqState
+ * @typedef {Extract<ApiMap['/api/standard/rests-on'], { rule: unknown }>} LinkData
+ * @typedef {{ d: ReqData | null, links: LinkData | null, busy: string|null, err: string|null, form: Record<string,string> }} ReqState
  * @extends {Component<StdProps, ReqState>}
  */
 class RequirementPage extends Component {
@@ -930,12 +938,15 @@ class RequirementPage extends Component {
   constructor(props) {
     super(props);
     /** @type {ReqState} */
-    this.state = { d: null, busy: null, err: null, form: {} };
+    this.state = { d: null, links: null, busy: null, err: null, form: {} };
   }
   load = this.createTask(async () => {
     nav.current = this.props.params.universe;
-    const r = await api('/api/standard/requirement', { u: this.props.params.universe, id: this.props.params.id });
+    const q = { u: this.props.params.universe, id: this.props.params.id };
+    const [r, links] = await Promise.all([api('/api/standard/requirement', q), api('/api/standard/rests-on', q)]);
     if (isErr(r)) throw new Error(r.error);
+    if (isErr(links)) throw new Error(links.error);
+    this.state.links = links;
     this.state.d = r;
   });
   mounted() { this.load.run(); }
@@ -956,6 +967,12 @@ class RequirementPage extends Component {
     return html`<input placeholder="${placeholder}" value="${this.state.form[k] || ''}"
       on-change="${(e, v) => { this.state.form = { ...this.state.form, [k]: v }; }}">`;
   }
+  /** One end of a rests-on link. @param {string} dir @param {string} u @param {LinkData['restsOn'][number]} l */
+  link(dir, u, l) {
+    return html`<div class="fs"><span class="dim">${dir}</span>
+      <a href="${href(requirementUrl(u, l.id))}">${l.title}</a> ${standingBadge(l)}
+      ${when(l.status !== 'ratified', () => html`<span class="qbadge">${l.status}</span>`)}</div>`;
+  }
 
   template() {
     const u = this.props.params.universe, d = this.state.d;
@@ -975,6 +992,12 @@ class RequirementPage extends Component {
         ${standingLines(d.requirement)}
         <div class="fs dim">a rule cites no code — it is upstream of the code, and where the code is lives in the pointers below</div>
       </div>
+
+      ${when(!!this.state.links && (this.state.links.restsOn.length > 0 || this.state.links.restedOnBy.length > 0), () => html`
+        <div class="sec">rests on (${this.state.links.restsOn.length}) · rested on by (${this.state.links.restedOnBy.length})</div>
+        <div class="empty">If this rule's falsifier fires, every rule resting on it goes to the owner with it.</div>
+        ${each(this.state.links.restsOn, (l) => this.link('rests on', u, l), (l) => 'on' + l.id)}
+        ${each(this.state.links.restedOnBy, (l) => this.link('rested on by', u, l), (l) => 'by' + l.id)}`)}
 
       <div class="sec">audit history (${d.audits.length})</div>
       ${when(!d.audits.length, () => html`<div class="empty">never audited. A conformance verdict with no audit behind it is <code>unknown</code>, which must never read as conformant.</div>`)}

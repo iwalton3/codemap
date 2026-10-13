@@ -28,7 +28,7 @@ import { readScope } from "./eventlog.js";
 import { universeKey } from "./sidecar-config.js";
 import {
   draftSpec, addOperation, ratifySpec, withdrawSpec, reviseSpec, reviseOperation,
-  removeOperation, getSpec, listRequirements,
+  removeOperation, getSpec, listRequirements, restsOnFor,
 } from "./requirements.js";
 import { ratifyReviewed, signOffEverything, ratifyWithReview } from "./test-approve.js";
 import { acknowledgeGap, listAcknowledgements } from "./acknowledgements.js";
@@ -777,3 +777,51 @@ test("the tool refuses a standing the fold would refuse, and amend_standing chan
     assert.match(err(await addOperation(u.root, { ...amend, specId: sp4.id, ...STANDING, level: 1 })), /retired/);
   } finally { u.cleanup(); }
 });
+
+// --- rests-on links (plan 2026-10-07-ladder-support, C1-C2) ---------------------------------
+
+test("a rule names a sibling by its operation, the link is revisable, and both ends read back", async () => {
+  for (const sidecar of [false, true]) await linksRoundTrip(sidecar);
+});
+
+async function linksRoundTrip(sidecar: boolean) {
+  const u = await universe({ sidecar });
+  try {
+    const sp = ok(await draftSpec(u.root, { title: "Ladder", ...AGENT }));
+    const add = (title: string, extra: object = {}) => addOperation(u.root, {
+      specId: sp.id, kind: "add_requirement", rationale: "from docs/rules", reversibility: "reversible",
+      title, section: "Goods", statement: `${title}.`, provenance: "INDEX.md", ...STANDING, ...extra, ...AGENT,
+    });
+    const base = ok(await add("Acme takes title to the goods"));
+    assert.match(err(await add("Dangling", { restsOnRules: ["r_nope"] })), /neither a rule nor one this spec adds/);
+    assert.match(err(await add("Twice", { restsOnRules: [base.id, requirementIdFor(base.id)] })), /twice/);
+    const card = ok(await add("Card fees are the merchant's", { restsOnRules: [base.id] }));
+    assert.deepEqual(card.operation.restsOnRules, [requirementIdFor(base.id)], "stored as the rule id the operation will create");
+    assert.match(err(await reviseOperation(u.root, { operationId: base.id, restsOnRules: [requirementIdFor(base.id)], ...AGENT })),
+      /itself|neither/);
+    assert.match(err(await removeOperation(u.root, { operationId: base.id, reason: "x", ...AGENT })), /rests on the rule/);
+
+    ok(await signOffEverything(u.root, sp.id));
+    const cleared = ok(await reviseOperation(u.root, { operationId: card.id, restsOnRules: [], ...AGENT }));
+    assert.equal(cleared.operation.restsOnRules, undefined);
+    assert.ok("restsOnRules" in cleared.operation.revisions!.at(-1)!.was, "recorded as what changed");
+    assert.equal(ok(await getSpec(u.root, sp.id)).signedOff, false, "the earlier sign-off no longer covers it");
+    ok(await reviseOperation(u.root, { operationId: card.id, restsOnRules: [base.id], ...AGENT }));
+    ok(await ratifyReviewed(u.root, sp.id));
+
+    const baseRule = ok(await restsOnFor(u.root, requirementIdFor(base.id)));
+    assert.deepEqual(baseRule.restedOnBy.map((l) => l.title), ["Card fees are the merchant's"]);
+    const cardRule = ok(await restsOnFor(u.root, requirementIdFor(card.id)));
+    assert.deepEqual(cardRule.restsOn.map((l) => [l.title, l.interim]), [["Acme takes title to the goods", true]]);
+    const { projectedRules } = await import("./rules-projection.js");
+    const projected = (await projectedRules(u.root)).find((p) => p.rule.id === requirementIdFor(base.id))!;
+    assert.deepEqual(projected.restedOnBy, ['"Card fees are the merchant\'s" (provisional)']);
+
+    // amend_standing states the links with the rest, so adding one is a change.
+    const sp2 = ok(await draftSpec(u.root, { title: "Relink", ...AGENT }));
+    const amend = { specId: sp2.id, kind: "amend_standing" as const, requirementId: requirementIdFor(base.id), rationale: "x", reversibility: "reversible" as const, ...STANDING, ...AGENT };
+    assert.match(err(await addOperation(u.root, amend)), /identical/);
+    assert.match(err(await addOperation(u.root, { ...amend, restsOnRules: [requirementIdFor(base.id)] })), /itself/);
+    ok(await addOperation(u.root, { ...amend, restsOnRules: [requirementIdFor(card.id)] }));
+  } finally { u.cleanup(); }
+}

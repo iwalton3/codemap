@@ -1864,3 +1864,95 @@ test("amend_standing on a retired rule, or against a statement amended since, do
     } finally { discard(root); }
   }
 });
+
+// --- rests-on links (plan 2026-10-07-ladder-support, C1) --------------------------------------
+
+const RESTING = (id: string, restsOnRules: string[], specId = "sp_2"): Operation => ({
+  ...LEVELED, id, specId, ord: 0, title: `Rule ${id}`, restsOnRules,
+});
+
+test("a rule rests on one already standing and on one its own spec creates", async () => {
+  const root = await log("rests-on");
+  try {
+    await ratified(root);
+    await publishSpecDrafted(root, SCOPE, opus, { ...SPEC, id: "sp_2", title: "sp_2" });
+    await publishOperation(root, SCOPE, opus, { ...RESTING("op_b", []), restsOnRules: undefined });
+    await publishOperation(root, SCOPE, opus, { ...RESTING("op_a", [requirementIdFor("op_1"), requirementIdFor("op_b")]), ord: 1 });
+    await ratifyWithReview(root, SCOPE, izzie, "sp_2", "2026-08-03T00:00:00.000Z", {}, ["op_b", "op_a"]);
+    const a = (await fold(root)).requirements.find((r) => r.id === requirementIdFor("op_a"))!;
+    assert.deepEqual(a.restsOnRules, [requirementIdFor("op_1"), requirementIdFor("op_b")]);
+  } finally { discard(root); }
+});
+
+test("a link to no rule, or to itself, is refused at the door and is damage on read", async () => {
+  for (const [what, links] of [
+    ["a rule that does not exist", ["r_nope"]],
+    ["itself", [requirementIdFor("op_a")]],
+    ["a sibling in ANOTHER draft", [requirementIdFor("op_elsewhere")]],
+    ["the same rule twice", [requirementIdFor("op_1"), requirementIdFor("op_1")]],
+  ] as const) {
+    const root = await log("rests-on-door");
+    try {
+      await ratified(root);
+      await publishSpecDrafted(root, SCOPE, opus, { ...SPEC, id: "sp_x", title: "sp_x" });
+      await publishOperation(root, SCOPE, opus, { ...RESTING("op_elsewhere", []), specId: "sp_x", restsOnRules: undefined });
+      await publishSpecDrafted(root, SCOPE, opus, { ...SPEC, id: "sp_2", title: "sp_2" });
+      const bad = RESTING("op_a", [...links]);
+      await publishOperation(root, SCOPE, opus, bad).catch(() => undefined);
+      assert.ok(!(await readScope(root, SCOPE)).some((e) => e.kind === "spec.operation" && (e.data as { operation: Operation }).operation.id === "op_a"),
+        `${what}: the door let it into the log`);
+      await damage(probe.publishOperation(root, SCOPE, opus, bad), what);
+    } finally { discard(root); }
+  }
+});
+
+test("a retired rule may still be rested on — the tombstone keeps the link resolving", async () => {
+  const root = await log("rests-on-retired");
+  try {
+    await ratified(root);
+    await against(root, "sp_r", { kind: "retire_requirement" });
+    await ratifyWithReview(root, SCOPE, izzie, "sp_r", "2026-08-03T00:00:00.000Z", {}, ["op_sp_r"]);
+    await publishSpecDrafted(root, SCOPE, opus, { ...SPEC, id: "sp_2", title: "sp_2" });
+    await publishOperation(root, SCOPE, opus, RESTING("op_a", [requirementIdFor("op_1")]));
+    await ratifyWithReview(root, SCOPE, izzie, "sp_2", "2026-08-04T00:00:00.000Z", {}, ["op_a"]);
+    assert.deepEqual((await fold(root)).requirements.find((r) => r.id === requirementIdFor("op_a"))!.restsOnRules, [requirementIdFor("op_1")]);
+  } finally { discard(root); }
+});
+
+test("a rule another operation in the draft rests on cannot be pulled out from under it", async () => {
+  const root = await log("rests-on-pull");
+  try {
+    await publishSpecDrafted(root, SCOPE, opus, SPEC);
+    await publishOperation(root, SCOPE, opus, ADD);
+    await publishOperation(root, SCOPE, opus, { ...RESTING("op_a", [requirementIdFor("op_1")], "sp_1"), ord: 1 });
+    await damage(probe.publishOperationRemoved(root, SCOPE, opus, {
+      ...ADD, removed: { at: "2026-08-02T00:00:00.000Z", by: opus, reason: "wrong" },
+    }), "pulling a rule a sibling rests on");
+  } finally { discard(root); }
+});
+
+test("amend_standing restates the links with the rest: absent clears them", async () => {
+  const root = await log("rests-on-amend");
+  try {
+    await ratified(root, [{ ...RESTING("op_a", [requirementIdFor("op_1")], "sp_1"), ord: 1 }]);
+    const rid = requirementIdFor("op_a");
+    const amend = async (id: string, extra: Partial<Operation>, at: string) => {
+      await publishSpecDrafted(root, SCOPE, opus, { ...SPEC, id, title: id });
+      await publishOperation(root, SCOPE, opus, {
+        id: `op_${id}`, specId: id, ord: 0, kind: "amend_standing", requirementId: rid, rationale: "x", reversibility: "reversible",
+        context: { requirementId: rid, statement: LEVELED.statement! }, level: 4, authority: "the CEO", lapsesWhen: "the CEO says so", ...extra,
+      } as Operation);
+      await ratifyWithReview(root, SCOPE, izzie, id, at, {}, [`op_${id}`]);
+    };
+    await amend("sp_drop", {}, "2026-08-03T00:00:00.000Z");
+    assert.equal((await fold(root)).requirements.find((r) => r.id === rid)!.restsOnRules, undefined);
+    await amend("sp_add", { restsOnRules: [requirementIdFor("op_1")] }, "2026-08-04T00:00:00.000Z");
+    assert.deepEqual((await fold(root)).requirements.find((r) => r.id === rid)!.restsOnRules, [requirementIdFor("op_1")]);
+    // An existing rule resolves, so only the self check stops this one.
+    await publishSpecDrafted(root, SCOPE, opus, { ...SPEC, id: "sp_self", title: "sp_self" });
+    await damage(probe.publishOperation(root, SCOPE, opus, {
+      id: "op_sp_self", specId: "sp_self", ord: 0, kind: "amend_standing", requirementId: rid, rationale: "x", reversibility: "reversible",
+      context: { requirementId: rid, statement: LEVELED.statement! }, level: 4, authority: "the CEO", lapsesWhen: "the CEO says so", restsOnRules: [rid],
+    } as Operation), "an amend_standing resting the rule on itself");
+  } finally { discard(root); }
+});
