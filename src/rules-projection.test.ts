@@ -28,6 +28,18 @@ test("the projection renders a hand-built standard to the golden files, byte for
 
 const git = (root: string, ...a: string[]) => spawnSync("git", a, { cwd: root, encoding: "utf8" });
 
+test("areas whose names slug alike each get a file, named the same way on every run", () => {
+  const at = (id: string, section: string) => ({ ...GOLDEN_RULES[1]!, rule: { ...GOLDEN_RULES[1]!.rule, id, title: id, section } });
+  const rules = [at("r_b", "Credit-Card"), at("r_a", "Credit Card"), at("r_i", "Index")];
+  for (const order of [rules, [...rules].reverse()]) {
+    const files = renderRules(order);
+    assert.deepEqual([...files.keys()].sort(), ["INDEX.md", "credit-card-2.md", "credit-card.md", "index-2.md"]);
+    assert.match(files.get("credit-card.md")!, /# Credit Card\n/);
+    assert.match(files.get("credit-card-2.md")!, /# Credit-Card\n/);
+    assert.match(files.get("INDEX.md")!, /\| Credit-Card \| 1 \| \[credit-card-2\.md\]\(credit-card-2\.md\) \|/);
+  }
+});
+
 /** A committed universe with two ratified rules, one of them system-wide. */
 async function universe() {
   const root = mkdtempSync(join(tmpdir(), "codemap-rules-"));
@@ -93,6 +105,22 @@ test("an automatic write happens only where docs/rules/ is ignored", async () =>
     assert.ok("ok" in r, JSON.stringify(r));
     assert.ok(existsSync(join(root, "docs/rules/INDEX.md")));
     assert.ok("skipped" in await writeRulesProjection(root, { when: "open" }), "open writes only when it is absent");
+  } finally { discard(root); }
+});
+
+test("--out never writes into a directory git tracks", async () => {
+  const root = await universe();
+  try {
+    const out = join(root, "docs/notes");
+    mkdirSync(out, { recursive: true });
+    writeFileSync(join(out, "INDEX.md"), "hand-written\n");
+    git(root, "add", "-A"); git(root, "commit", "-qm", "notes");
+    const r = await writeRulesProjection(root, { out });
+    assert.ok("error" in r && /tracked by git/.test(r.error), JSON.stringify(r));
+    assert.equal(readFileSync(join(out, "INDEX.md"), "utf8"), "hand-written\n");
+    assert.ok("ok" in await writeRulesProjection(root, { out: join(root, "docs/fresh") }), "an untracked directory inside the repository is fine");
+    discard(out);
+    assert.ok("error" in await writeRulesProjection(root, { out }), "deleted from the working tree is still tracked");
   } finally { discard(root); }
 });
 

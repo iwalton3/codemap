@@ -944,8 +944,12 @@ firm rule's falsifier firing goes to the owner.
 `codemap rules [repo] [--out dir]` renders the in-force rules in the format a repository's
 hand-written `docs/rules/` uses (`rules-projection.ts`). It is never a second authority: every
 file's first line says it is generated, a write removes only files carrying that line, and it
-**refuses to write over a `docs/rules/` git tracks** — a repository keeps its committed rules
-until it is cut over (ratified into the standard, `docs/rules/` ignored). A sync and a server
+**never writes into a directory git tracks**, `--out` included (owner, 2026-10-14) — a repository
+keeps its committed rules until it is cut over (ratified into the standard, `docs/rules/` ignored),
+and what a write replaces is otherwise generated output. Every file's header, and the line cutover
+adds to the repository's CLAUDE.md, say the rules live in codemap and edits are lost. Two areas
+whose names slug alike get numbered file names rather than one overwriting the other: the files
+are a reading surface, not an authority. A sync and a server
 start write it automatically only where it is ignored, and **not while the standard is blocked or
 stale**: generated files read as settled, which a non-authoritative scope is not. An explicit
 `codemap rules` still writes and warns.
