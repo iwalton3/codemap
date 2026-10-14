@@ -1865,6 +1865,34 @@ test("amend_standing on a retired rule, or against a statement amended since, do
   }
 });
 
+test("two drafts amending one rule's standing: the second ratifies only if it ends where the first did", async () => {
+  const base = { level: 2, interim: true, authority: "IATA RP 1600", lapsesWhen: "IATA withdraws RP 1600" } as const;
+  const firm = { kind: "amend_standing", level: 3, authority: "IATA RP 1600 §2", lapsesWhen: "IATA withdraws it" } as const;
+  for (const [what, second, lands] of [
+    ["a different end overwrites the first", { kind: "amend_standing", level: 4, authority: "the CEO", lapsesWhen: "the CEO says so" }, false],
+    ["the same end changes nothing", firm, true],
+  ] as const) {
+    const root = await log("standing-race");
+    try {
+      await publishSpecDrafted(root, SCOPE, opus, SPEC);
+      await publishOperation(root, SCOPE, opus, LEVELED);
+      await ratifyWithReview(root, SCOPE, izzie, "sp_1", "2026-08-02T00:00:00.000Z", {}, ["op_1"]);
+      const rid = requirementIdFor("op_1");
+      const ctx = { context: { requirementId: rid, statement: ADD.statement!, standing: base } };
+      await against(root, "sp_a", { ...firm, ...ctx });
+      await against(root, "sp_b", { ...second, ...ctx });
+      await ratifyWithReview(root, SCOPE, izzie, "sp_a", "2026-08-03T00:00:00.000Z", {}, ["op_sp_a"]);
+      if (lands) {
+        await ratifyWithReview(root, SCOPE, izzie, "sp_b", "2026-08-04T00:00:00.000Z", {}, ["op_sp_b"]);
+        assert.equal((await fold(root)).specs.find((s) => s.id === "sp_b")?.status, "ratified", what);
+      } else {
+        await signOff(root, izzie, "sp_b", ["op_sp_b"], "2026-08-04T00:00:00.000Z");
+        await damage(probe.publishSpecRatified(root, SCOPE, izzie, "sp_b", "2026-08-04T00:00:00.000Z", {}, ["op_sp_b"]), what);
+      }
+    } finally { discard(root); }
+  }
+});
+
 // --- rests-on links (plan 2026-10-07-ladder-support, C1) --------------------------------------
 
 const RESTING = (id: string, restsOnRules: string[], specId = "sp_2"): Operation => ({

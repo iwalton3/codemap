@@ -929,6 +929,11 @@ firm rule's falsifier firing goes to the owner.
   `operationStandingRefusal`, `restsOnRefusal` in `schema.ts`). Links point at requirements, which
   the standard's own fold holds, so the fold's refusal is both the door and the read check — a
   planted bad link is damage, without a `registerReferences` check.
+- **An `amend_standing` carries the standing it was drafted against** (`context.standing`), and
+  ratification refuses it if that standing has moved since — two drafts against one rule would
+  otherwise race, last ratified wins. One that ENDS at the standing now in force passes, moved or
+  not (owner, 2026-10-14: "just pass it through, don't waste a person's time with it").
+  `contextRefusal` is the one check the tool, the spec page and the fold share.
 - **Every standing field is signed content** (`operationContent`), so revising one voids an
   earlier sign-off. The revisable-field list is copied in five places (`OperationRevision.was`,
   `merged`, the candidate's reset, `changedFields`, `operationContent`); `spec-revision.test.ts`
@@ -945,10 +950,8 @@ start write it automatically only where it is ignored, and **not while the stand
 stale**: generated files read as settled, which a non-authoritative scope is not. An explicit
 `codemap rules` still writes and warns.
 
-*Not built* (owner decisions pending): an act for "the falsifier fired"; refusing an
-`amend_standing` whose standing moved since it was drafted (two of them against one rule race
-today, last ratified wins); where "Applies at" sites that are not code live once they are not
-pointers.
+*Not built:* an act for "the falsifier fired" (decided, next plan); where "Applies at" sites that
+are not code live once they are not pointers (owner decision pending).
 
 ## Backout is two problems, and only one of them is ours
 

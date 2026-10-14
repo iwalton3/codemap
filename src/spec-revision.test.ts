@@ -778,6 +778,39 @@ test("the tool refuses a standing the fold would refuse, and amend_standing chan
   } finally { u.cleanup(); }
 });
 
+test("a draft amend_standing whose rule's standing moved is shown blocked and refused, unless it ends there", async () => {
+  for (const sidecar of [false, true]) {
+    const u = await universe({ sidecar });
+    try {
+      const sp = ok(await draftSpec(u.root, { title: "Ladder", ...AGENT }));
+      const added = ok(await addOperation(u.root, {
+        specId: sp.id, kind: "add_requirement", rationale: "r", reversibility: "reversible",
+        title: "Goods title", section: "Goods", statement: "We never take title to the goods.", provenance: "INDEX.md", ...STANDING, ...AGENT,
+      }));
+      ok(await ratifyReviewed(u.root, sp.id));
+      const rid = requirementIdFor(added.id);
+      const firm = { kind: "amend_standing" as const, requirementId: rid, rationale: "r", reversibility: "reversible" as const, level: 2 as const, authority: "IATA RP 1600", lapsesWhen: "IATA withdraws RP 1600", ...AGENT };
+      const draft = async (title: string, extra: object) => {
+        const s = ok(await draftSpec(u.root, { title, ...AGENT }));
+        ok(await addOperation(u.root, { ...firm, specId: s.id, ...extra }));
+        return s.id;
+      };
+      const first = await draft("Firm", {});
+      const same = await draft("Firm too", {});
+      const other = await draft("CEO's call", { level: 4, authority: "the CEO", lapsesWhen: "the CEO says so" });
+      ok(await ratifyReviewed(u.root, first));
+
+      const view = ok(await getSpec(u.root, other));
+      assert.equal(view.adoptable, false, `${sidecar}: shown as not adoptable`);
+      assert.match(view.operations[0]!.blockedBy ?? "", /standing has changed/, `${sidecar}: says why`);
+      assert.match(err(await ratifyReviewed(u.root, other)), /standing has changed/, `${sidecar}: refused`);
+
+      assert.equal(ok(await getSpec(u.root, same)).adoptable, true, `${sidecar}: same end state is adoptable`);
+      ok(await ratifyReviewed(u.root, same));
+    } finally { u.cleanup(); }
+  }
+});
+
 // --- rests-on links (plan 2026-10-07-ladder-support, C1-C2) ---------------------------------
 
 test("a rule names a sibling by its operation, the link is revisable, and both ends read back", async () => {

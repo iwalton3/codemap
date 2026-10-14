@@ -1105,6 +1105,32 @@ export interface Standing {
   restsOnRules?: string[];
 }
 
+/**
+ * Why an operation's `context` no longer holds against the rule as it stands, or nothing.
+ * Tool, read and fold all call it, so the button and the refusal cannot disagree.
+ *
+ * A stale `amend_standing` whose result is the standing already in force passes (owner,
+ * 2026-10-14: "just pass it through, don't waste a person's time with it") — applying it
+ * changes nothing anyone approved against.
+ */
+export function contextRefusal(cur: Requirement | undefined, op: Standing & Pick<Operation, "kind" | "context">): string | undefined {
+  const c = op.context;
+  if (!c) return undefined;
+  if (!cur) return `requirement ${c.requirementId} no longer exists`;
+  if (cur.status === "retired") return `${cur.id} has been retired since this was written`;
+  if (op.kind === "amend_standing") {
+    const now = JSON.stringify(standingFromOperation(cur));
+    if (now === JSON.stringify(standingFromOperation(op))) return undefined;
+    if (c.standing && now !== JSON.stringify(standingFromOperation(c.standing))) {
+      return `${cur.id}'s standing has changed since this operation was written, and it would overwrite that change`;
+    }
+  }
+  if (cur.statement !== c.statement) {
+    return `${cur.id} has changed since this operation was written — it was drafted against "${c.statement}"`;
+  }
+  return undefined;
+}
+
 /** The standing an operation or a rule carries, and nothing else. */
 export const standingFromOperation = (s: Standing): Standing => ({
   ...(s.level !== undefined ? { level: s.level } : {}),
@@ -1255,6 +1281,8 @@ export type Reversibility = "reversible" | "irreversible" | "unknown";
 export interface OperationContext {
   requirementId: string;
   statement: string;
+  /** `amend_standing` only: the standing it was written against. */
+  standing?: Standing;
 }
 
 export interface Operation {

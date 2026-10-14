@@ -39,7 +39,7 @@ import type {
 } from "./schema.js";
 import {
   contentDiff, criterionIdFor, EVIDENCE_KINDS, framingContent, movedSection, normalizeSection,
-  operationContent, requirementIdFor, operationStandingRefusal, restsOnRefusal, standingRefusal, SIGN_OFF_AXES, standingFromOperation, withStanding, witnessHash,
+  contextRefusal, operationContent, requirementIdFor, operationStandingRefusal, restsOnRefusal, standingRefusal, SIGN_OFF_AXES, standingFromOperation, withStanding, witnessHash,
 } from "./schema.js";
 import { resolveSidecar, universeKey } from "./sidecar-config.js";
 import {
@@ -511,7 +511,10 @@ async function operationPayload(
     // The state this was written against. Verified at ratification, so an operation
     // drafted before another spec changed the same rule is refused rather than applied
     // to a base its author never saw.
-    context = { requirementId: r.id, statement: r.statement };
+    context = {
+      requirementId: r.id, statement: r.statement,
+      ...(input.kind === "amend_standing" ? { standing: standingFromOperation(r) } : {}),
+    };
     payload = { ...payload, requirementId: r.id };
   }
   return { payload, context };
@@ -1268,16 +1271,8 @@ export async function ratifySpec(
   const checks: OperationCheck[] = [];
   for (const op of ops) {
     if (op.context) {
-      const r = await readRequirement(root, op.context.requirementId);
-      if (!r) { checks.push({ operation: op, ok: false, reason: `requirement ${op.context.requirementId} no longer exists` }); continue; }
-      if (r.status === "retired") { checks.push({ operation: op, ok: false, reason: `${r.id} has been retired since this was written` }); continue; }
-      if (r.statement !== op.context.statement) {
-        checks.push({
-          operation: op, ok: false,
-          reason: `${r.id} has changed since this operation was written — it was drafted against "${op.context.statement}"`,
-        });
-        continue;
-      }
+      const reason = contextRefusal(await readRequirement(root, op.context.requirementId) ?? undefined, op);
+      if (reason) { checks.push({ operation: op, ok: false, reason }); continue; }
     }
     if (op.kind === "add_requirement") {
       const siblings = sectionsIntroducedBy(ops.filter((o) => o.id !== op.id));
@@ -1847,8 +1842,10 @@ export async function getSpec(
   for (const op of ops) {
     const target = op.requirementId ? await readRequirement(root, op.requirementId) : null;
     const before = target ? await serve(root, target) : undefined;
-    let contextMoved = !!op.context && (!target || target.statement !== op.context.statement);
-    let blockedBy: string | undefined;
+    const moved = contextRefusal(target ?? undefined, op);
+    let contextMoved = !!moved;
+    // A moved standing is invisible in `before`/`after`, which show only where it ends.
+    let blockedBy: string | undefined = moved && op.kind === "amend_standing" ? moved : undefined;
     let moves: RenderedOperation["moves"];
     // The same re-check ratification does, on the same subject. Only while it is a draft:
     // on a spec already disposed of this would report the standard as it is now against an

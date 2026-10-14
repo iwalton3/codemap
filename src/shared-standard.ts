@@ -47,7 +47,7 @@ import type {
   AcceptanceCriterion, Acknowledgement, Actor, Audit, BugWitness, Operation, Pointer,
   PopulationPredicate, Problem, ProposalWitness, Requirement, ScrubPolicy, Spec, VacuityCheck,
 } from "./schema.js";
-import { criterionIdFor, movedSection, normalizeSection, operationStandingRefusal, requirementIdFor, restsOnRefusal, standingFromOperation, withStanding, EVIDENCE_KINDS, AUDIT_TRIGGERS, COVERING_TRIGGERS, PROBLEM_DISPOSITIONS, ACK_PRIORITIES, ISO_DATE, auditClaimStands, contentDiff, framingContent, operationContent, witnessHash } from "./schema.js";
+import { contextRefusal, criterionIdFor, movedSection, normalizeSection, operationStandingRefusal, requirementIdFor, restsOnRefusal, standingFromOperation, withStanding, EVIDENCE_KINDS, AUDIT_TRIGGERS, COVERING_TRIGGERS, PROBLEM_DISPOSITIONS, ACK_PRIORITIES, ISO_DATE, auditClaimStands, contentDiff, framingContent, operationContent, witnessHash } from "./schema.js";
 import type { LogEvent } from "./eventlog.js";
 import { readSets, readScope, registerDoor, scopesOnDisk, sortEvents, type DoorFold } from "./eventlog.js";
 import { emitEvent } from "./write.js";
@@ -649,9 +649,7 @@ function foldStandardWithRefusals(events: LogEvent[]): { value: SharedStandard; 
           // slips through this check on every clone. A move whose source has since been
           // emptied applies cleanly and does nothing, which is the silent half.
           if (op.kind === "move_section") return !moveApplicable(requirements, op, mine);
-          if (!op.context) return false;
-          const cur = requirements.get(op.context.requirementId);
-          return !cur || cur.status === "retired" || cur.statement !== op.context.statement;
+          return !!op.context && !!contextRefusal(requirements.get(op.context.requirementId), op);
         });
         // The RATIFIER's own signature over the proposal's own text, restated here for the
         // reason every other gate is: this row reaching a teammate's clone was never seen
