@@ -1809,6 +1809,8 @@ test("a revision cannot set a standing an add could not", async () => {
   for (const [what, change] of [
     ["level 5", { level: 5 }],
     ["a blank authority", { authority: "" }],
+    ["a link to no rule", { restsOnRules: ["r_nope"] }],
+    ["a link to itself", { restsOnRules: [requirementIdFor("op_1")] }],
   ] as const) {
     const root = await log("standing-revise");
     try {
