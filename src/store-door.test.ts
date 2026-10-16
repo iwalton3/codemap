@@ -91,8 +91,12 @@ async function server(script: string, args: string[], cwd: string): Promise<{ co
   if (script === "mcp.js") {
     p.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "t", version: "0" } } }) + "\n");
   }
-  const answered = (async () => { while (!stdout.includes('"id":1') && !/codemap-serve: http/.test(stderr)) await new Promise((r) => setTimeout(r, 50)); })();
-  const first = await Promise.race([exited.then((c) => ({ c })), answered.then(() => null), new Promise((r) => setTimeout(r, 10_000)).then(() => null)]);
+  // Every wait here must end when the server does: the suite is one process, and a live timer
+  // keeps it from ever exiting after its last test.
+  let over = false;
+  void exited.then(() => { over = true; });
+  const answered = (async () => { while (!over && !stdout.includes('"id":1') && !/codemap-serve: http/.test(stderr)) await new Promise((r) => setTimeout(r, 50)); })();
+  const first = await Promise.race([exited.then((c) => ({ c })), answered.then(() => null), new Promise((r) => setTimeout(r, 10_000).unref()).then(() => null)]);
   if (first) return { code: first.c, stderr };
   // The startup rules write is not awaited by the server; give it time to land, then stop.
   await new Promise((r) => setTimeout(r, 1500));
