@@ -55,6 +55,29 @@ A Codex verifier does not count: a verifier is a session the person starts with 
 the item stays pending and the report says so. Codex never puts a question to the owner. A Codex
 host is not supported for these acts.
 
+## The rules
+
+This section applies in any mode, shared or markdown-only: whether a repository is cut over is a
+fact about the repository, not about this session's tools. The codemap skill's *Rules in a cut-over
+repo* (`codemap/SKILL.md`) is the rule; this is how these skills carry it out.
+
+- **Cut over** means `git check-ignore -q docs/rules/INDEX.md` succeeds in the member. Not cut over,
+  `docs/rules/` is the walls exactly as the steps say.
+- **Cut over, the walls are still the files** — `docs/rules/INDEX.md` and the area docs — because
+  the sorters and the coherence check read files. The files are generated from codemap's standard,
+  so cite a rule's `Id:` beside its heading.
+- **Missing** (a fresh worktree, a clone never synced): run `codemap rules` in that member. It writes
+  only into the ignored directory, so the tree stays clean. If it cannot run, or refuses, stop and
+  tell the owner: "the rules live in codemap and are not generated here; run `codemap sync`". Never
+  note `none` for a cut-over member.
+- **Not settled**: where `standard_status` (shared mode) reports a `scope`, or `codemap rules` warns
+  that the standard is blocked or stale, write that in the round section beside the paths. A rule
+  read from an unsettled standard still binds; say so rather than treat it as settled.
+- **A level-4 rule the owner states while planning** goes, in a cut-over repo, into a codemap draft
+  spec in their words (`draft_spec`, `add_operation`), never into `docs/rules/`; then tell them to
+  sign and ratify it on the spec page. Without shared capability, record their words in `owner.md`
+  and say the rule is not yet in force anywhere. The plan cites the draft spec's id.
+
 ## Findings and sort
 
 Before posting a shared round, record each missing canonical finding in the correct universe and

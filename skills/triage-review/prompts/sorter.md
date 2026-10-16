@@ -74,7 +74,7 @@ or qualifications the reader does not need are suggestions where they are harmle
 *out of scope* where they work against a stated purpose.
 
 **What settles it.** For every valid item, name what already decides its fix, or `none`:
-- **a rule** — its entry in `docs/rules/`, with its level and status;
+- **a rule** — its entry in `docs/rules/`, with its level and status, and its `Id:` where it has one;
 - **a principle** — from `CLAUDE.md`'s `## PRINCIPLES`, quoted;
 - **a sibling** — `path:line` where the code already does it the right way;
 - **the finding's own check** — group 1 only: the defect is shown by a check that fails, and there

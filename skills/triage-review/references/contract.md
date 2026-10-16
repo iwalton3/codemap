@@ -85,7 +85,8 @@ questions about the artifact are 15 and 18, under `references/diagnose.md`, *Dia
     on fixes, whatever its trailer or message says. A commit mixing a ruling with a fix counts only
     where blame reaches the fix.
 - **R3.** The findings are numbered as received, and purpose is stated as `references/shared.md` S1
-  says. The session finds the walls — `docs/rules/` and each `CLAUDE.md`'s `## PRINCIPLES` — and
+  says. The session finds the walls — `docs/rules/` (generated, where the project generates it:
+  `references/codemap-workflow.md`, *The rules*) and each `CLAUDE.md`'s `## PRINCIPLES` — and
   clusters the findings by cause into `clusters.md`, ordering and adding only, and checks that every
   finding is in a cluster (`references/shared.md`, *Clustering*). Two sorters, one blind, sort the
   clusters: each is an item, split where a sorter reads two causes, put in a group, with what

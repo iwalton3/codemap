@@ -60,7 +60,35 @@ still holds. Ask instead (`references/asking.md`).
 | Understand how some code works | the `codemap-explore` agent, or `context` / `search` before reading code |
 | Docs went stale after a change | `check_stale`, then per doc `confirm`, `update_node` or `ack_hole` (the server's instructions, *Review docs after a change*) |
 | "Does the code meet this requirement?" — audits, scrubs, the standard's queues | `/codemap-audit` |
+| "What rules bind this?" / add or change a rule | *Rules in a cut-over repo*, below |
 | More than one write | `begin`, the writes, then `sync` — all or none; a refused write comes back with why. Read it with `staged` first (it may be a dead session's write this one adopted, whose content you never saw), then `drop_staged` it and every later write that depended on it, redo them, `sync` again. **Sync before anything another session or a browser must read** — a `repair_request` a verifier picks up, a questionnaire link: a staged write is invisible outside this session |
+
+## Rules in a cut-over repo
+
+A repository is **cut over** when `git check-ignore -q docs/rules/INDEX.md` succeeds: its rules
+(levels 1-4 of the owner's ladder) live in codemap's standard, and `docs/rules/` is generated from
+them — a reading surface, never an authority, and hand edits are lost. Not cut over, `docs/rules/`
+is the rules and nothing here applies. Every skill that reads or writes rules defers to this
+section.
+
+- **Read** with the tools: `requirements` (filter by `section`), `requirement`, `requirement_sections`,
+  `rests_on`, and `standard_queue` with `pending_specs` for rules still in a draft. Cite a rule by its
+  `r_…` id. Say in your record when `standard_status` reports a `scope` (`blocked` or `stale`): the
+  rows are not settled.
+- **A reader without these tools** — a script, a subagent with files only — reads the generated
+  `docs/rules/`. **Absent is not empty:** a cut-over repo with no `docs/rules/` has rules nobody
+  generated here yet, never none. Stop and say so: "the rules live in codemap; run `codemap sync`
+  (or `codemap rules`) here". Never sort, plan or check as if there were no rules.
+- **Write** a rule only as a draft spec: `draft_spec`, then `add_operation` — `add_requirement`
+  with `level`, `interim` for a provisional rule, `authority`, `lapsesWhen` (the rule's falsifier),
+  `restsOnRules`, `provenance`, `title` and `section`; `amend_statement` or `amend_standing` to
+  change one; `retire_requirement` to take one out of force. A level-4 rule is in its holder's own
+  words. Then tell the person to review, sign and ratify it on the spec page — never sign or ratify
+  it yourself, and never write a rule into `docs/rules/`.
+- **A deviation** — code that knowingly does not conform — is `debt` when the person accepts it,
+  which they grant (`acknowledge_debt` is theirs, not yours), and a problem when they have not
+  decided: `record_audit` (non-conformant) then `raise_problem`. `/codemap-audit` has the procedure.
+  Never a prose "Deviations" line.
 
 ## Reading the answers
 

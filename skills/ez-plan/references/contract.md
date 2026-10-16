@@ -291,8 +291,10 @@ flowchart TD
     forks go to me"*).
   - **The owner decides**: a level-5 fork, put as the fork — each option, what it costs, what
     depends on it, none the default; anything touching a level-4 rule, marked for whoever holds it
-    in the project's chain of command; an item nothing settles after measuring; and first, a rule a
-    finding refuted or whose falsifier it tripped.
+    in the project's chain of command (where the project's rules are not written by hand, what they
+    rule is drafted there in their words: `references/codemap-workflow.md`, *The rules*); an item
+    nothing settles after measuring; and first, a rule a finding refuted or whose falsifier it
+    tripped.
   - **Open decisions** a round brought (`open-decisions.md`, O1..On) are settled like any item: one
     a rule, principle, sibling or check settles is logged; the rest are the owner's.
   - A conflict with a level 1-3 rule makes the item, or the plan, wrong. It is never a question.

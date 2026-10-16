@@ -94,10 +94,15 @@ else outside git stops the skill: "not a git repository".
 - **L.** A decision's level is who can change it and what that costs — the skill developer's solidity
   ladder, condensed. The agent infers the level (the skill developer: *"counterintuitively the agent can
   usually infer the level and can be generally trusted to do so"*), and who acts follows from it:
-  - **1-3, natural law, law, industry rule** — cited in `docs/rules/`. They do not move: a finding
-    or a plan that conflicts with one is wrong.
-  - **4, business rule** — in `docs/rules/`, human-written with its reason. A conflict goes up the
-    chain of command; no agent settles it.
+  - **1-3, natural law, law, industry rule** — cited in the project's rules. They do not move: a
+    finding or a plan that conflicts with one is wrong.
+  - **4, business rule** — in the project's rules, in its holder's words with its reason. A conflict
+    goes up the chain of command; no agent settles it.
+
+  **The project's rules** are `docs/rules/`, or, where the project generates that directory from
+  where its rules are kept, the rules there; the files are then a reading surface and an edit to
+  them is lost. A generated directory that is missing is never "no rules". `codemap-workflow.md`
+  says how to tell and where to read them.
   - **5, design rule** — a commitment a design direction made, costly to change. **Mostly written
     nowhere**: the code and docs show it, in how much depends on it and what reversing it would
     take (the skill developer: *"most level 5 items are unwritten and implicit based on code or

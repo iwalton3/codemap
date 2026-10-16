@@ -75,8 +75,9 @@ this.
 
 Find what already decides fixes in this unit, for both sorters to cite: `docs/rules/INDEX.md` and
 the area docs it points to, and the `## PRINCIPLES` section of each `CLAUDE.md` in scope, the user's
-global one included. Note each path, or `none`, in `sort.md`'s round section, where `ez-plan` reads
-them. A project with neither is sorted as before: what settles an item can then only be a sibling in
+global one included. Where the project generates `docs/rules/`, a missing one is not `none`:
+`references/codemap-workflow.md`, *The rules*. Note each path, or `none`, in `sort.md`'s round
+section, where `ez-plan` reads them. A project with neither is sorted as before: what settles an item can then only be a sibling in
 the code or the finding's own check. Read no earlier triage or plan records for this.
 
 ## Cluster by cause
