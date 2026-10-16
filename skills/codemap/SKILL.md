@@ -72,17 +72,16 @@ is the rules and nothing here applies. Every skill that reads or writes rules de
 section.
 
 - **Read** with the tools: `requirements` with `status: "ratified"` (without it, retired rules come
-  back too; read those only as history), filtered by `section` as needed, `requirement`, `requirement_sections`,
-  `rests_on`, and `standard_queue` with `pending_specs` for rules still in a draft. Cite a rule by its
-  `r_…` id. Say in your record when `standard_status` reports a `scope` (`blocked` or `stale`): the
-  rows are not settled.
+  back too; read those only as history), filtered by `section` as needed, `requirement`,
+  `requirement_sections`, `rests_on`, and for rules still in a draft, `standard_queue` with
+  `pending_specs`, then `spec` for each. Cite a rule by its `r_…` id. Say in your record when
+  `standard_status` reports a `scope` (`blocked` or `stale`): the rows are not settled.
 - **A reader without these tools** — a script, a subagent with files only — reads the generated
   `docs/rules/`. **Absent is not empty:** a cut-over repo with no `docs/rules/` has rules nobody
   generated here yet, never none. Generate them with `generate_rules` (`out` set to this checkout's
   `docs/rules/` when it is a worktree, which has no store of its own); without the tools, the CLI
   from the checkout that has the store: `codemap rules <that checkout> --out <this one>/docs/rules`.
-  If neither can, stop and say so. Never sort, plan or check as if there were no
-  rules.
+  If neither can, stop and say so. Never sort, plan or check as if there were no rules.
 - **Write** a rule only as a draft spec: `draft_spec`, then `add_operation` — `add_requirement`
   with `level`, `interim` for a provisional rule, `authority`, `lapsesWhen` (the rule's falsifier),
   `restsOnRules`, `provenance`, `title` and `section`; `amend_statement` or `amend_standing` to
