@@ -68,6 +68,11 @@ claude mcp add codemap -- node ~/codemap/dist/mcp.js /path/to/your-repo
 Skipped step 1? The agent will be told the universe isn't initialized and can
 run the `init` tool itself — it doesn't need you at a terminal.
 
+A server configured once for every directory (an agent's global config, started
+in whatever directory it is in) passes `--existing .` instead: it serves a repo
+that already has a store and refuses one that has none, so it never leaves an
+empty store behind.
+
 **3. Read it yourself.** The web UI serves the same store the agent writes to,
 so documentation appears live:
 

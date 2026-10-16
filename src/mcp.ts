@@ -7,6 +7,7 @@
  * Launch with either a single repo (single-universe) or a workspace manifest:
  *   node dist/mcp.js /working/Acme.API
  *   node dist/mcp.js /working/codemap.workspace.json
+ *   node dist/mcp.js --existing .     # one config for every directory: never creates a store
  *
  * Per-universe tools take an optional `universe` (defaults to the primary), so
  * one server serves several projects concurrently and links them at boundaries.
@@ -63,9 +64,12 @@ const PROTOCOL_VERSION = "2024-11-05";
 
 // No fallback to the working directory (owner, 2026-10-16: "a bare codemap mcp should just be
 // refused"): a server started in a worktree would create an empty store and serve an empty map.
-const target = process.argv[2] ?? process.env.CODEMAP_ROOT;
+// `--existing` is for a launch configured once for every directory (Codex's `mcp --existing .`):
+// it may use a store, never create one (owner, 2026-10-16).
+const existingOnly = process.argv.includes("--existing");
+const target = process.argv.slice(2).find((a) => a !== "--existing") ?? process.env.CODEMAP_ROOT;
 if (!target) {
-  process.stderr.write("codemap-mcp: name the repo or workspace to serve: `codemap mcp <repo|codemap.workspace.json>`\n");
+  process.stderr.write("codemap-mcp: name the repo or workspace to serve: `codemap mcp [--existing] <repo|codemap.workspace.json>`\n");
   process.exit(1);
 }
 let ws: Workspace;
@@ -81,6 +85,11 @@ try {
 // Before anything opens a store. A store this server creates is empty, and its rules write
 // would replace a good generated set with "None.".
 const hadStore = ws.universes.map((u) => u.path).filter((p) => existsSync(storeFile(p)));
+if (existingOnly && hadStore.length < ws.universes.length) {
+  const missing = ws.universes.filter((u) => !hadStore.includes(u.path)).map((u) => u.path);
+  process.stderr.write(`codemap-mcp: --existing and no codemap store at ${missing.join(", ")}; run \`codemap init\` there to serve it\n`);
+  process.exit(1);
+}
 
 /** This MCP connection's repair standing: the verifier claim, held in memory for its life. */
 const connection = new RepairConnection(resolvePrincipal(ws.primary.path) ?? "");

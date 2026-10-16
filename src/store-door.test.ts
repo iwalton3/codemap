@@ -126,3 +126,18 @@ test("a server given a storeless checkout writes no rule set at start", async ()
     assert.equal(existsSync(join(root, "docs", "rules")), false, "an empty store renders \"None.\"");
   } finally { discard(root); }
 });
+
+test("`mcp --existing` serves a checkout that has a store and refuses one that has none, creating nothing", async () => {
+  // For a launch configured once for every directory (a global cwd config): it may use a store,
+  // never create one (owner, 2026-10-16).
+  const root = storeless();
+  try {
+    const refused = await server("mcp.js", ["--existing", "."], root);
+    assert.equal(refused.code, 1, refused.stderr);
+    assert.match(refused.stderr, /no codemap store/);
+    assert.equal(existsSync(join(root, ".codemap")), false);
+    assert.equal(cli(["init", root]).status, 0);
+    const served = await server("mcp.js", ["--existing", "."], root);
+    assert.equal(served.code, null, served.stderr);
+  } finally { discard(root); }
+});
