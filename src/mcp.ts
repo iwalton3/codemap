@@ -62,7 +62,7 @@ const guardSelfCheck = (u: string, targetKind: string, targetId: string) =>
 const PROTOCOL_VERSION = "2024-11-05";
 
 // No fallback to the working directory (owner, 2026-10-16: "a bare codemap mcp should just be
-// refused"): started in a worktree it made an empty store and served an empty map from it.
+// refused"): a server started in a worktree would create an empty store and serve an empty map.
 const target = process.argv[2] ?? process.env.CODEMAP_ROOT;
 if (!target) {
   process.stderr.write("codemap-mcp: name the repo or workspace to serve: `codemap mcp <repo|codemap.workspace.json>`\n");
