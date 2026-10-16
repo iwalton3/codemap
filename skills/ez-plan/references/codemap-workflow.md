@@ -66,13 +66,19 @@ repo* (`codemap/SKILL.md`) is the rule; this is how these skills carry it out.
 - **Cut over, the walls are still the files** — `docs/rules/INDEX.md` and the area docs — because
   the sorters and the coherence check read files. The files are generated from codemap's standard,
   so cite a rule's `Id:` beside its heading.
-- **Missing** (a fresh worktree, a clone never synced): call `generate_rules`, with `out` set to the
-  member's absolute `docs/rules/` when the member is a worktree; without the tools, the CLI from the
-  checkout that has the store: `codemap rules <that checkout> --out <the member>/docs/rules` (run in
-  a worktree itself, it refuses: no store). Either writes only into the ignored directory, so the
-  tree stays clean. If
-  neither can, stop and tell the owner: "the rules live in codemap and are not generated here".
-  Never note `none` for a cut-over member.
+- **Regenerate at the start of every round**, before reading the walls, whether or not the files
+  exist: a rule ratified since they were written is otherwise missing from the walls (owner,
+  2026-10-16: "making sure the docs/rules/ markdown files are up to date before reading them"). Call
+  `generate_rules`, with `out` set to the member's absolute `docs/rules/` when the member is a
+  worktree; without the tools, the CLI from the checkout that has the store:
+  `codemap rules <that checkout> --out <the member>/docs/rules` (run in a worktree itself, it
+  refuses: no store). Either writes only into the ignored directory, so the tree stays clean, and
+  writes nothing over an unchanged standard. ez-plan's `--round` regenerates too, though it reuses
+  the triage round's wall list: a ratification can land between the two.
+- **Cannot regenerate**: with the files present, proceed, write "not regenerated: <why>" in the
+  round section beside the paths, and the rules in them still settle items. **Missing** (a fresh
+  worktree, a clone never synced) and not generated: stop and tell the owner: "the rules live in
+  codemap and are not generated here". Never note `none` for a cut-over member.
 - **Not settled**: where `standard_status` (shared mode) reports a `scope`, or `codemap rules` warns
   that the standard is blocked or stale, write that in the round section beside the paths. A rule
   read from an unsettled standard settles nothing on its own: an item it would settle goes to the

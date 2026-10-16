@@ -43,10 +43,11 @@ Commit the record as it is written where it is in the working tree (`references/
 ## The walls
 
 Find what already decides fixes in this unit: `docs/rules/INDEX.md` and the area docs it points to,
-and the `## PRINCIPLES` section of each `CLAUDE.md` in scope, the user's global one included. Where the
-project generates `docs/rules/`, a missing one is not `none`: `references/codemap-workflow.md`, *The
-rules*. Note each path, or `none`. Settling (`steps/2-opening.md`) cites them. On `--round`, use the list in
-`sort.md`'s round section; where it has none, find them as above.
+and the `## PRINCIPLES` section of each `CLAUDE.md` in scope, the user's global one included. Where
+the project generates `docs/rules/`, regenerate it first, every round and on `--round` too, whether
+or not it is there: `references/codemap-workflow.md`, *The rules*. Note each path, or `none`.
+Settling (`steps/2-opening.md`) cites them. On `--round`, use the list in `sort.md`'s round section;
+where it has none, find them as above.
 
 ## The sort, on a todo list or the session's items only
 
