@@ -35,19 +35,25 @@ export interface ProjectedRule {
   acceptedDeviations?: string[];
 }
 
+// Each field is one line beginning `Key:`, so free text with a line break could forge one
+// (`"a\nId: r_x"`). Owner, 2026-10-16: "Flatten names, indent the rest" — a name is a heading
+// or a table cell, which an indented continuation would break.
+const name = (s: string) => s.replace(/\s*[\r\n]\s*/g, " ");
+const field = (s: string) => s.replace(/\r\n?|\n/g, "\n  ");
+
 const slug = (area: string) =>
   area.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "area";
 
 function renderRule({ rule: r, appliesAt, restsOn = [], restedOnBy = [], acceptedDeviations = [] }: ProjectedRule): string {
-  const lines = [`### ${r.title} — ${r.interim ? "provisional" : "ratified"}`, `Rule: ${r.statement}`];
+  const lines = [`### ${name(r.title)} — ${r.interim ? "provisional" : "ratified"}`, `Rule: ${field(r.statement)}`];
   if (r.level) lines.push(`Level: ${r.level} ${LEVEL_NAMES[r.level]}`);
-  if (r.authority) lines.push(`Authority: ${r.authority}`);
-  lines.push(`Source: ${r.provenance}`);
-  if (appliesAt.length) lines.push(`Applies at: ${appliesAt.join("; ")}`);
-  if (r.lapsesWhen) lines.push(`Falsifier: ${r.lapsesWhen}`);
-  if (restsOn.length) lines.push(`Rests on: ${restsOn.join("; ")}`);
-  if (restedOnBy.length) lines.push(`Rested on by: ${restedOnBy.join("; ")}`);
-  if (acceptedDeviations.length) lines.push(`Accepted deviations: ${acceptedDeviations.join("; ")}`);
+  if (r.authority) lines.push(`Authority: ${field(r.authority)}`);
+  lines.push(`Source: ${field(r.provenance)}`);
+  if (appliesAt.length) lines.push(`Applies at: ${field(appliesAt.join("; "))}`);
+  if (r.lapsesWhen) lines.push(`Falsifier: ${field(r.lapsesWhen)}`);
+  if (restsOn.length) lines.push(`Rests on: ${field(restsOn.join("; "))}`);
+  if (restedOnBy.length) lines.push(`Rested on by: ${field(restedOnBy.join("; "))}`);
+  if (acceptedDeviations.length) lines.push(`Accepted deviations: ${field(acceptedDeviations.join("; "))}`);
   lines.push(`Id: ${r.id}`);
   return lines.join("\n");
 }
@@ -73,8 +79,8 @@ function renderArea(area: string, rules: ProjectedRule[], label = ""): string[] 
   }
   const out: string[] = [];
   for (const [sub, members] of [...subs].sort(([a], [b]) => a.localeCompare(b))) {
-    if (sub) out.push(`## ${sub}`);
-    out.push(...renderGroup(members, sub ? ` — ${sub}` : label));
+    if (sub) out.push(`## ${name(sub)}`);
+    out.push(...renderGroup(members, sub ? ` — ${name(sub)}` : label));
   }
   return out;
 }
@@ -116,14 +122,14 @@ export function renderRules(rules: ProjectedRule[]): Map<string, string> {
     "## Areas",
     named.length
       ? ["| Area | Rules | Doc |", "|---|---|---|",
-        ...named.map((a) => `| ${a} | ${areas.get(a)!.length} | [${fileOf.get(a)}](${fileOf.get(a)}) |`)].join("\n")
+        ...named.map((a) => `| ${name(a)} | ${areas.get(a)!.length} | [${fileOf.get(a)}](${fileOf.get(a)}) |`)].join("\n")
       : "None.",
   ];
   files.set("INDEX.md", doc(index));
   for (const area of named) {
     files.set(fileOf.get(area)!, doc([
       GENERATED,
-      `# ${area}`,
+      `# ${name(area)}`,
       "Format and statuses: [INDEX.md](INDEX.md).",
       ...renderArea(area, areas.get(area)!),
     ]));
@@ -146,7 +152,7 @@ export async function projectedRules(root: string): Promise<ProjectedRule[]> {
   // A retired target stays linked and says so; the projection prints in-force rules only.
   const worded = (id: string) => {
     const t = byId.get(id);
-    return t ? `"${t.title}" (${t.status === "retired" ? "retired" : t.interim ? "provisional" : "ratified"})` : id;
+    return t ? `"${name(t.title)}" (${t.status === "retired" ? "retired" : t.interim ? "provisional" : "ratified"})` : id;
   };
   const ord = new Map<string, number>();
   for (const op of await readOperations(root, {}) as Operation[]) {

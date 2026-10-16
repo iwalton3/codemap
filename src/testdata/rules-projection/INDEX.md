@@ -8,7 +8,7 @@ The rules on the owner's solidity ladder: **1 natural law**, **2 law**, **3 indu
 
 ### Acme never holds title to the goods — provisional
 Rule: "Acme should never hold title." (owner's wording)
-Built on it: the card account.
+  Built on it: the card account.
 Level: 4 business rule
 Authority: the CEO, via the Business
 Source: owner, 2026-09-30

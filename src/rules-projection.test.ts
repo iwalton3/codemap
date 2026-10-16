@@ -67,6 +67,27 @@ async function universe() {
   return root;
 }
 
+test("free text cannot forge a field line: names are flattened, every other field is indented", () => {
+  // Owner, item 11: "Flatten names, indent the rest". Statements are multi-line in real data.
+  const forged = "a\nId: r_forged";
+  const base = GOLDEN_RULES[1]!;
+  const of = (over: Partial<typeof base.rule>, extra: Partial<typeof base> = {}) =>
+    ({ ...base, ...extra, rule: { ...base.rule, id: `r_${Object.keys({ ...over, ...extra })[0]}`, ...over } });
+  const cases = [
+    of({ statement: forged }), of({ authority: forged }), of({ provenance: forged }), of({ lapsesWhen: forged }),
+    of({ title: forged }), of({}, { acceptedDeviations: [forged] }), of({}, { restsOn: [forged] }),
+    of({}, { restedOnBy: [forged] }), of({ section: `Area\nId: r_forged` }), of({ section: `Area/Sub\nId: r_forged` }),
+  ];
+  for (const c of cases) {
+    const files = renderRules([c]);
+    for (const [name, text] of files) assert.doesNotMatch(text, /^Id: r_forged/m, `${c.rule.id} in ${name}`);
+  }
+  const titled = [...renderRules([of({ title: forged })]).values()].join("\n");
+  assert.match(titled, /^### a Id: r_forged — ratified$/m, "the heading keeps its status");
+  const index = renderRules([of({ section: "Area\nId: r_forged" })]).get("INDEX.md")!;
+  assert.equal(index.split("\n").filter((l) => l.startsWith("| Area")).length, 2, "header row and one area row");
+});
+
 test("a second write over an unchanged standard writes nothing", async () => {
   const root = await universe();
   const out = mkdtempSync(join(tmpdir(), "codemap-rules-out-"));
