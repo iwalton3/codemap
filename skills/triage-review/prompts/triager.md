@@ -175,9 +175,8 @@ Do not check everything. Four checks that decide something beat forty that do no
    questions, remedied by adding the missing concept and a migration — and **the underreach
    remedy actively misleads here**, because there is no choice to remove when no single answer
    is right for both questions. Put the distinction to the owner as a §10 question; if it holds,
-   price it as a rearchitecture and say the frame is what wants handing over — to an uninvolved, stronger reader, not another
-   repair round. **Unknown** is honest when the evidence selects
-   none of them; say what would.
+   price it as a rearchitecture and say the frame is what wants handing over — to whom is the
+   owner's call. **Unknown** is honest when the evidence selects none of them; say what would.
 
    *Evidence access*, per rule rather than overall. **Consulted**. **Available and
    unconsulted**: the owner first and most often, then a reference implementation on the

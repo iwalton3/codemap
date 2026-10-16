@@ -35,7 +35,8 @@ import unittest
 from _repo import SKILL_DIR
 
 # A path into the skill, with or without the SKILL_DIR prefix the step files use.
-POINTER = re.compile(r"(?:SKILL_DIR/)?((?:steps|references|prompts|scripts)/[\w.-]+\.(?:md|py))")
+# Not after a word or `/`: `codemap/references/x.md` names another skill's file.
+POINTER = re.compile(r"(?<![\w/])(?:SKILL_DIR/)?((?:steps|references|prompts|scripts)/[\w.-]+\.(?:md|py))")
 
 
 class StepPointers(unittest.TestCase):

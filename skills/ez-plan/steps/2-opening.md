@@ -57,7 +57,8 @@ act of this session's choice line (`references/contract.md` Z8).
 
 Hand the conversation back and talk (`references/contract.md` Z6). No drafting checks, no question
 batches, no turn-by-turn transcript, and no reciting what still binds. What still binds is the
-shared contract and the fix-all guard (Z11).
+shared contract and the fix-all guard (Z11). Where the owner asks for a mock-up of a screen, build
+one for elicitation only (`references/contract.md` Z6).
 
 **Where the owner asks for a bulk fix** (`references/contract.md` Z11): first mention the key design
 changes they have not already read — what was discussed and is known is just done. Where agents

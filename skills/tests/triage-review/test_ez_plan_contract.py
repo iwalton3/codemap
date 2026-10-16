@@ -143,6 +143,8 @@ class PlanningOnlyConversation(unittest.TestCase):
         first = self.section(op, "## Settle, first pass", "1. On a triage round")
         self.assertIn("on a planning-only conversation", first)
 
+    # DESIGN.md is the canonical skills repo's and is not published with the skills.
+    @unittest.skipUnless(os.path.exists(os.path.join(ROOT, "DESIGN.md")), "no DESIGN.md here")
     def test_design_quotes_the_rulings(self):
         with open(os.path.join(ROOT, "DESIGN.md"), encoding="utf-8") as fh:
             d = " ".join(fh.read().replace("**", "").split())

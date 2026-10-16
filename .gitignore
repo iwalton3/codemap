@@ -4,3 +4,6 @@ dist/
 
 # Agent scratch worktrees — a nested git repo, never part of this tree.
 .claude/worktrees/
+
+# The skills' Python tests leave these behind.
+__pycache__/

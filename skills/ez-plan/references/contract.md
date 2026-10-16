@@ -151,7 +151,19 @@ flowchart TD
   `owner.md` turn by turn — the owner chose to talk, and a question protocol run at them defeats
   that. **Still binding:** the shared contract, `Z11` and its gate, and the ability to resume
   planning. They are honoured, not announced. Inside the discussion the owner may ask for any
-  planning option.
+  planning option. **In any discussion this skill records** — its Discuss First, and the
+  planning-only conversation it continues (`Z9`) — **the owner may ask for a mock-up**: an HTML
+  page of a screen, built by the session and published as a private Artifact, as evidence for
+  elicitation. The mock-up is never itself a spec or something a build follows; what the owner
+  rules from it is, written into the plan as an item that describes the screen well enough to stand
+  alone, cites the mock-up by its link and quotes their rulings about it (the skill developer:
+  *"Would get specified in a plan with a citation to the mock-up and user rulings about it"*;
+  *"Rule should describe it well enough to stand alone"*). It is offered only when asked, and
+  showing the one asked for is not sending the owner to an agent's output (`Q1`): a question about
+  it still carries what it asks. A mock-up is not drafting, so a discussion that drafts nothing may
+  still have one; what the owner settles from it reaches `owner.md` when the discussion ends, like
+  any other ruling (`Z7`) (the skill developer: *"I think we need to include the ability to create
+  mock-ups as a part of planning, just for elicitation."*).
 - **Z7. How a discussion ends.**
   - **A plan, here or later.** Everything the discussion settled goes to `owner.md` verbatim when it
     ends, before planning goes on. On a planning-only conversation (`Z9`) it continues the

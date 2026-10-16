@@ -132,7 +132,7 @@ questions about the artifact are 15 and 18, under `references/diagnose.md`, *Dia
   discusses or hands off. This skill writes no summary, asks no planning question, and writes no
   `plan.md` of its own.
 
-**Diagnose** — `D1`-`D8` and the diagnosis questions are in `references/diagnose.md`.
+**Diagnose** — `D1`-`D7` and the diagnosis questions are in `references/diagnose.md`.
 
 **The unit, beyond the shared rules** (`references/shared.md` U). Node 2, blame, the checkpoint, the
 evidence pack and the readers' windows cover every member; the report, earlier runs and earlier

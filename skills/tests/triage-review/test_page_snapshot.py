@@ -10,7 +10,7 @@ import subprocess
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-HARNESS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "page_harness.js")
+HARNESS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "page_harness.cjs")
 PAGES = [("ez-plan/page.html", "decisions.json"), ("reconsolidate/page.html", "clusters.json")]
 
 

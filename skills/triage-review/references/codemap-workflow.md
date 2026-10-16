@@ -78,7 +78,7 @@ answer id) on why it is not an instance — ask the person, log their answer, th
 correction citing it. `restsOn` names what holds a sort: a free label at sort time, re-pointed with
 a correction to `decision:<id>` once /ez-plan has posted the question that decides it. Nothing else
 drops a `restsOn` entry: once the person has answered, `release_held_sort` releases the sort with
-two readers (`references/verify-repair.md` in the codemap skill).
+two readers (`codemap/references/verify-repair.md`, in the codemap skill).
 
 A requirement/scope choice is the owner's. Design defects, assumptions and suggestions remain held
 for their relevant ruling. A pattern is held only when its fix forks the design (`triage-review`'s
