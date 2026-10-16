@@ -2,10 +2,10 @@
  * Whether this process may CREATE a universe's store (owner, 2026-10-16, items 6 and 8).
  *
  * Opening a store creates it, so a command pointed at a checkout with none — a worktree, a
- * typo'd `--repo` — used to make an empty one and answer from it: `diff` said "+0 −0 ~0",
- * `rules` an INDEX.md of "None.". Without a person at a terminal only `init` may create one;
- * with one, any command may, and says so. Checked where a store is created (`db()`) and where
- * `.codemap/` is made for a lock (`withLock`), so a refused command leaves nothing behind.
+ * typo'd `--repo` — would answer from an empty store: a `diff` of nothing, a rule set of
+ * "None.". Without a person at a terminal only `init` may create one; with one, any command
+ * may, and says so. Checked where a store is created (`db()`) and where `.codemap/` is made for
+ * a lock (`withLock`), so a refused command leaves nothing behind.
  */
 
 import { existsSync } from "node:fs";
