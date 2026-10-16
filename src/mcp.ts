@@ -12,6 +12,7 @@
  * one server serves several projects concurrently and links them at boundaries.
  */
 
+import { isAbsolute } from "node:path";
 import * as ops from "./ops.js";
 import * as shared from "./ops-shared.js";
 import { branchKeyFor } from "./review-target.js";
@@ -2033,6 +2034,17 @@ const tools: Tool[] = [
     description: "What a rule rests on, and what rests on IT. When a rule's falsifier fires, `restedOnBy` is what goes to the owner with it: each of those rules was ratified on the assumption the lapsed one held. Links are set by `add_requirement` / `amend_standing` (`restsOnRules`).",
     inputSchema: obj({ requirementId: { type: "string" } }, ["requirementId"]),
     handler: (a, c) => ops.restsOn(c.universe.path, a),
+  },
+  {
+    name: "generate_rules",
+    description: "Write this universe's in-force rules as `docs/rules/` markdown — what `codemap rules` does, for a session that has no CLI. The files are a GENERATED reading surface, never an authority: change a rule with a spec. Use it where a repository is cut over (git ignores `docs/rules/`) and the directory is missing, e.g. a fresh worktree: pass `out` as that worktree's `docs/rules/`, since the worktree has no store of its own. Never writes into a directory git tracks (a repository that is not cut over keeps its hand-written rules). Writes and warns where the standard is blocked or stale — say so rather than treat the rules as settled.",
+    inputSchema: obj({
+      out: { type: "string", description: "ABSOLUTE path to write into instead of this universe's own `docs/rules/` — e.g. a worktree's." },
+    }),
+    handler: async (a, c) => {
+      if (a.out && !isAbsolute(String(a.out))) return { error: "`out` must be an absolute path: a relative one would resolve against the MCP server's directory, not yours" };
+      return ops.writeRulesProjection(c.universe.path, a.out ? { out: String(a.out) } : {});
+    },
   },
   {
     name: "audit_queue",

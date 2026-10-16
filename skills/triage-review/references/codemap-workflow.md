@@ -66,10 +66,11 @@ repo* (`codemap/SKILL.md`) is the rule; this is how these skills carry it out.
 - **Cut over, the walls are still the files** — `docs/rules/INDEX.md` and the area docs — because
   the sorters and the coherence check read files. The files are generated from codemap's standard,
   so cite a rule's `Id:` beside its heading.
-- **Missing** (a fresh worktree, a clone never synced): run `codemap rules` in that member. It writes
-  only into the ignored directory, so the tree stays clean. If it cannot run, or refuses, stop and
-  tell the owner: "the rules live in codemap and are not generated here; run `codemap sync`". Never
-  note `none` for a cut-over member.
+- **Missing** (a fresh worktree, a clone never synced): call `generate_rules`, with `out` set to the
+  member's absolute `docs/rules/` when the member is a worktree; without the tools, run the CLI's
+  `codemap rules` there. Either writes only into the ignored directory, so the tree stays clean. If
+  neither can, stop and tell the owner: "the rules live in codemap and are not generated here".
+  Never note `none` for a cut-over member.
 - **Not settled**: where `standard_status` (shared mode) reports a `scope`, or `codemap rules` warns
   that the standard is blocked or stale, write that in the round section beside the paths. A rule
   read from an unsettled standard settles nothing on its own: an item it would settle goes to the

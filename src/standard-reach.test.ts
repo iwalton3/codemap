@@ -123,7 +123,6 @@ const MCP_EXEMPT: Record<string, string> = {
   adjudicate: "PRINCIPAL only",
   acknowledgeDebt: "PRINCIPAL only",
   releaseAcknowledgement: "open to any actor, but it is the reader of the queue who notices",
-  writeRulesProjection: "a file write into the working tree, not an act: `codemap rules`, and on sync and server start where docs/rules/ is ignored",
 };
 
 test("the standard surface has more than a handful of ops, or this sweep is vacuous", () => {

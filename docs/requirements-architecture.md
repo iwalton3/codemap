@@ -941,7 +941,8 @@ firm rule's falsifier firing goes to the owner.
 
 ### `docs/rules/` is a projection of the standard
 
-`codemap rules [repo] [--out dir]` renders the in-force rules in the format a repository's
+`codemap rules [repo] [--out dir]`, and the MCP tool `generate_rules` (`out` absolute, for a
+worktree that has no store of its own), render the in-force rules in the format a repository's
 hand-written `docs/rules/` uses (`rules-projection.ts`). It is never a second authority: every
 file's first line says it is generated, a write removes only files carrying that line, and it
 **never writes into a directory git tracks**, `--out` included (owner, 2026-10-14) — a repository
