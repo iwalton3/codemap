@@ -47,6 +47,11 @@ const SKILL_VOCAB = new Set([
   "verified", "checked", "invalid",                          // review trust levels, a sort classification
   "changed", "blocked", "words", "state", "maps", "arbitrator", "ruling", "child",     // asking / repair fields
   "unread", "disputed", "unclear",                           // possiblySuperseded states
+  // rules in a cut-over repo: add_operation kinds, the standard_queue name, a rule's fields, values
+  "add_requirement", "amend_statement", "amend_standing", "retire_requirement", "pending_specs",
+  "title", "section", "statement", "level", "interim", "authority", "provenance", "rationale",
+  "debt", "scope", "stale", "none", "out",
+  "grep", "regulation", "aside",                             // discover-rules / reconsolidate prose
 ]);
 
 /** `use \`x\``, `see \`x\``, `with \`x\`` … — a reference to something callable. */
