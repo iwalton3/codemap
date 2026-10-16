@@ -9,9 +9,9 @@ go.
 
 ## Reading (step 0)
 
-- **What is already a rule**: `requirements`, and every `add_requirement` in a spec still waiting on
-  the owner (`standard_queue` with `pending_specs`, then `spec` for each). Skip both: a rule in a
-  draft is proposed already.
+- **What is already a rule**: `requirements` with `status: "ratified"`, and every `add_requirement`
+  in a spec still waiting on the owner (`standard_queue` with `pending_specs`, then `spec` for each).
+  Skip both: a rule in a draft is proposed already.
 - **What was rejected** lives in the run records, never in `docs/rules/`: read the **Rejected**
   section of every earlier discover run record wherever run records are kept (*Where records live*).
   Propose one again only with a new source.

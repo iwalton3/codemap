@@ -10,8 +10,10 @@ saying they are not in force anywhere yet.
 ## Before it starts
 
 `docs/rules/` existing is not the test here: the standard is. Read the rules with `requirements`
-(levels 1-4, each with its `r_…` id) and the drafts still waiting on the owner (`standard_queue`
-with `pending_specs`); a rule in a draft predicts answers like one in force. If the standard has no
+and `status: "ratified"` (levels 1-4, each with its `r_…` id; a retired rule is history and explains
+nothing now), and the drafts still waiting on the owner: `standard_queue` with `pending_specs` lists
+them by id and count only, so read each with `spec` for its `add_requirement` and amendment
+operations. A rule in a draft predicts answers like one in force. If the standard has no
 level 1-3 rules, stop as the skill says: run `/discover-rules` first. Rejected candidates are in the
 discover run records, not in `docs/rules/`. Where `standard_status` reports a `scope`, say so on
 the page: the rules read are not settled.

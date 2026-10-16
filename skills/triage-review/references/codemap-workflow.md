@@ -72,7 +72,9 @@ repo* (`codemap/SKILL.md`) is the rule; this is how these skills carry it out.
   note `none` for a cut-over member.
 - **Not settled**: where `standard_status` (shared mode) reports a `scope`, or `codemap rules` warns
   that the standard is blocked or stale, write that in the round section beside the paths. A rule
-  read from an unsettled standard still binds; say so rather than treat it as settled.
+  read from an unsettled standard settles nothing on its own: an item it would settle goes to the
+  owner instead, with the rule and why the standard is not settled. It still counts as a conflict to
+  raise.
 - **A level-4 rule the owner states while planning** goes, in a cut-over repo, into a codemap draft
   spec in their words (`draft_spec`, `add_operation`), never into `docs/rules/`; then tell them to
   sign and ratify it on the spec page. Without shared capability, record their words in `owner.md`

@@ -71,7 +71,8 @@ them — a reading surface, never an authority, and hand edits are lost. Not cut
 is the rules and nothing here applies. Every skill that reads or writes rules defers to this
 section.
 
-- **Read** with the tools: `requirements` (filter by `section`), `requirement`, `requirement_sections`,
+- **Read** with the tools: `requirements` with `status: "ratified"` (without it, retired rules come
+  back too; read those only as history), filtered by `section` as needed, `requirement`, `requirement_sections`,
   `rests_on`, and `standard_queue` with `pending_specs` for rules still in a draft. Cite a rule by its
   `r_…` id. Say in your record when `standard_status` reports a `scope` (`blocked` or `stale`): the
   rows are not settled.
