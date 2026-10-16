@@ -92,7 +92,7 @@ test("a rule prints the debts granted against it, and a released one goes", asyn
     assert.ok(!("error" in granted), JSON.stringify(granted));
     assert.ok("ok" in await writeRulesProjection(root, { out }));
     const file = readdirSync(out).map((f) => readFileSync(join(out, f), "utf8")).join("\n");
-    assert.match(file, /Accepted deviations: the bank's sample fails strict totals \(until 2027-01-01\)/);
+    assert.match(file, /Accepted deviations: the bank's sample fails strict totals \(revalidate by 2027-01-01\)/);
     const id = (granted as { acknowledgement: { id: string } }).acknowledgement.id;
     assert.ok(!("error" in await releaseAcknowledgement(root, id, "conformant now", { agent: true, model: "m" })));
     assert.ok("ok" in await writeRulesProjection(root, { out }));

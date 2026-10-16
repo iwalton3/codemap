@@ -167,7 +167,7 @@ export async function projectedRules(root: string): Promise<ProjectedRule[]> {
       restsOn: (rule.restsOnRules ?? []).map(worded).sort(),
       restedOnBy: requirements.filter((x) => x.restsOnRules?.includes(rule.id)).map((x) => worded(x.id)).sort(),
       acceptedDeviations: (await readAcknowledgements(root, { requirementId: rule.id, state: "active" }))
-        .filter((a) => a.basis === "debt").map((a) => `${a.rationale} (until ${a.revalidateBy})`),
+        .filter((a) => a.basis === "debt").map((a) => `${a.rationale} (revalidate by ${a.revalidateBy})`),
     });
   }
   return out;
