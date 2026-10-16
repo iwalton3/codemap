@@ -37,9 +37,10 @@ export interface ProjectedRule {
 
 // Each field is one line beginning `Key:`, so free text with a line break could forge one
 // (`"a\nId: r_x"`). Owner, 2026-10-16: "Flatten names, indent the rest" — a name is a heading
-// or a table cell, which an indented continuation would break.
+// or a table cell, which an indented continuation would break. Four spaces, not two: CommonMark
+// reads 0-3 as a heading (`###`, or a setext `===` under the field) that interrupts the field.
 const name = (s: string) => s.replace(/\s*[\r\n]\s*/g, " ");
-const field = (s: string) => s.replace(/\r\n?|\n/g, "\n  ");
+const field = (s: string) => s.replace(/\r\n?|\n/g, "\n    ");
 
 const slug = (area: string) =>
   area.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "area";
