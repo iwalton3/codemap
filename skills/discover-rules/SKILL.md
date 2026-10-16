@@ -24,8 +24,8 @@ From the owner's solidity ladder (2026-09-29). Only these three:
 3. **Industry rule** — set by an industry body or a provider the system depends on: a standards
    body (e.g. IATA, ISO, a banking file format), a card scheme, a payment processor's policy, a
    vendor's published API contract. **A law that binds a partner, which the partner then requires
-   of the business, is the partner's rule** — level 3, with the partner as its authority (owner,
-   2026-09-30, on a bank's KYC: *"it is a vendor rule because the bank requires us to run their
+   of the business, is the partner's rule** — level 3, with the partner as its authority (the skill
+   developer, on a bank's KYC: *"it is a vendor rule because the bank requires us to run their
    kyc"*).
 
 Everything else is out of scope, and the skill drafts **no text** for it:
@@ -62,8 +62,8 @@ All of these, or it is not proposed:
   rule applies; it is never the authority.
 
 **Status is the owner's call.** The skill proposes no ratified or provisional; the owner marks it.
-*Ratified* means not on the roadmap to change; *provisional*, interim and expected to change (owner,
-2026-09-30).
+*Ratified* means not on the roadmap to change; *provisional*, interim and expected to change (the skill
+developer).
 
 Past rulings are **evidence, never authority** (the skill developer: *"rulings are usually
 interactions between different system rules"*). A ruling a candidate explains is listed under it.
@@ -78,7 +78,8 @@ quoting only the clauses that bite; split one where its clauses bite different a
 The records repo (`--records`, else the one holding the planning records) holds the planning
 records and `docs/rules/`. If `docs/rules/` exists, read `INDEX.md`, every area doc, and every
 **Rejected** list: skip anything ratified or rejected, and propose again only with a new source.
-Discovery is incremental.
+Discovery is incremental. **Where the records repo is cut over** — its rules live in codemap and
+`docs/rules/` is generated — steps 0, 4 and 6 change: `references/codemap-workflow.md`.
 
 **Where records live.** The planning records are `triage/` and `plan/` under the records repo's
 `$(git rev-parse --git-common-dir)`, plus every directory a `CLAUDE.md` names for `/triage-review`
@@ -89,7 +90,8 @@ supersedes it. Any `CLAUDE.md` the session was given counts, the user's global o
 relative path is relative to the records repo's working tree root, and a run record in the working
 tree is committed as it is written. Some shells wrap `grep` to skip `.git` and ignored files, which
 hides these records without an error; use `command grep` or `rg --no-ignore --hidden`, and check a
-search of its `triage/` returns hits before trusting an empty one.
+search of its `triage/` returns hits before trusting an empty one. A run record never goes under
+`docs/rules/` in a cut-over repo (`references/codemap-workflow.md`).
 
 **1. Areas.** Name the system's areas the way its code and specs do (e.g. *the money plane*, *the
 invoice system*); where the code names none, coin one and say so, for the owner to rename. An area
@@ -133,7 +135,8 @@ approve or reject, **ratified or provisional**, and room for a reason. Level-unc
 level. **The doc is a reading surface, not the record.** Unrecorded conflicts are raised in the
 conversation, not left in the doc.
 
-**6. Write what was approved.** Only after the owner's marks. Read them back from the doc (the
+**6. Write what was approved.** Only after the owner's marks. In a cut-over repo nothing is written
+to `docs/rules/`: `references/codemap-workflow.md`, *Writing*. Read them back from the doc (the
 docs connector's read, or the artifact's store): each rule's decision, status and note, the level
 placed on each level-unclear item, and any note typed beside a *Needs a source* item. **A note that
 changes a rule's wording or level wins**, quoted verbatim with the date; a note on a *Needs a

@@ -21,7 +21,9 @@ approved"*).
 **`docs/rules/` must exist.** Run `/discover-rules` first. Otherwise every answer that follows from
 an outside rule without naming it looks like a business rule or a principle, the two expensive
 layers (the skill developer: *"We need to discover the system rules levels 1-3 before we can discover
-#4 (business rules) and #6 (principles)"*). If it is missing, say so and stop.
+#4 (business rules) and #6 (principles)"*). If it is missing, say so and stop — **unless the
+records repo is cut over** (its rules live in codemap and `docs/rules/` is generated from them):
+then `references/codemap-workflow.md` says where the rules are read and written.
 
 **Where records live.** Records are under the records repo's `$(git rev-parse --git-common-dir)`,
 never a literal `.git/`: in a linked worktree that is a file, and the records are in the main
@@ -181,7 +183,8 @@ or falsifier) is asked about, not guessed. Then:
   it they ship, which **the owner manages: the skill says which principle looks cross-project and
   writes there only when asked** (the skill developer: *"For global claude.md, that's territory where
   it only goes in there if the user asks"*). Its provenance line names repos, not absolute paths.
-- **A business rule** goes into `docs/rules/` in the format `/discover-rules` defines: level 4, the
+- **A business rule** (in a cut-over repo: `references/codemap-workflow.md`) goes into `docs/rules/`
+  in the format `/discover-rules` defines: level 4, the
   owner's words as the Rule, the owner's reason as the Authority, and a falsifier. It goes into the
   area doc it governs, or into `INDEX.md` if it is system-wide.
 - **Doc material** goes, in the owner's words, into the doc they named; with no doc named it is
@@ -218,4 +221,5 @@ Close the run record with `writeback.md`: what was written where, what was table
 the discussed notes, and **how the set guesses held** — for each set, how many clusters the owner
 marked as guessed. The skill's sorting improves only if that is counted.
 
-Commit the edits to `CLAUDE.md` and `docs/rules/`, naming the run.
+Commit the edits to `CLAUDE.md` and `docs/rules/`, naming the run. In a cut-over repo only `CLAUDE.md`
+is committed: the rules went to a draft spec.
