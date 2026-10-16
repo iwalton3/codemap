@@ -116,6 +116,23 @@ test("a checkout with no store generates nothing, rather than an empty rule set"
   } finally { discard(root); }
 });
 
+test("a .codemap/ with no codemap.db is no store: an empty one, or one holding only a legacy JSON store", async () => {
+  // Owner, C1: "Store file exists". A legacy import carries no standard, so it renders "None." too.
+  const { writeRulesProjection: op } = await import("./ops.js");
+  for (const seed of [[], ["anchors.json", JSON.stringify({ anchors: [] })]]) {
+    const root = mkdtempSync(join(tmpdir(), "codemap-rules-nodb-"));
+    try {
+      git(root, "init", "-q");
+      mkdirSync(join(root, ".codemap"));
+      if (seed.length) writeFileSync(join(root, ".codemap", seed[0]!), seed[1]!);
+      const r = await op(root, {});
+      assert.match((r as { error?: string }).error ?? JSON.stringify(r), /no codemap store/, `seeded ${seed[0] ?? "nothing"}`);
+      assert.ok(!existsSync(join(root, ".codemap", "codemap.db")), "it must not create a store");
+      assert.ok(!existsSync(join(root, "docs")), "it must not write files");
+    } finally { discard(root); }
+  }
+});
+
 test("a tracked docs/rules/ is never written over, and the refusal names the cutover", async () => {
   const root = await universe();
   try {

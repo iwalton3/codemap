@@ -12,6 +12,8 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { isTabId, webSession, withSession } from "./sync-session.js";
 import { randomBytes } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { storeFile } from "./store-door.js";
 import { fileURLToPath } from "node:url";
 import { dirname, join, normalize, extname } from "node:path";
 import * as ops from "./ops.js";
@@ -49,7 +51,12 @@ const MIME: Record<string, string> = {
   ".wasm": "application/wasm",
 };
 
-const target = process.argv[2] ?? process.env.CODEMAP_ROOT ?? process.cwd();
+// No fallback to the working directory, as for `codemap mcp` (owner, 2026-10-16).
+const target = process.argv[2] ?? process.env.CODEMAP_ROOT;
+if (!target) {
+  process.stderr.write("codemap-serve: name the repo or workspace to serve: `codemap serve <repo|codemap.workspace.json> [port]`\n");
+  process.exit(1);
+}
 const port = Number(process.argv[3] ?? process.env.PORT ?? 4310);
 let ws: Workspace;
 try {
@@ -58,6 +65,8 @@ try {
   process.stderr.write(`codemap-serve: failed to load workspace "${target}": ${e?.message ?? e}\n`);
   process.exit(1);
 }
+// Before anything opens a store; see the same line in mcp.ts.
+const hadStore = ws.universes.map((u) => u.path).filter((p) => existsSync(storeFile(p)));
 
 const rootFor = (u: string | null) => (u && ws.byId.get(u) ? ws.byId.get(u)!.path : ws.primary.path);
 
@@ -402,7 +411,7 @@ const server = createServer((req, res) => {
 void shared.attemptGoneSessions(ws.universes.map((u) => u.path));
 setInterval(() => { void shared.attemptGoneSessions(ws.universes.map((u) => u.path)); }, 30_000).unref();
 shared.startPullLoop(ws.universes.map((u) => u.path), () => lastRequest);
-void projectRulesOnOpen(ws.universes.map((u) => u.path), (msg) => console.error(msg));
+void projectRulesOnOpen(hadStore, (msg) => console.error(msg));
 
 async function serveRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
   try {

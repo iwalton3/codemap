@@ -316,7 +316,8 @@ output.
 
 **Joining a sidecar somebody else set up** is the same minus the publishing:
 clone it, point at it, `sync`. The fold materializes their state into your store,
-resolved against *your* checkout.
+resolved against *your* checkout. A script or an agent runs `codemap init <repo>`
+first: without a terminal, no command but `init` creates a store.
 
 ### Day to day
 

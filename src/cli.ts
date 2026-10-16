@@ -10,6 +10,7 @@ import { findDamage } from "./damage-scan.js";
 import { analyzeMarten } from "./analyzers/marten.js";
 import { enableAnalyzer } from "./analyzers/run.js";
 import { withLock } from "./lock.js";
+import { NoStore, setStoreCreation, storeCreationFor } from "./store-door.js";
 import * as ops from "./ops.js";
 import * as shared from "./ops-shared.js";
 import { questionnaireList, questionnaireRead, questionnaireStatus, waitQuestionnaireStatus } from "./ops/questionnaire-status.js";
@@ -700,6 +701,14 @@ async function cmdCheck(root: string): Promise<void> {
 
 
 const { positionals, values } = parseArgs({ allowPositionals: true, options: { verbose: { type: "boolean" }, emit: { type: "boolean" }, repo: { type: "string" }, "no-fetch": { type: "boolean" }, json: { type: "boolean" }, limit: { type: "string" }, offset: { type: "string" }, "dry-run": { type: "boolean" }, confirm: { type: "boolean" }, viewed: { type: "boolean" }, all: { type: "boolean" }, "min-severity": { type: "string" }, force: { type: "boolean" }, "max-prs": { type: "string" }, summary: { type: "string" }, approve: { type: "boolean" }, "request-changes": { type: "boolean" }, pull: { type: "boolean" }, anyone: { type: "boolean" }, only: { type: "string" }, queue: { type: "boolean" }, tier: { type: "string" }, locate: { type: "boolean" }, "show-elsewhere": { type: "boolean" }, principal: { type: "string" }, cursor: { type: "string" }, "wait-ms": { type: "string" }, apply: { type: "boolean" }, assign: { type: "string", multiple: true }, ref: { type: "string" }, title: { type: "string" }, path: { type: "string", multiple: true }, symbol: { type: "string", multiple: true }, node: { type: "string", multiple: true }, base: { type: "string" }, head: { type: "string" }, whole: { type: "boolean" }, walk: { type: "string" }, out: { type: "string" } } });
+
+// Before anything opens a store. A refusal is thrown from deep inside an op; it reaches here.
+setStoreCreation(storeCreationFor(positionals[0] ?? "", Boolean(process.stdin.isTTY)));
+process.on("uncaughtException", (e) => {
+  // Not a rethrow, which would exit 7 instead of the 1 an uncaught error gave before.
+  console.error(e instanceof NoStore ? e.message : e);
+  process.exit(1);
+});
 
 // Damage in the shared log locks every command but the ones that fetch and re-check, and the
 // read-only check itself (plan 1.2). Which store a command is about varies, so every store named

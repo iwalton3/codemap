@@ -23,7 +23,7 @@
  */
 
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { storeFile } from "../store-door.js";
 import {
   draftSpec as draftSpecRec, addOperation as addOperationRec, ratifySpec as ratifySpecRec,
   withdrawSpec as withdrawSpecRec, reviseSpec as reviseSpecRec,
@@ -511,9 +511,10 @@ export const listProblems = async (root: string, input: { requirementId?: string
 /** Render the in-force standard as `docs/rules/` markdown. See `rules-projection.ts`. */
 // Through `served` like every read: the files present the standard as settled, so a blocked
 // or stale scope has to reach whoever asked for them.
-// Before `served`, which opens the store and so would CREATE an empty one: a checkout with none
-// (a worktree) would then generate an empty rule set that reads as "no rules".
+// Before `served`, tty or not (owner, C1: "Store file exists"): a store created or imported here
+// holds no standard, so a worktree would get an empty rule set reading as "no rules". Beside the
+// CLI's store door on purpose: that one says "run `codemap init`", which leads to the same place.
 export const writeRulesProjection = async (root: string, opts: { out?: string; when?: RulesWhen } = {}) =>
-  existsSync(join(root, ".codemap"))
+  existsSync(storeFile(root))
     ? served(root, () => writeRulesProjectionRec(root, opts))
     : { error: `${root} has no codemap store, so it has no rules to generate — run this against the checkout that has one, with --out (or generate_rules' out) for a worktree` };

@@ -17,6 +17,7 @@ import { tmpdir } from "node:os";
 import { createHash, randomBytes } from "node:crypto";
 import { join, dirname } from "node:path";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { admitStore } from "./store-door.js";
 
 const lockPath = (root: string) => join(root, ".codemap", ".lock");
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -87,6 +88,7 @@ function pidAlive(pid: number): boolean {
 }
 
 export function withLock<T>(root: string, fn: () => Promise<T>, opts: LockOpts = {}): Promise<T> {
+  admitStore(root); // `hold` makes `<root>/.codemap/` for the lock file
   return hold(lockPath(root), root, fn, opts);
 }
 

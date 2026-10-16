@@ -15,6 +15,7 @@ import { readFileSync, readdirSync, existsSync, writeFileSync, renameSync, rmSyn
 import { mkdirSync } from "node:fs";
 import { join, sep } from "node:path";
 import { randomBytes } from "node:crypto";
+import { admitStore } from "./store-door.js";
 
 export const WORK_REF = "@work";
 /**
@@ -33,6 +34,7 @@ const cache = new Map<string, DatabaseSync>();
 export function db(root: string): DatabaseSync {
   let d = cache.get(root);
   if (d) return d;
+  admitStore(root);
   const dir = join(root, ".codemap");
   mkdirSync(dir, { recursive: true });
   // Ensure the whole .codemap/ is git-ignored (DB must not be tracked).

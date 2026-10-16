@@ -13,6 +13,8 @@
  */
 
 import { isAbsolute } from "node:path";
+import { existsSync } from "node:fs";
+import { storeFile } from "./store-door.js";
 import * as ops from "./ops.js";
 import * as shared from "./ops-shared.js";
 import { branchKeyFor } from "./review-target.js";
@@ -59,7 +61,13 @@ const guardSelfCheck = (u: string, targetKind: string, targetId: string) =>
 
 const PROTOCOL_VERSION = "2024-11-05";
 
-const target = process.argv[2] ?? process.env.CODEMAP_ROOT ?? process.cwd();
+// No fallback to the working directory (owner, 2026-10-16: "a bare codemap mcp should just be
+// refused"): started in a worktree it made an empty store and served an empty map from it.
+const target = process.argv[2] ?? process.env.CODEMAP_ROOT;
+if (!target) {
+  process.stderr.write("codemap-mcp: name the repo or workspace to serve: `codemap mcp <repo|codemap.workspace.json>`\n");
+  process.exit(1);
+}
 let ws: Workspace;
 try {
   ws = await loadWorkspace(target);
@@ -70,6 +78,9 @@ try {
   );
   process.exit(1);
 }
+// Before anything opens a store. A store this server creates is empty, and its rules write
+// would replace a good generated set with "None.".
+const hadStore = ws.universes.map((u) => u.path).filter((p) => existsSync(storeFile(p)));
 
 /** This MCP connection's repair standing: the verifier claim, held in memory for its life. */
 const connection = new RepairConnection(resolvePrincipal(ws.primary.path) ?? "");
@@ -2582,7 +2593,7 @@ setProcessSessionKind("mcp");
 void shared.attemptGoneSessions(ws.universes.map((u) => u.path));
 let lastCall = Date.now();
 shared.startPullLoop(ws.universes.map((u) => u.path), () => lastCall);
-void projectRulesOnOpen(ws.universes.map((u) => u.path), (msg) => process.stderr.write(`codemap-mcp: ${msg}\n`));
+void projectRulesOnOpen(hadStore, (msg) => process.stderr.write(`codemap-mcp: ${msg}\n`));
 
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => {
