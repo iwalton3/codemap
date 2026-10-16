@@ -22,6 +22,7 @@ Authority: IETF RFC 8259 §6
 Source: https://www.rfc-editor.org/rfc/rfc8259.txt
 Applies at: src/money.ts DecimalConverter; acme/react: anchor a_1
 Falsifier: Acme drops JSON.
+Accepted deviations: the legacy converter still reads JSON numbers (until 2027-01-01)
 Id: r_json
 
 ## Unleveled system-wide rules (1)

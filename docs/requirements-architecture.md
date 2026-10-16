@@ -949,7 +949,9 @@ keeps its committed rules until it is cut over (ratified into the standard, `doc
 and what a write replaces is otherwise generated output. Every file's header, and the line cutover
 adds to the repository's CLAUDE.md, say the rules live in codemap and edits are lost. Two areas
 whose names slug alike get numbered file names rather than one overwriting the other: the files
-are a reading surface, not an authority. A sync and a server
+are a reading surface, not an authority. A rule prints each live `debt` granted against it in this
+universe as `Accepted deviations:`, with its reason and revalidation date (owner, 2026-10-16:
+a deviation is debt when accepted, a problem when not). A sync and a server
 start write it automatically only where it is ignored, and **not while the standard is blocked or
 stale**: generated files read as settled, which a non-authoritative scope is not. An explicit
 `codemap rules` still writes and warns.

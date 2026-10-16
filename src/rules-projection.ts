@@ -10,7 +10,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import type { Anchor, Operation, Pointer, Requirement } from "./schema.js";
-import { readAnchorStore, readOperations, readPointers, readRequirements } from "./store.js";
+import { readAcknowledgements, readAnchorStore, readOperations, readPointers, readRequirements } from "./store.js";
 
 export const SYSTEM_WIDE = "System-wide";
 export const RULES_DIR = join("docs", "rules");
@@ -31,12 +31,14 @@ export interface ProjectedRule {
   /** Each linked rule, worded (phase C). Optional so a rule with no links needs nothing. */
   restsOn?: string[];
   restedOnBy?: string[];
+  /** Each live `debt` granted against the rule in this universe, worded (owner Q1, 2026-10-16). */
+  acceptedDeviations?: string[];
 }
 
 const slug = (area: string) =>
   area.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "area";
 
-function renderRule({ rule: r, appliesAt, restsOn = [], restedOnBy = [] }: ProjectedRule): string {
+function renderRule({ rule: r, appliesAt, restsOn = [], restedOnBy = [], acceptedDeviations = [] }: ProjectedRule): string {
   const lines = [`### ${r.title} — ${r.interim ? "provisional" : "ratified"}`, `Rule: ${r.statement}`];
   if (r.level) lines.push(`Level: ${r.level} ${LEVEL_NAMES[r.level]}`);
   if (r.authority) lines.push(`Authority: ${r.authority}`);
@@ -45,6 +47,7 @@ function renderRule({ rule: r, appliesAt, restsOn = [], restedOnBy = [] }: Proje
   if (r.lapsesWhen) lines.push(`Falsifier: ${r.lapsesWhen}`);
   if (restsOn.length) lines.push(`Rests on: ${restsOn.join("; ")}`);
   if (restedOnBy.length) lines.push(`Rested on by: ${restedOnBy.join("; ")}`);
+  if (acceptedDeviations.length) lines.push(`Accepted deviations: ${acceptedDeviations.join("; ")}`);
   lines.push(`Id: ${r.id}`);
   return lines.join("\n");
 }
@@ -163,6 +166,8 @@ export async function projectedRules(root: string): Promise<ProjectedRule[]> {
       rule, appliesAt: pointers.map((p) => pointerText(p, anchors, universe)).sort(),
       restsOn: (rule.restsOnRules ?? []).map(worded).sort(),
       restedOnBy: requirements.filter((x) => x.restsOnRules?.includes(rule.id)).map((x) => worded(x.id)).sort(),
+      acceptedDeviations: (await readAcknowledgements(root, { requirementId: rule.id, state: "active" }))
+        .filter((a) => a.basis === "debt").map((a) => `${a.rationale} (until ${a.revalidateBy})`),
     });
   }
   return out;

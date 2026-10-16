@@ -15,6 +15,8 @@ import { discard } from "./test-tmp.js";
 import { draftSpec, addOperation } from "./requirements.js";
 import { ratifyReviewed } from "./test-approve.js";
 import { GENERATED, renderRules, writeRulesProjection } from "./rules-projection.js";
+import { acknowledgeDebt, releaseAcknowledgement } from "./acknowledgements.js";
+import { listRequirements } from "./requirements.js";
 import { GOLDEN_RULES } from "./rules-projection-fixture.js";
 
 const AGENT = { agent: true, model: "claude-opus-5" } as const;
@@ -76,6 +78,26 @@ test("a second write over an unchanged standard writes nothing", async () => {
     const second = await writeRulesProjection(root, { out });
     assert.ok("ok" in second);
     assert.deepEqual(second.written, []);
+  } finally { discard(root); discard(out); }
+});
+
+test("a rule prints the debts granted against it, and a released one goes", async () => {
+  const root = await universe();
+  const out = mkdtempSync(join(tmpdir(), "codemap-rules-out-"));
+  try {
+    const rule = (await listRequirements(root))[0]!;
+    const granted = await acknowledgeDebt(root, {
+      requirementId: rule.id, rationale: "the bank's sample fails strict totals", priority: "low", revalidateBy: "2027-01-01",
+    });
+    assert.ok(!("error" in granted), JSON.stringify(granted));
+    assert.ok("ok" in await writeRulesProjection(root, { out }));
+    const file = readdirSync(out).map((f) => readFileSync(join(out, f), "utf8")).join("\n");
+    assert.match(file, /Accepted deviations: the bank's sample fails strict totals \(until 2027-01-01\)/);
+    const id = (granted as { acknowledgement: { id: string } }).acknowledgement.id;
+    assert.ok(!("error" in await releaseAcknowledgement(root, id, "conformant now", { agent: true, model: "m" })));
+    assert.ok("ok" in await writeRulesProjection(root, { out }));
+    const after = readdirSync(out).map((f) => readFileSync(join(out, f), "utf8")).join("\n");
+    assert.doesNotMatch(after, /Accepted deviations/);
   } finally { discard(root); discard(out); }
 });
 
