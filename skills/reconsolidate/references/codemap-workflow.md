@@ -45,6 +45,11 @@ run (`draft_spec`, titled with the run record's name) instead:
   drafts no rule: no words from the owner, no operation.
 - **Joined clusters, or a contradiction answered**, that change a rule already in force →
   `amend_statement` on that rule, in the words given; the old wording stays in the run record.
+- **A cluster that changes a rule still in a pending draft** (the usual case after a cut-over
+  `/discover-rules`) → `revise_operation` on that draft's `add_requirement` operation, in the
+  owner's words, never a competing `add_requirement`. It voids the sign-offs on that operation,
+  which is intended. If it refuses (somebody else's pending acknowledgement or comment hangs off the
+  operation), write nothing for that cluster and list it in `writeback.md` with the refusal.
 - **A known conflict left open on purpose** (*not a surprise*, with a note) is a deviation: the
   owner grants it as `debt` once the rule is in force, or it waits as a problem (`/codemap-audit`).
   List it in `writeback.md` for them; never write a `Deviations` line.

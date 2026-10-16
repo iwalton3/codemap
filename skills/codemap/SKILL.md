@@ -86,9 +86,11 @@ section.
 - **Write** a rule only as a draft spec: `draft_spec`, then `add_operation` — `add_requirement`
   with `level`, `interim` for a provisional rule, `authority`, `lapsesWhen` (the rule's falsifier),
   `restsOnRules`, `provenance`, `title` and `section`; `amend_statement` or `amend_standing` to
-  change one; `retire_requirement` to take one out of force. A level-4 rule is in its holder's own
-  words. Then tell the person to review, sign and ratify it on the spec page — never sign or ratify
-  it yourself, and never write a rule into `docs/rules/`.
+  change one in force, and `revise_operation` on its `add_requirement` to change one still in a
+  pending draft (never a competing `add_requirement`); `retire_requirement` to take one out of
+  force. A level-4 rule is in its holder's own words. Then tell the person to review, sign and
+  ratify it on the spec page — never sign or ratify it yourself, and never write a rule into
+  `docs/rules/`.
 - **A deviation** — code that knowingly does not conform — is `debt` when the person accepts it,
   which they grant (`acknowledge_debt` is theirs, not yours), and a problem when they have not
   decided: `record_audit` (non-conformant) then `raise_problem`. `/codemap-audit` has the procedure.
