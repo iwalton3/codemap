@@ -88,6 +88,20 @@ test("free text cannot forge a field line: names are flattened, every other fiel
   assert.equal(index.split("\n").filter((l) => l.startsWith("| Area")).length, 2, "header row and one area row");
 });
 
+test("free text cannot start a markdown heading inside a field, and a pipe stays inside its table cell", () => {
+  // CommonMark reads 0-3 spaces of indentation as a heading (ATX `###`, or a setext `===`/`---`
+  // underline), and either can interrupt the field's paragraph. The renderer's own headings are
+  // unindented, so an indented one is forged.
+  const base = GOLDEN_RULES[1]!;
+  for (const statement of ["x\n### Fake — ratified\nRule: y", "x\n===", "x\n---"]) {
+    const text = [...renderRules([{ ...base, rule: { ...base.rule, statement } }]).values()].join("\n");
+    assert.doesNotMatch(text, /^ {1,3}(#{1,6} |=+\s*$|-+\s*$)/m, JSON.stringify(statement));
+  }
+  const index = renderRules([{ ...base, rule: { ...base.rule, section: "Payments | Refunds" } }]).get("INDEX.md")!;
+  const row = index.split("\n").find((l) => l.startsWith("| Payments"))!;
+  assert.equal(row.split(/(?<!\\)\|/).length - 2, 3, `three cells: ${row}`);
+});
+
 test("a second write over an unchanged standard writes nothing", async () => {
   const root = await universe();
   const out = mkdtempSync(join(tmpdir(), "codemap-rules-out-"));

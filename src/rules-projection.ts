@@ -123,7 +123,7 @@ export function renderRules(rules: ProjectedRule[]): Map<string, string> {
     "## Areas",
     named.length
       ? ["| Area | Rules | Doc |", "|---|---|---|",
-        ...named.map((a) => `| ${name(a)} | ${areas.get(a)!.length} | [${fileOf.get(a)}](${fileOf.get(a)}) |`)].join("\n")
+        ...named.map((a) => `| ${name(a).replace(/\|/g, "\\|")} | ${areas.get(a)!.length} | [${fileOf.get(a)}](${fileOf.get(a)}) |`)].join("\n")
       : "None.",
   ];
   files.set("INDEX.md", doc(index));
