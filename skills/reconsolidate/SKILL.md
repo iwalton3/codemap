@@ -1,6 +1,6 @@
 ---
 name: reconsolidate
-description: Consolidate the owner's past decisions into the durable layer, days after the work. Reads the project's rules (docs/rules/) and principles (CLAUDE.md PRINCIPLES), finds the owner's answers those do not explain — the residuals — clusters them by what the owner did, and puts the clusters to the owner sorted into probable business rules, probable principles, and uncertain. The owner names each in their own words or calls it a one-off; the skill never drafts a rule or principle. Named principles go into CLAUDE.md's PRINCIPLES section, named business rules into docs/rules/. Run after /discover-rules.
+description: Consolidate the owner's past decisions into the durable layer, days after the work. Reads the project's rules (docs/rules/) and principles (CLAUDE.md PRINCIPLES), finds the owner's answers those do not explain — the residuals — clusters them by what the owner did, and puts the clusters to the owner sorted into probable business rules, probable principles, and uncertain. The owner names each in their own words or calls it a one-off; the skill never drafts a rule or principle. Named principles go into CLAUDE.md's PRINCIPLES section, named business rules into docs/rules/ — or, where the repo's rules live in codemap and docs/rules/ is generated, into a codemap draft spec for the owner to ratify. Run after /discover-rules.
 argument-hint: "[<repo> ...] [--since <date or record>] [--records <repo holding the planning records>]"
 ---
 

@@ -1,6 +1,6 @@
 ---
 name: discover-rules
-description: Find the rules a codebase must obey that nobody on the project decided — natural laws, laws and regulations, and industry or vendor rules (solidity levels 1-3) — each with a citation that proves it, where it bites in the code or which path it forecloses, what would falsify it, and the past rulings it explains. Produces a record of the run and a document for the owner to approve, reject, and mark ratified or provisional; only approved rules are written to docs/rules/. Run before /reconsolidate, so rulings that follow from an outside rule are not mistaken for business rules or principles.
+description: Find the rules a codebase must obey that nobody on the project decided — natural laws, laws and regulations, and industry or vendor rules (solidity levels 1-3) — each with a citation that proves it, where it bites in the code or which path it forecloses, what would falsify it, and the past rulings it explains. Produces a record of the run and a document for the owner to approve, reject, and mark ratified or provisional; only approved rules are written to docs/rules/ — or, where the repo's rules live in codemap and docs/rules/ is generated, into a codemap draft spec for the owner to ratify. Run before /reconsolidate, so rulings that follow from an outside rule are not mistaken for business rules or principles.
 argument-hint: "<repo> [<repo>...] [--records <repo holding the planning records and docs/rules/>]"
 ---
 
