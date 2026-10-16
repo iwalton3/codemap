@@ -35,7 +35,8 @@ run (`draft_spec`, titled with the run record's name) instead:
   owner grants it as `debt` once the rule is in force, or it waits as a problem (`/codemap-audit`).
   List it in `writeback.md` for them; never write a `Deviations` line.
 
-`rationale` names the run; `reversibility` says a ratified rule is changed by a later spec. Then
-tell the owner the draft spec's id and that it waits for them to review, sign off and ratify on the
-spec page. Do not sign or ratify for them. `writeback.md` records the spec id and each operation
-beside the cluster it came from.
+`rationale` names the run. `reversibility` is whether *satisfying* the rule can be undone
+(`reversible`, `irreversible`): what the owner said, else `unknown`. Then tell the owner the draft
+spec's id and that it waits for them to review, sign off and ratify on the spec page. Do not sign or
+ratify for them. `writeback.md` records the spec id and each operation beside the cluster it came
+from.

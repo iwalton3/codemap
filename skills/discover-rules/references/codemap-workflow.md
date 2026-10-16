@@ -45,9 +45,10 @@ record's name), one `add_operation` per approved rule:
 | Falsifier | `lapsesWhen` |
 | Rests on | `restsOnRules`: an existing rule's id, or the `add_requirement` operation id of one in this spec |
 
-`rationale` says which run approved it; `reversibility` that a ratified rule is changed by a later
-spec. The title and section are this skill's wording and the owner reviews them at sign-off. An item
-the owner placed at level 4 is still not written (step 6, as before).
+`rationale` says which run approved it. `reversibility` is whether *satisfying* the rule can be
+undone (`reversible`, `irreversible`): what the source or the owner said, else `unknown`. The title
+and section are this skill's wording and the owner reviews them at sign-off. An item the owner
+placed at level 4 is still not written (step 6, as before).
 
 Nothing goes to `docs/rules/` — no area doc, no `INDEX.md`, no Rejected list — and no `CLAUDE.md`
 line pointing at `INDEX.md` as must-read: in a cut-over repo the line saying the rules live in
