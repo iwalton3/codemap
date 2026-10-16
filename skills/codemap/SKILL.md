@@ -79,8 +79,9 @@ section.
 - **A reader without these tools** — a script, a subagent with files only — reads the generated
   `docs/rules/`. **Absent is not empty:** a cut-over repo with no `docs/rules/` has rules nobody
   generated here yet, never none. Generate them with `generate_rules` (`out` set to this checkout's
-  `docs/rules/` when it is a worktree, which has no store of its own); without the tools, the CLI's
-  `codemap rules`. If neither can, stop and say so. Never sort, plan or check as if there were no
+  `docs/rules/` when it is a worktree, which has no store of its own); without the tools, the CLI
+  from the checkout that has the store: `codemap rules <that checkout> --out <this one>/docs/rules`.
+  If neither can, stop and say so. Never sort, plan or check as if there were no
   rules.
 - **Write** a rule only as a draft spec: `draft_spec`, then `add_operation` — `add_requirement`
   with `level`, `interim` for a provisional rule, `authority`, `lapsesWhen` (the rule's falsifier),

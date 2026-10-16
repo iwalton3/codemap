@@ -101,6 +101,21 @@ test("a rule prints the debts granted against it, and a released one goes", asyn
   } finally { discard(root); discard(out); }
 });
 
+test("a checkout with no store generates nothing, rather than an empty rule set", async () => {
+  // A worktree has no `.codemap/` of its own: `codemap rules` there created an empty store and
+  // wrote an INDEX.md with no rules — a missing rule set read as "no rules" (dry run, 2026-10-16).
+  const { writeRulesProjection: op } = await import("./ops.js");
+  const root = mkdtempSync(join(tmpdir(), "codemap-rules-nostore-"));
+  try {
+    git(root, "init", "-q");
+    const r = await op(root, {});
+    assert.ok("error" in r, JSON.stringify(r));
+    assert.match((r as { error: string }).error, /no codemap store/);
+    assert.ok(!existsSync(join(root, ".codemap")), "it must not create a store");
+    assert.ok(!existsSync(join(root, "docs")), "it must not write files");
+  } finally { discard(root); }
+});
+
 test("a tracked docs/rules/ is never written over, and the refusal names the cutover", async () => {
   const root = await universe();
   try {

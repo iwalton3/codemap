@@ -22,6 +22,8 @@
  * free.
  */
 
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import {
   draftSpec as draftSpecRec, addOperation as addOperationRec, ratifySpec as ratifySpecRec,
   withdrawSpec as withdrawSpecRec, reviseSpec as reviseSpecRec,
@@ -509,5 +511,9 @@ export const listProblems = async (root: string, input: { requirementId?: string
 /** Render the in-force standard as `docs/rules/` markdown. See `rules-projection.ts`. */
 // Through `served` like every read: the files present the standard as settled, so a blocked
 // or stale scope has to reach whoever asked for them.
-export const writeRulesProjection = (root: string, opts: { out?: string; when?: RulesWhen } = {}) =>
-  served(root, () => writeRulesProjectionRec(root, opts));
+// Before `served`, which opens the store and so would CREATE an empty one: a checkout with none
+// (a worktree) would then generate an empty rule set that reads as "no rules".
+export const writeRulesProjection = async (root: string, opts: { out?: string; when?: RulesWhen } = {}) =>
+  existsSync(join(root, ".codemap"))
+    ? served(root, () => writeRulesProjectionRec(root, opts))
+    : { error: `${root} has no codemap store, so it has no rules to generate — run this against the checkout that has one, with --out (or generate_rules' out) for a worktree` };

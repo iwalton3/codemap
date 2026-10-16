@@ -67,8 +67,10 @@ repo* (`codemap/SKILL.md`) is the rule; this is how these skills carry it out.
   the sorters and the coherence check read files. The files are generated from codemap's standard,
   so cite a rule's `Id:` beside its heading.
 - **Missing** (a fresh worktree, a clone never synced): call `generate_rules`, with `out` set to the
-  member's absolute `docs/rules/` when the member is a worktree; without the tools, run the CLI's
-  `codemap rules` there. Either writes only into the ignored directory, so the tree stays clean. If
+  member's absolute `docs/rules/` when the member is a worktree; without the tools, the CLI from the
+  checkout that has the store: `codemap rules <that checkout> --out <the member>/docs/rules` (run in
+  a worktree itself, it refuses: no store). Either writes only into the ignored directory, so the
+  tree stays clean. If
   neither can, stop and tell the owner: "the rules live in codemap and are not generated here".
   Never note `none` for a cut-over member.
 - **Not settled**: where `standard_status` (shared mode) reports a `scope`, or `codemap rules` warns
