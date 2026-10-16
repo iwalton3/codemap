@@ -51,7 +51,7 @@ const SKILL_VOCAB = new Set([
   "add_requirement", "amend_statement", "amend_standing", "retire_requirement", "pending_specs",
   "title", "section", "statement", "level", "interim", "authority", "provenance", "rationale",
   "debt", "scope", "stale", "none", "out", "reversible", "irreversible",
-  "grep", "regulation", "aside",                             // discover-rules / reconsolidate prose
+  "grep", "regulation", "aside", "reason",                   // discover-rules / reconsolidate prose
 ]);
 
 /** `use \`x\``, `see \`x\``, `with \`x\`` … — a reference to something callable. */

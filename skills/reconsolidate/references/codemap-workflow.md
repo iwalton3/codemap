@@ -13,10 +13,24 @@ saying they are not in force anywhere yet.
 and `status: "ratified"` (levels 1-4, each with its `r_…` id; a retired rule is history and explains
 nothing now), and the drafts still waiting on the owner: `standard_queue` with `pending_specs` lists
 them by id and count only, so read each with `spec` for its `add_requirement` and amendment
-operations. A rule in a draft predicts answers like one in force. If the standard has no
-level 1-3 rules, stop as the skill says: run `/discover-rules` first. Rejected candidates are in the
-discover run records, not in `docs/rules/`. Where `standard_status` reports a `scope`, say so on
-the page: the rules read are not settled.
+operations. Rejected candidates are in the discover run records, not in `docs/rules/`. Where
+`standard_status` reports a `scope`, say so on the page: the rules read are not settled.
+
+**Only a ratified rule explains an answer** (owner, 2026-10-16: drafts are shown apart and remove
+nothing). In §1, *by a rule* means a ratified one. An answer a draft rule would predict stays a
+residual, and its cluster's `reason` names the draft operation; the run record lists, per draft
+rule, how many answers it would explain, beside the explained counts. An answer that disagrees with
+a draft rule is not a *Contradiction*, since a draft is not in force: it is an ordinary residual
+whose `reason` says "disagrees with draft operation `<id>`", so the owner can correct the draft
+before ratifying it (*Writing*, below).
+
+Whether to run:
+- **No ratified level 1-3 rule, and a pending draft holds level 1-3 `add_requirement`s** → stop and
+  say the outside rules are in draft `<spec id>`, not ratified yet: ratify it, then run
+  `/reconsolidate`.
+- **Neither ratified nor drafted** → stop as the skill says: run `/discover-rules` first.
+- **Ratified level 1-3 rules exist** → run, with any pending draft's rules shown apart as above,
+  including a newer `/discover-rules` draft (owner: "Run, show draft apart").
 
 ## Writing (step 4)
 
