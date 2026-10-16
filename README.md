@@ -439,6 +439,20 @@ cp -r ~/codemap/skills/triage-review ~/codemap/skills/ez-plan ~/.claude/skills/
 (`~/.agents/skills` for harnesses that read the vendor-neutral location.) They
 use the same names as the standalone versions and replace them.
 
+### The `discover-rules` and `reconsolidate` skills
+
+Ship beside them. `/discover-rules` finds the outside world's rules a codebase must obey (natural
+law, law, industry rules) with a citation each; `/reconsolidate` turns the owner's past answers into
+business rules and principles in their own words. In a repository whose rules live in codemap's
+standard — `docs/rules/` git-ignored and generated from it — both write their rules as a draft spec
+for you to sign off and ratify, never into `docs/rules/`; each skill's
+`references/codemap-workflow.md` says how. Install all four with the `codemap` skill, whose *Rules
+in a cut-over repo* section they defer to:
+
+```sh
+cp -r ~/codemap/skills/{triage-review,ez-plan,discover-rules,reconsolidate,codemap} ~/.claude/skills/
+```
+
 ### The `codemap-explore` agent
 
 A subagent for the other half of the loop: exploration that uses the map as a
