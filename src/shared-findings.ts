@@ -1159,7 +1159,7 @@ async function outsideReferences(scope: string, e: LogEvent, _own: LogEvent[], r
   const universe = universeOfFindingScope(scope);
   if (!universe) return [];
   if (e.kind === "finding.rulingApplied") return rulingReferences(read, e);
-  if (e.kind === "repair.sort-recorded") return repairSortReferences(read, e);
+  if (e.kind === "repair.sort-recorded") return repairSortReferences(read, scope, e);
   if (e.kind === "finding.created") {
     const bound = keyFieldProblem(scope, universe, e.data as Data | undefined);
     if (bound) return [{ id: e.id, kind: e.kind, cls: "reference", why: bound }];

@@ -32,6 +32,7 @@ import { decisionDevEra, decisionEventShape } from "./log-shape.js";
 import { isAgentActor } from "./identity.js";
 import { verifierIdentityKey } from "./verifier-boundary.js";
 import { questionnaireAnswerId } from "./ruling-application.js";
+import { registerRuledCheck } from "./ruling-references.js";
 import { canonicalIssueKey, type CanonicalIssueReference } from "./decision-issues.js";
 import { questionnaireVersion, stageSubmission, validateQuestionnaire, type Questionnaire, type QuestionnaireAnswer, type StagedSubmission } from "./questionnaire.js";
 import { canonical, codeUnitOrder, normalizeQuestion, sameQuestion } from "./transcript.js";
@@ -2666,6 +2667,26 @@ registerDoor(isDecisionScope, (logRoot, scope) => async (events, minted) => {
 registerReferences(isDecisionScope, async (scope, e, own, read) => {
   const why = await decisionReferences(read, scope, await decisionPrior(read, scope, own), e);
   return why ? [{ id: e.id, kind: e.kind, cls: "reference", why }] : [];
+});
+
+/**
+ * What a `ruled` repair sort's ruling must be (plan 2026-10-19 R1, R2): the decision's verified
+ * standing answer — an unverified relayed answer only unblocks decision holds (C8) and never a
+ * sort — whose chosen options `unblock` every finding the sort covers. A bare finding id is in its
+ * round's universe; an exact issue names its own scope.
+ */
+registerRuledCheck((events, r, findings, scope) => {
+  const s = foldDecisionsReport(events).value;
+  const d = s.decisions.find((x) => x.id === r.decision);
+  if (!d) return `no decision ${r.decision}`;
+  const a = standing(d);
+  if (!a || a.id !== r.answer) return `${r.answer} is not the standing answer to ${d.ref}`;
+  if (!a.verified) return `${r.answer} is unverified: an unverified answer unblocks decision holds, never a held sort (C8)`;
+  const universe = s.rounds.find((x) => x.id === d.round)?.universe;
+  const unblocks = d.options.filter((o) => a.options.includes(o.label)).flatMap((o) => o.effects).filter((e) => e.on === "unblock");
+  const missing = findings.filter((f) => !unblocks.some((e) => (e.findings.includes(f) && scope.startsWith(`findings/${universe}/`))
+    || (e.issues ?? []).some((i) => i.kind === "finding" && i.id === f && i.scope === scope)));
+  return missing.length ? `the ruling on ${d.ref} does not unblock ${missing.join(", ")}: a ruled release needs every finding the sort covers unblocked` : null;
 });
 
 /** One write, folded at the door: refused with the fold's reason, never appended to be refused later. */

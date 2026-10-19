@@ -112,7 +112,7 @@ test("C-2 (D2): a ruling no longer releases what a held sort rests on — a free
     const held = sort({ classification: "design-defect", restsOn: [entry] });
     const freed = sort({ id: "next", prior: "s1", reason: "ruled", restsOn: [], classification: "implementation-defect", ruling: "ans1" });
     const records = foldRepairRecords(chain([sorted(held), sorted(freed)]));
-    assert.match(records.rejected[0]?.reason ?? "", /released only by two readers/, entry);
+    assert.match(records.rejected[0]?.reason ?? "", /released only by its ruling \(release_ruled_sort\) or two readers/, entry);
     assert.equal(records.sorts.find(s => s.input.id === "next"), undefined);
   }
 });
@@ -123,7 +123,7 @@ test("Q2: a free label is re-pointed to its decision for free, and stays held; d
   assert.deepEqual(repointed.rejected, []);
   assert.match(repointed.sorts.find(s => s.input.id === "next")!.holds.join(), /dependency remains/);
   const dropped = foldRepairRecords(chain([sorted(held), sorted(sort({ id: "next", prior: "s1", reason: "gone", classification: "design-defect", restsOn: ["other"] }))]));
-  assert.match(dropped.rejected[0]?.reason ?? "", /released only by two readers/);
+  assert.match(dropped.rejected[0]?.reason ?? "", /released only by its ruling \(release_ruled_sort\) or two readers/);
   const bare = foldRepairRecords(chain([sorted(sort({ restsOn: ["decision:"] }))]));
   assert.match(bare.rejected[0]?.reason ?? "", /names its decision/);
 });
@@ -153,13 +153,23 @@ test("D2: two readers' yes on the exact brief release a held sort; anything less
   refused(release([reader(1), reader(2)], { coverage: [] }), /coverage/);
   refused(release([reader(1)]), /two readers/);
   refused(sort({ id: "next", prior: "s1", reason: "r", restsOn: ["label"], classification: "implementation-defect", provenance: "released" }), /carries the release/);
-  refused(sort({ id: "next", prior: "s1", reason: "r", restsOn: ["decision:d1", "label"], release: { rulings, readers: [reader(1), reader(2)] } }), /only to a released sort/);
+  refused(sort({ id: "next", prior: "s1", reason: "r", restsOn: ["decision:d1", "label"], release: { rulings, readers: [reader(1), reader(2)] } }), /only to a released or ruled sort/);
   // Evidence carries the release's rulings, so verification re-checks their authority.
   const ev2 = (rulingIds: string[]) => proof(ev({ id: "proof2", sortId: "next", rulingIds }));
   const cleanChain = (rulingIds: string[]) => foldRepairRecords(chain([sorted(sort({ classification: "design-defect", restsOn: ["decision:d1"] })),
     sorted(sort({ id: "next", prior: "s1", reason: "released", classification: "implementation-defect", restsOn: [], provenance: "released", release: { rulings, readers: [reader(1), reader(2)] } }), agent), ev2(rulingIds)]));
   assert.match(cleanChain([]).rejected[0]?.reason ?? "", /ans1.*rulingIds/);
   assert.deepEqual(cleanChain(["ans1"]).rejected, []);
+  // R2: a ruled release has the same shape and no readers; whether the ruling covers the sort is
+  // the decisions log's, checked by `repairSortReferences` (repair-ops.test.ts).
+  const ruled = (over: Partial<RepairSortInput> = {}) => sort({ id: "next", prior: "s1", reason: "ruled", classification: "implementation-defect",
+    restsOn: ["label"], provenance: "ruled", release: { rulings }, ...over });
+  assert.deepEqual(run(ruled()).rejected, []);
+  refused(ruled({ release: { rulings, readers: [reader(1), reader(2)] } }), /no readers/);
+  refused(ruled({ restsOn: [] }), /drops decision entries only/);
+  refused(ruled({ coverage: [] }), /coverage/);
+  refused(ruled({ release: { rulings: [] } }), /one ruling/);
+  refused(ruled({ assessments: [{ identity: who, classification: "mechanical", reason: "r" }] }), /its rulings alone/);
 });
 
 test("A8 (D2): a decision entry and a release ruling must exist in the decisions log, checked at the door and on read", async () => {

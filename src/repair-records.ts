@@ -86,10 +86,11 @@ export function foldRepairRecords(input: LogEvent[]): RepairRecords {
   // The log is linear, so corrections are sequential (plan 5.2): a correction names the CURRENT
   // sort of its claims as prior or is stale, and it supersedes that sort — except that removing
   // coverage the prior had needs a logged ruling on why those are not instances (owner, batch 5:
-  // "Narrowing needs a ruling"). Dropping a `restsOn` entry is what releases a held sort, and only
-  // two readers do that (`releaseError`, owner D2); a ruling alone releases nothing, or every sort
-  // /triage-review holds on a free label could be freed by any ruling-cited reclassification. The
-  // one free move is RE-POINTING free labels at the decision that will answer them (owner, Q2).
+  // "Narrowing needs a ruling"). Dropping a `restsOn` entry is what releases a held sort: a ruling
+  // whose `unblock` names every finding it covers (`ruled`), or two readers (`released`, owner D2)
+  // — never a ruling-cited reclassification, or every sort /triage-review holds on a free label
+  // could be freed by any ruling. The one free move is RE-POINTING free labels at the decision
+  // that will answer them (owner, Q2).
   const sequenceError = (d: RepairSortInput): string | undefined => {
     const current = heads(), named = priorsOf(d);
     const stale = named.find(p => !current.some(s => s.input.id === p));
@@ -103,22 +104,26 @@ export function foldRepairRecords(input: LogEvent[]): RepairRecords {
       if (!nonempty(d.ruling) && (claims.length || sites.length))
         return `a correction that removes ${[...claims, ...sites].join(", ")} from ${prior.id} needs a logged ruling citing why they are not instances`;
       const dropped = prior.restsOn.filter(x => !d.restsOn.includes(x));
-      if (!dropped.length || d.provenance === "released") continue;
+      if (!dropped.length || d.provenance === "released" || d.provenance === "ruled") continue;
       const repointed = dropped.every(x => !decisionOfEntry(x)) && d.restsOn.some(x => !!decisionOfEntry(x) && !prior.restsOn.includes(x));
-      if (!repointed) return `a correction that drops ${dropped.join(", ")} from what ${prior.id} rests on is released only by two readers (release_held_sort); a free label may be re-pointed to the decision:<id> that answers it`;
+      if (!repointed) return `a correction that drops ${dropped.join(", ")} from what ${prior.id} rests on is released only by its ruling (release_ruled_sort) or two readers (release_held_sort); a free label may be re-pointed to the decision:<id> that answers it`;
     }
   };
-  // Owner, D2: "If two readers agree on a solid implementation direction approved by clear
-  // rulings, it gets unblocked for autonomous fixing" — and, unanimous, with no arbitrator.
+  // Two ways out of a hold, one shape. `ruled`: the rulings themselves, when each chosen option
+  // unblocks every finding the sort covers — whether it does, and whether each answer is verified
+  // and standing, is the decisions log's to say, so `repairSortReferences` checks it at the door
+  // and on read. `released` (owner, D2): "If two readers agree on a solid implementation direction
+  // approved by clear rulings, it gets unblocked for autonomous fixing" — unanimous, no arbitrator.
   const releaseError = (d: RepairSortInput): string | undefined => {
     const r = d.release;
-    if (d.provenance !== "released") return r === undefined ? undefined : "a release belongs only to a released sort";
+    const ruled = d.provenance === "ruled";
+    if (d.provenance !== "released" && !ruled) return r === undefined ? undefined : "a release belongs only to a released or ruled sort";
     const named = priorsOf(d);
     const prior = named.length === 1 ? out.sorts.find(s => s.input.id === named[0])?.input : undefined;
-    if (!prior || !r || typeof r !== "object") return "a released sort names the one held sort it releases, and carries the release";
+    if (!prior || !r || typeof r !== "object") return `a ${d.provenance} sort names the one held sort it releases, and carries the release`;
     if (!["mechanical", "implementation-defect"].includes(d.classification)) return "a release settles a sort only as mechanical or implementation-defect";
     if (d.assessments.length || d.disagreements.length || d.arbitration || d.ruling !== undefined || d.refutationSubtype !== undefined)
-      return "a released sort's provenance is its two readers alone";
+      return ruled ? "a ruled sort's provenance is its rulings alone" : "a released sort's provenance is its two readers alone";
     const shape = (s: RepairSortInput) => canonical({ coverage: s.coverage, kind: s.kind, predicate: s.predicate ?? null, sites: s.sites ?? null });
     if (shape(d) !== shape(prior)) return "a release keeps the held sort's coverage, kind, predicate and sites";
     if (!Array.isArray(r.rulings) || !r.rulings.length || r.rulings.some(x => !x || ![x.decision, x.answer, x.question, x.words].every(nonempty))
@@ -128,6 +133,7 @@ export function foldRepairRecords(input: LogEvent[]): RepairRecords {
       return "a release drops decision entries only, and adds nothing: re-point a free label to its decision first";
     if (canonical(dropped.map(decisionOfEntry).sort()) !== canonical(r.rulings.map(x => x.decision).sort()))
       return "a release carries exactly the rulings on the decision entries it drops";
+    if (ruled) return r.readers === undefined ? undefined : "a ruled sort has no readers: its rulings release it";
     const claims = out.claims.filter(c => prior.coverage.some(ref => ref.findingId === c.findingId && ref.claimIds.includes(c.id)));
     const brief = releaseBriefHash(releaseBriefContent(prior, claims, r.rulings));
     const readers = r.readers as ReleaseReceipt[];
@@ -161,7 +167,7 @@ export function foldRepairRecords(input: LogEvent[]): RepairRecords {
         if (!error && data.arbitration && (!Array.isArray(data.arbitration.addresses) || data.arbitration.addresses.some(x => !nonempty(x)) || !nonempty(data.arbitration.reason) || !reported(data.arbitration.identity))) error = "arbitration needs addressed disagreements and provenance";
         if (!error && data.sites !== undefined && (!Array.isArray(data.sites) || data.sites.some(x => !nonempty(x)))) error = "sites must be explicit strings";
         if (!error && (data.assessments.some(a => !receiptValid(a.receipt)) || !receiptValid(data.arbitration?.receipt))) error = "reported receipt needs exact content and source";
-        if (!error && !["owner-reviewed", "dual-sorted", "released"].includes(data.provenance)) error = "unknown sort provenance";
+        if (!error && !["owner-reviewed", "dual-sorted", "released", "ruled"].includes(data.provenance)) error = "unknown sort provenance";
         if (!error && data.restsOn.some(x => x.startsWith(DECISION_ENTRY) && !decisionOfEntry(x))) error = "a decision entry names its decision: decision:<id>";
         if (!error && data.provenance === "dual-sorted" && data.assessments.length !== 2) error = "dual sorting needs two sorters";
         if (!error && data.provenance === "dual-sorted" && new Set(data.assessments.map(a => verifierIdentityKey(a.identity))).size < 2) error = "dual sorting needs two independent sorters: their identities (session and subagent) must differ";

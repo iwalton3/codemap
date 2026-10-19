@@ -5,7 +5,7 @@
  * events, not the decisions fold, which imports the issue folds.
  * Existence only; whether the answer still has authority is the op's question.
  */
-import type { LogEvent, ScopeReader } from "./eventlog.js";
+import { sortEvents, type LogEvent, type ScopeReader } from "./eventlog.js";
 import { questionnaireAnswerId } from "./ruling-application.js";
 import type { Refusal } from "./validation.js";
 
@@ -68,10 +68,13 @@ export async function signoffReferences(read: ScopeReader, e: LogEvent): Promise
 /**
  * A repair sort's references into the decisions log (docs/sidecar-references.md A8): each
  * `decision:<id>` entry in `restsOn` names a decision in a decisions scope, and each release ruling
- * an answer to its decision there (owner, D2). Existence only; whether the answer stands is the
- * op's question, and verification re-checks it through the evidence's `rulingIds`.
+ * an answer to its decision there (owner, D2). Existence only for a `released` sort: whether the
+ * answer stands is the op's question, and verification re-checks it through the evidence's
+ * `rulingIds`. A `ruled` sort has no readers, so its rulings ARE its authority: each must be the
+ * verified standing answer, and its chosen `unblock` must cover every finding the sort covers (R1,
+ * R2) — checked here, against the log before it, so a hand-written event is refused on read.
  */
-export async function repairSortReferences(read: ScopeReader, e: LogEvent): Promise<Refusal[]> {
+export async function repairSortReferences(read: ScopeReader, scope: string, e: LogEvent): Promise<Refusal[]> {
   const d = e.data as Data | undefined;
   const entries = (Array.isArray(d?.restsOn) ? d.restsOn : []).filter((x): x is string => typeof x === "string" && x.startsWith("decision:")).map((x) => x.slice("decision:".length));
   const rulings = (((d?.release as Data | undefined)?.rulings as { decision?: unknown; answer?: unknown }[] | undefined) ?? [])
@@ -97,5 +100,23 @@ export async function repairSortReferences(read: ScopeReader, e: LogEvent): Prom
       || (x.kind === "decision.questionnaire.submitted" && questionnaireAnswerId(x.id, label) === r.answer));
     if (!answered) return refused(`no answer ${r.answer} to ${r.decision} in ${at}`);
   }
+  if (d?.provenance === "ruled") {
+    if (!ruledCheck) throw new Error("no decisions fold is registered in this process, so a ruled sort cannot be checked");
+    const covered = (Array.isArray(d.coverage) ? d.coverage as { findingId?: unknown }[] : []).map((c) => String(c?.findingId));
+    const sorted = sortEvents(events);
+    for (const r of rulings) {
+      const why = ruledCheck(sorted, r, covered, scope);
+      if (why) return refused(why);
+    }
+  }
   return [];
 }
+
+/**
+ * Why ruling `r` cannot release a sort covering `findings` (in findings scope `scope`), or null.
+ * Registered by `shared-decisions.ts`, whose fold answers it: this module sits under the issue
+ * folds, which the decisions module imports.
+ */
+export type RuledCheck = (decisions: LogEvent[], r: { decision: string; answer: string }, findings: string[], scope: string) => string | null;
+let ruledCheck: RuledCheck | null = null;
+export function registerRuledCheck(check: RuledCheck): void { ruledCheck = check; }

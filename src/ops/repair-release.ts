@@ -1,10 +1,14 @@
 /**
- * Releasing a held repair sort after the person rules (owner, D2): "If two readers agree on a
- * solid implementation direction approved by clear rulings, it gets unblocked for autonomous
- * fixing. Otherwise a session with a user doing an ez-plan targeted at the backlog is needed."
- * Unanimous, so no arbitrator. The readers see the held claims as filed and the rulings — nothing
- * of the fixer's — and `release_held_sort` builds the correction itself, so the fixer chooses
- * nothing about it.
+ * Releasing a held repair sort after the person rules. Two ways, and codemap builds the
+ * correction in both, so the fixer chooses nothing about it:
+ *
+ * - `release_ruled_sort`, the normal path (plan 2026-10-19 R2): the person's verified standing
+ *   answer chose options that `unblock` every finding the sort covers. A ruling made with the
+ *   person present needs no reader to say what it means.
+ * - `release_held_sort`, break-glass for headless backlog work (owner, D2, kept as R3): "If two
+ *   readers agree on a solid implementation direction approved by clear rulings, it gets
+ *   unblocked for autonomous fixing." Unanimous, so no arbitrator. The readers see the held
+ *   claims as filed and the rulings — nothing of the fixer's.
  */
 import { randomUUID } from "node:crypto";
 import { requireActor } from "../identity.js";
@@ -41,6 +45,21 @@ async function heldSort(root: string, review: number | string, sortId: string) {
   }
   const claims = r.records.claims.filter((c) => sort.input.coverage.some((ref) => ref.findingId === c.findingId && ref.claimIds.includes(c.id)));
   return { sort: sort.input, content: releaseBriefContent(sort.input, claims, rulings), rulings };
+}
+
+/** Release the held sort on its rulings alone: each answer's chosen options unblock every finding
+ *  the sort covers. The door checks that against the decisions log (`repairSortReferences`). */
+export async function releaseRuledSort(root: string, review: number | string, input: { sort: string }) {
+  const held = await heldSort(root, review, input?.sort);
+  if ("error" in held) return held;
+  const prior = held.sort;
+  return recordSort(root, review, {
+    prior: prior.id, reason: `released by ruling ${held.rulings.map((r) => r.answer).join(", ")}`,
+    classification: "implementation-defect", kind: prior.kind, coverage: prior.coverage,
+    ...(prior.predicate !== undefined ? { predicate: prior.predicate } : {}), ...(prior.sites !== undefined ? { sites: prior.sites } : {}),
+    restsOn: prior.restsOn.filter((x) => !decisionOfEntry(x)), source: prior.source, provenance: "ruled",
+    assessments: [], disagreements: [], release: { rulings: held.rulings },
+  });
 }
 
 /** The exact prompt to launch release reader `slot` with: a new background subagent, blind to the other. */
