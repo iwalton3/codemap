@@ -25,20 +25,27 @@ optionally with a **subagent** id. There are two ways to be one:
   is only HELD on this machine; the launching session records it with
   `record_repair_verification`, and codemap reads the subagent's own transcript: launched with
   exactly that prompt, submitted exactly what was held, got that receipt back.
+- **A batch subagent — a reviewer, typically** (plan 2026-10-19-batch-release-held-sorts 4.2;
+  owner, DB: "Reviewers verify"). `repair_batch_brief` returns one `launch` line for every open job
+  of one role and slot on a review. A subagent whose launch prompt holds that line **whole, on a
+  line of its own**, verifies every job in the batch; the rest of its prompt is trusted, the way
+  I13 trusts a sort. **Accepted gap, the owner's pick:** a launcher could write steering into the
+  surrounding prompt and codemap cannot tell. The single-request pointer keeps exact equality.
 
 A subagent shares its parent's connection, so its identity carries the parent's connection plus
 its own id.
 
 **Only grants verify** (R2, plan 3.1: "We shouldn't pretend to know who the fixer is"): (G1) a
 fresh session a person starts with the `codemap-verify` skill, which claims the role first; (G2) a
-subagent on the controlled prompt path above; (G3) question logging, which buys derived actions.
+subagent on a controlled prompt path above — the exact single pointer, or a prompt holding a
+batch's launch line; (G3) question logging, which buys derived actions.
 There is no fixer record and no weaker grade for a verifier the fixer launched. The tool enforces
 the grants; the fold keeps what it can see — the requester (whoever calls `repair_request`) never
-fills a slot of its own request, the two runs are distinct verifiers, and a verifier cannot apply
+fills a slot of its own request, two runs are distinct verifiers, and a verifier cannot apply
 the verdict it gave. The rest is an accepted gap: a fixer that reconnects gets a fresh connection
 and could claim the role. This guards against mistakes, not adversaries.
 
-## The request and the two slots
+## The request and its slots
 
 `repair_request` freezes an eligible current sort and evidence record, the immutable original and decomposed claims, the pinned witness/base/fix commits and
 diff, the findings' open epochs and claim hashes, and the ruling context. A pinned commit missing
@@ -46,11 +53,25 @@ from the requesting clone refuses the request (owner, 2026-10-06): one frozen as
 be applied. That is not a verdict on the finding; fetch the commit and request again. Nothing runs a
 stored command.
 
-Each request has exactly two blind verifier slots. `repair_brief` gives a slot the claims, the
-sort, the pinned commits and the checks the fixer pinned — never the fixer's conclusions or the
-other slot's verdict. Per-claim outcomes are `fixed`, `factually-refuted`, `decision-needed` or
-`unknown`. On a genuine disagreement a third verifier arbitrates, addressing each disagreement with
-a reason; it cannot manufacture evidence a run did not have.
+How many blind verifier slots a request has is its frozen sort's `stakes` (plan
+2026-10-19 V1, V2; `slotsFor`): **low** has slot 1 alone and closes on that run; **high** has two
+slots, and on a genuine disagreement a third verifier arbitrates. A sort without stakes — every
+sort from before stakes, and an owner-reviewed one that names none — is high: the default is
+applied where the fold reads `capsule.sort.stakes`, never computed by an op. Stakes is the
+sorters' judgment, trusted like the rest of the sort (I13): a standing `CLAUDE.md` definition,
+else the owner's five conditions (money, permanent data loss, PII, a credible lawsuit, a terminal
+broken state). Sorters who disagree make it high, and a correction may raise it and never lower
+it, so that guard cannot be undone in one step. Correcting a requested sort makes the request
+stale, as any sort change does.
+
+`repair_brief` gives a slot the claims, the sort, the pinned commits and the checks the fixer
+pinned — never the fixer's conclusions or the other slot's verdict. `repair_batch_brief` gives the
+same, one entry per open job of one slot across the review, so a round's close-out costs one
+verifier per slot (plus an arbitrator for the high-stakes runs that split) whatever the number of
+findings. Each entry is still submitted and recorded per request, so every rule below is per
+request. Per-claim outcomes are `fixed`, `factually-refuted`, `decision-needed` or `unknown`. An
+arbitrator addresses each disagreement with a reason; it cannot manufacture evidence a run did not
+have.
 
 ## What "fixed" needs
 
@@ -66,7 +87,7 @@ The owner's bar ("Your approved bar only"):
   where each must pass. Any other passing command proves nothing. With no pinned check, a refutation
   is an inspection with a written reason.
 - **invalid**: a reviewer's refuted assumption, sorted `refutationSubtype: "assumed"`. It closes
-  the same way (two runs, an arbitrator on disagreement), and each run may be executable or an
+  the same way (its stakes' runs, an arbitrator on disagreement), and each run may be executable or an
   inspection with a written reason, because such a refutation is often shown by reading. An
   assumption IN THE CODE is a real finding and never invalid.
 - **inspection** grade (weaker): only when no pinned check ran, with a no-check reason and the
@@ -87,8 +108,9 @@ verifier learns a filed site's bug id from the evidence's `siteBugs`, which the 
 cannot look bugs up, so this tells it which sites the fixer did not fix (owner, I14 (a)). A
 correction of a sort supersedes it and may add sites or claims freely; one that drops a site or
 claim is refused unless it cites a logged ruling on why it is not an instance (R5, plan 5.2). A
-held sort's `restsOn` is dropped only by a two-reader release (`docs/repair-records.md`, owner
-D2), and the verifier brief carries the release's rulings with their words.
+held sort's `restsOn` is dropped only by its ruling (`ruled`) or, break-glass, a two-reader
+release (`released`; `docs/repair-records.md`), and the verifier brief carries the release's
+rulings with their words.
 
 Any bug made from a finding (`defer_finding`, `file_site_bug`) keeps the finding's filer and
 the verdicts that stood behind it (plan 3.5). An agent deferring a person's confirmed finding

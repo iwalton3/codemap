@@ -84,6 +84,31 @@ claim about one implementation. Law-scoping debt would let accepting it for the 
 silence the rule for the API, which is the "declare the rule not yet applicable" escape the
 mint-time asymmetry exists to close.
 
+### Decisions join the law's side
+
+Decision rounds are workspace-scoped too (plan 2026-10-19-batch-release-held-sorts, owner:
+"Workspace scope, since the system is now linear I am less worried about FKs between scopes"):
+one `law/decisions` beside `law/standard`, because a ruling — most of /ez-plan's — governs
+whatever it names in any repository of the workspace. The migration is this document's: new
+rounds post to `law/decisions`; the fold reads it AND every legacy `decisions/<universe>` and
+merges them in `seq` order, so a log from before folds exactly as it did and nothing is
+rewritten. Unlike the standard, every universe reads every decisions scope, so the view is the
+same in each; the rows are stored under the universe's legacy key, so every reader of them is
+unchanged.
+
+Two things differ from the law/evidence split, and each is load-bearing:
+
+- **An act on a decision is written where the decision was posted** (`decisionHome`), not
+  always to the workspace scope. An event's `after` names only its own scope's heads, and the
+  fold's "saw" rules — a withdrawal saw the answers, a resolution saw the judgments — are about
+  events of one decision; an act on a legacy decision written to `law/decisions` would read as
+  having seen none of them. A comparison between two decisions goes to their shared scope, else
+  the workspace's.
+- **A decision may name an issue in another universe** by its exact reference (kind, universe,
+  scope, review). That store holds no rows for it, so posting checks it against the sidecar's
+  log, as the door does. Carrying a ruling out happens in the issue's own universe, which
+  resolves it locally; a bare finding id is in its round's universe.
+
 ## A requirement cites nothing
 
 **`Requirement.cites` goes.** A requirement citing code is the inversion again in

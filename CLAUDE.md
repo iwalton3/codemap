@@ -342,15 +342,19 @@ with `test-door.ts`, never by weakening the door.
 ## Closing a finding: one bar, and only grants verify — read `docs/repair-verification.md`
 
 **An agent never closes a finding directly** (R4). Not `refuted`, not `invalid`, not even its own
-unconfirmed one. Its closure goes through repair verification: two blind runs, an arbitrator on
-disagreement, then a separate application. Anything else it concludes becomes a person's ask.
+unconfirmed one. Its closure goes through repair verification: blind runs — one for a low-stakes
+sort, two and an arbitrator on disagreement for a high-stakes one, or one with no stakes
+(`slotsFor`) — then a separate application. A round batches them (`repair_batch_brief`): one
+verifier per slot covers every request on the review. Anything else it concludes becomes a person's ask.
 `mayTransitionFinding` is the finding ratchet. Bugs keep `mayTransition`'s agent close path until
 the bug follow-up.
 
 **Only grants verify** (R2: "We shouldn't pretend to know who the fixer is"): a fresh session a
-person starts with the `codemap-verify` skill (it claims first), or a subagent launched with exactly
-the prompt `repair_brief` returns. There is no fixer record and no weaker grade. The fold keeps what
-it can see: the requester never fills a slot of its own request, the two runs are distinct, and
+person starts with the `codemap-verify` skill (it claims first), a subagent launched with exactly
+the prompt `repair_brief` returns, or one whose prompt holds a batch's launch line whole on a line
+of its own — a reviewer, whose surrounding prompt is trusted (owner, DB; an accepted gap). There is
+no fixer record and no weaker grade. The fold keeps what
+it can see: the requester never fills a slot of its own request, two runs are distinct, and
 nobody applies their own verdict. A refutation states why the pinned check tests the claim, then
 runs it at the old code. A pattern closes site by site from the SORT's list: each site is fixed or
 filed with `file_site_bug`. Cross-scope references (the site bug, a cited ruling, the finding a
@@ -362,9 +366,14 @@ than hidden.
 **Reader independence is one key everywhere**, `verifierIdentityKey` `[principal, session, child]`
 — never a session comparison alone, since every subagent shares its parent's session. What stands
 behind `child` differs: a launch codemap verified for receipts, a reported agent id for sorters
-(I13 accepts sorts as written). **A held sort is released only by two blind readers**
-(`release_held_sort`, `docs/repair-records.md`; owner, D2), never by a ruling; re-pointing a free
-`restsOn` label to `decision:<id>` is the one free move. **A decision answer is read only from a
+(I13 accepts sorts as written). **A held sort is released by its ruling** (`release_ruled_sort`,
+provenance `ruled`): a VERIFIED standing answer whose chosen options unblock every finding it
+covers, checked on read by `repairSortReferences` through a check the decisions fold registers.
+Two blind readers (`release_held_sort`, owner D2) are break-glass for headless backlog work
+(`docs/repair-records.md`). A ruling-cited reclassification releases nothing; re-pointing a free
+`restsOn` label to `decision:<id>` is the one free move. **Stakes is raise-only**: a correction
+may raise a sort's `stakes`, never lower it, so sorters' disagreement-means-high cannot be undone in
+one step. **A decision answer is read only from a
 session whose transcript carries that round** (`findCarriers`; `skills/codemap/references/asking.md`
 step 4) and only after the carrier.
 
@@ -503,7 +512,10 @@ API and the React app is stated once; the **evidence** (audit, pointer, populati
 `debt`) stays per-universe because each is an observation of code. A requirement therefore
 **cites nothing** — code linkage is pointers, which name exactly one universe each — and
 pointers are never provisional, because provisionality protects conformance and a pointer
-cannot reach it.
+cannot reach it. **Decisions are the workspace's too** (`law/decisions`): every decisions scope —
+it and each legacy `decisions/<universe>` — folds together, never one alone (`cachedDecisions`;
+`projectionFor` does not offer it), and an act on a decision is written where the decision was
+posted (`decisionHome`), because `after` and the fold's "saw" rules are per scope.
 
 **Both front ends carry it, and `src/standard-reach.test.ts` is what keeps that true.** The
 standard was agent-only when it was built, which left ratification — the one act an agent
