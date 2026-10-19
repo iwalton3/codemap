@@ -342,9 +342,9 @@ with `test-door.ts`, never by weakening the door.
 ## Closing a finding: one bar, and only grants verify — read `docs/repair-verification.md`
 
 **An agent never closes a finding directly** (R4). Not `refuted`, not `invalid`, not even its own
-unconfirmed one. Its closure goes through repair verification: blind runs — one for a low-stakes
-sort, two and an arbitrator on disagreement for a high-stakes one, or one with no stakes
-(`slotsFor`) — then a separate application. A round batches them (`repair_batch_brief`): one
+unconfirmed one. Its closure goes through repair verification: blind runs — one run for a
+low-stakes sort; two runs and an arbitrator on disagreement for a high-stakes sort, and for a sort
+with no stakes, which is high (`slotsFor`) — then a separate application. A round batches them (`repair_batch_brief`): one
 verifier per slot covers every request on the review. Anything else it concludes becomes a person's ask.
 `mayTransitionFinding` is the finding ratchet. Bugs keep `mayTransition`'s agent close path until
 the bug follow-up.
