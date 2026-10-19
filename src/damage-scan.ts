@@ -16,7 +16,7 @@ import {
 import { classify, foldJudged, registerPushGate, reportFor, withPeersAhead, type Report } from "./validation.js";
 import { withoutOverlay } from "./sync-session.js";
 import "./families.js";
-import { foldDecisionsReport } from "./shared-decisions.js";
+import { foldDecisionsReport, isDecisionScope } from "./shared-decisions.js";
 import { foldStandardReport, LAW_SCOPE } from "./shared-standard.js";
 import { peersAhead } from "./sidecar.js";
 import { isLogDamage, type DamagedEntry } from "./log-damage.js";
@@ -200,9 +200,11 @@ export async function judgeReads(reads: Map<string, ScopeRead>, ahead: boolean, 
       : events.map((e) => ({ id: e.id, kind: e.kind, why: `no family of this build reads ${scope}` }));
     for (const r of found) newer.push({ id: r.id, kind: r.kind, scope, why: r.why });
   };
+  // Every decisions scope is one log, judged together as it is folded (`shared-decisions.ts DECISIONS_SCOPE`).
+  const decisions = scopes.filter(isDecisionScope);
+  if (decisions.length) judged(decisions, foldDecisionsReport, kindsFor(decisions[0]!));
   for (const scope of scopes) {
-    if (scope.startsWith("decisions/")) judged([scope], foldDecisionsReport, kindsFor(scope));
-    else if (scope.startsWith("standard/") || scope === LAW_SCOPE) continue;
+    if (isDecisionScope(scope) || scope.startsWith("standard/") || scope === LAW_SCOPE) continue;
     else { const report = reportFor(scope); if (report) judged([scope], report, kindsFor(scope)); else unfolded(scope); }
   }
   const evidence = scopes.filter((s) => s.startsWith("standard/"));

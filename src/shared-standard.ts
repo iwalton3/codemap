@@ -141,8 +141,10 @@ export const standardDoor = (logRoot: string, scope: string): DoorFold => async 
 };
 const standardReferences: ReferenceCheck = async (_scope, e, _own, read) =>
   e.kind === "spec.operation-signoff-applied" ? signoffReferences(read, e) : [];
-registerReferences((scope) => scope.startsWith("standard/") || scope.startsWith("law/"), standardReferences);
-registerDoor((scope) => scope.startsWith("standard/") || scope.startsWith("law/"), (logRoot, scope) => {
+// The law scope exactly, not `law/`: `law/decisions` is the decisions family's.
+const isStandardScope = (scope: string): boolean => scope.startsWith("standard/") || scope === LAW_SCOPE;
+registerReferences(isStandardScope, standardReferences);
+registerDoor(isStandardScope, (logRoot, scope) => {
   const fold = standardDoor(logRoot, scope);
   return async (events, minted) => {
     const own = await fold(events, minted);
@@ -377,7 +379,7 @@ export function reviewGap(
 
 
 /** Every kind this family folds or knows to skip: anything else here is newer (`eventlog.ts registerKinds`). */
-const STANDARD_KINDS = registerKinds((scope) => scope.startsWith("standard/") || scope.startsWith("law/"), [
+const STANDARD_KINDS = registerKinds(isStandardScope, [
   "spec.drafted", "spec.operation", "spec.revised", "spec.operation.revised", "spec.operation.removed",
   "spec.operation-signoff-applied", "spec.reviewed", "spec.ratified", "spec.withdrawn", "ack.granted", "ack.released",
   "audit.recorded", "vacuity.checked", "pointer.declared", "pointer.restated", "pointer.retired", "population.pinned",

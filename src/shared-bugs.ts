@@ -630,7 +630,7 @@ async function outsideReferences(scope: string, e: LogEvent, _own: LogEvent[], r
     const findings = await read.read(at);
     return findings.some((f) => f.kind === "finding.created" && f.subject === finding) ? [] : refused(`no finding ${finding} in ${at}`);
   }
-  if (e.kind === "bug.rulingApplied") return rulingReferences(read, universe, e);
+  if (e.kind === "bug.rulingApplied") return rulingReferences(read, e);
   return [];
 }
 

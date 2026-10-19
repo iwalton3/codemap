@@ -25,7 +25,7 @@ import { readerTranscript as sharedReaderTranscript } from "./test-transcripts.j
 import { postRound as postRoundOp, logQuestion, relayAnswer, answerDirect, decisionRounds, decisionRound, nominateComparison, readerBrief, recordReading, submitVerdict as submitVerdictOp, confirmReading, parseVerdict, confirmId, withdrawDecision, reportRuling as reportRulingOp, withdrawalReaderBrief, submitWithdrawalVerdict, reviseDecision, revisionRelayBrief as revisionRelayBriefOp, reviseDecisionRelayed, interpretationRequestId } from "./ops/decisions.js";
 import { discard, moveAside } from "./test-tmp.js";
 import { decisionsView, holdBuilds } from "./ops/decision-holds.js";
-import { confirmPayload, CONFIRM_YES, decisionScope, foldDecisions, foldDecisionsReport, postRoundEvent, logQuestionEvent, postConfirmEvent, recordReadingEvent } from "./shared-decisions.js";
+import { confirmPayload, CONFIRM_YES, DECISIONS_SCOPE, foldDecisions, foldDecisionsReport, postRoundEvent, logQuestionEvent, postConfirmEvent, recordReadingEvent } from "./shared-decisions.js";
 import { causalHeads, readScope, sortEvents, type LogEvent } from "./eventlog.js";
 import { appendUnfolded, planted } from "./test-door.js";
 
@@ -82,6 +82,7 @@ function assertEveryWriteAdmitted(side: string): void {
     }
   };
   walk(join(side, "decisions"));
+  walk(join(side, "law", "decisions"));
   const refused = foldDecisionsReport(sortEvents(events)).refused.filter((r) => !planted.has(r.id));
   assert.deepEqual(refused, [], "an op appended a decisions event the fold refuses");
 }
@@ -368,7 +369,7 @@ test("historical prevalidated replay retains provenance and its answer closes no
     await asAgent(async () => {
       const binding = bindDecisions(u.root);
       assert.ok(!("error" in binding));
-      const r = await postRoundEvent(binding.cfg.path, binding.cfg.universe, binding.actor,
+      const r = await postRoundEvent(binding.cfg.path, DECISIONS_SCOPE, binding.actor,
         { id: "R1", source: "triage", universe: binding.cfg.universe, prevalidated: { record: "rec", sortedBy: "two sorters and an arbitrator" } },
         [decision("d1", f)]);
       assert.ok(!("error" in r) && r.id);
@@ -391,7 +392,7 @@ test("H6.1: a call that crashed after it was logged records its answers on the r
       transcript(u.transcripts).ask("toolu_1", [payloadFor(f)], { [payloadFor(f).question]: "Not a defect" }, when);
       const b = bindDecisions(u.root) as any;
       // The crash: the call is in the log, and no answer followed it.
-      await logQuestionEvent(b.cfg.path, b.cfg.universe, b.actor, { session: SESSION, toolUseId: "toolu_1", questions: [payloadFor(f)], answers: { [payloadFor(f).question]: "Not a defect" }, transcript: SESSION, rounds: ["R1"], bound: { [payloadFor(f).question]: "R1" }, answeredAt: when });
+      await logQuestionEvent(b.cfg.path, DECISIONS_SCOPE, b.actor, { session: SESSION, toolUseId: "toolu_1", questions: [payloadFor(f)], answers: { [payloadFor(f).question]: "Not a defect" }, transcript: SESSION, rounds: ["R1"], bound: { [payloadFor(f).question]: "R1" }, answeredAt: when });
       assert.equal((await decisionRound(u.root, "R1") as any).decisions[0].answers.length, 0, "the check could fail: nothing is answered yet");
       const r = await logQuestion(u.root, { toolUseId: "toolu_1", round: "R1" }, {}, u.transcripts) as any;
       assert.equal(r.retried, true, JSON.stringify(r));
@@ -412,7 +413,7 @@ test("I3: a retry reaches an older logged call whose answers a crash stranded, p
       t.ask("toolu_A", qsA, ansA, whenA);
       const b = bindDecisions(u.root) as any;
       // The H6.1 crash: A is logged, and none of its answers followed.
-      await logQuestionEvent(b.cfg.path, b.cfg.universe, b.actor, { session: SESSION, toolUseId: "toolu_A", questions: qsA, answers: ansA, transcript: SESSION,
+      await logQuestionEvent(b.cfg.path, DECISIONS_SCOPE, b.actor, { session: SESSION, toolUseId: "toolu_A", questions: qsA, answers: ansA, transcript: SESSION,
         rounds: ["R1"], bound: { [qsA[0]!.question]: "R1", [qsA[1]!.question]: "R1" }, answeredAt: whenA });
       t.ask("toolu_B", [payloadFor(g, "D2")], { [payloadFor(g, "D2").question]: "Real, fix it" }, later(2));
       const first = await logQuestion(u.root, { round: "R1" }, {}, u.transcripts) as any;
@@ -838,7 +839,7 @@ test("R2 (P1.2): a reader whose reading the fold rejected was never used — it 
       const x = nextReader();
       // A foreign writer's reading of a1 by x, naming an unposted D9 outside its issued brief.
       const b = bindDecisions(u.root) as any;
-      await recordReadingEvent(b.cfg.path, b.cfg.universe, b.actor, { answer: a1, session: { maps: [{ decision: "d9", option: "Real, fix it" }] }, reader: { agent: x, verdict: [{ decision: "d9", option: "Real, fix it" }], launchedAt: later(3), brief: brief1, verified: { session: SESSION, toolUseId: "t" } } });
+      await recordReadingEvent(b.cfg.path, DECISIONS_SCOPE, b.actor, { answer: a1, session: { maps: [{ decision: "d9", option: "Real, fix it" }] }, reader: { agent: x, verdict: [{ decision: "d9", option: "Real, fix it" }], launchedAt: later(3), brief: brief1, verified: { session: SESSION, toolUseId: "t" } } });
       const r = await reads(u, t, a2, "D3 → Not a defect", { prompt: await briefOf(u.root, a2, [{ decision: "d3", option: "Not a defect" }]), agentId: x });
       assert.equal(r.rec.agree, true, JSON.stringify(r));
 
@@ -1045,7 +1046,7 @@ test("Q14 / H7.14: a decisions log that cannot be read is blocked, not 'nothing 
     await asAgent(async () => {
       await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f)] });
       const b = bindDecisions(u.root) as any;
-      const dir = join(b.cfg.path, decisionScope(b.cfg.universe));
+      const dir = join(b.cfg.path, DECISIONS_SCOPE);
       const shard = join(dir, readdirSync(dir).find((n) => n.endsWith(".ndjson"))!);
       writeFileSync(shard, `\x00\x01 garbage\n${readFileSync(shard, "utf8")}`);
       const view = await decisionRounds(u.root) as any;
@@ -1090,7 +1091,7 @@ test("GATE (held offered as work) + C2: a missing decisions log reads as unknown
       await postRound(u.root, { round: { id: "R1", source: "x" }, decisions: [decision("d1", f)] });
       assert.ok(!(await reviewQueue(u.root) as any).queue.some((x: any) => x.id === f), "held from its posting");
       const b = bindDecisions(u.root) as any;
-      const dir = join(b.cfg.path, decisionScope(b.cfg.universe));
+      const dir = join(b.cfg.path, DECISIONS_SCOPE);
       rmSync(dir, { recursive: true });
       const q = await reviewQueue(u.root) as any;
       assert.match(String(q.error), /decisions log cannot be read/, JSON.stringify(q).slice(0, 300));
@@ -1221,7 +1222,7 @@ test("round five: a differently worded confirmation is refused at the door", asy
       const other = { id: confirmId(a, posted), ...posted };
       assert.notEqual(other.id, c.label);
       // No conforming build writes it: the door folds it and refuses (plan 1.1).
-      const otherEvent = await postConfirmEvent(b.cfg.path, b.cfg.universe, b.actor, other);
+      const otherEvent = await postConfirmEvent(b.cfg.path, DECISIONS_SCOPE, b.actor, other);
       assert.ok("error" in otherEvent, JSON.stringify(otherEvent));
       assert.match(otherEvent.error, /not a confirm codemap could have posted/);
       const round = await decisionRound(u.root, "R1") as any;
@@ -1311,8 +1312,8 @@ test("round five: rejected readings strand nothing and withdrawal cancels a pend
       const prompt = await briefOf(u.root, a, [{ decision: "d1", option: "Not a defect" }]);
       const b = bindDecisions(u.root) as any;
       // A foreign writer's reading of the words, one that could never bind, and an empty one.
-      await recordReadingEvent(b.cfg.path, b.cfg.universe, b.actor, { answer: a, session: { maps: [{ decision: "d9", option: null }] }, reader: { agent: "aFOREIGN000000001", verdict: [{ decision: "d9", option: null }], launchedAt: later(6), brief: prompt, verified: { session: SESSION, toolUseId: "t" } } });
-      await recordReadingEvent(b.cfg.path, b.cfg.universe, b.actor, { answer: a, session: { maps: [] }, reader: { agent: "aFOREIGN000000002", verdict: [], launchedAt: later(6), brief: prompt, verified: { session: SESSION, toolUseId: "t" } } });
+      await recordReadingEvent(b.cfg.path, DECISIONS_SCOPE, b.actor, { answer: a, session: { maps: [{ decision: "d9", option: null }] }, reader: { agent: "aFOREIGN000000001", verdict: [{ decision: "d9", option: null }], launchedAt: later(6), brief: prompt, verified: { session: SESSION, toolUseId: "t" } } });
+      await recordReadingEvent(b.cfg.path, DECISIONS_SCOPE, b.actor, { answer: a, session: { maps: [] }, reader: { agent: "aFOREIGN000000002", verdict: [], launchedAt: later(6), brief: prompt, verified: { session: SESSION, toolUseId: "t" } } });
       let view = await decisionRounds(u.root) as any;
       assert.ok(view.awaitingReading.some((x: any) => x.answer === a), "the words still wait for a reader");
       const c = await confirmReading(u.root, { answer: a, maps: [{ decision: "d1", option: "Not a defect" }] }) as any;
@@ -1349,11 +1350,11 @@ test("GATE (codex round, overwritten): a Yes survives another clone's wording an
       const c = await confirmReading(u.root, { answer: a, maps }) as any;
       assert.equal(c.label, confirmId(a, { kind: "options", payload: c.ask, options: c.ask.options.map((o: any) => ({ label: o.label, effects: [] })) }));
       const b = bound(u);
-      await postConfirmEvent(b.cfg.path, b.cfg.universe, b.actor, otherClone(c, a, [maps], (q) => q.replace("is that what they meant?", "did they mean this?")));
+      await postConfirmEvent(b.cfg.path, DECISIONS_SCOPE, b.actor, otherClone(c, a, [maps], (q) => q.replace("is that what they meant?", "did they mean this?")));
       transcript(u.transcripts).ask("toolu_c", [c.ask], { [c.ask.question]: "Yes" }, later(2));
       await logQuestion(u.root, { toolUseId: "toolu_c", round: "R1" }, {}, u.transcripts);
       // A pull brings another clone's question numbered D1 — the ref the Yes acted on.
-      await postConfirmEvent(b.cfg.path, b.cfg.universe, b.actor, otherClone(c, a, [maps], (q) => q.replace(/^D2:/, "D1:").replace("is that", "was that"), "D1"));
+      await postConfirmEvent(b.cfg.path, DECISIONS_SCOPE, b.actor, otherClone(c, a, [maps], (q) => q.replace(/^D2:/, "D1:").replace("is that", "was that"), "D1"));
       const d = (await decisionRound(u.root, "R1") as any).decisions.find((x: any) => (x.label ?? x.id) === "d1");
       assert.equal(d.standing.id, a, JSON.stringify(d.standing));
       assert.ok(d.standing.ruled.some((x: any) => x.finding === f && x.on === "unblock"));
@@ -1483,7 +1484,7 @@ test("Round five replaces vanishing gate: cancelled replies remain visible; miss
     await asAgent(async () => {
       const b = bound(u);
       const never = otherClone(c, "never-recorded", [[{ decision: "d2", option: "Real, fix it" }]], (q) => q.replace(/^D3:/, "D9:"), "D9");
-      const neverEvent = await postConfirmEvent(b.cfg.path, b.cfg.universe, b.actor, never);
+      const neverEvent = await postConfirmEvent(b.cfg.path, DECISIONS_SCOPE, b.actor, never);
       assert.ok("error" in neverEvent && /not a confirm codemap could have posted/.test(neverEvent.error), JSON.stringify(neverEvent));
     });
   } finally { u.cleanup(); }
@@ -1519,7 +1520,7 @@ test("Q4: confirmReading refuses a ref shared by two posted questions", async ()
       // Another agent, which had not seen that confirm, posts its own reading of the same words
       // under the next free ref: also D2. Two confirms sharing a ref is a RACE, not damage.
       const b = bindDecisions(u.root) as any;
-      const scope = decisionScope(b.cfg.universe);
+      const scope = DECISIONS_SCOPE;
       const events = sortEvents(await readScope(b.cfg.path, scope));
       const firstEvent = events.find((e) => e.id === first.confirm)!;
       const before = events.filter((e) => e.id !== firstEvent.id);

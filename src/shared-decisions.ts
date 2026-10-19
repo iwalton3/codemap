@@ -1,5 +1,5 @@
 /**
- * Decision rounds, folded from `decisions/<universe>`.
+ * Decision rounds, folded from the workspace's `law/decisions` and every legacy `decisions/<universe>`.
  *
  * Five events: `decision.round.posted`, `decision.confirm.posted`, `decision.question.logged`,
  * `decision.answer.recorded` and `decision.reading.recorded`. The rules are the owner's, word
@@ -25,7 +25,7 @@
 import { registerKinds, registerReferences, tipReader, type ScopeReader } from "./eventlog.js";
 import { createHash } from "node:crypto";
 import { comparisonContextHash, deriveComparison, validateComparisonRequest, type AnswerSource, type CanonicalIssue, type ComparisonProjection, type ComparisonRequest, type ReaderJudgment, type HumanResolution } from "./decision-comparison.js";
-import { readSets, readScope, registerDoor, scopesOnDisk, type DoorFold, type LogEvent, type ReadSets } from "./eventlog.js";
+import { readSets, readScope, readScopeChecked, registerDoor, scopesOnDisk, sortEvents, type AdmissionCheck, type DoorFold, type LogEvent, type ReadSets, type ScopeRead } from "./eventlog.js";
 import { emitEventChecked } from "./write.js";
 import { foldJudged, shaped, type Refusal } from "./validation.js";
 import { decisionDevEra, decisionEventShape } from "./log-shape.js";
@@ -37,7 +37,67 @@ import { questionnaireVersion, stageSubmission, validateQuestionnaire, type Ques
 import { canonical, codeUnitOrder, normalizeQuestion, sameQuestion } from "./transcript.js";
 import { ISO_DATE, type Actor, type AskedQuestion, type Decision, type DecisionEffect, type DecisionOption, type DecisionRound, type LoggedQuestion } from "./schema.js";
 
+/** A universe's decisions log from before the workspace scope: read, and written only by acts on
+ *  the decisions posted there, so each act stays in the scope of what it is about. */
 export const decisionScope = (universe: string): string => `decisions/${universe}`;
+
+/**
+ * The workspace's decisions — ONE per sidecar, beside the law (`shared-standard.ts LAW_SCOPE`),
+ * because a ruling governs whatever it names in any repository of the workspace. New rounds post
+ * here; the fold reads it and every legacy `decisions/<universe>` and merges them, so the view
+ * is the same in every universe and nothing written before the split is rewritten. An act on a
+ * decision goes to the decision's own scope (`decisionHome`): an event's `after` names only its
+ * own scope's heads, and the fold's "saw" rules (a withdrawal saw the answers, a resolution saw
+ * the judgments) are about events of that same decision.
+ */
+export const DECISIONS_SCOPE = "law/decisions";
+export const isDecisionScope = (scope: string): boolean => scope === DECISIONS_SCOPE || scope.startsWith("decisions/");
+/** Every decisions scope the fold reads: the workspace's, and every legacy one on disk. */
+export const decisionScopes = async (logRoot: string): Promise<string[]> =>
+  [DECISIONS_SCOPE, ...(await scopesOnDisk(logRoot)).filter((s) => s.startsWith("decisions/"))];
+/** A decision issue's scope is valid if it is its round's legacy log or the workspace's. */
+export const validDecisionIssueScope = (scope: string, universe: string): boolean =>
+  scope === DECISIONS_SCOPE || scope === decisionScope(universe);
+
+const otherDecisionEvents = async (logRoot: string, scope: string): Promise<LogEvent[]> =>
+  (await Promise.all((await decisionScopes(logRoot)).filter((s) => s !== scope).map((s) => readScope(logRoot, s)))).flat();
+
+/** Every decisions scope, read and merged in `seq` order: what every reader of decisions folds. */
+export async function readDecisionLog(logRoot: string): Promise<ScopeRead> {
+  const reads = await Promise.all((await decisionScopes(logRoot)).map((s) => readScopeChecked(logRoot, s)));
+  const blocked = reads.find((r) => r.status === "blocked");
+  return {
+    events: sortEvents(reads.flatMap((r) => r.events)), malformed: reads.flatMap((r) => r.malformed),
+    ...(blocked ? { status: "blocked" as const, ...(blocked.diagnostic ? { diagnostic: blocked.diagnostic } : {}) } : { status: "complete" as const }),
+  };
+}
+
+/** The scope decision `id` was posted in — where every act on it is written. A decision's id is
+ *  `<posting event id>:<label>`, or a confirm's own event id. Unknown → the workspace's. */
+export const decisionHome = (logRoot: string, id: string): Promise<string> =>
+  homeOf(logRoot, (e) => e.id === id.split(":")[0]);
+/** A decision as a canonical issue: its round's universe and the scope it was posted in. */
+export async function decisionIssueRef(logRoot: string, s: SharedDecisions, d: Pick<FoldedDecision, "id" | "round">, fallbackUniverse: string) {
+  return { kind: "decision" as const, id: d.id, universe: s.rounds.find((r) => r.id === d.round)?.universe || fallbackUniverse,
+    scope: await decisionHome(logRoot, d.id) };
+}
+/** Where an act about two decisions goes: their shared scope, else the workspace's. */
+export async function pairHome(logRoot: string, a: string, b: string): Promise<string> {
+  const [x, y] = await Promise.all([decisionHome(logRoot, a), decisionHome(logRoot, b)]);
+  return x === y ? x : DECISIONS_SCOPE;
+}
+/** Where a comparison's later acts go: wherever its request was written. */
+export const comparisonHome = (logRoot: string, request: string): Promise<string> =>
+  homeOf(logRoot, (e) => e.kind === "decision.comparison.requested" && e.subject === request);
+async function homeOf(logRoot: string, match: (e: LogEvent) => boolean): Promise<string> {
+  for (const scope of await decisionScopes(logRoot))
+    if ((await readScope(logRoot, scope)).some(match)) return scope;
+  return DECISIONS_SCOPE;
+}
+
+/** A check that folds decisions sees every decisions scope, not only the one it writes to. */
+export const acrossDecisions = (logRoot: string, scope: string, check: AdmissionCheck): AdmissionCheck =>
+  async (events) => check(sortEvents([...events, ...await otherDecisionEvents(logRoot, scope)]));
 
 export const loggedQuestionOnce = (q: Pick<LoggedQuestion, "session" | "toolUseId">): string => `q:${q.session}\0${q.toolUseId}`;
 
@@ -777,7 +837,7 @@ function listRevisionMatchesAnswer(d: FoldedDecision, list: ListRevision | undef
 
 
 /** Every kind this family folds or knows to skip: anything else here is newer (`eventlog.ts registerKinds`). */
-const DECISION_KINDS = registerKinds((scope) => scope.startsWith("decisions/"), [
+const DECISION_KINDS = registerKinds(isDecisionScope, [
   "decision.round.posted", "decision.confirm.posted", "decision.question.logged", "decision.answer.recorded",
   "decision.answer.revised", "decision.questionnaire.submitted", "decision.comparison.nominated",
   "decision.comparison.requested", "decision.comparison.judged", "decision.comparison.resolved", "decision.withdrawn",
@@ -1860,10 +1920,12 @@ function foldComparisons(s: SharedDecisions, positioned: { e: LogEvent; pos: num
       if (byId.has(r.id)) { refuse(e, `comparison ${r.id} is already requested`); continue; }
       const leftDecision = s.decisions.find((d) => d.id === r.left.questionId);
       const rightDecision = s.decisions.find((d) => d.id === r.right.questionId);
-      if (!leftDecision || !rightDecision || !r.issues.every((issue) => issue.universe === s.rounds[0]?.universe
-        && (issue.kind === "decision" ? issue.scope === decisionScope(issue.universe)
+      // A decision and a bare finding id are in their round's universe; a canonical ref names its own.
+      const universeOf = (d: FoldedDecision) => s.rounds.find((x) => x.id === d.round)?.universe;
+      if (!leftDecision || !rightDecision || !r.issues.every((issue) =>
+        (issue.kind === "decision" ? issue.universe === universeOf(leftDecision) && validDecisionIssueScope(issue.scope, issue.universe)
           && leftDecision.id === rightDecision.id && issue.id === leftDecision.id
-          : issue.kind === "finding" ? [leftDecision, rightDecision].some((d) => named(d).includes(issue.id)
+          : issue.kind === "finding" ? [leftDecision, rightDecision].some((d) => named(d).includes(issue.id) && issue.universe === universeOf(d)
               || namedIssues(d).some((ref) => issueKey(ref) === issueKey(issue as CanonicalIssueReference)))
             && validIssue(issue as CanonicalIssueReference)
             : [leftDecision, rightDecision].some((d) => namedIssues(d).some((x) => issueKey(x) === issueKey(issue as CanonicalIssueReference)))
@@ -2540,8 +2602,9 @@ export function comparisonActRefusal(s: SharedDecisions, e: Pick<LogEvent, "id" 
  * `origin.answer` an answer; a logged question names rounds that were posted. Raw events.
  */
 async function decisionReferences(read: ScopeReader, scope: string, events: LogEvent[], e: LogEvent): Promise<string | null> {
-  const universe = scope.slice("decisions/".length);
   const d = e.data as Record<string, any> | undefined;
+  // A bare finding id is in its round's universe: the legacy log's own, or the one the round names.
+  const universe = scope === DECISIONS_SCOPE ? String(d?.round?.universe ?? "") : scope.slice("decisions/".length);
   const posted = events.filter((x) => x.kind === "decision.round.posted");
   const roundKnown = (r: string) => posted.some((x) => x.id === r || (x.data as Record<string, any> | undefined)?.round?.id === r);
   const decisionKnown = (id: string) => posted.some((x) => (((x.data as Record<string, any> | undefined)?.decisions as { id?: unknown }[] | undefined) ?? [])
@@ -2583,36 +2646,48 @@ async function decisionReferences(read: ScopeReader, scope: string, events: LogE
   return null;
 }
 
-registerDoor((scope) => scope.startsWith("decisions/"), (logRoot, scope) => async (events, minted) => {
-  const own = await decisionsDoor(events, minted);
-  const why = await decisionReferences(tipReader(logRoot), scope, events.filter((x) => x.id !== minted.id), minted);
+/** The decisions fold at the door of one decisions scope, folded with the others as a read folds them. */
+export const decisionsDoorAt = (logRoot: string, scope: string): DoorFold => async (events, minted) =>
+  decisionsDoor(sortEvents([...events, ...await otherDecisionEvents(logRoot, scope)]), minted);
+
+/** Prior events of every decisions scope, as the references check reads them: the scope's own
+ *  `own` and the rest through `read` (the tip at the door, the prefix before `e` on read). */
+const decisionPrior = async (read: ScopeReader, scope: string, own: LogEvent[]): Promise<LogEvent[]> => {
+  const others = (await read.scopes()).filter((s) => isDecisionScope(s) && s !== scope);
+  return sortEvents([...own, ...(await Promise.all(others.map((s) => read.read(s)))).flat()]);
+};
+
+registerDoor(isDecisionScope, (logRoot, scope) => async (events, minted) => {
+  const own = await decisionsDoorAt(logRoot, scope)(events, minted);
+  const read = tipReader(logRoot);
+  const why = await decisionReferences(read, scope, await decisionPrior(read, scope, events.filter((x) => x.id !== minted.id)), minted);
   return why ? { refused: [...own.refused, { id: minted.id, why }] } : own;
 });
-registerReferences((scope) => scope.startsWith("decisions/"), async (scope, e, own, read) => {
-  const why = await decisionReferences(read, scope, own, e);
+registerReferences(isDecisionScope, async (scope, e, own, read) => {
+  const why = await decisionReferences(read, scope, await decisionPrior(read, scope, own), e);
   return why ? [{ id: e.id, kind: e.kind, cls: "reference", why }] : [];
 });
 
 /** One write, folded at the door: refused with the fold's reason, never appended to be refused later. */
-const put = (logRoot: string, universe: string, actor: Actor, kind: string, subject: string, data: Record<string, unknown>) =>
-  emitEventChecked(logRoot, decisionScope(universe), actor, async () => ({ kind, subject, data }), decisionsDoor);
+const put = (logRoot: string, scope: string, actor: Actor, kind: string, subject: string, data: Record<string, unknown>) =>
+  emitEventChecked(logRoot, scope, actor, async () => ({ kind, subject, data }), decisionsDoorAt(logRoot, scope));
 
-export const postRoundEvent = (logRoot: string, universe: string, actor: Actor, round: Omit<DecisionRound, "postedBy" | "at">, decisions: Decision[]) =>
-  put(logRoot, universe, actor, "decision.round.posted", round.id, { publication: 2, round, decisions });
+export const postRoundEvent = (logRoot: string, scope: string, actor: Actor, round: Omit<DecisionRound, "postedBy" | "at">, decisions: Decision[]) =>
+  put(logRoot, scope, actor, "decision.round.posted", round.id, { publication: 2, round, decisions });
 
-export const postConfirmEvent = (logRoot: string, universe: string, actor: Actor, decision: Decision & { confirms: Confirms }) =>
-  put(logRoot, universe, actor, "decision.confirm.posted", decision.id, { publication: 2, round: decision.round, decision });
+export const postConfirmEvent = (logRoot: string, scope: string, actor: Actor, decision: Decision & { confirms: Confirms }) =>
+  put(logRoot, scope, actor, "decision.confirm.posted", decision.id, { publication: 2, round: decision.round, decision });
 
-export const logQuestionEvent = (logRoot: string, universe: string, actor: Actor, q: Omit<LoggedQuestion, "id" | "loggedBy" | "at">) =>
-  put(logRoot, universe, actor, "decision.question.logged", q.toolUseId, q as unknown as Record<string, unknown>);
+export const logQuestionEvent = (logRoot: string, scope: string, actor: Actor, q: Omit<LoggedQuestion, "id" | "loggedBy" | "at">) =>
+  put(logRoot, scope, actor, "decision.question.logged", q.toolUseId, q as unknown as Record<string, unknown>);
 
-export const recordAnswerEvent = (logRoot: string, universe: string, actor: Actor, a: { decision: string; hash: string; via: AnswerVia; relayedBy?: string }) =>
-  put(logRoot, universe, actor, "decision.answer.recorded", a.decision, a as unknown as Record<string, unknown>);
+export const recordAnswerEvent = (logRoot: string, scope: string, actor: Actor, a: { decision: string; hash: string; via: AnswerVia; relayedBy?: string }) =>
+  put(logRoot, scope, actor, "decision.answer.recorded", a.decision, a as unknown as Record<string, unknown>);
 
 /** One locked append is the whole selected batch. A retry is the original receipt. */
 export const submitQuestionnaireEvent = (
-  logRoot: string, universe: string, actor: Actor, roundId: string, staged: StagedSubmission,
-) => emitEventChecked(logRoot, decisionScope(universe), actor, async (events) => {
+  logRoot: string, scope: string, actor: Actor, roundId: string, staged: StagedSubmission,
+) => emitEventChecked(logRoot, scope, actor, acrossDecisions(logRoot, scope, async (events) => {
   if (isAgentActor(actor)) return { error: "questionnaire submission needs the principal's own act" };
   const s = foldDecisions(events);
   const exact = s.rounds.find((x) => x.id === roundId);
@@ -2640,7 +2715,7 @@ export const submitQuestionnaireEvent = (
   }
   return { kind: "decision.questionnaire.submitted", subject: round.id,
     data: { round: round.id, staged: checked.value } as unknown as Record<string, unknown> };
-}, decisionsDoor);
+}), decisionsDoorAt(logRoot, scope));
 
 export interface ReadingEvent {
   answer: string;
@@ -2653,17 +2728,17 @@ export interface ReadingEvent {
   asks?: string;
 }
 
-export const recordReadingEvent = (logRoot: string, universe: string, actor: Actor, a: ReadingEvent) =>
-  put(logRoot, universe, actor, "decision.reading.recorded", a.answer, a as unknown as Record<string, unknown>);
+export const recordReadingEvent = (logRoot: string, scope: string, actor: Actor, a: ReadingEvent) =>
+  put(logRoot, scope, actor, "decision.reading.recorded", a.answer, a as unknown as Record<string, unknown>);
 
-export const nominateComparisonEvent = (logRoot: string, universe: string, actor: Actor,
+export const nominateComparisonEvent = (logRoot: string, scope: string, actor: Actor,
   input: { answers: [string, string]; findings: string[]; issues?: CanonicalIssueReference[]; reason: string }) =>
-  put(logRoot, universe, actor, "decision.comparison.nominated", [...input.answers].sort().join("/"), input);
+  put(logRoot, scope, actor, "decision.comparison.nominated", [...input.answers].sort().join("/"), input);
 
-export const withdrawDecisionEvent = (logRoot: string, universe: string, actor: Actor,
+export const withdrawDecisionEvent = (logRoot: string, scope: string, actor: Actor,
   input: { decision: string; answer?: string; reason: string; knownAnswers: string[];
     relay?: string; review?: WithdrawalReview }) =>
-  emitEventChecked(logRoot, decisionScope(universe), actor, async (events) => {
+  emitEventChecked(logRoot, scope, actor, acrossDecisions(logRoot, scope, async (events) => {
     const d = foldDecisions(events).decisions.find((x) => x.id === input.decision);
     if (!d) return { error: `no decision ${input.decision}` };
     if (d.withdrawn) return { error: `${d.ref} is already withdrawn (${d.withdrawn.id})` };
@@ -2671,16 +2746,16 @@ export const withdrawDecisionEvent = (logRoot: string, universe: string, actor: 
     if (canonical(sources.map((a) => a.id).sort()) !== canonical([...input.knownAnswers].sort()))
       return { error: "answers changed before withdrawal; read the decision again" };
     return { kind: "decision.withdrawn", subject: input.decision, data: input };
-  }, decisionsDoor);
+  }), decisionsDoorAt(logRoot, scope));
 
-export const reviseAnswerEvent = (logRoot: string, universe: string, actor: Actor,
+export const reviseAnswerEvent = (logRoot: string, scope: string, actor: Actor,
   input: { decision: string; hash: string; via: Extract<AnswerVia, { kind: "direct" | "revision-relay" }>;
     list?: ListRevision;
     revision: { of: string[]; findings: string[]; issues?: CanonicalIssueReference[];
       resolves?: { answers: [string, string]; priorResolution: string; shownHash: string } } }) =>
-  emitEventChecked(logRoot, decisionScope(universe), actor, async (events) => {
+  emitEventChecked(logRoot, scope, actor, acrossDecisions(logRoot, scope, async (events) => {
     const d = foldDecisions(events).decisions.find((x) => x.id === input.decision);
     if (!d || d.hash !== input.hash || d.withdrawn || d.answers.some((a) => a.withdrawn))
       return { error: "the question or its authority changed before revision; read it again" };
     return { kind: "decision.answer.revised", subject: d.id, data: input };
-  }, decisionsDoor);
+  }), decisionsDoorAt(logRoot, scope));

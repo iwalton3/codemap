@@ -20,7 +20,7 @@ import type { Questionnaire } from "../questionnaire.js";
 import { discard } from "../test-tmp.js";
 import { readScope } from "../eventlog.js";
 import { emitEvent } from "../write.js";
-import { comparisonBriefText, decisionScope, decisionsDoor, foldDecisions } from "../shared-decisions.js";
+import { comparisonBriefText, comparisonHome, decisionsDoorAt, foldDecisions, readDecisionLog } from "../shared-decisions.js";
 import { resolveSidecar } from "../sidecar-config.js";
 
 const pw = resolvePlaywright();
@@ -382,7 +382,8 @@ describe("the decisions UI", { skip: pw ? false : "playwright not resolvable (se
     const id = requested.id as string;
     const request = requested.comparison.request;
     const cfg = resolveSidecar(root)!;
-    await emitEvent(cfg.path, decisionScope(cfg.universe), { principal: "independent-reader@x.com" },
+    const home = await comparisonHome(cfg.path, id);
+    await emitEvent(cfg.path, home, { principal: "independent-reader@x.com" },
       "decision.comparison.judged", id, {
         judgment: { requestId: id, contextHash: request.contextHash, issues: request.issues,
           answerVersions: [`${request.left.answerId}\0${request.left.version}`, `${request.right.answerId}\0${request.right.version}`],
@@ -392,8 +393,8 @@ describe("the decisions UI", { skip: pw ? false : "playwright not resolvable (se
         proof: { purpose: "pair-comparison", requestId: id, contextHash: request.contextHash,
           brief: comparisonBriefText(request), receipt: "reader-receipt", agent: "reader-e2e",
           session: "reader-session", launch: "reader-launch", toolUseId: "reader-launch", call: "reader-call" },
-      }, decisionsDoor);
-    const pure = foldDecisions(await readScope(cfg.path, decisionScope(cfg.universe)));
+      }, decisionsDoorAt(cfg.path, home));
+    const pure = foldDecisions((await readDecisionLog(cfg.path)).events);
     assert.equal(pure.comparisons.find((x) => x.request.id === id)?.projection.state, "incompatible", JSON.stringify(pure.comparisons));
     const detail = await ops.comparisonDetail(root, id) as any;
     assert.equal(detail.comparison.projection.state, "incompatible", JSON.stringify(detail.comparison.projection));

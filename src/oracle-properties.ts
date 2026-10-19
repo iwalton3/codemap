@@ -26,8 +26,9 @@ import { branchKey } from "./review-target.js";
 import assert from "node:assert/strict";
 import { readScope, scopesOnDisk, sortEvents, type LogEvent } from "./eventlog.js";
 import { withoutOverlay } from "./sync-session.js";
-import { projectionFor } from "./shared-projections.js";
-import { foldCount } from "./materialize.js";
+import { decisionsProjection, projectionFor } from "./shared-projections.js";
+import { decisionScope, foldDecisions, isDecisionScope } from "./shared-decisions.js";
+import { foldCount, type Projection } from "./materialize.js";
 import { docScope, foldDocs } from "./shared-docs.js";
 import { triageScope, foldTriage, isTombstone, ABSENT_FIELD } from "./shared-triage.js";
 import { bugScope, foldBugs } from "./shared-bugs.js";
@@ -62,14 +63,27 @@ export function stable(value: unknown): string {
   return JSON.stringify(norm(value));
 }
 
+/**
+ * Every projected entity on a clone's disk: one per scope, and the decisions as ONE — every
+ * decisions scope folds together, stored under the universe's legacy key (`cachedDecisions`).
+ */
+async function projected(m: Member): Promise<{ scope: string; events: LogEvent[]; fold: (e: LogEvent[]) => unknown; proj: Projection<any> }[]> {
+  const out = [];
+  const scopes = await scopesOnDisk(m.sidecar);
+  for (const scope of scopes) {
+    const which = projectionFor(scope);
+    if (which) out.push({ scope, events: await readScope(m.sidecar, scope), ...which });
+  }
+  const decisions = scopes.filter(isDecisionScope);
+  if (decisions.length) out.push({ scope: decisionScope(universeKey(m.repo)), fold: foldDecisions, proj: decisionsProjection,
+    events: sortEvents((await Promise.all(decisions.map((s) => readScope(m.sidecar, s)))).flat()) });
+  return out;
+}
+
 /** Every scope on a clone's disk, folded. */
 async function foldedScopes(m: Member): Promise<Map<string, string>> {
   const out = new Map<string, string>();
-  for (const scope of await scopesOnDisk(m.sidecar)) {
-    const which = projectionFor(scope);
-    if (!which) continue;
-    out.set(scope, stable(which.fold(await readScope(m.sidecar, scope))));
-  }
+  for (const { scope, events, fold } of await projected(m)) out.set(scope, stable(fold(events)));
   return out;
 }
 
@@ -201,10 +215,7 @@ export function shuffled<T>(items: T[], seed: number): T[] {
  * without the `seq` that orders it.
  */
 export async function determinism(m: Member, seed: number): Promise<void> {
-  for (const scope of await scopesOnDisk(m.sidecar)) {
-    const which = projectionFor(scope);
-    if (!which) continue;
-    const events = await readScope(m.sidecar, scope);
+  for (const { scope, events, ...which } of await projected(m)) {
     if (events.length < 2) continue;
     const canonical = stable(which.fold(events));
     // REVERSE first, and it is not decoration: for exactly two events every seeded
@@ -502,10 +513,8 @@ export async function converged(t: Team): Promise<void> {
   // fingerprint — passed both this and completeness while `sharedFindings` served the
   // corruption, because neither ever looked at what a read returns.
   for (const m of t.all) {
-    for (const scope of await scopesOnDisk(m.sidecar)) {
-      const which = projectionFor(scope);
-      if (!which) continue;
-      const fromLog = stable(which.fold(await readScope(m.sidecar, scope)));
+    for (const { scope, events, ...which } of await projected(m)) {
+      const fromLog = stable(which.fold(events));
       let fromRows: string;
       try { fromRows = stable(which.proj.read(db(m.repo), scope)); }
       catch (e) { throw new Error(`PROJECTION violated in ${scope} for ${m.actor.principal}: rows unreadable — ${(e as Error).message}`); }

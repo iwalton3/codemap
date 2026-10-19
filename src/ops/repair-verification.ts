@@ -25,7 +25,7 @@ import { readCached } from "../materialize.js";
 import { readScopeChecked, type LogEvent } from "../eventlog.js";
 import { emitEventChecked } from "../write.js";
 import { foldRepairRecords, type RepairFindingMap } from "../repair-records.js";
-import { decisionScope, foldDecisions, answerHasCurrentAuthority, intentCandidates, comparisonRestricts, heldFindings, heldIssues } from "../shared-decisions.js";
+import { readDecisionLog, foldDecisions, answerHasCurrentAuthority, intentCandidates, comparisonRestricts, heldFindings, heldIssues } from "../shared-decisions.js";
 import { canonicalIssueKey } from "../decision-issues.js";
 import { workEligibility } from "./decision-holds.js";
 import { issueClaimHash } from "../ruling-application.js";
@@ -62,7 +62,7 @@ async function rulingContext(root: string, review: number | string, findings: Sh
   const door = sidecarWriteDoor(root);
   if (!door.cfg) return { error: door.error ?? "sidecar unavailable" };
   const cfg = door.cfg;
-  const source = await readScopeChecked(cfg.path, decisionScope(cfg.universe));
+  const source = await readDecisionLog(cfg.path);
   if (source.status !== "complete") return { error: "ruling scope is blocked; no repair authority can be issued" };
   const state = foldDecisions(source.events);
   const refs = findings.map((f) => ({ kind: "finding" as const, universe: cfg.universe, review: String(review), scope: findingScope(findingKeyScope(cfg, review)), id: f.id }));

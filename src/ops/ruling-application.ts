@@ -9,7 +9,7 @@ import { foldFindings, isClosed, type SharedFinding } from "../shared-findings.j
 import { readCached } from "../materialize.js";
 import { findingsProjection } from "../shared-projections.js";
 import { foldBugs, type SharedBug } from "../shared-bugs.js";
-import { decisionScope, foldDecisions, intentCandidates, rulerOf, comparisonRestricts, namedIssues, answerHasCurrentAuthority, type FoldedAnswer, type FoldedDecision } from "../shared-decisions.js";
+import { readDecisionLog, decisionIssueRef, foldDecisions, intentCandidates, rulerOf, comparisonRestricts, namedIssues, answerHasCurrentAuthority, type FoldedAnswer, type FoldedDecision } from "../shared-decisions.js";
 import { saveReaderRequest, readerRequest, holdReaderReceipt, readerReceipts, settleReaderReceipt } from "../reader-local.js";
 import { locateReaderCall, recordedAgain, verifyReaderCall, type ReaderExpectation, type VerifiedCall } from "../reader-call.js";
 import {
@@ -75,7 +75,7 @@ async function context(root: string, input: { issue: IssueReference; answerId: s
   if (!issue) return { error: "the projected issue is missing from its authoritative scope" };
   if (isClosed(issue.state)) return { error: "already closed" };
   if (!issue.openEpoch) return { error: "the issue has no open-state event identity" };
-  const source = await readScopeChecked(door.cfg.path, decisionScope(door.cfg.universe));
+  const source = await readDecisionLog(door.cfg.path);
   if (source.status !== "complete") return { error: `the ruling scope is blocked: ${source.diagnostic?.detail ?? "unreadable"}` };
   const decisions = foldDecisions(source.events);
   const pair = decisions.decisions.flatMap((d) => d.answers.map((a) => ({ d, a }))).find((x) => x.a.id === input.answerId);
@@ -88,8 +88,7 @@ async function context(root: string, input: { issue: IssueReference; answerId: s
   const declaredFinding = resolved.ref.kind === "finding"
     && d.options.some((o) => o.effects.some((e) => e.findings.includes(resolved.ref.id)));
   const authorityScope = resolved.ref.kind === "bug" || declaredFinding ? resolved.ref
-    : { kind: "decision" as const, universe: door.cfg.universe,
-      scope: decisionScope(door.cfg.universe), id: d.id };
+    : await decisionIssueRef(door.cfg.path, decisions, d, door.cfg.universe);
   if (!answerHasCurrentAuthority(d, a, authorityScope))
     return { error: `answer ${a.id} is not a current ruling for this issue` };
   if (intentCandidates(decisions).some((c) => {

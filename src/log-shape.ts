@@ -148,7 +148,8 @@ export const standardEventShape = (e: LogEvent): string | null => check(STANDARD
 
 /** The shape check for whatever scope a shard belongs to, or null for a scope without one. */
 export function shapeCheckFor(scope: string): ((e: LogEvent) => string | null) | null {
-  if (scope.startsWith("decisions/")) return decisionEventShape;
-  if (scope.startsWith("standard/") || scope.startsWith("law/")) return standardEventShape;
+  // `law/decisions` before `law/standard`: both are workspace scopes beside each other.
+  if (scope.startsWith("decisions/") || scope === "law/decisions") return decisionEventShape;
+  if (scope.startsWith("standard/") || scope === "law/standard") return standardEventShape;
   return null;
 }

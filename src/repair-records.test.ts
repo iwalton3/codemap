@@ -171,10 +171,10 @@ test("A8 (D2): a decision entry and a release ruling must exist in the decisions
   const event = (data: Record<string, unknown>) => testChain("w", [{ id: "e1", kind: "repair.sort-recorded", subject: "s", actor, data }])[0]!;
   const why = async (data: Record<string, unknown>) => (await check("findings/acme/api/pr-7", event(data), [], read)).map(r => r.why);
   assert.deepEqual(await why({ restsOn: ["decision:r1:d1", "free label"] }), []);
-  assert.deepEqual(await why({ restsOn: ["decision:r1:d9"] }), ["no decision r1:d9 in decisions/acme/api"]);
+  assert.deepEqual(await why({ restsOn: ["decision:r1:d9"] }), ["no decision r1:d9 in the decisions log"]);
   const release = (answer: string) => ({ restsOn: [], release: { rulings: [{ decision: "r1:d1", answer }] } });
   assert.deepEqual(await why(release("ans1")), []);
-  assert.deepEqual(await why(release("ans9")), ["no answer ans9 to r1:d1 in decisions/acme/api"]);
+  assert.deepEqual(await why(release("ans9")), ["no answer ans9 to r1:d1 in the decisions log"]);
 });
 
 test("arbitration must address each disagreement and unresolved dependency holds", () => {

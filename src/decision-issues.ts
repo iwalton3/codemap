@@ -1,6 +1,7 @@
 /** Exact shared issue identities used by ruling application. */
 import { createHash } from "node:crypto";
 import { readBug, readFinding, lookupFinding } from "./store.js";
+import { readScope } from "./eventlog.js";
 import { universeKey } from "./sidecar-config.js";
 import { findingKeyScope, normalizeFindingKey } from "./review-target.js";
 import { findingScope, type SharedFinding } from "./shared-findings.js";
@@ -30,6 +31,24 @@ export function canonicalIssueKey(ref: CanonicalIssueReference): string {
   return "issue_" + createHash("sha256")
     .update(JSON.stringify(["codemap-issue-v1", ref.kind, ref.universe, ref.scope, ref.id]))
     .digest("hex");
+}
+
+/**
+ * An issue in ANOTHER universe of the workspace, for a decision to name (a decision is
+ * workspace-scoped; `shared-decisions.ts DECISIONS_SCOPE`). This store has no rows for it, so it
+ * is checked against the sidecar's log, as the door checks it: the exact scope, and its creation
+ * there. Carrying a ruling out happens in the issue's own universe, which resolves it locally.
+ */
+export async function resolveWorkspaceIssue(logRoot: string, input: CanonicalIssueReference): Promise<{ ok: true; ref: CanonicalIssueReference } | IssueRefusal> {
+  if (!input || typeof input.id !== "string" || !input.id.trim() || typeof input.universe !== "string" || !input.universe.trim() || typeof input.scope !== "string")
+    return refuse("invalid-reference", "an issue in another universe needs its kind, universe, exact ID and scope");
+  if (input.kind === "bug" ? input.scope !== bugScope(input.universe)
+    : input.kind !== "finding" || typeof input.review !== "string" || !input.scope.startsWith(`findings/${input.universe}/`))
+    return refuse("wrong-scope", `${input.scope} is not a ${input.kind} scope in ${input.universe}`);
+  const created = input.kind === "bug" ? "bug.filed" : "finding.created";
+  if (!(await readScope(logRoot, input.scope)).some((e) => e.kind === created && e.subject === input.id))
+    return refuse("not-found", `no ${input.kind} ${input.id} in ${input.scope}`);
+  return { ok: true, ref: input };
 }
 
 /** Resolve only an exact store ID. The source scope, not a display ref, owns the issue. */

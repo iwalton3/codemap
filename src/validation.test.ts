@@ -85,7 +85,7 @@ test("the findings door checks what a finding names in other scopes: a ruling's 
     const ruling = testEvent({ id: "e2", kind: "finding.rulingApplied", subject: "f1", seq: 2,
       data: { capsule: { version: 3, ruling: { answerId: "a1", roundId: "r_missing", questionId: "r_missing:d1" } } } });
     const r1 = await door([created], ruling);
-    assert.ok(r1.refused.some((r) => r.id === "e2" && /no round r_missing in decisions\/acme\/api/.test(r.why)), JSON.stringify(r1.refused));
+    assert.ok(r1.refused.some((r) => r.id === "e2" && /no round r_missing in the decisions log/.test(r.why)), JSON.stringify(r1.refused));
     const site = testEvent({ id: "e3", kind: "repair.verification-recorded", subject: "run", seq: 3,
       data: { results: [{ sites: [{ bug: "bug_never_filed" }] }] } });
     const r2 = await door([created], site);

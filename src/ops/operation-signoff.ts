@@ -7,7 +7,7 @@ import { readScopeChecked } from '../eventlog.js';
 import { emitEventChecked } from '../write.js';
 import { foldStandard, lawScope, standardDoor, standardScope } from '../shared-standard.js';
 import { materializeStandard } from '../standard-publish.js';
-import { decisionScope, foldDecisions, answerHasCurrentAuthority, rulerOf, intentCandidates, comparisonRestricts } from '../shared-decisions.js';
+import { readDecisionLog, decisionIssueRef, foldDecisions, answerHasCurrentAuthority, rulerOf, intentCandidates, comparisonRestricts } from '../shared-decisions.js';
 import { operationContent, framingContent, contentDiff } from '../schema.js';
 import { locateReaderCall, recordedAgain, verifyReaderCall, type ReaderExpectation } from '../reader-call.js';
 import { saveReaderRequest, readerRequest, holdReaderReceipt, readerReceipts, settleReaderReceipt } from '../reader-local.js';
@@ -66,7 +66,7 @@ async function context(root: string, input: {
   const content = operationContent(op), framing = framingContent(spec), payload = operationSignoffDisplay(op.id, spec.id, content, framing, input.ref);
   if (!input.answerId)
     return { cfg, op, spec, content, framing, payload };
-  const source = await readScopeChecked(cfg.path, decisionScope(cfg.universe));
+  const source = await readDecisionLog(cfg.path);
   if (source.status !== 'complete')
     return { error: 'the answer scope is blocked' };
   const decisions = foldDecisions(source.events);
@@ -74,7 +74,7 @@ async function context(root: string, input: {
   if (!pair)
     return { error: 'no recorded human answer' };
   const { d, a } = pair;
-  const scope = { kind: 'decision' as const, id: d.id, universe: cfg.universe, scope: decisionScope(cfg.universe) };
+  const scope = await decisionIssueRef(cfg.path, decisions, d, cfg.universe);
   if (!a.verified || a.sourceAnswer || a.cancelled || a.withdrawn || a.resolvedOutBy || a.elsewhere || a.revisionInvalid || d.withdrawn || !answerHasCurrentAuthority(d, a, scope))
     return { error: 'answer has no current verified human authority' };
   if (intentCandidates(decisions).some(c => c.answers.includes(a.id) && comparisonRestricts(decisions, c, scope)))
@@ -82,7 +82,7 @@ async function context(root: string, input: {
   if (signoffHash(d.payload) !== signoffHash(operationSignoffDisplay(op.id, spec.id, content, framing, d.ref)) || a.options.length !== 1 || a.options[0] !== SIGN_OPERATION)
     return { error: 'answer does not sign the full exact operation presentation; plan-only answers sign nothing' };
   const ruling: OperationSignoffCapsule['ruling'] = {
-    answerId: a.id, decisionId: d.id, ref: d.ref, universe: cfg.universe, sourceScope: decisionScope(cfg.universe), via: a.via,
+    answerId: a.id, decisionId: d.id, ref: d.ref, universe: scope.universe, sourceScope: scope.scope, via: a.via,
     ...(a.questionnaire ? { questionnaire: a.questionnaire } : {}), principal: rulerOf(a).principal, responseHash: a.responseHash,
     display: d.payload, selected: a.options, words: a.words, verified: true, status: 'current', comparison: 'clear',
     // The cited ruling alone (D4: F19, F46): the whole decisions scope's events made any decision

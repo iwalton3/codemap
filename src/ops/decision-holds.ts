@@ -10,11 +10,11 @@ import { join } from "node:path";
 import { db } from "../db.js";
 import { decisionScopeHasEvents, decisionFindingStates, decisionBugStates } from "../store.js";
 import { canonicalIssueKey, type CanonicalIssueReference } from "../decision-issues.js";
-import { readCached } from "../materialize.js";
+import { readCachedMerged } from "../materialize.js";
 import { decisionsProjection } from "../shared-projections.js";
 import { resolveSidecar, sidecarIdentity, universeKey } from "../sidecar-config.js";
 import { isClosed, type FindingState } from "../shared-findings.js";
-import { decisionScope, foldDecisions, heldFindings, heldIssues, intentCandidates, comparisonRestricts, supersededFindings, type Hold, type SharedDecisions } from "../shared-decisions.js";
+import { DECISIONS_SCOPE, decisionScope, decisionScopes, foldDecisions, heldFindings, heldIssues, intentCandidates, comparisonRestricts, supersededFindings, type Hold, type SharedDecisions } from "../shared-decisions.js";
 import type { ScopeDiagnostic, ScopeStatus } from "../eventlog.js";
 
 /** What a row carries: its holds, or `"unknown"`, and whether its decision may be superseded. */
@@ -149,9 +149,23 @@ export async function decisionsView(root: string): Promise<DecisionsView> {
   };
   if (!cfg) return missing("no sidecar is configured, and this store has read decisions from one before");
   if (!existsSync(join(cfg.path, ".git"))) return missing(`the sidecar at ${cfg.path} is missing, and this store has read decisions from it before`);
-  if (!existsSync(join(cfg.path, decisionScope(cfg.universe)))) return missing(`the decisions log is missing from ${cfg.path}, and this store has read decisions from it before`);
-  const { value, ...status } = await readCached(root, cfg.path, decisionScope(cfg.universe), sidecarIdentity(cfg), foldDecisions, decisionsProjection);
+  if (!existsSync(join(cfg.path, DECISIONS_SCOPE)) && !existsSync(join(cfg.path, decisionScope(cfg.universe))))
+    return missing(`the decisions log is missing from ${cfg.path}, and this store has read decisions from it before`);
+  const { value, status } = await cachedDecisions(root, cfg);
   return view(value, status, status.status === "blocked" ? status.diagnostic?.detail ?? "the decisions log cannot be read" : undefined);
+}
+
+/**
+ * The workspace's decisions, through the cache: every decisions scope folded together and stored
+ * under this universe's legacy key, so `source_scope` and every reader of the rows are unchanged.
+ * Never folded one scope alone (`projectionFor` does not offer it): an act in `law/decisions` on a
+ * legacy decision would be refused by a fold that cannot see the decision.
+ */
+export async function cachedDecisions(root: string, cfg: { path: string; universe: string })
+  : Promise<{ value: SharedDecisions; status: ScopeStatus; folded: boolean; fresh: boolean }> {
+  const { value, folded, fresh, ...status } = await readCachedMerged(root, cfg.path, await decisionScopes(cfg.path), decisionScope(cfg.universe),
+    sidecarIdentity(cfg), (events) => foldDecisions(events), decisionsProjection);
+  return { value, status, folded, fresh };
 }
 
 /** The rows this store holds, read without folding. */
