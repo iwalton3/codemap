@@ -343,6 +343,14 @@ const tools: Tool[] = [
     handler: (a, c) => ops.repairVerificationBrief(c.universe.path, a.review, a, connection),
   },
   {
+    name: "repair_batch_brief",
+    description: "One brief for a round's verification: every open job of one role and slot on the review (or of the `requests` named), each entry exactly repair_brief's. A low-stakes request has no slot 2, so slot 1's batch carries it alone. Submit each entry as its own repair_verification (or repair_arbitration). To delegate, put the returned `launch` line, whole and on a line of its own, in a subagent's prompt — a reviewer's prompt may carry it beside its review instructions; launch slot 1 and slot 2 as different subagents. Called with `batch` it re-reads that batch: what the subagent does first.",
+    inputSchema: obj({ review: { type: "string" }, role: { type: "string", enum: ["verifier", "arbitrator"] }, slot: { type: "integer", enum: [1, 2] },
+      requests: { type: "array", items: { type: "string" } }, batch: { type: "string" } }, ["review"]),
+    mutates: true,
+    handler: (a, c) => ops.repairBatchBrief(c.universe.path, a.review, a as never, connection),
+  },
+  {
     name: "repair_verification",
     description: "Submit your results for one verifier slot: your own run of each check (fails at the witness, passes at the fix), or an inspection with a no-check reason. A subagent's submission is held until its launcher records it.",
     inputSchema: obj({ review: { type: "string" }, requestId: { type: "string" }, slot: { type: "integer", enum: [1, 2] }, results: { type: "array", items: repairClaimVerdictSchema } }, ["review", "requestId", "slot", "results"]),
@@ -358,7 +366,7 @@ const tools: Tool[] = [
   },
   {
     name: "record_repair_verification",
-    description: "Record a subagent verifier's held submission by the receipt it got back. Codemap finds the subagent's repair_verification (or repair_arbitration) call that returned it and checks its transcript: launched with exactly the issued prompt, and submitted exactly what was held." + " `pending`: the call is not in its transcript yet — call again in a moment (for up to a minute). An error: it will never count (a fork, a message sent after launch, a call this machine's transcripts do not show) — launch a new one.",
+    description: "Record a subagent verifier's held submission by the receipt it got back. Codemap finds the subagent's repair_verification (or repair_arbitration) call that returned it and checks its transcript: launched with exactly the issued prompt (or a prompt holding the launch line of a repair_batch_brief listing this job), and submitted exactly what was held." + " `pending`: the call is not in its transcript yet — call again in a moment (for up to a minute). An error: it will never count (a fork, a message sent after launch, a call this machine's transcripts do not show) — launch a new one.",
     inputSchema: obj({ review: { type: "string" }, requestId: { type: "string" }, role: { type: "string", enum: ["verifier", "arbitrator"] }, slot: { type: "integer", enum: [1, 2] },
       receipt: { type: "string" } }, ["review", "requestId", "role", "receipt"]),
     mutates: true,
