@@ -311,8 +311,11 @@ export function checkQuestionnaireDecisions(q: Questionnaire, decisions: Decisio
  *  refuses exactly what the fold would drop. */
 export function checkDecision(d: Decision): string | null {
   // A fold drops garbage; it never throws on it, or one bad line blocks the whole scope.
-  if (!d || typeof d !== "object" || !Array.isArray(d.options) || !d.options.every((o) => o && typeof o === "object" && typeof o.label === "string" && Array.isArray(o.effects))) {
-    return "a decision needs options, each with a label and effects";
+  if (!d || typeof d !== "object" || !Array.isArray(d.options) || !d.options.every((o) => o && typeof o === "object" && typeof o.label === "string")) {
+    return "a decision needs options, each with a label";
+  }
+  if (!d.options.every((o) => Array.isArray(o.effects))) {
+    return "every option needs an `effects` list — `[]` when it acts on nothing; `{findings, on: \"unblock\"}` and `{findings, on: \"settle\", as}` are effects";
   }
   if (!d.payload || typeof d.payload !== "object" || !str(d.payload.question) || !Array.isArray(d.payload.options)
     || !d.payload.options.every((o) => o && typeof o === "object" && typeof o.label === "string")) {

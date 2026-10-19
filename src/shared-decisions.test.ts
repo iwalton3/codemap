@@ -876,6 +876,9 @@ test("posting refuses what the rulings forbid, and accepts the same decision wit
   assert.match(refused({ ...good, options: [{ label: "A", effects: [{ findings: ["F1"], on: "settle", as: "unsupported" }] }, good.options[1]] })!, /must say how it closes/);
   assert.match(refused({ ...good, options: [{ label: "A", effects: [{ findings: ["F1"], on: "unblock", as: "refuted" }] }, good.options[1]] })!, /takes no `as`/);
   assert.match(refused({ ...good, options: [{ label: "A", effects: [settle()] }, good.options[1]] })!, /needs findings/);
+  // F2: the refusal for a missing `effects` field says an empty list is allowed and an unblock counts.
+  const noEffects = refused({ ...good, options: [{ label: "A" }, good.options[1]] })!;
+  assert.match(noEffects, /`effects`/); assert.match(noEffects, /`\[\]`/); assert.match(noEffects, /unblock/);
   const multiPark = D("dp", "D8", q("D8: park?", ["Park until 2026-10-15", "Now"], true), [{ label: "Park until 2026-10-15", effects: [], park: "2026-10-15" }, { label: "Now", effects: [] }]);
   assert.equal(refused({ ...multiPark, payload: { ...multiPark.payload, multiSelect: false } }), null);
   assert.match(refused(multiPark)!, /multi-select question cannot offer a park/);
