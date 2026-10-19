@@ -187,6 +187,16 @@ test("A8 (D2): a decision entry and a release ruling must exist in the decisions
   assert.deepEqual(await why(release("ans9")), ["no answer ans9 to r1:d1 in the decisions log"]);
 });
 
+test("V1: a correction may raise stakes and never lower them; a sort without stakes is high", () => {
+  const corrected = (first: Partial<RepairSortInput>, next: Partial<RepairSortInput>) =>
+    foldRepairRecords(chain([sorted(sort(first)), sorted(sort({ id: "s2", prior: "s1", reason: "restaked", ...next }))])).rejected.map(r => r.reason);
+  assert.deepEqual(corrected({ stakes: "low" }, { stakes: "high" }), []);
+  assert.deepEqual(corrected({ stakes: "low" }, { stakes: "low" }), []);
+  assert.match(corrected({ stakes: "high" }, { stakes: "low" }).join(), /raise stakes, never lower/);
+  assert.match(corrected({}, { stakes: "low" }).join(), /raise stakes, never lower/);
+  assert.match(foldRepairRecords(chain([sorted(sort({ stakes: "medium" as never }))])).rejected[0]?.reason ?? "", /high or low/);
+});
+
 test("arbitration must address each disagreement and unresolved dependency holds", () => {
   const conflict = sort({ disagreements: [{ id: "d1", text: "requirement missing" }], arbitration: { addresses: [], reason: "agree", identity: who }, restsOn: ["question-1"] });
   const records = foldRepairRecords(chain([sorted(conflict)]));
@@ -236,7 +246,7 @@ test("unchanged shards replay old materializer cache and atomically persist repa
     const result = await readCached(root, log, scope, "identity", foldFindings, findingsProjection);
     assert.equal((result.value as import("./repair-records.js").RepairFindingMap<import("./shared-findings.js").SharedFinding>).repairRecords!.evidence.length, 1);
     assert.equal(readRepairRecords(root, scope).claims[0]!.text, created.data.text);
-    assert.equal(MATERIALIZER_VERSION, 58);
+    assert.equal(MATERIALIZER_VERSION, 59);
     assert.equal((d.prepare("SELECT fingerprint FROM shared_scope WHERE scope=?").get(scope) as {fingerprint:string}).fingerprint, await scopeFingerprint(log, scope, "identity"));
     d.prepare("UPDATE repair_records SET body='{}' WHERE scope=?").run(scope);
     assert.throws(() => readRepairRecords(root, scope), /malformed shape/);

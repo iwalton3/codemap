@@ -17,6 +17,10 @@ export interface RepairSortInput {
   restsOn: string[]; source: string; provenance: "owner-reviewed" | "dual-sorted" | "released" | "ruled";
   assessments: RepairAssessment[]; disagreements: { id: string; text: string }[];
   arbitration?: { addresses: string[]; reason: string; identity: ReportedSorter; receipt?: ReportedSortReceipt };
+  /** How many verifiers close it (plan 2026-10-19 V1, V2): `low` closes on one run, `high` on two plus an
+   *  arbitrator on disagreement. Judged by /triage-review's sorters; they disagree → high; absent → high
+   *  (`slotsFor`). A correction may raise it and never lower it. */
+  stakes?: "high" | "low";
   /** A logged decisions answer on why the sites or claims this correction removes are not instances (R5, plan 5.2). */
   ruling?: string;
   /** Only on a sort that left its hold, built by codemap: the rulings that answered its decision entries. `ruled`

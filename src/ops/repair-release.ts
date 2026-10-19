@@ -58,6 +58,7 @@ export async function releaseRuledSort(root: string, review: number | string, in
     classification: "implementation-defect", kind: prior.kind, coverage: prior.coverage,
     ...(prior.predicate !== undefined ? { predicate: prior.predicate } : {}), ...(prior.sites !== undefined ? { sites: prior.sites } : {}),
     restsOn: prior.restsOn.filter((x) => !decisionOfEntry(x)), source: prior.source, provenance: "ruled",
+    ...(prior.stakes !== undefined ? { stakes: prior.stakes } : {}),
     assessments: [], disagreements: [], release: { rulings: held.rulings },
   });
 }
@@ -134,6 +135,7 @@ export async function releaseHeldSort(root: string, review: number | string, inp
     classification: "implementation-defect", kind: prior.kind, coverage: prior.coverage,
     ...(prior.predicate !== undefined ? { predicate: prior.predicate } : {}), ...(prior.sites !== undefined ? { sites: prior.sites } : {}),
     restsOn: prior.restsOn.filter((x) => !decisionOfEntry(x)), source: prior.source, provenance: "released",
+    ...(prior.stakes !== undefined ? { stakes: prior.stakes } : {}),
     assessments: [], disagreements: [], release: { rulings: held.rulings, readers },
   };
   return recordSort(root, review, release);

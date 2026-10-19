@@ -35,7 +35,7 @@ import { saveReaderRequest, readerRequest, holdReaderReceipt, readerReceipts, se
 import { verifierIdentityKey, type RepairConnection, type VerifierIdentity } from "../verifier-boundary.js";
 import {
   foldRepairVerification, repairVerificationHash, repairVerificationDecision, repairVerificationDisagreements,
-  isRepairVerificationState, emptyRepairVerificationState, resultError,
+  isRepairVerificationState, emptyRepairVerificationState, resultError, slotsFor,
   type RepairVerificationCapsule, type RepairVerificationRun, type RepairVerificationArbitration,
   type RepairVerificationApplication, type RepairClaimVerdict,
 } from "../repair-verification.js";
@@ -217,7 +217,7 @@ export async function pendingRepairJobs(root: string, review: number | string) {
   const jobs = source.records.requests.filter((r) => !applied.has(r.id)).flatMap((r) => {
     const runs = source.records.runs.filter((x) => x.requestId === r.id);
     const arbitrated = source.records.arbitrations.some((x) => x.requestId === r.id);
-    const open: Job[] = ([1, 2] as const).filter((slot) => !runs.some((x) => x.slot === slot)).map((slot) => ({ requestId: r.id, role: "verifier" as const, slot }));
+    const open: Job[] = slotsFor(r.capsule).filter((slot) => !runs.some((x) => x.slot === slot)).map((slot) => ({ requestId: r.id, role: "verifier" as const, slot }));
     if (runs.length === 2 && !arbitrated && repairVerificationDisagreements(runs[0]!, runs[1]!).length) open.push({ requestId: r.id, role: "arbitrator" });
     return open;
   });
@@ -236,6 +236,7 @@ export async function repairVerificationBrief(root: string, review: number | str
   const runs = source.records.runs.filter((r) => r.requestId === request.id);
   if (job.role === "arbitrator" && runs.length !== 2) return { error: "arbitration requires both runs" };
   if (job.role === "arbitrator" && !repairVerificationDisagreements(runs[0]!, runs[1]!).length) return { error: "no actual disagreement needs arbitration" };
+  if (job.role === "verifier" && !slotsFor(request.capsule).includes(job.slot!)) return { error: `a low-stakes request has one verifier: slot 1` };
   if (job.role === "verifier" && runs.some((r) => r.slot === job.slot)) return { error: "that slot already has its run" };
   if (connection.claimed()) {
     const held = jobs.get(connection);

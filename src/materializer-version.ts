@@ -260,4 +260,9 @@
 // 57 → 58 (plan 2026-10-07-ladder-support): the standard fold carries a rule's standing and
 // learned `amend_standing`; the rests-on links ride this same bump (phase C). Same reason as
 // 18 → 19.
-export const MATERIALIZER_VERSION = 58;
+// 58 → 59 (plan 2026-10-19-batch-release-held-sorts, one bump for phases 1–4, shipped with
+// EVENT_SCHEMA 4 → 5 so the team upgrades once): decisions fold from the workspace scope
+// `law/decisions` and every legacy `decisions/<universe>` together; the repair fold learned the
+// `ruled` provenance and `stakes`, and the verification fold closes a low-stakes request on one
+// run. Same reason as 18 → 19: the shards do not move.
+export const MATERIALIZER_VERSION = 59;

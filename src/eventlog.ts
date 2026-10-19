@@ -60,7 +60,11 @@ export const SIDECAR_PROTOCOL = 2;
 // `interim`, `authority`, `lapsesWhen`, and from phase C `restsOnRules`) and `amend_standing`
 // changes it. An older build would fold the rule without its standing and an `amend_standing`
 // into a no-op. Phase C rides this bump: nothing at 4 had shipped.
-export const EVENT_SCHEMA = 4;
+// 4 → 5 (plan 2026-10-19-batch-release-held-sorts): a repair sort carries `stakes`, and a sort
+// leaves its hold with provenance `ruled`. An older build would refuse the second as an unknown
+// provenance — damage — and, ignoring the first, demand two verifiers of a low-stakes request
+// and read its one-run closure as unverified.
+export const EVENT_SCHEMA = 5;
 
 /**
  * The one file per scope that every write since the linear log goes to

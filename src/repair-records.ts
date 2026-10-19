@@ -174,6 +174,10 @@ export function foldRepairRecords(input: LogEvent[]): RepairRecords {
         if (!error && data.priors !== undefined && (!Array.isArray(data.priors) || !data.priors.length || data.priors.some(p => !nonempty(p)) || !unique(priorsOf(data)))) error = "priors must name distinct sorts";
         if (!error && priorsOf(data).length && (!nonempty(data.reason) || priorsOf(data).some(p => !out.sorts.some(s => s.input.id === p)))) error = "correction needs predecessor and reason";
         if (!error && data.ruling !== undefined && (!nonempty(data.ruling) || !priorsOf(data).length)) error = "a cited ruling belongs to a correction: it names a logged answer and a prior sort";
+        if (!error && data.stakes !== undefined && data.stakes !== "high" && data.stakes !== "low") error = "stakes is high or low";
+        // Raise-only, so the sorters' disagreement-means-high cannot be undone in one step (V1).
+        if (!error && data.stakes === "low" && priorsOf(data).some(p => out.sorts.find(s => s.input.id === p)?.input.stakes !== "low"))
+          error = "a correction may raise stakes, never lower them: a sort without stakes is high";
         if (!error && data.kind === "pattern" && (!nonempty(data.predicate) || !data.sites?.length || !unique(data.sites))) error = "pattern needs predicate and original sites";
         if (!error) error = releaseError(data);
         if (!error) error = sequenceError(data);

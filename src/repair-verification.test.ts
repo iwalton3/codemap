@@ -27,9 +27,10 @@ const run = (command: string, commit: string, phase: RepairExecution["phase"], o
 const CHECK = "node --test guard.test.js";
 const observedFix = [run(CHECK, W, "witness", "failed"), run(CHECK, F, "fix", "passed")];
 
-function fixture(opts: { pinned?: RepairExecution[]; classification?: string; refutationSubtype?: "factual" | "assumed" } = {}) {
+function fixture(opts: { pinned?: RepairExecution[]; classification?: string; refutationSubtype?: "factual" | "assumed"; stakes?: "high" | "low" } = {}) {
   const sort: RepairSortInput = { id: "sort", classification: opts.classification ?? "mechanical", kind: "isolated", coverage: [{ findingId: "f", claimIds: ["f:original"] }],
-    restsOn: [], source: "owner reviewed", provenance: "owner-reviewed", assessments: [], disagreements: [], ...(opts.refutationSubtype ? { refutationSubtype: opts.refutationSubtype } : {}) };
+    restsOn: [], source: "owner reviewed", provenance: "owner-reviewed", assessments: [], disagreements: [], ...(opts.refutationSubtype ? { refutationSubtype: opts.refutationSubtype } : {}),
+    ...(opts.stakes ? { stakes: opts.stakes } : {}) };
   const evidence: RepairEvidenceInput = { id: "proof", sortId: "sort", witnessCommit: W, baseCommit: "b".repeat(40), fixCommit: F,
     coverage: [{ findingId: "f", claimIds: ["f:original"], result: "complete", reason: "r", claimResults: [{ claimId: "f:original", result: "complete", reason: "r" }] }],
     reproducer: opts.pinned ?? [], regression: [], inspected: [], rulingIds: [], attribution: [] };
@@ -140,6 +141,26 @@ test("two blind slots take two verifiers, once each, and the orchestrator is nei
   assert.match(f.rejected(f.verify(1, conn("v9"), f.verdict("fixed", observedFix))) ?? "", /its own verifier/, "a slot is taken once");
   const self = fixture(); self.capsule.orchestrator = conn("orch"); self.request();
   assert.match(self.rejected(self.verify(1, conn("orch"), self.verdict("fixed", observedFix))) ?? "", /orchestrator cannot verify/);
+});
+
+test("V2: a low-stakes request closes on its one run and has no slot 2; high, or no stakes, still needs two", () => {
+  const low = fixture({ stakes: "low" }); low.request();
+  low.verify(1, conn("v1"), low.verdict("fixed", observedFix));
+  assert.match(low.rejected(low.verify(2, conn("v2"), low.verdict("fixed", observedFix))) ?? "", /low-stakes request has slot 1 only/);
+  assert.equal(repairVerificationDecision(low.folded(), "rq", "f").complete, true);
+  const applied = low.apply(conn("fixer"));
+  assert.equal(low.rejected(applied), undefined);
+  assert.equal(foldFindings(low.events).get("f")!.closed?.eventId, applied);
+  for (const stakes of ["high", undefined] as const) {
+    const high = fixture({ stakes }); high.request();
+    high.verify(1, conn("v1"), high.verdict("fixed", observedFix));
+    assert.match(high.rejected(high.apply(conn("fixer"))) ?? "", /complete independent/, `${stakes ?? "absent"}: one run does not close it`);
+    assert.equal(repairVerificationDecision(high.folded(), "rq", "f").reasons[0], "two independent runs are required");
+  }
+  // One run stands for both: an unknown from it still closes nothing.
+  const unknown = fixture({ stakes: "low" }); unknown.request();
+  unknown.verify(1, conn("v1"), unknown.verdict("unknown", [], "none"));
+  assert.equal(repairVerificationDecision(unknown.folded(), "rq", "f").complete, false);
 });
 
 test("a disagreement needs a third verifier who addresses it with reasons", () => {

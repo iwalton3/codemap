@@ -537,3 +537,18 @@ test("G8: a subagent's submission is validated before it is held, not when its l
     assert.match(schema, /results: \{ type: "array", items: repairClaimVerdictSchema \}/, "the tool advertises the item shape");
   } finally { f.t.dispose(); }
 });
+
+test("V2 through the ops: a low-stakes request offers one verifier and closes on its run; raising its sort to high makes it stale", async () => {
+  const f = await fixture(1, false, undefined, undefined, { stakes: "low" });
+  try {
+    const pending = await pendingRepairJobs(f.root, 7) as { jobs: { slot?: number }[] };
+    assert.deepEqual(pending.jobs.map((j) => j.slot), [1], "no slot 2 for low stakes");
+    assert.match(String((await repairVerificationBrief(f.root, 7, { requestId: f.requestId, role: "verifier", slot: 2 }, f.host("second")) as { error?: string }).error), /one verifier/);
+    await f.run(1);
+    ok(await applyRepairVerification(f.root, 7, { requestId: f.requestId, findingId: f.ids[0]!, reason: "one batched verifier, low stakes" }, f.orchestrator));
+    assert.equal((await readFinding(f.root, f.ids[0]!, { pr: 7 }))!.state, "resolved");
+    ok(await postRepairSort(f.root, 7, { ...f.sort, stakes: "high", prior: f.sortId, reason: "a sorter judges it high after all" }));
+    const after = await repairRecords(f.root, 7) as { verificationResults: { requestId: string; staleReasons: string[] }[] };
+    assert.ok(after.verificationResults.find((r) => r.requestId === f.requestId)!.staleReasons.includes("sort changed or is held"));
+  } finally { f.t.dispose(); }
+});
