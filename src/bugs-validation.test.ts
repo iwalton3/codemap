@@ -89,6 +89,6 @@ test("the door refuses a ruling application naming a round the decisions scope n
     const minted = testEvent({ id: "e_apply", kind: "bug.rulingApplied", subject: id, seq: 99,
       data: { capsule: { version: 3, ruling: { answerId: "a_x", roundId: "r_x", questionId: "r_x:q1" } } } });
     const verdict = await doorFor(root, bugScope(U))!([...events, minted], minted);
-    assert.ok(verdict.refused.some((r) => r.id === "e_apply" && /no round r_x in decisions\/acme\/api/.test(r.why)), JSON.stringify(verdict));
+    assert.ok(verdict.refused.some((r) => r.id === "e_apply" && /no round r_x in the decisions log/.test(r.why)), JSON.stringify(verdict));
   } finally { discard(root); }
 });
