@@ -102,7 +102,9 @@ arrangement: the blind second starts before blame and receives only the raw find
 purpose and artifact, never the first reading. Post the skill's own sort with the round through
 `post_repair_sort`: `dual-sorted`, with both sorters' classifications and reasons and the
 arbitrator's reasons where they disagreed, or `owner-reviewed` for a genuine owner-approved
-worklist — never fabricate owner approval. Name each subagent sorter by its agent id (`child`, as
+worklist — never fabricate owner approval. Carry each sort's `stakes` (`triage-review`'s
+`prompts/sorter.md`, *Stakes*): `high` where the sorters disagree, and a correction may raise it,
+never lower it. Name each subagent sorter by its agent id (`child`, as
 its Agent result shows it) and leave it out for this session's own reading; codemap fills the
 session. Two sorters, and the arbitrator, must differ. Read `repair_records` for eligibility and
 holds. A correction names the current sort as prior and supersedes it; a correction naming an
@@ -111,8 +113,10 @@ REMOVES a site or claim is refused unless it cites a logged ruling (its ruling f
 answer id) on why it is not an instance — ask the person, log their answer, then post the
 correction citing it. `restsOn` names what holds a sort: a free label at sort time, re-pointed with
 a correction to `decision:<id>` once /ez-plan has posted the question that decides it. Nothing else
-drops a `restsOn` entry: once the person has answered, `release_held_sort` releases the sort with
-two readers (`codemap/references/verify-repair.md`, in the codemap skill).
+drops a `restsOn` entry: once the person has answered, `release_ruled_sort` releases the sort when
+their verified answer unblocks every finding it covers — so post the decision with an unblock
+effect naming them all. Two readers (`release_held_sort`) are break-glass for headless backlog
+work only (`codemap/references/verify-repair.md`, in the codemap skill).
 
 A requirement/scope choice is the owner's. Design defects, assumptions and suggestions remain held
 for their relevant ruling. A pattern is held only when its fix forks the design (`triage-review`'s
@@ -184,12 +188,15 @@ Regression runs and whole-pattern enumeration are separate; a regression suite i
 Inspection-only work records exact source/reasoning and `noCheckReason`, visibly weaker; no-check
 never pretends a test ran.
 
-After an eligible sort and evidence, `repair_request` freezes them. Each of two blind verifier slots
-(`repair_brief` slot 1 or 2) is either a dedicated session that calls `claim_verifier` before any
-other codemap call, or a subagent launched with exactly the `launch` prompt `repair_brief` returns,
-whose held `repair_verification` its launcher records with `record_repair_verification`. A verifier
-runs the check itself, failing at the witness and passing at the fix, and records both; it sees no
-other verdict or fixer conclusion. A third verifier arbitrates only a genuine disagreement. Then
+After an eligible sort and evidence, `repair_request` freezes them. A low-stakes request has one
+blind verifier slot, a high-stakes one (or one with no stakes) two; `repair_batch_brief` gives one
+brief per slot covering every open request of the round. Each slot is filled by a dedicated
+session that calls `claim_verifier` before any other codemap call, or by a subagent launched with
+exactly the `launch` prompt, or by a reviewer whose prompt holds a batch's `launch` line whole on a
+line of its own; a subagent's held `repair_verification` its launcher records with
+`record_repair_verification`. A verifier runs the check itself, failing at the witness and passing
+at the fix, and records both; it sees no other verdict or fixer conclusion. A third verifier
+arbitrates only a genuine disagreement, on a high-stakes request. Then
 `repair_apply_verification` applies the verdict; a verifier never applies its own. An unavailable
 seam leaves the repair reported and pending. Never skip a verifier to finish.
 

@@ -1,8 +1,11 @@
 # Verifying that findings were fixed
 
-A repaired finding closes on evidence two blind verifiers re-ran, never on the fixer's word. The
-chain is: **claims → sort → evidence → request → two verifier runs (an arbitrator if they
-disagree) → application.** Each step is a shared act on the sidecar, so this needs shared mode.
+A repaired finding closes on evidence blind verifiers re-ran, never on the fixer's word. The
+chain is: **claims → sort → evidence → request → verifier runs → application.** How many runs
+is the sort's `stakes`: **low** closes on one verifier's run; **high** — or a sort with no stakes
+— on two, with an arbitrator if they disagree. Verification is batched per round: one verifier
+per slot covers every request on the review. Each step is a shared act on the sidecar, so this
+needs shared mode.
 A local finding — one that never reached the sidecar — has no repair verification: its close is a
 person's ask (`close_finding` with a closing state).
 
@@ -40,14 +43,21 @@ fix never closes the whole finding.
   person's decision first (`references/asking.md`), not something a verifier can settle.
 - **The person has ruled on a held sort:** its `restsOn` must name the decision —
   `decision:<id>`. If it still holds a free label, re-point it first: a correction with the held
-  sort as prior and the label replaced by the decision entry. Then release it with two readers:
+  sort as prior and the label replaced by the decision entry. Then `release_ruled_sort`: it
+  releases the sort when every decision it rests on has a **verified** standing answer whose chosen
+  options **unblock every finding the sort covers**. codemap writes the correction itself,
+  `implementation-defect`, provenance `ruled`, with the rulings in it; evidence lists them in
+  `rulingIds`, and the blind verifiers still answer `decision-needed` where a ruling does not
+  decide a claim. It refuses an unverified answer (relayed words the transcript could not confirm
+  only unblock decision holds), a settle, and an unblock that misses a covered finding: ask the
+  person again, with a decision whose unblock names them all. Dropping a `restsOn` entry any other
+  way is refused.
+- **Break-glass, headless backlog work only:** when nobody is present to ask and the ruling does
+  not unblock the sort as it stands, two readers may release it instead (owner, D2):
   `release_reader_brief` for slot 1 and slot 2, each launched as a fresh background subagent from
   this session with exactly its prompt; each calls `submit_release_verdict`; then
-  `release_held_sort` with both refs. Both must say yes. codemap writes the correction itself,
-  `implementation-defect`, with the rulings in it; evidence lists them in `rulingIds`, and the
-  blind verifiers still answer `decision-needed` where a ruling does not decide a claim. A `no` or
-  a split leaves the sort held: it needs a person-led `/ez-plan` over it, whose sharper answers
-  start a new release. Dropping a `restsOn` entry any other way is refused.
+  `release_held_sort` with both refs. Both must say yes. A `no` or a split leaves the sort held for
+  a person-led `/ez-plan`. With a person in the session, use `/ez-plan` and the ruled release.
 - **The sort is wrong:** a correction is a whole new sort. Re-sort with `/triage-review`, naming
   the current sort as `prior`, with a reason. Adding sites or claims is free; dropping one needs a
   logged ruling (a decisions answer id) on why it is not an instance.
@@ -79,18 +89,25 @@ fix never closes the whole finding.
 `repair_request` with the review, the sort id and the evidence id. It freezes everything and
 returns a request id. You are now the requester: you can never fill a slot of this request, but
 you may launch the verifiers. If a `begin` is open, `sync` now: a staged request is invisible to
-every verifier outside this session.
+every verifier outside this session. Request every repaired sort of the round before step 5, so
+one batch covers them.
 
-## 5. Two blind verifiers
+## 5. Blind verifiers, one per slot, batched
 
-Two ways, and only these two count.
+Slot 1 always; slot 2 only for a high-stakes request (`repair_pending` lists exactly the open
+slots). `repair_batch_brief` with the review, `role: "verifier"` and the slot lists every open job
+of that slot on the review — a low-stakes request appears in slot 1's batch only — and returns
+one `launch` line for the batch. One verifier per batch does every entry, submitting each as its
+own `repair_verification`. `repair_brief` is the same for one request.
+
+Three ways, and only these count.
 
 **A. Subagents you launch** — Claude Code subagents only: codemap checks them against Claude Code's
-transcripts, so a Codex subagent never counts as a verifier (use B, or leave the request pending
-and say so). For slot 1 and slot 2:
+transcripts, so a Codex subagent never counts as a verifier (use C, or leave the request pending
+and say so). For each slot with open jobs:
 
-1. `repair_brief` with the review, the request id, `role: "verifier"` and the slot. It returns
-   `launch`, a one-line prompt.
+1. `repair_batch_brief` (or `repair_brief` for one request) with the review, `role: "verifier"`
+   and the slot. It returns `launch`, a one-line prompt.
 2. Launch a fresh subagent whose prompt is **exactly `launch`, with nothing added before or
    after**, and with `isolation: "worktree"` so its checkouts cannot move a live checkout (an
    isolated subagent's transcript still passes codemap's check, measured 2026-10-06). Use an agent
@@ -100,8 +117,8 @@ and say so). For slot 1 and slot 2:
    never relay one verifier's result to the other.
 3. The subagent reads its own brief, works in a scratch worktree at the pinned commits and calls
    `repair_verification`. That submission is **held** until you record it.
-4. Record it with `record_repair_verification`: the review, the request id, `role: "verifier"`, the
-   slot and the `receipt` the subagent got back, which it reports. codemap finds the subagent's
+4. Record each with `record_repair_verification`: the review, the request id, `role: "verifier"`, the
+   slot and the `receipt` the subagent got back for that request, which it reports. codemap finds the subagent's
    call that returned that receipt, and checks that its transcript shows the exact prompt and the
    exact held submission. `pending` means the call is not on disk yet: record again in a moment
    (for up to a minute). After an error, record once more: some failures (writing to the sidecar,
@@ -110,14 +127,21 @@ and say so). For slot 1 and slot 2:
    transcripts do not show. Say so, and launch a new verifier rather than resubmitting. Any other
    error that repeats, report as it is.
 
-**B. Sessions a person starts.** The request must be on the remote first (`sync`, step 4). Ask the
+**B. The next review round's reviewers.** A reviewer's prompt may carry a batch's `launch` line,
+**whole and on a line of its own**, beside its own review instructions: it verifies that batch and
+reviews in the same run, and its submissions are recorded as in A. Slot 1's and slot 2's lines go
+to different reviewers. `/codemap-review` does this; `codemap-check-fixes` is the scoped form, for
+checking fixes without a full review. The rest of the prompt is trusted, so write nothing in it
+about what the fixes did.
+
+**C. Sessions a person starts.** The request must be on the remote first (`sync`, step 4). Ask the
 person to open two fresh sessions and run `/codemap-verify <review>` in each. They claim the role,
 `pull`, and submit directly; nothing to record. `pull` before step 6 to see their runs. Use this
 when subagents cannot reach the codemap tools, or when the person prefers it.
 
-**Arbitration.** When `repair_pending` shows the two runs disagree, do the same with
-`role: "arbitrator"` and no slot. Its call is `repair_arbitration`, and it is recorded with
-`role: "arbitrator"`.
+**Arbitration.** High stakes only. When `repair_pending` shows two runs disagree, do the same with
+`role: "arbitrator"` and no slot — `repair_batch_brief` batches every request that split. Its call
+is `repair_arbitration`, and it is recorded with `role: "arbitrator"`.
 
 ## 6. Apply
 
@@ -128,7 +152,7 @@ refuses `decision-needed`, `unknown` and an incomplete verdict: they go straight
 
 | Verdict | The finding becomes |
 | --- | --- |
-| fixed — both runs, or an arbitrator between two closing verdicts | resolved |
+| fixed — its one run (low stakes); both runs, or an arbitrator between two closing verdicts (high) | resolved |
 | factually refuted | refuted |
 | a reviewer's assumption refuted | invalid |
 | decision-needed | nothing — it is a person's decision now |

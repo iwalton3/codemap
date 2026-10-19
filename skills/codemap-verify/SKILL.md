@@ -8,7 +8,8 @@ argument-hint: "<review, e.g. 7 or acme/api#7>"
 disable-model-invocation: true
 ---
 
-You are one of two blind verifiers of a repair, or the arbitrator between them. A person started
+You are a blind verifier of a repair — the only one for a low-stakes request, one of two for a
+high-stakes one — or the arbitrator between two. A person started
 this session on purpose: that is what makes your verdict count. It only counts if you did the work
 yourself and saw nothing of anyone else's conclusion.
 
@@ -19,7 +20,8 @@ call cannot claim, and the claim is refused. If it is refused, stop and tell the
 session cannot verify, and they should start a fresh one.
 
 After the claim, this connection can only call `pull`, `repair_pending`, `repair_brief`,
-`repair_verification` and `repair_arbitration`. Anything else is refused. That is the point.
+`repair_batch_brief`, `repair_verification` and `repair_arbitration`. Anything else is refused.
+That is the point.
 
 ## 2. Take one job
 
@@ -28,11 +30,14 @@ it has the team's log. If the pull refuses (a locked store, say), stop and show 
 said. This session cannot repair it.
 
 Then call `repair_pending` with the review from the arguments. It lists open jobs: a request id and a
-verifier slot (1 or 2), or an arbitration. If nothing is open, say so and stop.
+verifier slot (1 or 2), or an arbitration. A low-stakes request has slot 1 only. If nothing is open,
+say so and stop.
 
-Take **one** job. A claimed connection holds one job for its life, so a second one needs another
-fresh session. Call `repair_brief` for it. The brief shows the claims, the sort, the pinned commits
-and the checks the fixer pinned. It never shows another verdict or the fixer's conclusions. Do not
+Take **one** slot. `repair_batch_brief` with the review, `role: "verifier"` and the slot gives every
+open job of that slot on the review, one entry each; with `role: "arbitrator"`, every request
+whose two runs split. Or take a single job with `repair_brief`. A claimed connection holds that one
+batch or job for its life, so another slot needs another fresh session. Each entry shows the
+claims, the sort, the pinned commits and the checks the fixer pinned. It never shows another verdict or the fixer's conclusions. Do not
 go looking for them in the repository, the pull request or the sidecar.
 
 ## 3. Check it yourself
@@ -55,7 +60,7 @@ Record what actually happened, including a command that would not run.
 
 ## 4. Submit
 
-Submit your results with `repair_verification` for your slot. As the arbitrator, submit with
+Submit your results with `repair_verification` for your slot, once per request in your batch. As the arbitrator, submit with
 `repair_arbitration`: address each disagreement with a reason, not a one-word verdict. Then stop.
 Applying the verdict is someone else's act, and a verifier cannot apply its own.
 
