@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { db } from "../db.js";
 import { decisionScopeHasEvents, decisionFindingStates, decisionBugStates, readStoreMeta, writeStoreMeta } from "../store.js";
 import { canonicalIssueKey, type CanonicalIssueReference } from "../decision-issues.js";
-import { readCachedMerged } from "../materialize.js";
+import { readCachedMerged, sidecarUnusable } from "../materialize.js";
 import { decisionsProjection } from "../shared-projections.js";
 import { resolveSidecar, sidecarIdentity, universeKey } from "../sidecar-config.js";
 import { isClosed, type FindingState } from "../shared-findings.js";
@@ -158,8 +158,9 @@ export async function cachedDecisions(root: string, cfg: { path: string; univers
   : Promise<{ value: SharedDecisions; status: ScopeStatus; folded: boolean; fresh: boolean }> {
   // Absent is not empty, over the set the fold reads: the fold is total, so folding without a
   // scope it read before would write its rows away. Both callers come through here.
+  // Asked only on the way to declining: `wrongSidecar` may spawn git, which a read must not pay.
   const gone = decisionsAbsence(root, cfg);
-  if (gone) return { value: stored(root, cfg.universe), status: { status: "blocked", diagnostic: gone }, folded: false, fresh: false };
+  if (gone) return { value: stored(root, cfg.universe), status: { status: "blocked", diagnostic: sidecarUnusable(root, cfg.path) ?? gone }, folded: false, fresh: false };
   const scopes = await decisionScopes(cfg.path);
   // None on disk, none staged and none read before: not folded, so no zero-event row is
   // written (S0.8(b)).

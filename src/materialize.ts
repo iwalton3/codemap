@@ -93,7 +93,7 @@ export async function readCachedMerged<T>(
   fold = locking(logRoot, scopes, fold);
   const d = db(root);
   let checked: ScopeDiagnostic | null | undefined;
-  const unusable = () => (checked !== undefined ? checked : (checked = logRootMissing(logRoot) ?? unmigrated(logRoot) ?? wrongSidecar(root, logRoot)));
+  const unusable = () => (checked !== undefined ? checked : (checked = sidecarUnusable(root, logRoot)));
   const decline = (gone: ScopeDiagnostic) => {
     try { return { value: proj.read(d, key), fresh: false, folded: false, status: "blocked" as const, diagnostic: gone }; }
     catch { return { value: fold([], { readable: new Set() }), fresh: false, folded: false, status: "blocked" as const, diagnostic: gone }; }
@@ -348,6 +348,11 @@ function unmigrated(logRoot: string): ScopeDiagnostic | null {
   } : null;
 }
 
+/** Why this sidecar must not be folded at all — missing, unmigrated, or not this store's. Asked
+ *  before any judgement about one scope, so the diagnostic names the repair that applies. */
+export const sidecarUnusable = (root: string, logRoot: string): ScopeDiagnostic | null =>
+  logRootMissing(logRoot) ?? unmigrated(logRoot) ?? wrongSidecar(root, logRoot);
+
 function logRootMissing(logRoot: string): ScopeDiagnostic | null {
   if (existsSync(logRoot)) return null;
   return {
@@ -390,7 +395,7 @@ export async function readCached<T>(
   // every scope — which is precisely the work the materializer exists to avoid. Memoised
   // per call because the retry loop below can come round again.
   let checked: ScopeDiagnostic | null | undefined;
-  const unusable = () => (checked !== undefined ? checked : (checked = logRootMissing(logRoot) ?? unmigrated(logRoot) ?? wrongSidecar(root, logRoot)));
+  const unusable = () => (checked !== undefined ? checked : (checked = sidecarUnusable(root, logRoot)));
   /** Serve what is stored, fold nothing, discard nothing. See `logRootMissing`. */
   const decline = (gone: ScopeDiagnostic): Cached<T> => {
     try { return { value: proj.read(d, scope), status: "blocked", diagnostic: gone }; }

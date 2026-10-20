@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { indexBlob } from "./repo.js";
-import { writeStore } from "./store.js";
+import { writeStore, readStoreMeta, SIDECAR_LINEAGE } from "./store.js";
 import type { Decision, State } from "./schema.js";
 import { shareFinding, bindDecisions } from "./ops-shared.js";
 import { postRound, answerDirect, readerBrief } from "./ops/decisions.js";
@@ -313,6 +313,24 @@ test("absent is not empty, per scope: this universe's own decisions log vanishin
     const signoff = await asAgent(() => operationSignoffReaderBrief(w.api.root, { operationId: op.id, answerId: "a_any" })) as { error?: string };
     assert.match(String(signoff.error), /the answer scope is blocked/);
   } finally { w.cleanup(); }
+});
+
+test("a repointed sidecar answers the wrong-sidecar diagnostic, not a missing decisions scope", async () => {
+  const w = await twoScopes("repoint");
+  const other = mkdtempSync(join(tmpdir(), "codemap-ws-repoint-other-"));
+  try {
+    const { ensureSidecar, sync } = await import("./sidecar.js");
+    assert.ok(!("error" in await ensureSidecar(other, { principal: "dana@x.com" })));
+    assert.ok(!("error" in await sync(other, { principal: "dana@x.com" }, "dana's team")));
+    // The store records its sidecar at its first binding check after the sidecar has a commit.
+    assert.ok(!("error" in await sync(w.side, { principal: "alice@x.com" }, "acme")));
+    assert.ok(!("error" in bindDecisions(w.api.root)));
+    assert.ok(readStoreMeta(w.api.root, SIDECAR_LINEAGE), "precondition: the store knows which sidecar it folded from");
+    writeFileSync(join(w.api.root, ".codemap", "sidecar"), other, "utf8");
+    const r = await cachedDecisions(w.api.root, { path: other, universe: w.b.cfg.universe });
+    assert.equal(r.status.status, "blocked");
+    assert.equal(r.status.diagnostic?.reason, "sidecar-mismatch", JSON.stringify(r.status));
+  } finally { w.cleanup(); discard(other); }
 });
 
 test("adopting a sidecar forgets which decisions scopes the old one had", async () => {
