@@ -21,6 +21,9 @@ import { decisionsView } from "./ops/decision-holds.js";
 import { resolveSidecar } from "./sidecar-config.js";
 import { findingScope } from "./shared-findings.js";
 import { findingKeyScope } from "./review-target.js";
+import { bindDecisions } from "./ops-shared.js";
+import { DECISIONS_SCOPE, decisionScope, postRoundEvent } from "./shared-decisions.js";
+import { LINEAR_SHARD } from "./eventlog.js";
 const ok = (result: unknown) => assert.equal((result as { error?: string }).error, undefined, JSON.stringify(result));
 async function fixture(count = 1, decomposed = false, changeEvidence?: (evidence: Omit<RepairEvidenceInput, "id">, root: string) => void, holdBeforeRequest?: "legacy" | "typed", sortOver: Partial<RepairSortInput> = {}) {
   const t = await team(["owner@acme.test", "fixer@acme.test"]);
@@ -631,4 +634,26 @@ test("4.1-4.3: one batch per slot — reviewers carry its launch line, low stake
     assert.deepEqual(runs.filter((r) => r.requestId === high.id).map((r) => r.identity.child).sort(), ["a7777772", "a7777773"], "4.3: the two reviewers are distinct verifiers");
     for (const r of requests) assert.equal((await readFinding(root, r.finding, { pr: 7 }))!.state, "resolved");
   } finally { discard(dir); t.dispose(); }
+});
+
+test("the decisions scope holding a finding vanishing, while another survives, refuses verification as blocked rather than unheld", async () => {
+  const f = await fixture(1, false, undefined, "legacy");
+  try {
+    const b = bindDecisions(f.root);
+    assert.ok(!("error" in b));
+    assert.ok(!("error" in await postRoundEvent(b.cfg.path, decisionScope("acme/settlement"), b.actor, { id: "R9", source: "x", universe: "acme/settlement" }, [{
+      id: "d9", round: "R9", ref: "D9", kind: "options",
+      payload: { question: "D9: is the settlement rule real?", options: [{ label: "Yes" }, { label: "No" }] },
+      options: [{ label: "Yes", effects: [] }, { label: "No", effects: [] }],
+    }])));
+    assert.equal((await decisionsView(f.root)).status.status, "complete");
+    // Gone from the remote too: the op syncs first, which refuses a hand-deleted shard and
+    // restores a committed deletion from the tip.
+    const git = (...a: string[]) => assert.equal(spawnSync("git", ["-c", "user.email=x@x", "-c", "user.name=x", ...a], { cwd: b.cfg.path }).status, 0, a.join(" "));
+    git("rm", "-q", join(DECISIONS_SCOPE, LINEAR_SHARD));
+    git("commit", "-qm", "gone");
+    git("push", "-q");
+    const again = await requestRepairVerification(f.root, 7, { sortId: f.sortId, evidenceId: f.evidenceId }, f.orchestrator);
+    assert.match(String((again as { error?: string }).error), /ruling scope is blocked/);
+  } finally { f.t.dispose(); }
 });

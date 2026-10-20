@@ -8,14 +8,14 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { db } from "../db.js";
-import { decisionScopeHasEvents, decisionFindingStates, decisionBugStates } from "../store.js";
+import { decisionScopeHasEvents, decisionFindingStates, decisionBugStates, readStoreMeta, writeStoreMeta } from "../store.js";
 import { canonicalIssueKey, type CanonicalIssueReference } from "../decision-issues.js";
 import { readCachedMerged } from "../materialize.js";
 import { decisionsProjection } from "../shared-projections.js";
 import { resolveSidecar, sidecarIdentity, universeKey } from "../sidecar-config.js";
 import { isClosed, type FindingState } from "../shared-findings.js";
 import { comparisonHoldApplies, decisionScope, decisionScopes, foldDecisions, heldFindings, heldIssues, supersededFindings, type Hold, type SharedDecisions } from "../shared-decisions.js";
-import type { ScopeDiagnostic, ScopeStatus } from "../eventlog.js";
+import { LINEAR_SHARD, overlayActive, type ScopeDiagnostic, type ScopeStatus } from "../eventlog.js";
 
 /** What a row carries: its holds, or `"unknown"`, and whether its decision may be superseded. */
 export interface HoldMark {
@@ -156,17 +156,46 @@ export async function decisionsView(root: string): Promise<DecisionsView> {
  */
 export async function cachedDecisions(root: string, cfg: { path: string; universe: string })
   : Promise<{ value: SharedDecisions; status: ScopeStatus; folded: boolean; fresh: boolean }> {
+  // Absent is not empty, over the set the fold reads: the fold is total, so folding without a
+  // scope it read before would write its rows away. Both callers come through here.
+  const gone = decisionsAbsence(root, cfg);
+  if (gone) return { value: stored(root, cfg.universe), status: { status: "blocked", diagnostic: gone }, folded: false, fresh: false };
   const scopes = await decisionScopes(cfg.path);
-  // Absent is not empty, over the set the fold reads: the fold is total, so folding no scope at
-  // all would write empty rows over stored ones. Both callers come through here.
-  if (!scopes.some((s) => existsSync(join(cfg.path, s)))) {
-    if (!foldedBefore(root, cfg.universe)) return { value: EMPTY, status: { status: "complete" }, folded: false, fresh: true };
-    const detail = `the decisions log is missing from ${cfg.path}, and this store has read decisions from it before`;
-    return { value: stored(root, cfg.universe), status: { status: "blocked", diagnostic: { reason: "sidecar-missing", detail, evidence: [cfg.path] } }, folded: false, fresh: false };
-  }
+  // None on disk, none staged and none read before: not folded, so no zero-event row is
+  // written (S0.8(b)).
+  if (!scopes.some((s) => existsSync(join(cfg.path, s)) || overlayActive(cfg.path, s))) return { value: EMPTY, status: { status: "complete" }, folded: false, fresh: true };
   const { value, folded, fresh, ...status } = await readCachedMerged(root, cfg.path, scopes, decisionScope(cfg.universe),
-    sidecarIdentity(cfg), (events) => foldDecisions(events), decisionsProjection);
+    sidecarIdentity(cfg), (events) => foldDecisions(events), decisionsProjection,
+    (read) => writeStoreMeta(root, DECISIONS_READ, read));
   return { value, status, folded, fresh };
+}
+
+/** The decisions scopes this store's stored fold read events from (`cachedDecisions`). */
+const DECISIONS_READ = "decisions-scopes-read";
+
+/** Adopting a sidecar replaces the rows, so nothing read from the old one is expected in it.
+ *  An empty record, not none: none falls back to the pre-record seed below. */
+export const forgetDecisionScopesRead = (root: string): void => writeStoreMeta(root, DECISIONS_READ, []);
+
+/**
+ * A `sidecar-missing` diagnostic when a decisions scope this store has folded events from is
+ * gone, or null. Every reader of decisions authority asks it before reading the merged log —
+ * `cachedDecisions` and each op that calls `readDecisionLog` — because the scope list comes from
+ * the disk, so a vanished scope otherwise reads `complete` over the rest.
+ */
+export function decisionsAbsence(root: string, cfg: { path: string; universe: string }): ScopeDiagnostic | null {
+  let read = readStoreMeta<string[]>(root, DECISIONS_READ);
+  if (!read) {
+    // No record: last folded by a build before it, which folded only this universe's own scope.
+    // Persisted at once, because an overlay fold writes that same `shared_scope` row: seeding
+    // later would read a dropped staged act as "folded before", and decline for good.
+    read = foldedBefore(root, cfg.universe) ? [decisionScope(cfg.universe)] : [];
+    writeStoreMeta(root, DECISIONS_READ, read);
+  }
+  // The shard, not the directory: deleting the file leaves the directory, and it folds as empty.
+  const gone = read.find((s) => !existsSync(join(cfg.path, s, LINEAR_SHARD)));
+  if (!gone) return null;
+  return { reason: "sidecar-missing", detail: `${gone} is missing from ${cfg.path}, and this store has read decisions from it before`, evidence: [cfg.path] };
 }
 
 /** The rows this store holds, read without folding. */

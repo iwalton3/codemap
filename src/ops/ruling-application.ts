@@ -9,6 +9,7 @@ import { foldFindings, isClosed, type SharedFinding } from "../shared-findings.j
 import { readCached } from "../materialize.js";
 import { findingsProjection } from "../shared-projections.js";
 import { foldBugs, type SharedBug } from "../shared-bugs.js";
+import { decisionsAbsence } from "./decision-holds.js";
 import { readDecisionLog, decisionIssueRef, foldDecisions, intentCandidates, rulerOf, comparisonRestricts, namedIssues, answerHasCurrentAuthority, type FoldedAnswer, type FoldedDecision } from "../shared-decisions.js";
 import { saveReaderRequest, readerRequest, holdReaderReceipt, readerReceipts, settleReaderReceipt } from "../reader-local.js";
 import { locateReaderCall, recordedAgain, verifyReaderCall, type ReaderExpectation, type VerifiedCall } from "../reader-call.js";
@@ -75,6 +76,8 @@ async function context(root: string, input: { issue: IssueReference; answerId: s
   if (!issue) return { error: "the projected issue is missing from its authoritative scope" };
   if (isClosed(issue.state)) return { error: "already closed" };
   if (!issue.openEpoch) return { error: "the issue has no open-state event identity" };
+  const absent = decisionsAbsence(root, door.cfg);
+  if (absent) return { error: `the ruling scope is blocked: ${absent.detail}` };
   const source = await readDecisionLog(door.cfg.path);
   if (source.status !== "complete") return { error: `the ruling scope is blocked: ${source.diagnostic?.detail ?? "unreadable"}` };
   const decisions = foldDecisions(source.events);

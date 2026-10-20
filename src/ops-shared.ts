@@ -59,7 +59,7 @@ export { mirrorNote } from "./notes-publish.js";
 export { sharedKnowsNode, docsVerdict, type DocsVerdict } from "./docs-lookup.js";
 import { docsVerdict } from "./docs-lookup.js";
 import { liveAnchors, liveIndex, anchorFiles } from "./ops/shared.js";
-import { cachedDecisions, decisionsView } from "./ops/decision-holds.js";
+import { cachedDecisions, decisionsView, forgetDecisionScopesRead } from "./ops/decision-holds.js";
 import { findingWork, findingMark } from "./ops/finding-work.js";
 export { mirrorTriage, mirrorTriageBatch, mirrorTriageClear } from "./triage-publish.js";
 import { homed, linkedBranches, prsLinkedTo, writeLocalLink, readSharedNotes, readAnnotations, readAnchorStore, readFindings, loadNodes, loadNodeVersions, nodeIdsWithPublishableVersions, derivationLookup, workIndexFor, readLocalTriage, replaceLocalTriage, coveredTriageTargets, attributeLocalWalkthrough, readBlockedScopes, findingCountsByPr, readUnpublishedWalkthroughs, readStoreMeta, writeStoreMeta, foldedScopes, hasFoldedFromSidecar, SIDECAR_LINEAGE, type SidecarMark } from "./store.js";
@@ -500,6 +500,7 @@ export async function adoptSidecar(root: string) {
   const was = readStoreMeta<SidecarMark>(root, SIDECAR_LINEAGE);
   const stranded = await strandedScopes(root, cfg);
   writeStoreMeta(root, SIDECAR_LINEAGE, { lineage, path: cfg.path } satisfies SidecarMark);
+  forgetDecisionScopesRead(root);
   return {
     ok: true as const,
     universe: cfg.universe,

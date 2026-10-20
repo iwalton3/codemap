@@ -85,6 +85,9 @@ export async function readCachedMerged<T>(
   identity: string,
   fold: (events: LogEvent[], opts: { readable: Set<string> }) => T,
   proj: Projection<T>,
+  /** Called inside the transaction that stores the rows, with the scopes the fold read at least
+   *  one event from — so a record of them never disagrees with the rows. Never for an overlay fold. */
+  onStore?: (scopesRead: string[]) => void,
 ): Promise<Cached<T> & { fresh: boolean; folded: boolean }> {
   assertNotLockedOut([logRoot]);
   fold = locking(logRoot, scopes, fold);
@@ -142,6 +145,7 @@ export async function readCachedMerged<T>(
         + "events=excluded.events, status=excluded.status, diagnostic=excluded.diagnostic")
         .run(key, after, new Date().toISOString(), events.length,
           status.status, status.diagnostic ? JSON.stringify(status.diagnostic) : null);
+      onStore?.(reads.filter((r) => r.events.length).map((r) => r.sc));
       d.exec("COMMIT");
     } catch (e) {
       d.exec("ROLLBACK");

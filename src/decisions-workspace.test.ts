@@ -4,7 +4,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -14,6 +14,10 @@ import type { Decision, State } from "./schema.js";
 import { shareFinding, bindDecisions } from "./ops-shared.js";
 import { postRound, answerDirect } from "./ops/decisions.js";
 import { cachedDecisions, decisionsView } from "./ops/decision-holds.js";
+import { adoptSidecar } from "./ops-shared.js";
+import { begin, discard as discardStaged } from "./sync-engine.js";
+import { draftSpec, addOperation } from "./requirements.js";
+import { operationSignoffReaderBrief } from "./ops/operation-signoff.js";
 import { findingReviewMatchesScope, resolveDecisionIssue, resolveWorkspaceIssue, type CanonicalIssueReference } from "./decision-issues.js";
 import { DECISIONS_SCOPE, decisionScope, foldDecisions, foldDecisionsReport, heldFindings, postRoundEvent, readDecisionLog, recordAnswerEvent } from "./shared-decisions.js";
 import { LINEAR_SHARD, readScope } from "./eventlog.js";
@@ -269,4 +273,94 @@ test("a finding ref whose review is spelled unnormalized but resolves to its sco
     const ev = (await readScope(side, DECISIONS_SCOPE)).find((e) => e.kind === "decision.round.posted")!;
     assert.equal((ev.data as any).decisions[0].options[0].effects[0].issues[0].review, "7", "the log holds the canonical ref");
   } finally { discard(api.root); discard(settlement.root); discard(side); }
+});
+
+/** An api store that has folded its own legacy round and settlement's: two decisions scopes read. */
+async function twoScopes(name: string) {
+  const side = mkdtempSync(join(tmpdir(), `codemap-ws-${name}-side-`));
+  const api = await repo(side, "api"), settlement = await repo(side, "settlement");
+  const b = bindDecisions(api.root), s = bindDecisions(settlement.root);
+  assert.ok(!("error" in b) && !("error" in s));
+  const round = (universe: string, finding: string, id: string): [any, Decision[]] => [{ id, source: "x", universe }, [{
+    id: "d1", round: id, ref: "D1", kind: "options",
+    payload: { question: `D1: is ${finding} real?`, options: [{ label: "Yes" }, { label: "No" }] },
+    options: [{ label: "Yes", effects: [{ findings: [finding], on: "unblock" }] }, { label: "No", effects: [] }],
+  }]];
+  assert.ok(!("error" in await postRoundEvent(b.cfg.path, decisionScope(b.cfg.universe), b.actor, ...round(b.cfg.universe, api.finding, "R1"))));
+  assert.ok(!("error" in await postRoundEvent(s.cfg.path, decisionScope(s.cfg.universe), s.actor, ...round(s.cfg.universe, settlement.finding, "R2"))));
+  assert.equal((await decisionsView(api.root)).s.decisions.length, 2, "precondition: folded both");
+  return { side, api, settlement, b, s,
+    cleanup: () => { discard(api.root); discard(settlement.root); discard(side); } };
+}
+
+test("absent is not empty, per scope: this universe's own decisions log vanishing while another's is present blocks and keeps the rows", async () => {
+  const w = await twoScopes("own-absent");
+  try {
+    rmSync(join(w.side, decisionScope(w.b.cfg.universe), LINEAR_SHARD));
+    assert.ok(existsSync(join(w.side, decisionScope(w.s.cfg.universe))), "precondition: the other universe's scope is present");
+    const r = await cachedDecisions(w.api.root, w.b.cfg);
+    assert.equal(r.status.status, "blocked", JSON.stringify(r.status));
+    assert.match(r.status.diagnostic?.detail ?? "", new RegExp(decisionScope(w.b.cfg.universe)));
+    assert.equal(r.value.decisions.length, 2, "the stored rows are served, never overwritten");
+
+    // Every op reading decisions authority fresh asks the same guard (`decisionsAbsence`).
+    const spec = await asAgent(() => draftSpec(w.api.root, { title: "Credit approval" }));
+    assert.ok("id" in spec, JSON.stringify(spec));
+    const op = await asAgent(() => addOperation(w.api.root, { specId: spec.id, kind: "add_requirement", title: "Credit bound", section: "Credit",
+      statement: "Bound credit.", provenance: "Owner", rationale: "Exposure", reversibility: "reversible" }));
+    assert.ok("operation" in op, JSON.stringify(op));
+    const signoff = await asAgent(() => operationSignoffReaderBrief(w.api.root, { operationId: op.id, answerId: "a_any" })) as { error?: string };
+    assert.match(String(signoff.error), /the answer scope is blocked/);
+  } finally { w.cleanup(); }
+});
+
+test("adopting a sidecar forgets which decisions scopes the old one had", async () => {
+  const w = await twoScopes("adopt");
+  const other = mkdtempSync(join(tmpdir(), "codemap-ws-adopt-other-"));
+  try {
+    const { ensureSidecar, sync } = await import("./sidecar.js");
+    assert.ok(!("error" in await ensureSidecar(other, { principal: "dana@x.com" })));
+    assert.ok(!("error" in await sync(other, { principal: "dana@x.com" }, "dana's team")));
+    writeFileSync(join(w.api.root, ".codemap", "sidecar"), other, "utf8");
+    const adopted = await asPerson(() => adoptSidecar(w.api.root)) as { error?: string };
+    assert.equal(adopted.error, undefined, JSON.stringify(adopted));
+    const r = await cachedDecisions(w.api.root, { path: other, universe: w.b.cfg.universe });
+    assert.equal(r.status.status, "complete", JSON.stringify(r.status));
+  } finally { w.cleanup(); discard(other); }
+});
+
+test("a staged decisions act that is dropped leaves no scope recorded as read", async () => {
+  const side = mkdtempSync(join(tmpdir(), "codemap-ws-staged-side-"));
+  const api = await repo(side, "api");
+  try {
+    const b = bindDecisions(api.root);
+    assert.ok(!("error" in b));
+    begin(b.cfg.path);
+    try {
+      const staged = await postRoundEvent(b.cfg.path, DECISIONS_SCOPE, b.actor, { id: "R1", source: "x", universe: b.cfg.universe }, [{
+        id: "d1", round: "R1", ref: "D1", kind: "options",
+        payload: { question: `D1: is ${api.finding} real?`, options: [{ label: "Yes" }, { label: "No" }] },
+        options: [{ label: "Yes", effects: [{ findings: [api.finding], on: "unblock" }] }, { label: "No", effects: [] }],
+      }]);
+      assert.ok(!("error" in staged), JSON.stringify(staged));
+      assert.equal((await decisionsView(api.root)).s.decisions.length, 1, "precondition: the overlay read sees the staged round");
+      assert.ok(!existsSync(join(side, DECISIONS_SCOPE, LINEAR_SHARD)), "precondition: staged, not on the log");
+    } finally { discardStaged(b.cfg.path); }
+    const r = await cachedDecisions(api.root, b.cfg);
+    assert.equal(r.status.status, "complete", JSON.stringify(r.status));
+  } finally { discard(api.root); discard(side); }
+});
+
+test("every production reader of the merged decisions log asks the absence guard first", () => {
+  const sites: string[] = [];
+  for (const dir of ["src", "src/ops"]) for (const f of readdirSync(dir)) {
+    if (!f.endsWith(".ts") || f.endsWith(".test.ts") || f === "shared-decisions.ts") continue;
+    const text = readFileSync(join(dir, f), "utf8");
+    const reads = text.match(/readDecisionLog\(/g)?.length ?? 0;
+    if (!reads) continue;
+    sites.push(`${dir}/${f}`);
+    assert.equal(text.match(/decisionsAbsence\(/g)?.length ?? 0, reads, `${dir}/${f}: one guard per read`);
+  }
+  // A new reader fails here first: it is guarded, or the list says why not.
+  assert.deepEqual(sites.sort(), ["src/ops/operation-signoff.ts", "src/ops/repair-verification.ts", "src/ops/ruling-application.ts"]);
 });

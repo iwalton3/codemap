@@ -15,6 +15,11 @@ import { applicationReaderBrief, submitApplicationVerdict, recordApplicationVerd
 import { universeKey } from "./sidecar-config.js";
 import { readScope } from "./eventlog.js";
 import { discard } from "./test-tmp.js";
+import { rmSync } from "node:fs";
+import { bindDecisions } from "./ops-shared.js";
+import { decisionsView } from "./ops/decision-holds.js";
+import { decisionScope, postRoundEvent } from "./shared-decisions.js";
+import { LINEAR_SHARD } from "./eventlog.js";
 
 const code = "export function creditLine(cents) { return cents * 2; }\n";
 const error = (value: any) => String(value?.error ?? value?.reason ?? "");
@@ -275,5 +280,27 @@ test("plan 3.7: no decision closes an issue without a logged ruling", async () =
     });
     assert.equal((await applicationEvents(u)).length, 0, "nothing was applied");
     assert.equal((await issueRow(u))?.state, "issued", "the finding is untouched");
+  } finally { u.cleanup(); }
+});
+
+test("a decisions scope this store read vanishing, while the ruling's own survives, refuses the application as blocked", async () => {
+  const u = await fixture("finding");
+  try {
+    assert.equal(u.posted.ok, true, JSON.stringify(u.posted));
+    // A second decisions scope, read once: where a restricting comparison could have lived.
+    const b = bindDecisions(u.root);
+    assert.ok(!("error" in b));
+    const legacy = decisionScope("acme/settlement");
+    assert.ok(!("error" in await postRoundEvent(b.cfg.path, legacy, b.actor, { id: "R9", source: "x", universe: "acme/settlement" }, [{
+      id: "d9", round: "R9", ref: "D9", kind: "options",
+      payload: { question: "D9: is the settlement rule real?", options: [{ label: "Yes" }, { label: "No" }] },
+      options: [{ label: "Yes", effects: [] }, { label: "No", effects: [] }],
+    }])));
+    assert.equal((await decisionsView(u.root)).status.status, "complete");
+    rmSync(join(u.sidecar, legacy, LINEAR_SHARD));
+    await withActor(true, async () => {
+      const brief = await applicationReaderBrief(u.root, { issue: u.issue, answerId: u.answer, slot: 1 }, u.transcripts);
+      assert.match(error(brief), /the ruling scope is blocked: .*acme\/settlement/);
+    });
   } finally { u.cleanup(); }
 });

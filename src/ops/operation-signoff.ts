@@ -7,6 +7,7 @@ import { readScopeChecked } from '../eventlog.js';
 import { emitEventChecked } from '../write.js';
 import { foldStandard, lawScope, standardDoor, standardScope } from '../shared-standard.js';
 import { materializeStandard } from '../standard-publish.js';
+import { decisionsAbsence } from './decision-holds.js';
 import { readDecisionLog, decisionIssueRef, foldDecisions, answerHasCurrentAuthority, rulerOf, intentCandidates, comparisonRestricts } from '../shared-decisions.js';
 import { operationContent, framingContent, contentDiff } from '../schema.js';
 import { locateReaderCall, recordedAgain, verifyReaderCall, type ReaderExpectation } from '../reader-call.js';
@@ -66,6 +67,9 @@ async function context(root: string, input: {
   const content = operationContent(op), framing = framingContent(spec), payload = operationSignoffDisplay(op.id, spec.id, content, framing, input.ref);
   if (!input.answerId)
     return { cfg, op, spec, content, framing, payload };
+  const absent = decisionsAbsence(root, cfg);
+  if (absent)
+    return { error: `the answer scope is blocked: ${absent.detail}` };
   const source = await readDecisionLog(cfg.path);
   if (source.status !== 'complete')
     return { error: 'the answer scope is blocked' };

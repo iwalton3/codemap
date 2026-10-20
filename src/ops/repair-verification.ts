@@ -29,7 +29,7 @@ import { emitEventChecked } from "../write.js";
 import { foldRepairRecords, type RepairFindingMap } from "../repair-records.js";
 import { readDecisionLog, foldDecisions, answerHasCurrentAuthority, answerRestricted, comparisonHoldApplies, intentCandidates, heldFindings, heldIssues } from "../shared-decisions.js";
 import { canonicalIssueKey } from "../decision-issues.js";
-import { workEligibility } from "./decision-holds.js";
+import { decisionsAbsence, workEligibility } from "./decision-holds.js";
 import { issueClaimHash } from "../ruling-application.js";
 import { gitBin } from "../git.js";
 import { canonical, isUnverified, readReceiptCall, transcriptDir } from "../transcript.js";
@@ -64,6 +64,8 @@ async function rulingContext(root: string, review: number | string, findings: Sh
   const door = sidecarWriteDoor(root);
   if (!door.cfg) return { error: door.error ?? "sidecar unavailable" };
   const cfg = door.cfg;
+  const absent = decisionsAbsence(root, cfg);
+  if (absent) return { error: `ruling scope is blocked; no repair authority can be issued: ${absent.detail}` };
   const source = await readDecisionLog(cfg.path);
   if (source.status !== "complete") return { error: "ruling scope is blocked; no repair authority can be issued" };
   const state = foldDecisions(source.events);
