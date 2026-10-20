@@ -443,3 +443,13 @@ test("a comparison request may name another universe's issue explicitly, as nomi
     assert.equal(requested.error, undefined, JSON.stringify(requested));
   } finally { discard(api.root); discard(settlement.root); discard(side); }
 });
+
+test("a recorded decisions shard emptied in place is absent, as a deleted one is", async () => {
+  const w = await twoScopes("emptied");
+  try {
+    writeFileSync(join(w.side, decisionScope(w.b.cfg.universe), LINEAR_SHARD), "", "utf8");
+    const r = await cachedDecisions(w.api.root, w.b.cfg);
+    assert.equal(r.status.status, "blocked", JSON.stringify(r.status));
+    assert.equal(r.value.decisions.length, 2, "the stored rows are served, never overwritten");
+  } finally { w.cleanup(); }
+});

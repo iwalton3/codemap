@@ -5,7 +5,7 @@
  * differently from another. Its own module because `ops/annotations` cannot reach `ops-shared`
  * without closing a cycle through `ops/triage`.
  */
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { db } from "../db.js";
 import { decisionScopeHasEvents, decisionFindingStates, decisionBugStates, readStoreMeta, writeStoreMeta } from "../store.js";
@@ -193,8 +193,9 @@ export function decisionsAbsence(root: string, cfg: { path: string; universe: st
     read = foldedBefore(root, cfg.universe) ? [decisionScope(cfg.universe)] : [];
     writeStoreMeta(root, DECISIONS_READ, read);
   }
-  // The shard, not the directory: deleting the file leaves the directory, and it folds as empty.
-  const gone = read.find((s) => !existsSync(join(cfg.path, s, LINEAR_SHARD)));
+  // The shard, not the directory, and its bytes: deleting the file leaves the directory, and
+  // emptying it leaves the file; either folds as empty. A recorded scope had an event.
+  const gone = read.find((s) => !(statSync(join(cfg.path, s, LINEAR_SHARD), { throwIfNoEntry: false })?.size));
   if (!gone) return null;
   return { reason: "sidecar-missing", detail: `${gone} is missing from ${cfg.path}, and this store has read decisions from it before`, evidence: [cfg.path] };
 }
