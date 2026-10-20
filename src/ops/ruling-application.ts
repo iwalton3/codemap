@@ -246,7 +246,7 @@ export function recordApplicationVerdict(root: string, input: { requestId: strin
   let body: { verdict: string; rationale: string };
   try { body = JSON.parse(held.body); } catch { return { error: "application reader receipt is malformed" }; }
   if (held.state === "recorded") return recordedAgain(expect(brief, held.receipt, body), held.heldAt, held.call, dir);
-  if (held.state !== "pending") return { error: `reader receipt is ${held.state}: ${held.why ?? "not actionable"}` };
+  if (held.state !== "pending" && held.state !== "invalid") return { error: `reader receipt is ${held.state}: ${held.why ?? "not actionable"}` };
   const key = { purpose: PURPOSE, requestId: input.requestId };
   const verified = locateReaderCall(expect(brief, held.receipt, body), held.heldAt, dir);
   if ("pending" in verified) return { pending: true as const, reason: verified.pending };

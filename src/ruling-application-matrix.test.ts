@@ -304,3 +304,24 @@ test("a decisions scope this store read vanishing, while the ruling's own surviv
     });
   } finally { u.cleanup(); }
 });
+
+test("a refused application reader is re-checked, not spent: its call turning up later records it", async () => {
+  const u = await fixture("finding");
+  const grace = process.env.CODEMAP_VERDICT_GRACE_MS;
+  try {
+    await withActor(true, async () => {
+      const brief = await applicationReaderBrief(u.root, { issue: u.issue, answerId: u.answer, slot: 1 }, u.transcripts) as any;
+      const rationale = "The intended doubling rebuts this finding.";
+      const held = submitApplicationVerdict(u.root, { requestId: brief.requestId, verdict: "sound", rationale }) as any;
+      process.env.CODEMAP_VERDICT_GRACE_MS = "0";
+      const ref = { requestId: brief.requestId, receipt: held.receipt };
+      assert.ok(error(recordApplicationVerdict(u.root, ref, u.transcripts)), "refused: no call on disk, past the grace");
+      writeTranscript(u.transcripts, brief.prompt, brief.requestId, "sound", rationale, held.receipt, 1);
+      const recorded = recordApplicationVerdict(u.root, ref, u.transcripts) as any;
+      assert.equal(recorded.recorded, true, JSON.stringify(recorded));
+    });
+  } finally {
+    if (grace === undefined) delete process.env.CODEMAP_VERDICT_GRACE_MS; else process.env.CODEMAP_VERDICT_GRACE_MS = grace;
+    u.cleanup();
+  }
+});

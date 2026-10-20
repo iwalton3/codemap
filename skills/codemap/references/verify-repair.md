@@ -123,9 +123,10 @@ and say so). For each slot with open jobs:
    call that returned that receipt, and checks that its transcript shows the exact prompt and the
    exact held submission. `pending` means the call is not on disk yet: record again in a moment
    (for up to a minute). After an error, record once more: some failures (writing to the sidecar,
-   say) leave the receipt usable. If the second answer is `reader receipt is invalid: …`, the run
-   will never count — a fork, a message sent to it after launch, or a call this machine's
-   transcripts do not show. Say so, and launch a new verifier rather than resubmitting. Any other
+   say) leave the receipt usable. A refusal names its reason — a fork, a message sent to it after
+   launch, a call this machine's transcripts do not show — and repeats on every record unless
+   codemap itself changed, so say so and launch a new verifier rather than resubmitting. The
+   receipt is not spent: if codemap's own check was the defect, record it again after the fix. Any other
    error that repeats, report as it is.
 
 **B. The next review round's reviewers.** A reviewer's prompt may carry a batch's `launch` line,

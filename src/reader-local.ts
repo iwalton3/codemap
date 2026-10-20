@@ -87,7 +87,9 @@ export function readerReceipts(root: string, key: ReaderKey): ReaderReceipt[] {
     .map(({ why, call, ...row }) => ({ ...row, ...(why ? { why } : {}), ...(call ? { call } : {}) }));
 }
 
-/** Called only after an external transcript check has reached a verdict. */
+/** Called only after an external transcript check has reached a verdict. `invalid` is not final: a
+ *  refusal can be codemap's own defect (2026-10-20: two in a day, each a lost verifier run), so a
+ *  later record re-checks it. `recorded` and `cancelled` are final. */
 export function settleReaderReceipt(
   root: string, key: ReaderKey, receipt: string, state: Exclude<ReaderReceiptState, "pending">,
   why?: string, call?: string,
@@ -95,7 +97,7 @@ export function settleReaderReceipt(
   if (!validKey(key) || !receipt?.trim() || !["recorded", "invalid", "cancelled"].includes(state))
     return { error: "invalid reader receipt settlement" };
   const d = db(root);
-  const changed = d.prepare("UPDATE reader_work_receipts SET state = ?, why = ?, call = ? WHERE purpose = ? AND request_id = ? AND receipt = ? AND state = 'pending'")
+  const changed = d.prepare("UPDATE reader_work_receipts SET state = ?, why = ?, call = ? WHERE purpose = ? AND request_id = ? AND receipt = ? AND state IN ('pending', 'invalid')")
     .run(state, why ?? null, call ?? null, key.purpose, key.requestId, receipt).changes;
   return { settled: changed === 1 };
 }

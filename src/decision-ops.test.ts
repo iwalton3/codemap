@@ -10,7 +10,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync } from "node:fs";
+import { appendFileSync, mkdtempSync, writeFileSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -758,7 +758,7 @@ test("Q2.2 (b2, b3): a message after the reader submitted leaves it verified; a 
   } finally { u.cleanup(); }
 });
 
-test("Q2.2 (c): the session's own submit_verdict is not a reader's — it is discarded and the reader's is recorded; one never found expires", async () => {
+test("Q2.2 (c): the session's own submit_verdict is not a reader's — it is discarded and the reader's is recorded; one never found expires, and records if it turns up", async () => {
   const u = await universe();
   try {
     await asAgent(async () => {
@@ -778,9 +778,33 @@ test("Q2.2 (c): the session's own submit_verdict is not a reader's — it is dis
       await withEnv({ CODEMAP_VERDICT_GRACE_MS: "0" }, async () => {
         const rec = await recordReading(v.root, { answer: w.a }, {}, v.transcripts) as any;
         assert.match(JSON.stringify(rec.invalid), /not found/, JSON.stringify(rec));
+        // Refused is not spent: naming the answer re-checks, and the call that turns up records.
+        w.t.reader(nextReader(), "D1 → Not a defect", { prompt: w.prompt, answer: w.a });
+        const again = await recordReading(v.root, { answer: w.a }, {}, v.transcripts) as any;
+        assert.ok(again.recorded && again.agree, JSON.stringify(again));
       });
     });
   } finally { v.cleanup(); }
+});
+
+test("a reader refused by codemap's own transcript check records from the same receipt once the check passes", async () => {
+  const u = await universe();
+  try {
+    await asAgent(async () => {
+      const { t, a, prompt } = await wordsWithBrief(u);
+      const id = nextReader(), verdict = "D1 → Not a defect";
+      t.reader(id, verdict, { prompt, answer: a });
+      // The 2026-10-20 shape: an entry type the check did not know, so its call is FOUND and then refused.
+      const file = join(u.transcripts, SESSION, "subagents", `agent-${id}.jsonl`);
+      appendFileSync(file, JSON.stringify({ type: "harness-bookkeeping", agentId: id, sessionId: SESSION }) + "\n");
+      await submitVerdict(u.root, { answer: a, verdict }, {}, u.transcripts);
+      const refused = await recordReading(u.root, { answer: a }, {}, u.transcripts) as any;
+      assert.match(JSON.stringify(refused.invalid), /not all its own sidechain/, JSON.stringify(refused));
+      writeFileSync(file, readFileSync(file, "utf8").split("\n").filter((l) => !l.includes("harness-bookkeeping")).join("\n"));
+      const again = await recordReading(u.root, { answer: a }, {}, u.transcripts) as any;
+      assert.ok(again.recorded && again.agree, JSON.stringify(again));
+    });
+  } finally { u.cleanup(); }
 });
 
 test("ambiguous legacy held calls stay unverified and block a later receipt row", async () => {

@@ -181,7 +181,7 @@ export function recordOperationSignoffVerdict(root: string, input: { requestId: 
   }
   if (held.state === 'recorded')
     return recordedAgain(expect(brief, held.receipt, body), held.heldAt, held.call, dir);
-  if (held.state !== 'pending')
+  if (held.state !== 'pending' && held.state !== 'invalid')
     return { error: `reader receipt is ${held.state}: ${held.why ?? 'not actionable'}` };
   const verified = locateReaderCall(expect(brief, held.receipt, body), held.heldAt, dir);
   if ('pending' in verified)
