@@ -109,6 +109,28 @@ Two things differ from the law/evidence split, and each is load-bearing:
   log, as the door does. Carrying a ruling out happens in the issue's own universe, which
   resolves it locally; a bare finding id is in its round's universe.
 
+**That last rule holds only at some sites — an accepted residual.** It is enforced by
+`heldFindings` and `supersededFindings`, the ruled-release check, the comparison-request fold and
+`decisionReferences` at the door. It is not enforced by `intentCandidates`, `answerRestricted`,
+`currentAnswersForIssue`/`revisionCovers`, `answerHasCurrentAuthority` (so by ruling application
+and repair verification), the fold-side application check in `ruling-application.ts`,
+`nominateComparison` or `ops/comparisons.ts`; `git grep -n "\.findings\.includes(\|named("` finds
+them. It fires only when two universes' findings share an id: ids are random (`f_` + `mintId`, and
+the legacy `finding_` + hex), no front end lets a caller choose one, so it takes a hand-chosen id or
+a planted event. When it fires, a ruling about A's finding can raise a false intent comparison that
+refuses a valid release, or pass B's authority check so that B's finding closes on it. Closing it is
+one universe-aware "this decision names this finding ref" predicate used at every site
+(review round 2026-10-20, I1).
+
+**A confirm written outside its round's scope is a known, unresolved gap.** Codemap's ops write a
+`decision.confirm.posted` in its round's home and refuse a reading that maps onto another round's
+question (`bindRefusal`, at the op and in the fold), so no conforming op binds across scopes. But
+the merged fold does not know which scope an event came from, so a confirm that something else
+wrote elsewhere (another build, a hand-written event) folds as valid, and the acts on it sit
+outside the decision's home. In the run that checked it, its rulings could still be withdrawn
+through their source and nothing became stuck. A decision issue accepted at either scope (I5) is
+the same gap (review round 2026-10-20, I9).
+
 ## A requirement cites nothing
 
 **`Requirement.cites` goes.** A requirement citing code is the inversion again in

@@ -12,7 +12,8 @@ import { indexBlob } from "./repo.js";
 import { writeStore } from "./store.js";
 import type { Decision, State } from "./schema.js";
 import { shareFinding, bindDecisions } from "./ops-shared.js";
-import { postRound, answerDirect } from "./ops/decisions.js";
+import { postRound, answerDirect, readerBrief } from "./ops/decisions.js";
+import { isLogDamage } from "./log-damage.js";
 import { cachedDecisions, decisionsView } from "./ops/decision-holds.js";
 import { adoptSidecar } from "./ops-shared.js";
 import { begin, discard as discardStaged } from "./sync-engine.js";
@@ -363,4 +364,44 @@ test("every production reader of the merged decisions log asks the absence guard
   }
   // A new reader fails here first: it is guarded, or the list says why not.
   assert.deepEqual(sites.sort(), ["src/ops/operation-signoff.ts", "src/ops/repair-verification.ts", "src/ops/ruling-application.ts"]);
+});
+
+test("a reading on a workspace question cannot bind onto a legacy decision: refused at the op and on read, by the same-round rule", async () => {
+  const side = mkdtempSync(join(tmpdir(), "codemap-ws-reading-side-"));
+  const api = await repo(side, "api");
+  try {
+    const b = bindDecisions(api.root);
+    assert.ok(!("error" in b));
+    const question = (r: string): Decision[] => [{
+      id: "d1", round: r, ref: "D1", kind: "options",
+      payload: { question: `D1: is ${api.finding} real?`, options: [{ label: "Yes" }, { label: "No" }] },
+      options: [{ label: "Yes", effects: [{ findings: [api.finding], on: "unblock" }] }, { label: "No", effects: [] }],
+    }];
+    assert.ok(!("error" in await postRoundEvent(b.cfg.path, decisionScope(b.cfg.universe), b.actor, { id: "RL", source: "legacy", universe: b.cfg.universe }, question("RL"))));
+    assert.ok(!("error" in await postRoundEvent(b.cfg.path, DECISIONS_SCOPE, b.actor, { id: "RW", source: "workspace", universe: b.cfg.universe }, question("RW"))));
+    const s = foldDecisions((await readDecisionLog(side)).events);
+    const roundOf = (label: string) => s.rounds.find((r) => r.label === label)!.id;
+    const legacy = s.decisions.find((d) => d.round === roundOf("RL"))!, workspace = s.decisions.find((d) => d.round === roundOf("RW"))!;
+    const words = await asPerson(async () => {
+      const p = bindDecisions(api.root);
+      assert.ok(!("error" in p));
+      return recordAnswerEvent(p.cfg.path, DECISIONS_SCOPE, p.actor, { decision: workspace.id, hash: workspace.hash, via: { kind: "direct", words: "yes, and the legacy one too" } });
+    });
+    assert.ok(!("error" in words), JSON.stringify(words));
+    const answer = foldDecisions((await readDecisionLog(side)).events).decisions.find((d) => d.id === workspace.id)!.answers[0]!.id;
+    const across = [{ decision: legacy.id, option: "Yes" }];
+
+    const op = await asAgent(() => readerBrief(api.root, { answer, maps: across })) as { error?: string };
+    assert.match(String(op.error), /not a question in round/);
+
+    const planted = await appendUnfolded(b.cfg.path, DECISIONS_SCOPE, b.actor, "decision.reading.recorded", answer, {
+      answer, session: { maps: across },
+      reader: { agent: "aPLANTED00000001", verdict: across, launchedAt: new Date(Date.now() + 60_000).toISOString(), brief: "a brief", verified: { session: "s", toolUseId: "t" } },
+    });
+    const events = (await readDecisionLog(side)).events;
+    // On the WHY: without the same-round rule a later check (its brief) still refuses it.
+    const refused = foldDecisionsReport(events).refused.find((r) => r.id === planted.id);
+    assert.match(refused?.why ?? "", /not a question in round/, JSON.stringify(refused));
+    assert.throws(() => foldDecisions(events), (e: unknown) => isLogDamage(e) && e.entry.id === planted.id);
+  } finally { discard(api.root); discard(side); }
 });
