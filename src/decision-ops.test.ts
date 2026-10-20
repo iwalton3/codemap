@@ -1895,12 +1895,21 @@ test("an issue ref written with review \"#7\" is posted, relayed and nominated a
     // The brief and the recorder map through one helper, so the question recorded is the one shown.
     await withEnv({ CODEMAP_AGENT_MODEL: "relay-model", CODEMAP_PRINCIPAL: "carol@x.com" }, async () => {
       const input = { decision: "d1", revises: [first.answer], findings: [], issues: [spelled] };
+      // A malformed or repeated issue is refused, never thrown on or written twice.
+      for (const issues of [[null], [spelled, resolved.ref]] as any[]) {
+        assert.match(String((await revisionRelayBrief(u.root, { ...input, issues }) as any).error), /issue/, JSON.stringify(issues));
+        assert.match(String((await reviseDecisionRelayed(u.root, { ...input, issues }, {}, u.transcripts) as any).error), /issue/, JSON.stringify(issues));
+      }
       const brief = await revisionRelayBrief(u.root, input) as any;
       assert.equal(brief.ok, true, JSON.stringify(brief));
       assert.equal(brief.scope.issues[0].review, "7");
       transcript(u.transcripts).ask("toolu_spelled", [brief.question], { [brief.question.question]: "Real, fix it" }, later(2));
       const revised = await reviseDecisionRelayed(u.root, input, {}, u.transcripts) as any;
       assert.equal(revised.ok, true, JSON.stringify(revised));
+    });
+    await asPerson(async () => {
+      const r = await reviseDecision(u.root, { decision: "d1", revises: [first.answer], findings: [], issues: [null as any], option: "Real, fix it" }) as any;
+      assert.match(String(r.error), /scope/);
     });
     const revision = (await events()).find((e) => e.kind === "decision.answer.revised")!;
     assert.equal((revision.data as any).revision.issues[0].review, "7");

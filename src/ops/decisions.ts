@@ -1166,13 +1166,15 @@ function verifiedWithdrawalReview(root: string, d: FoldedDecision, reason: strin
   return why ? { error: why } : review;
 }
 
-/** A caller's issues as the decision's own named refs, or undefined when it does not name one.
- *  The relay brief and its recorder both map through this: the question embeds the issues, so
- *  mapping them differently would record a question the person was not shown. */
-function namedIssueRefs(d: FoldedDecision, issues: CanonicalIssueReference[]): CanonicalIssueReference[] | undefined {
+/** A caller's issues as the decision's own named refs, each once; undefined when one is malformed,
+ *  repeated, or not named. The relay brief and its recorder both map through this: the question
+ *  embeds the issues, so mapping them differently would record a question the person was not shown. */
+function namedIssueRefs(d: FoldedDecision, issues: unknown): CanonicalIssueReference[] | undefined {
+  if (!Array.isArray(issues) || !issues.every((x) => x && typeof x === "object")) return undefined;
   const byKey = new Map(namedIssues(d).map((x) => [canonicalIssueKey(x), x]));
-  const refs = issues.map((issue) => byKey.get(canonicalIssueKey(issue)));
-  return refs.every((x) => x !== undefined) ? refs as CanonicalIssueReference[] : undefined;
+  const keys = issues.map((issue) => canonicalIssueKey(issue));
+  if (new Set(keys).size !== keys.length || !keys.every((k) => byKey.has(k))) return undefined;
+  return keys.map((k) => byKey.get(k)!);
 }
 
 /** Give an agent the exact question that a later transcript must prove was shown. */
@@ -1191,7 +1193,7 @@ export async function revisionRelayBrief(root: string,
   if (!sources?.length || sources.some((a) => !a?.verified || a.sourceAnswer || a.cancelled))
     return { error: "relay revision needs exact current verified source answers" };
   const issues = namedIssueRefs(d, input.issues ?? []);
-  if (!issues) return { error: "an issue is outside the question's named scope" };
+  if (!issues) return { error: "issues must be distinct canonical references the question names" };
   const scope = { findings: input.findings ?? [], ...(issues.length ? { issues } : {}) };
   if (d.presentation?.question.kind === "list" && !listRevisionItemIds(d, scope).length)
     return { error: "list revision needs selected items in its exact scope" };
@@ -1217,7 +1219,7 @@ export async function reviseDecisionRelayed(root: string,
   if (!sources?.length || sources.some((a) => !a?.verified || a.sourceAnswer || a.cancelled))
     return { error: "relay revision needs exact current verified source answers" };
   const issues = namedIssueRefs(d, input.issues ?? []);
-  if (!issues) return { error: "an issue is outside the question's named scope" };
+  if (!issues) return { error: "issues must be distinct canonical references the question names" };
   const scope = { findings: input.findings ?? [], ...(issues.length ? { issues } : {}) };
   const expected = revisionRelayQuestion(d, sources as NonNullable<typeof sources[number]>[], b.actor.principal, scope);
   // The agent cannot see the call's id (I12): find the call that asked `expected`, in a session
@@ -1270,10 +1272,10 @@ export async function reviseDecision(root: string, input: { decision: string; re
   const d = matches[0];
   if (!d) return { error: `no decision ${String(input?.decision)}` };
   if (d.withdrawn || d.answers.some((a) => a.withdrawn)) return { error: `${d.ref} was withdrawn; ask a fresh question` };
-  const issues = Array.isArray(input.issues ?? []) ? namedIssueRefs(d, input.issues ?? []) : undefined;
+  const issues = namedIssueRefs(d, input.issues ?? []);
   if (!Array.isArray(input.revises) || !input.revises.length || new Set(input.revises).size !== input.revises.length
     || !Array.isArray(input.findings) || new Set(input.findings).size !== input.findings.length
-    || !issues || new Set(issues.map(canonicalIssueKey)).size !== issues.length
+    || !issues
     || !input.findings.every((f) => named(d).length ? named(d).includes(f) : d.kind === "words" && f === d.id)
     || (!input.resolves && !input.findings.length && !issues.length))
     return { error: "revision needs exact source answer ids and named canonical scope" };
