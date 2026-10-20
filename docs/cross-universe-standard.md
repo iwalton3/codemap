@@ -131,6 +131,19 @@ outside the decision's home. In the run that checked it, its rulings could still
 through their source and nothing became stuck. A decision issue accepted at either scope (I5) is
 the same gap (review round 2026-10-20, I9).
 
+**The decisions door folds whatever decisions scopes are on disk — an accepted residual.** A
+store records which decisions scopes it has folded events from, and reads decline when one of them
+is gone (`decisionsAbsence`, in `cachedDecisions` and before each fresh `readDecisionLog`). The door
+has no store: `otherDecisionEvents` and replay judge an act against the scopes present, so a
+vanished scope is invisible to them. Ops that refuse a blocked view (`writable`,
+`requestComparison`) never reach the door that way. Comparison judgment and resolution
+(`comparisonDetail`) and ruled release (`heldSort`) act on the blocked view's stored rows, which
+still hold what the vanished scope said, and then write through a door that does not see it. It
+needs a decisions shard lost from the team's log or this clone's tree, which a sync refuses or
+restores, so it is accepted. Closing it means refusing a blocked view at those ops (the door and
+replay stay blind), or making the set of decisions scopes a fact of the log so any door can check it
+(review round 2026-10-20 r3, C4a).
+
 ## A requirement cites nothing
 
 **`Requirement.cites` goes.** A requirement citing code is the inversion again in
