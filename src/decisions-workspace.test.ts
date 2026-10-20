@@ -4,7 +4,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -13,7 +13,7 @@ import { writeStore } from "./store.js";
 import type { State } from "./schema.js";
 import { shareFinding, bindDecisions } from "./ops-shared.js";
 import { postRound, answerDirect } from "./ops/decisions.js";
-import { decisionsView } from "./ops/decision-holds.js";
+import { cachedDecisions, decisionsView } from "./ops/decision-holds.js";
 import { resolveDecisionIssue, type CanonicalIssueReference } from "./decision-issues.js";
 import { DECISIONS_SCOPE, decisionScope, foldDecisions, postRoundEvent, recordAnswerEvent } from "./shared-decisions.js";
 import { readScope } from "./eventlog.js";
@@ -108,4 +108,40 @@ test("a sidecar holding only legacy decisions/<u> rounds folds to the same proje
     assert.equal(before.decisions[0]!.answers.length, 1, "precondition: the answer folded");
     assert.equal(stable((await decisionsView(api.root)).s), stable(before));
   } finally { discard(api.root); discard(side); }
+});
+
+test("absent is not empty, over every decisions scope: another universe's legacy log is folded, and a store with rows keeps them when none is on disk", async () => {
+  const side = mkdtempSync(join(tmpdir(), "codemap-ws-absent-side-"));
+  const api = await repo(side, "api"), settlement = await repo(side, "settlement");
+  try {
+    const b = bindDecisions(api.root);
+    assert.ok(!("error" in b));
+    const legacy = decisionScope(b.cfg.universe);
+    const round = await postRoundEvent(b.cfg.path, legacy, b.actor, { id: "R1", source: "api only", universe: b.cfg.universe }, [{
+      id: "d1", round: "R1", ref: "D1", kind: "options",
+      payload: { question: `D1: is ${api.finding} real?`, options: [{ label: "Yes" }, { label: "No" }] },
+      options: [{ label: "Yes", effects: [{ findings: [api.finding], on: "unblock" }] },
+        { label: "No", effects: [{ findings: [api.finding], on: "settle", as: "refuted" }] }],
+    }]);
+    assert.ok(!("error" in round), JSON.stringify(round));
+    assert.ok(!existsSync(join(side, DECISIONS_SCOPE)), "precondition: only the api's legacy log is on disk");
+
+    // The settlement store reads the api's legacy decision, and folding it (as a sync does) does
+    // not turn every later read into "the log is missing".
+    assert.equal((await decisionsView(settlement.root)).s.decisions.length, 1, "the fold reads every decisions scope");
+    const s = bindDecisions(settlement.root);
+    assert.ok(!("error" in s));
+    await cachedDecisions(settlement.root, s.cfg);
+    const after = await decisionsView(settlement.root);
+    assert.equal(after.status.status, "complete", JSON.stringify(after.status));
+
+    // The api store has folded the decision; then no decisions scope is on disk at all.
+    assert.equal((await decisionsView(api.root)).s.decisions.length, 1);
+    rmSync(join(side, "decisions"), { recursive: true, force: true });
+    const r = await cachedDecisions(api.root, b.cfg);
+    assert.equal(r.status.status, "blocked", "the materializer declines rather than fold nothing");
+    const view = await decisionsView(api.root);
+    assert.equal(view.status.status, "blocked");
+    assert.equal(view.s.decisions.length, 1, "the stored rows are served, never overwritten with empty");
+  } finally { discard(api.root); discard(settlement.root); discard(side); }
 });
