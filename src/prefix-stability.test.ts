@@ -131,7 +131,7 @@ test("C16: a door-accepted append never changes the verdict on an earlier decisi
 // validity, and the comparison request / judgment / resolution checks in `foldComparisons`.
 
 const CAROL_ACTOR: Actor = { principal: "carol@x.com" };
-const F1_ISSUE = { kind: "finding" as const, universe: "u", scope: "findings/u/pr1", review: "pr1", id: "F1" };
+const F1_ISSUE = { kind: "finding" as const, universe: "u", scope: "findings/u/pr-1", review: "1", id: "F1" };
 const EMPTY_EXECUTIONS = createHash("sha256").update(JSON.stringify([])).digest("hex");
 
 /** A log built one door-checked append at a time, which remembers the first C16 breach. */
