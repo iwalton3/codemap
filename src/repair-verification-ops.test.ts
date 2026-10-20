@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { team, settle } from "./oracle.js";
 import { shareFinding, reviseFinding, reassignFinding, corroborateFinding } from "./ops-shared.js";
 import { postRepairSort, recordRepairClaims, recordRepairEvidence } from "./ops/repairs.js";
-import { citedRulings, requestRepairVerification, pendingRepairJobs, repairVerificationBrief, submitRepairVerification, arbitrateRepairVerification, applyRepairVerification, repairVerificationRecords, recordRepairVerification } from "./ops/repair-verification.js";
+import { citedRulings, requestRepairVerification, pendingRepairJobs, repairVerificationBrief, repairBatchBrief, submitRepairVerification, arbitrateRepairVerification, applyRepairVerification, repairVerificationRecords, recordRepairVerification } from "./ops/repair-verification.js";
 import { repairRecords } from "./ops/repairs.js";
 import { RepairConnection } from "./verifier-boundary.js";
 import { headCommit } from "./git.js";
@@ -21,6 +21,9 @@ import { decisionsView } from "./ops/decision-holds.js";
 import { resolveSidecar } from "./sidecar-config.js";
 import { findingScope } from "./shared-findings.js";
 import { findingKeyScope } from "./review-target.js";
+import { bindDecisions } from "./ops-shared.js";
+import { DECISIONS_SCOPE, decisionScope, postRoundEvent } from "./shared-decisions.js";
+import { LINEAR_SHARD } from "./eventlog.js";
 const ok = (result: unknown) => assert.equal((result as { error?: string }).error, undefined, JSON.stringify(result));
 async function fixture(count = 1, decomposed = false, changeEvidence?: (evidence: Omit<RepairEvidenceInput, "id">, root: string) => void, holdBeforeRequest?: "legacy" | "typed", sortOver: Partial<RepairSortInput> = {}) {
   const t = await team(["owner@acme.test", "fixer@acme.test"]);
@@ -535,5 +538,122 @@ test("G8: a subagent's submission is validated before it is held, not when its l
     assert.equal(refused.held, undefined, "nothing was held for a record that would be rejected");
     const schema = (await import("node:fs")).readFileSync("src/mcp.ts", "utf8");
     assert.match(schema, /results: \{ type: "array", items: repairClaimVerdictSchema \}/, "the tool advertises the item shape");
+  } finally { f.t.dispose(); }
+});
+
+test("V2 through the ops: a low-stakes request offers one verifier and closes on its run; raising its sort to high makes it stale", async () => {
+  const f = await fixture(1, false, undefined, undefined, { stakes: "low" });
+  try {
+    const pending = await pendingRepairJobs(f.root, 7) as { jobs: { slot?: number }[] };
+    assert.deepEqual(pending.jobs.map((j) => j.slot), [1], "no slot 2 for low stakes");
+    assert.match(String((await repairVerificationBrief(f.root, 7, { requestId: f.requestId, role: "verifier", slot: 2 }, f.host("second")) as { error?: string }).error), /one verifier/);
+    await f.run(1);
+    ok(await applyRepairVerification(f.root, 7, { requestId: f.requestId, findingId: f.ids[0]!, reason: "one batched verifier, low stakes" }, f.orchestrator));
+    assert.equal((await readFinding(f.root, f.ids[0]!, { pr: 7 }))!.state, "resolved");
+    ok(await postRepairSort(f.root, 7, { ...f.sort, stakes: "high", prior: f.sortId, reason: "a sorter judges it high after all" }));
+    const after = await repairRecords(f.root, 7) as { verificationResults: { requestId: string; staleReasons: string[] }[] };
+    assert.ok(after.verificationResults.find((r) => r.requestId === f.requestId)!.staleReasons.includes("sort changed or is held"));
+  } finally { f.t.dispose(); }
+});
+
+/** One subagent launched with `prompt` making several submit calls, each returning its own held receipt. */
+function batchTranscript(dir: string, agentId: string, prompt: string, calls: { input: unknown; result: unknown }[]) {
+  const session = "5e55a0a0-0000-0000-0000-00000000000" + agentId.slice(-1), launch = `launch_${agentId}`;
+  const sub = join(dir, session, "subagents");
+  mkdirSync(sub, { recursive: true });
+  writeFileSync(join(sub, `agent-${agentId}.meta.json`), JSON.stringify({ agentType: "general-purpose", toolUseId: launch }));
+  writeFileSync(join(sub, `agent-${agentId}.jsonl`), [
+    { type: "user", isSidechain: true, agentId, sessionId: session, message: { role: "user", content: prompt } },
+    ...calls.flatMap((c, i) => [
+      { type: "assistant", isSidechain: true, agentId, sessionId: session, message: { content: [{ type: "tool_use", id: `toolu_${agentId}_${i}`, name: "mcp__codemap__repair_verification", input: c.input }] } },
+      { type: "user", isSidechain: true, agentId, sessionId: session, message: { content: [{ type: "tool_result", tool_use_id: `toolu_${agentId}_${i}`, content: JSON.stringify(c.result) }] } },
+    ]),
+  ].map((x) => JSON.stringify(x)).join("\n") + "\n");
+  writeFileSync(join(dir, `${session}.jsonl`), [
+    { type: "assistant", isSidechain: false, timestamp: new Date().toISOString(), message: { content: [{ type: "tool_use", id: launch, name: "Agent", input: { prompt, subagent_type: "general-purpose" } }] } },
+    { type: "user", isSidechain: false, message: { content: [{ type: "tool_result", tool_use_id: launch, content: "launched" }] }, toolUseResult: { agentId } },
+  ].map((x) => JSON.stringify(x)).join("\n") + "\n");
+}
+
+test("4.1-4.3: one batch per slot — reviewers carry its launch line, low stakes close after slot 1, and an altered line counts for nothing", async () => {
+  const t = await team(["owner@acme.test"]);
+  const dir = mkdtempSync(join(tmpdir(), "codemap-repair-batch-tx-"));
+  try {
+    const root = t.all[0]!.repo, sha = headCommit(root)!, orchestrator = new RepairConnection("owner@acme.test");
+    const requests: { id: string; finding: string; stakes: "low" | "high" }[] = [];
+    for (const [i, stakes] of (["low", "low", "high"] as const).entries()) {
+      const f = await shareFinding(root, 7, { targetKind: "anchor", targetId: `src/pay.ts#batch${i}`, text: `batch obligation ${i}`, sourceRef: sha }) as { id: string };
+      ok(f);
+      const sorted = await postRepairSort(root, 7, { classification: "mechanical", kind: "isolated", source: "approved owner worklist", stakes,
+        coverage: [{ findingId: f.id, claimIds: [`${f.id}:original`] }], restsOn: [], provenance: "owner-reviewed", assessments: [], disagreements: [] }) as { id: string };
+      ok(sorted);
+      const evidence = await recordRepairEvidence(root, 7, { sortId: sorted.id, witnessCommit: sha, baseCommit: sha, fixCommit: sha,
+        coverage: [{ findingId: f.id, claimIds: [`${f.id}:original`], result: "complete", reason: "r", claimResults: [{ claimId: `${f.id}:original`, result: "complete", reason: "r" }] }],
+        reproducer: [], regression: [], inspected: [{ source: "src/pay.ts", commit: sha, reasoning: "read" }], noCheckReason: "no runnable check", rulingIds: [], attribution: [] }) as { id: string };
+      ok(evidence);
+      const requested = await requestRepairVerification(root, 7, { sortId: sorted.id, evidenceId: evidence.id }, orchestrator) as { request: { id: string } };
+      ok(requested);
+      requests.push({ id: requested.request.id, finding: f.id, stakes });
+    }
+    const results = (finding: string): RepairClaimVerdict[] => [{ findingId: finding, claimId: `${finding}:original`, verdict: "fixed",
+      reason: "independently inspected the guard at the fix commit", grade: "inspection", executions: [],
+      inspected: [{ source: "src/pay.ts", commit: sha, reasoning: "the guard is present" }], noCheckReason: "no runnable check" }];
+    const batch = async (slot: 1 | 2) => await repairBatchBrief(root, 7, { role: "verifier", slot }, orchestrator) as { batch: string; launch: string; entries: { requestId: string }[] };
+    const one = await batch(1), two = await batch(2);
+    assert.deepEqual(one.entries.map((e) => e.requestId).sort(), requests.map((r) => r.id).sort(), "slot 1 carries every request");
+    assert.deepEqual(two.entries.map((e) => e.requestId), [requests[2]!.id], "slot 2 carries the high-stakes request alone");
+    assert.deepEqual((await repairBatchBrief(root, 7, { batch: one.batch }, orchestrator) as { entries: unknown[] }).entries, one.entries, "the subagent re-reads the same batch");
+
+    /** A reviewer subagent: its own review prompt with the batch line inside it, submitting every entry. */
+    const verify = async (agentId: string, slot: 1 | 2, prompt: string, ids: string[]) => {
+      const calls = [];
+      for (const id of ids) {
+        const finding = requests.find((r) => r.id === id)!.finding;
+        const held = await submitRepairVerification(root, 7, { requestId: id, slot, results: results(finding) }, orchestrator) as { held: boolean; receipt: string };
+        assert.equal(held.held, true, JSON.stringify(held));
+        calls.push({ id, input: { review: "7", requestId: id, slot, results: results(finding) }, result: held });
+      }
+      batchTranscript(dir, agentId, prompt, calls);
+      return Promise.all(calls.map((c) => recordRepairVerification(root, 7, { requestId: c.id, role: "verifier", slot, receipt: (c.result as { receipt: string }).receipt }, dir)));
+    };
+    const review = (line: string) => `Review branch feat/x for correctness defects and report findings.\n${line}\nAlso check the fixes it lists.`;
+    const altered = await verify("a7777771", 1, review(one.launch.replace(one.batch, `${one.batch}x`)), [requests[0]!.id]);
+    assert.match(String((altered[0] as { error?: string }).error), /exactly the issued prompt/, "an altered launch line counts for nothing");
+
+    const first = await verify("a7777772", 1, review(one.launch), requests.map((r) => r.id));
+    for (const r of first) ok(r);
+    for (const r of requests.filter((x) => x.stakes === "low"))
+      ok(await applyRepairVerification(root, 7, { requestId: r.id, findingId: r.finding, reason: "one batched verifier, low stakes" }, orchestrator));
+    const high = requests[2]!;
+    assert.match(String((await applyRepairVerification(root, 7, { requestId: high.id, findingId: high.finding, reason: "too early" }, orchestrator) as { error?: string }).error), /two independent runs/);
+    const second = await verify("a7777773", 2, review(two.launch), [high.id]);
+    ok(second[0]);
+    ok(await applyRepairVerification(root, 7, { requestId: high.id, findingId: high.finding, reason: "two batched verifiers agree" }, orchestrator));
+    const runs = (await repairVerificationRecords(root, 7) as { records: { runs: { requestId: string; identity: { child?: string } }[] } }).records.runs;
+    assert.equal(runs.length, 4, "one run per request per slot, recorded per request");
+    assert.deepEqual(runs.filter((r) => r.requestId === high.id).map((r) => r.identity.child).sort(), ["a7777772", "a7777773"], "4.3: the two reviewers are distinct verifiers");
+    for (const r of requests) assert.equal((await readFinding(root, r.finding, { pr: 7 }))!.state, "resolved");
+  } finally { discard(dir); t.dispose(); }
+});
+
+test("the decisions scope holding a finding vanishing, while another survives, refuses verification as blocked rather than unheld", async () => {
+  const f = await fixture(1, false, undefined, "legacy");
+  try {
+    const b = bindDecisions(f.root);
+    assert.ok(!("error" in b));
+    assert.ok(!("error" in await postRoundEvent(b.cfg.path, decisionScope("acme/settlement"), b.actor, { id: "R9", source: "x", universe: "acme/settlement" }, [{
+      id: "d9", round: "R9", ref: "D9", kind: "options",
+      payload: { question: "D9: is the settlement rule real?", options: [{ label: "Yes" }, { label: "No" }] },
+      options: [{ label: "Yes", effects: [] }, { label: "No", effects: [] }],
+    }])));
+    assert.equal((await decisionsView(f.root)).status.status, "complete");
+    // Gone from the remote too: the op syncs first, which refuses a hand-deleted shard and
+    // restores a committed deletion from the tip.
+    const git = (...a: string[]) => assert.equal(spawnSync("git", ["-c", "user.email=x@x", "-c", "user.name=x", ...a], { cwd: b.cfg.path }).status, 0, a.join(" "));
+    git("rm", "-q", join(DECISIONS_SCOPE, LINEAR_SHARD));
+    git("commit", "-qm", "gone");
+    git("push", "-q");
+    const again = await requestRepairVerification(f.root, 7, { sortId: f.sortId, evidenceId: f.evidenceId }, f.orchestrator);
+    assert.match(String((again as { error?: string }).error), /ruling scope is blocked/);
   } finally { f.t.dispose(); }
 });

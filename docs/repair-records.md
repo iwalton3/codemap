@@ -35,16 +35,36 @@ decides it, a cross-scope reference checked at the door and on read (owner, D2: 
 the question itself, by decision id, and an answer to that question satisfies it"). A ruling
 alone drops nothing. A correction may re-point free labels to decision entries, because
 /triage-review posts the held sort before /ez-plan posts the question (Q2); any other drop
-is a **release**: `release_reader_brief` issues two blind briefs (the held claims as filed and
-the rulings, nothing of the fixer's), each reader calls `submit_release_verdict`, and
-`release_held_sort` checks both readers' transcripts and, on two `yes`, writes the correction
-itself — provenance `released`, `implementation-defect`, the decision entries dropped. The
-fold recomputes the brief hash with the same builder (`releaseBriefContent`), requires two
-independent readers and two `yes` (owner, D2: unanimous, so no arbitrator), and refuses a
-release that changes anything else. Evidence for a released sort lists its rulings in
-`rulingIds`. A `no` stays local to the clone that holds it, like a withdrawal reader's (Q5);
-the sort stays held for a person-led /ez-plan. One side door remains, accepted (Q3): a held
-sort with an EMPTY `restsOn` leaves its hold through any fresh dual-sorted reclassification.
+is a **release**, which codemap writes itself — the held sort's coverage, kind, predicate,
+sites and stakes, `implementation-defect`, the decision entries dropped, the rulings carried —
+and the fold refuses one that changes anything else. Evidence for a released sort lists its
+rulings in `rulingIds`. Two ways (plan 2026-10-19-batch-release-held-sorts, R1-R3):
+
+- **`ruled`, the normal path** (`release_ruled_sort`): every decision the sort rests on has a
+  **verified** standing answer whose chosen options **unblock every finding the sort covers**. A
+  ruling made with the person present needs no reader to say what it means. An unverified relayed
+  answer only unblocks decision holds (C8), never a sort; a settle, or an unblock that misses a
+  covered finding, releases nothing — nor does a ruling an open intent comparison restricts on a
+  covered finding (another person's verified answer on another decision naming it), which repair
+  verification would refuse anyway (`answerRestricted`). The decisions half is checked by `repairSortReferences`, at
+  the door and on read against the log before the event, through a check the decisions fold
+  registers — so a hand-written event is refused on read, not only by the op.
+- **`released`, break-glass for headless backlog work** (owner, D2, now "a break-glass solution
+  for now"): `release_reader_brief` issues two blind briefs (the held claims as filed and the
+  rulings, nothing of the fixer's), each reader calls `submit_release_verdict`, and
+  `release_held_sort` checks both readers' transcripts and, on two `yes`, writes the correction.
+  The fold recomputes the brief hash with the same builder (`releaseBriefContent`) and requires
+  two independent readers and two `yes` (unanimous, so no arbitrator). A `no` stays local to the
+  clone that holds it, like a withdrawal reader's (Q5); the sort stays held for a person-led
+  /ez-plan.
+
+One side door remains, accepted (Q3): a held sort with an EMPTY `restsOn` leaves its hold through
+any fresh dual-sorted reclassification.
+
+`stakes` (`high` | `low`) decides how many verifiers close the sort's findings — one for low, two
+and an arbitrator for high — and is the sorters' judgment ([repair
+verification](repair-verification.md), *The request and its slots*). Absent is high. A correction
+may raise it and never lower it.
 
 A `dual-sorted` sort is the skill's own two-sorter sort, posted with the round: two
 assessments by independent sorters, and an arbitration by a third when they disagree.

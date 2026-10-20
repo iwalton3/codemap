@@ -5,17 +5,17 @@
  * differently from another. Its own module because `ops/annotations` cannot reach `ops-shared`
  * without closing a cycle through `ops/triage`.
  */
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { db } from "../db.js";
-import { decisionScopeHasEvents, decisionFindingStates, decisionBugStates } from "../store.js";
+import { decisionScopeHasEvents, decisionFindingStates, decisionBugStates, readStoreMeta, writeStoreMeta } from "../store.js";
 import { canonicalIssueKey, type CanonicalIssueReference } from "../decision-issues.js";
-import { readCached } from "../materialize.js";
+import { readCachedMerged, sidecarUnusable } from "../materialize.js";
 import { decisionsProjection } from "../shared-projections.js";
 import { resolveSidecar, sidecarIdentity, universeKey } from "../sidecar-config.js";
 import { isClosed, type FindingState } from "../shared-findings.js";
-import { decisionScope, foldDecisions, heldFindings, heldIssues, intentCandidates, comparisonRestricts, supersededFindings, type Hold, type SharedDecisions } from "../shared-decisions.js";
-import type { ScopeDiagnostic, ScopeStatus } from "../eventlog.js";
+import { comparisonHoldApplies, decisionScope, decisionScopes, foldDecisions, heldFindings, heldIssues, supersededFindings, type Hold, type SharedDecisions } from "../shared-decisions.js";
+import { LINEAR_SHARD, overlayActive, type ScopeDiagnostic, type ScopeStatus } from "../eventlog.js";
 
 /** What a row carries: its holds, or `"unknown"`, and whether its decision may be superseded. */
 export interface HoldMark {
@@ -103,7 +103,7 @@ export async function decisionsView(root: string): Promise<DecisionsView> {
     // (P2.2 (7)).
     let marks: { held?: Map<string, Hold[]>; issues?: Map<string, Hold[]>; flagged: ReturnType<typeof supersededFindings> } | undefined;
     const built = () => {
-      if (!marks) { builds++; marks = { ...(unknown ? {} : { held: heldFindings(s, isOpen), issues: heldIssues(s, isOpenIssue) }), flagged: supersededFindings(s) }; }
+      if (!marks) { builds++; marks = { ...(unknown ? {} : { held: heldFindings(s, universe, isOpen), issues: heldIssues(s, isOpenIssue) }), flagged: supersededFindings(s, universe) }; }
       return marks;
     };
     const mark = (id: string): HoldMark => {
@@ -118,12 +118,7 @@ export async function decisionsView(root: string): Promise<DecisionsView> {
       if (ref.kind === "bug") return typed === "unknown" || typed.length ? { held: typed } : {};
       const legacy = mark(ref.id);
       if (typed === "unknown" || legacy.held === "unknown") return { ...legacy, held: "unknown" };
-      const exactLegacy = (legacy.held ?? []).filter((hold) => {
-        if (hold.why !== "comparison" || !hold.answers) return true;
-        const candidate = intentCandidates(s).find((c) => c.answers.slice().sort().join("\0") === hold.answers!.slice().sort().join("\0")
-          && c.findings.includes(ref.id));
-        return !candidate || comparisonRestricts(s, candidate, ref);
-      });
+      const exactLegacy = (legacy.held ?? []).filter((hold) => comparisonHoldApplies(s, hold, ref));
       const combined = [...exactLegacy, ...typed];
       return { ...legacy, ...(combined.length ? { held: combined } : {}) };
     };
@@ -149,9 +144,60 @@ export async function decisionsView(root: string): Promise<DecisionsView> {
   };
   if (!cfg) return missing("no sidecar is configured, and this store has read decisions from one before");
   if (!existsSync(join(cfg.path, ".git"))) return missing(`the sidecar at ${cfg.path} is missing, and this store has read decisions from it before`);
-  if (!existsSync(join(cfg.path, decisionScope(cfg.universe)))) return missing(`the decisions log is missing from ${cfg.path}, and this store has read decisions from it before`);
-  const { value, ...status } = await readCached(root, cfg.path, decisionScope(cfg.universe), sidecarIdentity(cfg), foldDecisions, decisionsProjection);
+  const { value, status } = await cachedDecisions(root, cfg);
   return view(value, status, status.status === "blocked" ? status.diagnostic?.detail ?? "the decisions log cannot be read" : undefined);
+}
+
+/**
+ * The workspace's decisions, through the cache: every decisions scope folded together and stored
+ * under this universe's legacy key, so `source_scope` and every reader of the rows are unchanged.
+ * Never folded one scope alone (`projectionFor` does not offer it): an act in `law/decisions` on a
+ * legacy decision would be refused by a fold that cannot see the decision.
+ */
+export async function cachedDecisions(root: string, cfg: { path: string; universe: string })
+  : Promise<{ value: SharedDecisions; status: ScopeStatus; folded: boolean; fresh: boolean }> {
+  // Absent is not empty, over the set the fold reads: the fold is total, so folding without a
+  // scope it read before would write its rows away. Both callers come through here.
+  // Asked only on the way to declining: `wrongSidecar` may spawn git, which a read must not pay.
+  const gone = decisionsAbsence(root, cfg);
+  if (gone) return { value: stored(root, cfg.universe), status: { status: "blocked", diagnostic: sidecarUnusable(root, cfg.path) ?? gone }, folded: false, fresh: false };
+  const scopes = await decisionScopes(cfg.path);
+  // None on disk, none staged and none read before: not folded, so no zero-event row is
+  // written (S0.8(b)).
+  if (!scopes.some((s) => existsSync(join(cfg.path, s)) || overlayActive(cfg.path, s))) return { value: EMPTY, status: { status: "complete" }, folded: false, fresh: true };
+  const { value, folded, fresh, ...status } = await readCachedMerged(root, cfg.path, scopes, decisionScope(cfg.universe),
+    sidecarIdentity(cfg), (events) => foldDecisions(events), decisionsProjection,
+    (read) => writeStoreMeta(root, DECISIONS_READ, read));
+  return { value, status, folded, fresh };
+}
+
+/** The decisions scopes this store's stored fold read events from (`cachedDecisions`). */
+const DECISIONS_READ = "decisions-scopes-read";
+
+/** Adopting a sidecar replaces the rows, so nothing read from the old one is expected in it.
+ *  An empty record, not none: none falls back to the pre-record seed below. */
+export const forgetDecisionScopesRead = (root: string): void => writeStoreMeta(root, DECISIONS_READ, []);
+
+/**
+ * A `sidecar-missing` diagnostic when a decisions scope this store has folded events from is
+ * gone, or null. Every reader of decisions authority asks it before reading the merged log —
+ * `cachedDecisions` and each op that calls `readDecisionLog` — because the scope list comes from
+ * the disk, so a vanished scope otherwise reads `complete` over the rest.
+ */
+export function decisionsAbsence(root: string, cfg: { path: string; universe: string }): ScopeDiagnostic | null {
+  let read = readStoreMeta<string[]>(root, DECISIONS_READ);
+  if (!read) {
+    // No record: last folded by a build before it, which folded only this universe's own scope.
+    // Persisted at once, because an overlay fold writes that same `shared_scope` row: seeding
+    // later would read a dropped staged act as "folded before", and decline for good.
+    read = foldedBefore(root, cfg.universe) ? [decisionScope(cfg.universe)] : [];
+    writeStoreMeta(root, DECISIONS_READ, read);
+  }
+  // The shard, not the directory, and its bytes: deleting the file leaves the directory, and
+  // emptying it leaves the file; either folds as empty. A recorded scope had an event.
+  const gone = read.find((s) => !(statSync(join(cfg.path, s, LINEAR_SHARD), { throwIfNoEntry: false })?.size));
+  if (!gone) return null;
+  return { reason: "sidecar-missing", detail: `${gone} is missing from ${cfg.path}, and this store has read decisions from it before`, evidence: [cfg.path] };
 }
 
 /** The rows this store holds, read without folding. */

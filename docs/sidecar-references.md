@@ -35,7 +35,7 @@ events of the scope(s) it is handed; nothing in the envelope names the scope.
 | `graph.published` | `graph/<universe>` | `graphScope` shared-graph.ts:30 | |
 | `review.linked` | `reviews/<universe>` | `reviewScope` shared-reviews.ts:21 | |
 | `walkthrough.published` | `walkthrough/<universe>/pr-<n>` (same key as findings) | `walkthroughScope` shared-walkthrough.ts:29, called with `prKey` ops-shared.ts:2665 | |
-| `decision.*` | `decisions/<universe>` | `decisionScope` shared-decisions.ts:36 | |
+| `decision.*` | `law/decisions` (new rounds), legacy `decisions/<universe>` — all folded together | `DECISIONS_SCOPE`, `decisionScope`, `decisionHome` shared-decisions.ts | an act on a decision is written to the scope it was posted in (plan 2026-10-19) |
 | Law: `spec.*`, `ack.granted`/`ack.released` **with basis `gap`** | `law/standard` (ONE per sidecar/workspace) | `LAW_SCOPE`/`lawScope` shared-standard.ts:71-72; routing standard-publish.ts:183-249 | Pre-split stores hold law events in `standard/<universe>`; the fold merges both (shared-standard.ts:61-70 comment). |
 | Evidence: `audit.recorded`, `vacuity.checked`, `pointer.*`, `population.pinned`, `scrub.policy`, `problem.*`, `problem.conflict.resolved`, `ack.*` **with basis `debt`** | `standard/<universe>` | `standardScope` shared-standard.ts:57; `share(..., scope ?? standardScope)` standard-publish.ts:175 | **Ambiguity:** `isLawEvent` (shared-standard.ts:75) says every `ack.*` is law; actual routing is by basis (standard-publish.ts:238, 249). `isLawEvent` is imported (standard-publish.ts:34) but never called. |
 | `scope.acknowledged` | any scope (the scope it acknowledges) | `acknowledgeScope` eventlog.ts:329-332 | Exempt from the "folded at the door" rule (eventlog.ts:407). |
@@ -189,7 +189,7 @@ that check.
 | 86 | doc.accepted | d.versionId | doc version | versionId, and its `nodeId` must equal E.subject | same | Not applied, but **retained** in `unmatched` (`no-version`/`no-citation`), never refused: shared-docs.ts:156-168 | retention is deliberate (cross-build anchor ids) |
 | 87 | doc.accepted | E.subject | logical node (shared doc) | node id = subject of a `doc.version` | same | via #86 (:157) | |
 
-### Decisions scope (`decisions/<u>`) — every kind here is folded at the write door (eventlog.ts:385, 407-408; `decisionsDoor` shared-decisions.ts:2512)
+### Decisions scopes (`law/decisions`, legacy `decisions/<u>`; every `decisions/<u>` below means any of them since plan 2026-10-19 — the references checks read them all) — every kind here is folded at the write door (eventlog.ts:385, 407-408; `decisionsDoor` shared-decisions.ts:2512)
 
 | # | Kind | Field | Target | Identified by | Target lives in | Fold checks today? | Notes |
 |---|---|---|---|---|---|---|---|
@@ -251,7 +251,7 @@ that check.
 | 138 | spec.operation-signoff-applied | d.capsule.operationId / .specId | operation / spec | ids | law | Refuse operation-signoff.ts:33 | |
 | 139 | spec.operation-signoff-applied | d.capsule.ruling.answerId | decision answer (verified, current) | answer id | **other log** `decisions/<ruling.universe>` | **No** (fold uses `current:false`, shared-standard.ts:596); **op only** ops/operation-signoff.ts:70-80 | law is workspace-wide, so the target universe is whichever wrote the ruling |
 | 140 | spec.operation-signoff-applied | d.capsule.ruling.decisionId | decision | decision id | decisions/<u> | **No** | |
-| 141 | spec.operation-signoff-applied | d.capsule.ruling.sourceScope | decisions scope | `decisions/<universe>` | — | Form only operation-signoff.ts:43 | |
+| 141 | spec.operation-signoff-applied | d.capsule.ruling.sourceScope | decisions scope | `law/decisions` or `decisions/<universe>` | — | Form only operation-signoff.ts:43 | |
 | 142 | spec.reviewed | d.witness.specId | spec (draft) | spec id | law | Refuse :607-611 | E.subject conventionally = specId, **not checked** |
 | 143 | spec.reviewed | d.witness.operationId | operation live in that spec | op id | law | Refuse :620-623 | optional (absent = framing sign-off) |
 | 144 | spec.ratified | E.subject | spec (draft, not held) | spec id | law | Refuse :630-644 | |
@@ -311,7 +311,7 @@ sometimes a local reference, and nothing in the event says which.
 | A5 | graph.published | d.nodeId (= E.subject) | the source node; only human nodes' edges travel, but the node itself may be unpublished | subject agreement only shared-graph.ts:64 |
 | A6 | graph.published | d.edges[].to | frequently an **analyzer** node (e.g. an aggregate) that never travels; `calls_api` edges carry a cross-universe qualified `to` (`api::handler`, schema.ts:368) | none (edge dropped only if malformed or `generatedBy`, :69-74) |
 | A7 | pointer.declared | d.pointer.target.id when target.kind = `node` | same as A1 | none |
-| A8 | repair.sort-recorded | d.restsOn[], d.release.rulings[] | a `decision:<id>` entry names a decision in `decisions/<u>`, and a release ruling an answer to it (owner, D2); other entries are free labels (e2e uses `"req-credit"`) with no target | `repairSortReferences` (ruling-references.ts), door and read |
+| A8 | repair.sort-recorded | d.restsOn[], d.release.rulings[] | a `decision:<id>` entry names a decision in a decisions scope, and a release ruling an answer to it (owner, D2); a `ruled` sort's ruling must also be the verified standing answer whose chosen options unblock every covered finding (plan 2026-10-19 R1, R2; the check the decisions fold registers); other entries are free labels (e2e uses `"req-credit"`) with no target | `repairSortReferences` (ruling-references.ts), door and read |
 | A9 | round.posted / answer.* | E.subject vs `d.decision` / `d.round.id` | subject is a label, not an id, for round/confirm/answer/reading/question kinds; nothing checks it | not checked |
 
 Also note-worthy but **not event-log references** (excluded, but a reviewer may expect them):

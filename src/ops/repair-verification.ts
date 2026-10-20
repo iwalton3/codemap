@@ -4,9 +4,11 @@
  *
  * Two ways to be a verifier (owner, 2026-09-28): a DEDICATED session, whose connection claims the
  * role before anything else and then submits directly; or a SUBAGENT an agent launches with the
- * exact launch prompt `repair_brief` issues, whose submission is held on this machine until the
- * session that launched it records it with `record_repair_verification`, which checks the
- * subagent's own transcript. Whoever launched it, there is no second grade (R2,
+ * exact launch prompt `repair_brief` issues — or with any prompt holding, on a line of its own,
+ * the launch line of a `repair_batch_brief` that lists the job (plan 2026-10-19 4.2: reviewers
+ * verify; the rest of the prompt is trusted, an accepted gap) — whose submission is held on this
+ * machine until the session that launched it records it with `record_repair_verification`, which
+ * checks the subagent's own transcript. Whoever launched it, there is no second grade (R2,
  * docs/repair-verification.md).
  */
 import { randomUUID } from "node:crypto";
@@ -25,24 +27,24 @@ import { readCached } from "../materialize.js";
 import { readScopeChecked, type LogEvent } from "../eventlog.js";
 import { emitEventChecked } from "../write.js";
 import { foldRepairRecords, type RepairFindingMap } from "../repair-records.js";
-import { decisionScope, foldDecisions, answerHasCurrentAuthority, intentCandidates, comparisonRestricts, heldFindings, heldIssues } from "../shared-decisions.js";
+import { readDecisionLog, foldDecisions, answerHasCurrentAuthority, answerRestricted, comparisonHoldApplies, intentCandidates, heldFindings, heldIssues } from "../shared-decisions.js";
 import { canonicalIssueKey } from "../decision-issues.js";
-import { workEligibility } from "./decision-holds.js";
+import { decisionsAbsence, workEligibility } from "./decision-holds.js";
 import { issueClaimHash } from "../ruling-application.js";
 import { gitBin } from "../git.js";
 import { canonical, isUnverified, readReceiptCall, transcriptDir } from "../transcript.js";
-import { saveReaderRequest, readerRequest, holdReaderReceipt, readerReceipts, settleReaderReceipt, type ReaderPurpose } from "../reader-local.js";
+import { saveReaderRequest, readerRequest, readerRequests, holdReaderReceipt, readerReceipts, settleReaderReceipt, type ReaderPurpose } from "../reader-local.js";
 import { verifierIdentityKey, type RepairConnection, type VerifierIdentity } from "../verifier-boundary.js";
 import {
   foldRepairVerification, repairVerificationHash, repairVerificationDecision, repairVerificationDisagreements,
-  isRepairVerificationState, emptyRepairVerificationState, resultError,
+  isRepairVerificationState, emptyRepairVerificationState, resultError, slotsFor,
   type RepairVerificationCapsule, type RepairVerificationRun, type RepairVerificationArbitration,
-  type RepairVerificationApplication, type RepairClaimVerdict,
+  type RepairVerificationApplication, type RepairClaimVerdict, type RepairVerificationRecords,
 } from "../repair-verification.js";
 
 const runGit = promisify(execFile);
-/** A dedicated verifier connection holds one job; asking for another is refused. */
-const jobs = new WeakMap<RepairConnection, string>();
+/** A dedicated verifier connection holds one job, or one batch's jobs; asking for others is refused. */
+const jobs = new WeakMap<RepairConnection, string[]>();
 /** This connection as it acts in `root`'s universe (F36). */
 const identityIn = (connection: RepairConnection, root: string): VerifierIdentity => connection.identity(resolvePrincipal(root) ?? connection.principal);
 
@@ -62,21 +64,19 @@ async function rulingContext(root: string, review: number | string, findings: Sh
   const door = sidecarWriteDoor(root);
   if (!door.cfg) return { error: door.error ?? "sidecar unavailable" };
   const cfg = door.cfg;
-  const source = await readScopeChecked(cfg.path, decisionScope(cfg.universe));
+  const absent = decisionsAbsence(root, cfg);
+  if (absent) return { error: `ruling scope is blocked; no repair authority can be issued: ${absent.detail}` };
+  const source = await readDecisionLog(cfg.path);
   if (source.status !== "complete") return { error: "ruling scope is blocked; no repair authority can be issued" };
   const state = foldDecisions(source.events);
   const refs = findings.map((f) => ({ kind: "finding" as const, universe: cfg.universe, review: String(review), scope: findingScope(findingKeyScope(cfg, review)), id: f.id }));
   const open = new Set(findings.filter((f) => !isClosed(f.state)).map((f) => f.id));
   const openKeys = new Set(refs.filter((ref) => open.has(ref.id)).map(canonicalIssueKey));
-  const legacy = heldFindings(state, (id) => open.has(id));
+  const legacy = heldFindings(state, cfg.universe, (id) => open.has(id));
   const typed = heldIssues(state, (key) => openKeys.has(key));
   const candidates = intentCandidates(state);
   const eligibility = refs.map((ref) => {
-    const exactLegacy = (legacy.get(ref.id) ?? []).filter((hold) => {
-      if (hold.why !== "comparison" || !hold.answers) return true;
-      const candidate = candidates.find((c) => c.answers.slice().sort().join("\0") === hold.answers!.slice().sort().join("\0") && c.findings.includes(ref.id));
-      return !candidate || comparisonRestricts(state, candidate, ref);
-    });
+    const exactLegacy = (legacy.get(ref.id) ?? []).filter((hold) => comparisonHoldApplies(state, hold, ref, candidates));
     const held = [...exactLegacy, ...(typed.get(canonicalIssueKey(ref)) ?? [])];
     const finding = findings.find((f) => f.id === ref.id)!;
     return { findingId: ref.id, work: workEligibility({ held }, finding.assignment), ...(held.length ? { assignment: finding.assignment } : {}) };
@@ -88,7 +88,7 @@ async function rulingContext(root: string, review: number | string, findings: Sh
     if (!pair || !pair.a.verified || pair.a.cancelled || pair.a.withdrawn || pair.a.sourceAnswer || pair.a.resolvedOutBy || pair.a.elsewhere || pair.a.revisionInvalid || pair.d.withdrawn) return { error: `ruling ${id} has no current verified authority` };
     for (const ref of refs) {
       if (!answerHasCurrentAuthority(pair.d, pair.a, ref)
-        || candidates.some((c) => c.answers.includes(id) && comparisonRestricts(state, c, ref))) return { error: `ruling ${id} is held or does not govern ${ref.id}` };
+        || answerRestricted(state, id, ref, candidates)) return { error: `ruling ${id} is held or does not govern ${ref.id}` };
     }
   }
   // Only the rulings this repair CITES (D4: F19, F46). The whole decisions state made any decision
@@ -204,6 +204,27 @@ const purposeOf = (j: Job): ReaderPurpose => (j.role === "verifier" ? "repair-ve
 export const repairLaunchPrompt = (review: number | string, j: Job) =>
   `Run the instructions from codemap MCP tool repair_brief with ${canonical({ review: String(review), requestId: j.requestId, role: j.role, ...(j.slot ? { slot: j.slot } : {}) })}.`;
 
+/** One subagent's share of a round's verification: every open job of one role and slot (4.1). */
+interface Batch { review: string; role: "verifier" | "arbitrator"; slot?: 1 | 2; jobs: Job[] }
+const BATCH = "batch:";
+/** The line a batch subagent's launch prompt holds, whole and on a line of its own (4.2). */
+export const repairBatchLaunchLine = (review: number | string, batch: string) =>
+  `Run the instructions from codemap MCP tool repair_batch_brief with ${canonical({ review: String(review), batch })}.`;
+function savedBatch(root: string, id: string): Batch | undefined {
+  for (const purpose of ["repair-verification", "repair-arbitration"] as const) {
+    const body = readerRequest(root, { purpose, requestId: BATCH + id });
+    if (body) return JSON.parse(body) as Batch;
+  }
+}
+/** Launched with exactly this job's prompt, or with a prompt holding the launch line of a batch listing it. */
+function launchedFor(root: string, review: number | string, job: Job, launch: string, prompt: string): boolean {
+  if (prompt === launch) return true;
+  const lines = new Set(prompt.split("\n").map((l) => l.trim()));
+  return readerRequests(root, purposeOf(job)).some((r) => r.requestId.startsWith(BATCH)
+    && (JSON.parse(r.body) as Batch).jobs.some((j) => jobKey(j) === jobKey(job))
+    && lines.has(repairBatchLaunchLine(review, r.requestId.slice(BATCH.length))));
+}
+
 /**
  * The work open to a verifier on a review, BLIND: request ids and which jobs are open, never a
  * verdict, the evidence or the fixer's conclusions. It is what a claimed verifier session (the
@@ -217,7 +238,7 @@ export async function pendingRepairJobs(root: string, review: number | string) {
   const jobs = source.records.requests.filter((r) => !applied.has(r.id)).flatMap((r) => {
     const runs = source.records.runs.filter((x) => x.requestId === r.id);
     const arbitrated = source.records.arbitrations.some((x) => x.requestId === r.id);
-    const open: Job[] = ([1, 2] as const).filter((slot) => !runs.some((x) => x.slot === slot)).map((slot) => ({ requestId: r.id, role: "verifier" as const, slot }));
+    const open: Job[] = slotsFor(r.capsule).filter((slot) => !runs.some((x) => x.slot === slot)).map((slot) => ({ requestId: r.id, role: "verifier" as const, slot }));
     if (runs.length === 2 && !arbitrated && repairVerificationDisagreements(runs[0]!, runs[1]!).length) open.push({ requestId: r.id, role: "arbitrator" });
     return open;
   });
@@ -231,20 +252,79 @@ export async function repairVerificationBrief(root: string, review: number | str
   const source = await repairVerificationRecords(root, review);
   if ("error" in source) return source;
   if (source.status !== "complete") return { error: "repair scope is blocked" };
-  const request = source.records.requests.find((r) => r.id === job.requestId);
-  if (!request) return { error: "unknown repair verification request" };
-  const runs = source.records.runs.filter((r) => r.requestId === request.id);
-  if (job.role === "arbitrator" && runs.length !== 2) return { error: "arbitration requires both runs" };
-  if (job.role === "arbitrator" && !repairVerificationDisagreements(runs[0]!, runs[1]!).length) return { error: "no actual disagreement needs arbitration" };
-  if (job.role === "verifier" && runs.some((r) => r.slot === job.slot)) return { error: "that slot already has its run" };
+  const brief = jobBrief(source.records, job);
+  if ("error" in brief) return brief;
   if (connection.claimed()) {
     const held = jobs.get(connection);
-    if (held && held !== jobKey(job)) return { error: "this verifier connection already holds another job" };
-    jobs.set(connection, jobKey(job));
+    if (held && (held.length !== 1 || held[0] !== jobKey(job))) return { error: "this verifier connection already holds another job" };
+    jobs.set(connection, [jobKey(job)]);
   }
   const launch = repairLaunchPrompt(review, job);
   const saved = saveReaderRequest(root, { purpose: purposeOf(job), requestId: jobKey(job) }, launch);
   if ("error" in saved) return saved;
+  return { ...brief, launch, instruction: `${brief.instruction} To hand this job to a subagent instead, launch it with exactly: ${launch}` };
+}
+
+/**
+ * One brief for a round's verification (plan 2026-10-19 4.1): every open job of one role and slot
+ * on the review — or of the `requests` named — each entry exactly the brief `repair_brief` gives.
+ * A low-stakes request has no slot 2, so it appears in slot 1's batch only. Results are submitted
+ * per request, as from a single brief, so every per-request rule of the fold is unchanged. Called
+ * with `batch` it re-reads an issued batch: what the subagent launched with its line does.
+ */
+export async function repairBatchBrief(root: string, review: number | string,
+  input: { role?: "verifier" | "arbitrator"; slot?: 1 | 2; requests?: string[]; batch?: string }, connection: RepairConnection) {
+  const source = await repairVerificationRecords(root, review);
+  if ("error" in source) return source;
+  if (source.status !== "complete") return { error: "repair scope is blocked" };
+  let batch: Batch, id: string;
+  if (input?.batch !== undefined) {
+    const saved = savedBatch(root, input.batch);
+    if (!saved || saved.review !== String(review)) return { error: `no batch ${String(input.batch)} was issued on review ${String(review)}` };
+    batch = saved; id = input.batch;
+  } else {
+    if (input?.role !== "verifier" && input?.role !== "arbitrator") return { error: "a batch is for verifiers (with slot 1 or 2) or the arbitrator" };
+    if (input.role === "verifier" && input.slot !== 1 && input.slot !== 2) return { error: "a verifier batch is for one slot, 1 or 2" };
+    const pending = await pendingRepairJobs(root, review);
+    if (!("jobs" in pending)) return { error: pending.error ?? "repair scope is unreadable" };
+    const open = pending.jobs.filter((j) => j.role === input.role && (input.role === "arbitrator" || j.slot === input.slot)
+      && (!input.requests || input.requests.includes(j.requestId)));
+    if (!open.length) return { error: input.role === "verifier" ? `no request on review ${String(review)} has an open slot ${input.slot}` : "no request needs arbitration" };
+    batch = { review: String(review), role: input.role, ...(input.role === "verifier" ? { slot: input.slot } : {}),
+      jobs: [...open].sort((a, b) => (a.requestId < b.requestId ? -1 : a.requestId > b.requestId ? 1 : 0)) };
+    id = `rb_${repairVerificationHash(batch).slice(0, 24)}`;
+    const saved = saveReaderRequest(root, { purpose: purposeOf(batch.jobs[0]!), requestId: BATCH + id }, JSON.stringify(batch));
+    if ("error" in saved) return saved;
+  }
+  const keys = batch.jobs.map(jobKey);
+  if (connection.claimed()) {
+    const held = jobs.get(connection);
+    if (held && held.join("\n") !== keys.join("\n")) return { error: "this verifier connection already holds another job" };
+    jobs.set(connection, keys);
+  }
+  const entries = [];
+  for (const job of batch.jobs) {
+    // Each job's own request too, so its submission is held and recorded exactly as a single brief's.
+    const saved = saveReaderRequest(root, { purpose: purposeOf(job), requestId: jobKey(job) }, repairLaunchPrompt(review, job));
+    if ("error" in saved) return saved;
+    const brief = jobBrief(source.records, job);
+    entries.push("error" in brief ? { requestId: job.requestId, skip: brief.error } : brief);
+  }
+  const launch = repairBatchLaunchLine(review, id);
+  return { batch: id, role: batch.role, ...(batch.slot ? { slot: batch.slot } : {}), launch, entries,
+    instruction: `Do each entry's instruction, on its own request: one ${batch.role === "verifier" ? `repair_verification per request, slot ${batch.slot}` : "repair_arbitration per request"}. An entry with \`skip\` needs nothing from you. `
+      + `To hand this batch to a subagent, put this line, whole and on a line of its own, in its launch prompt: ${launch}` };
+}
+
+/** One job's blind brief: what the verifier reads, and nothing it may not. */
+function jobBrief(records: RepairVerificationRecords, job: Job) {
+  const request = records.requests.find((r) => r.id === job.requestId);
+  if (!request) return { error: "unknown repair verification request" };
+  const runs = records.runs.filter((r) => r.requestId === request.id);
+  if (job.role === "arbitrator" && runs.length !== 2) return { error: "arbitration requires both runs" };
+  if (job.role === "arbitrator" && !repairVerificationDisagreements(runs[0]!, runs[1]!).length) return { error: "no actual disagreement needs arbitration" };
+  if (job.role === "verifier" && !slotsFor(request.capsule).includes(job.slot!)) return { error: `a low-stakes request has one verifier: slot 1` };
+  if (job.role === "verifier" && runs.some((r) => r.slot === job.slot)) return { error: "that slot already has its run" };
   const c = request.capsule;
   // Blind: no other verdict, and none of the fixer's conclusions — only what they pinned to run.
   const neutral = { scope: c.scope, targets: c.targets, code: c.code,
@@ -258,7 +338,7 @@ export async function repairVerificationBrief(root: string, review: number | str
       noCheckReason: c.evidence.noCheckReason, rulingIds: c.evidence.rulingIds, attribution: c.evidence.attribution,
       ...(c.evidence.siteBugs?.length ? { siteBugs: c.evidence.siteBugs } : {}) },
     rulingContext: c.rulingContext };
-  return { requestId: request.id, capsuleHash: request.capsuleHash, capsule: neutral, launch,
+  return { requestId: request.id, capsuleHash: request.capsuleHash, capsule: neutral,
     ...(job.role === "arbitrator" ? { runs } : {}),
     instruction: "Independently assess only the original claims against the pinned code. Where the sort cites a `ruling`, or was "
       + "released on rulings (`release.rulings`; their text is in `rulingContext`), first judge whether those rulings decide the claim as it is now classified; if they "
@@ -271,8 +351,7 @@ export async function repairVerificationBrief(root: string, review: number | str
       + "can be run, grade \"inspection\" with a no-check reason. For a pattern, give every sorted site a "
       + "disposition: fixed, or — for a site the evidence lists under `siteBugs` — filed, with that bug id. "
       + "A requirement or scope judgment is "
-      + `decision-needed. Then call ${job.role === "verifier" ? "repair_verification" : "repair_arbitration"}. `
-      + `To hand this job to a subagent instead, launch it with exactly: ${launch}` };
+      + `decision-needed. Then call ${job.role === "verifier" ? "repair_verification" : "repair_arbitration"}.` };
 }
 
 /**
@@ -308,7 +387,7 @@ export async function siteBugRefusal(root: string, events: LogEvent[], results: 
 async function submit(root: string, review: number | string, job: Job, body: Record<string, unknown>, connection: RepairConnection,
   produce: (identity: VerifierIdentity) => (events: LogEvent[]) => Promise<{ kind: string; subject: string; data: Record<string, unknown> } | { error: string }>) {
   if (connection.claimed()) {
-    if (jobs.get(connection) !== jobKey(job)) return { error: "read this job's brief (repair_brief) on this connection first" };
+    if (!jobs.get(connection)?.includes(jobKey(job))) return { error: "read this job's brief (repair_brief, or repair_batch_brief) on this connection first" };
     return append(root, review, identityIn(connection, root), produce(identityIn(connection, root)));
   }
   if (!readerRequest(root, { purpose: purposeOf(job), requestId: jobKey(job) })) return { error: "no brief was issued for this job; call repair_brief first" };
@@ -374,7 +453,7 @@ export async function recordRepairVerification(root: string, review: number | st
     return { error: call.unverified };
   }
   const expected = { review: String(review), requestId: job.requestId, ...(job.slot ? { slot: job.slot } : {}), ...body };
-  const reason = call.reader.prompt !== launch ? "the subagent was not launched with exactly the issued prompt"
+  const reason = !launchedFor(root, review, job, launch, call.reader.prompt) ? "the subagent was not launched with exactly the issued prompt, or one holding its batch's launch line"
     : canonical({ ...call.input, review: String(call.input?.review) }) !== canonical(expected) ? "the subagent's submission differs from what was held"
     : call.result?.receipt !== input.receipt ? "the subagent's call did not return this receipt" : undefined;
   if (reason) {

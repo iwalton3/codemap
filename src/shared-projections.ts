@@ -31,7 +31,7 @@ import { needsHumanAck, foldFindings, prOfScope, type SharedFinding } from "./sh
 import { foldDocs, type SharedDoc, type UnmatchedAcceptance } from "./shared-docs.js";
 import { foldNotes, type SharedNote } from "./shared-notes.js";
 import { foldReviewLinks, type ReviewLink } from "./shared-reviews.js";
-import { foldDecisions, type SharedDecisions } from "./shared-decisions.js";
+import type { SharedDecisions } from "./shared-decisions.js";
 import { foldTriage, triageSubject, isTombstone, ABSENT_FIELD, type TriageEntry, type Axis, type TriageField } from "./shared-triage.js";
 import { foldGraph, type SharedWiring } from "./shared-graph.js";
 import { foldBugs, needsHumanAck as bugNeedsAck, type SharedBug } from "./shared-bugs.js";
@@ -852,9 +852,10 @@ export function projectionFor(scope: string): { fold: (e: LogEvent[]) => any; pr
   if (scope.startsWith("triage/")) return { fold: foldTriage, proj: triageProjection };
   if (scope.startsWith("graph/")) return { fold: foldGraph, proj: graphProjection };
   if (scope.startsWith("reviews/")) return { fold: foldReviewLinks, proj: reviewLinksProjection };
-  if (scope.startsWith("decisions/")) return { fold: foldDecisions, proj: decisionsProjection };
   if (scope.startsWith("topics/")) return { fold: foldTopics, proj: topicsProjection };
   if (scope.startsWith("topic-walkthrough/")) return { fold: foldTopicWalkthroughs, proj: topicWalkthroughsProjection };
+  // NOT `decisions/`: every decisions scope folds together, the same hazard as below, so
+  // `materializeUniverse` calls `cachedDecisions` explicitly (`ops/decision-holds.ts`).
   // NOT `standard/`, and not `law/`. The standard is the one entity folded from TWO
   // scopes — law (workspace) and evidence (universe) — because `spec.withdrawn` consults
   // evidence to decide a law act. Folding either half ALONE here would write a partial

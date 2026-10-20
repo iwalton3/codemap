@@ -24,7 +24,7 @@ const TOOLS = new Set([...SRC.matchAll(/^\s*name: "([a-z_]+)",$/gm)].map((m) => 
  * appearing, so the list cannot quietly outlive its reason.
  */
 const NOT_TOOLS = new Set([
-  "disposition", "tier", "category", "line", "offset", "locate", "reversibility", "branch", // parameters
+  "disposition", "tier", "category", "line", "offset", "locate", "reversibility", "branch", "batch", // parameters
   "untriaged", "unverified", "refuted", "settled", "transitions_to", "baseline", // enum values
   "witnesses", "anchors", "citations", "vouch", "diagnostic", "rank", // record fields
 ]);
@@ -46,6 +46,7 @@ const SKILL_VOCAB = new Set([
   "retained", "lost", "live", "moved", "unjudgeable", "due", "woken",
   "verified", "checked", "invalid",                          // review trust levels, a sort classification
   "changed", "blocked", "words", "state", "maps", "arbitrator", "ruling", "child",     // asking / repair fields
+  "stakes", "high", "ruled",                                 // a repair sort's stakes and a release provenance
   "unread", "disputed", "unclear",                           // possiblySuperseded states
   // rules in a cut-over repo: add_operation kinds, the standard_queue name, a rule's fields, values
   "add_requirement", "amend_statement", "amend_standing", "retire_requirement", "pending_specs",

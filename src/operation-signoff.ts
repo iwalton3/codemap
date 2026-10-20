@@ -40,7 +40,8 @@ export function validateOperationSignoff(value: unknown, op: Operation, spec: Sp
     const r = c.ruling;
     if (!r || ![r.answerId, r.decisionId, r.ref, r.universe, r.sourceScope, r.via, r.principal, r.responseHash, r.sourceFingerprint, r.checkedAt].every(word) || !Number.isFinite(Date.parse(r.checkedAt)) || typeof r.words !== 'string' || r.verified !== true || r.status !== 'current' || r.comparison !== 'clear')
       return { error: 'sign-off lacks current verified human authority' };
-    if (r.sourceScope !== `decisions/${r.universe}`) return {error:'answer source scope is invalid'};
+    // `law/decisions` is `shared-decisions.ts DECISIONS_SCOPE`, spelled out to keep this module a leaf of the standard's fold.
+    if (r.sourceScope !== 'law/decisions' && r.sourceScope !== `decisions/${r.universe}`) return {error:'answer source scope is invalid'};
     if (canonical(r.display) !== canonical(operationSignoffDisplay(op.id, spec.id, c.content, c.framing, r.ref)) || !Array.isArray(r.selected) || r.selected.length !== 1 || r.selected[0] !== SIGN_OPERATION)
       return { error: 'the full human presentation does not explicitly sign this operation' };
     if (c.key !== operationSignoffKey(op.id, r.answerId) || !c.executor || !word(c.executor.principal) || (executor && canonical(executor) !== canonical(c.executor)))

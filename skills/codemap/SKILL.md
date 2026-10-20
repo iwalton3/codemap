@@ -31,8 +31,9 @@ still holds. Ask instead (`references/asking.md`).
   through repair verification (`references/verify-repair.md`); every other close is a person's
   ask, which `close_finding` with a closing state records for you.
 - **Verify a repair you requested, or apply a verdict you gave.** Only grants verify: a fresh
-  session a person starts with `/codemap-verify`, or a subagent launched with exactly the prompt
-  `repair_brief` returns.
+  session a person starts with `/codemap-verify`, a subagent launched with exactly the prompt
+  `repair_brief` returns, or one whose prompt holds a `repair_batch_brief` launch line whole on a
+  line of its own — a reviewer of the next round, say.
 - **Backlog (carry) a finding, or defer a bug.** There is deliberately no tool. Investigate, then
   ask, saying what the release condition should be.
 - **Move a bug somebody stood behind**, or settle a teammate's question — answer it with
@@ -49,7 +50,7 @@ still holds. Ask instead (`references/asking.md`).
 
 | The ask | Do this |
 | --- | --- |
-| "Were these findings actually fixed?" / verify a repair | `references/verify-repair.md` (it names `/codemap-verify`, the session a person starts as a verifier) |
+| "Were these findings actually fixed?" / verify a repair | `references/verify-repair.md` (it names `/codemap-verify`, the session a person starts as a verifier); `/codemap-check-fixes` to check a round's fixes without a full review |
 | "What is open / what was I asked to do?" | `review_queue` (assigned to you), `findings` with `tier: "unconfirmed"` (nobody has looked), `finding_backlog` (open on merged work), `list_bugs` with `queue: true`, `decision_rounds` (waiting on the person) |
 | "Was this ever reported?" | `search` — closed findings match on purpose. Why one was closed is in `shared_findings` for its pull request (`hit.pr`), not in the hit |
 | File, investigate, correct or dispose of a finding or bug | `references/findings.md` |

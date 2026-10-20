@@ -39,18 +39,13 @@ import { readFileSync } from "node:fs";
  * under its pull request. It is derived from GitHub, not from the code, which is what this
  * file forbids. See `src/shared-reviews.ts`.
  *
- * `decisions/` is authored: a round is posted, a person answers, and an agent logs the
- * question they were asked and reads free text. A logged question is a copy of what
- * the person was shown and said, not anything derived from code. See
- * `src/shared-decisions.ts`.
- *
  * `topics/` is authored: a person or agent defines a topic's selector. `topic-walkthrough/`
  * carries the set the selector resolved to at ONE commit, which is a function of the code —
  * but of an immutable commit, copied as the record of what was walked, exactly as a
  * walkthrough's witnesses are. Nothing re-derives it; the live comparison is local.
  * See `src/shared-topics.ts`.
  */
-const SHARED_KINDS = ["findings/", "bugs/", "docs/", "notes/", "walkthrough/", "triage/", "graph/", "reviews/", "decisions/", "topics/", "topic-walkthrough/"];
+const SHARED_KINDS = ["findings/", "bugs/", "docs/", "notes/", "walkthrough/", "triage/", "graph/", "reviews/", "topics/", "topic-walkthrough/"];
 
 /**
  * `standard/` and `law/` travel and are deliberately NOT here.
@@ -62,8 +57,13 @@ const SHARED_KINDS = ["findings/", "bugs/", "docs/", "notes/", "walkthrough/", "
  * let the generic loop fold either half alone and write a LAW-LESS standard under the real
  * key, which is a shipped bug this list would otherwise invite back.
  * `materializeUniverse` calls `cachedStandard` explicitly instead.
+ *
+ * `decisions/` travels on the same terms. It is authored — a round is posted, a person answers,
+ * an agent logs the question they were asked — but every decisions scope (the workspace's
+ * `law/decisions` and each legacy `decisions/<universe>`) folds together, so it is materialized
+ * by `cachedDecisions`. See `src/shared-decisions.ts`.
  */
-const MERGED_KINDS = ["standard/", "law/"];
+const MERGED_KINDS = ["standard/", "law/", "decisions/"];
 
 test("exactly the authored entity kinds travel", () => {
   const src = readFileSync("src/shared-projections.ts", "utf8");
@@ -80,12 +80,16 @@ test("exactly the authored entity kinds travel", () => {
   }
 });
 
-test("the standard is materialized explicitly, since nothing generic will do it", () => {
+test("the standard and the decisions are materialized explicitly, since nothing generic will do it", () => {
   // The other half of the rule above. Removing it from `projectionFor` without this is how
   // a ratification stops reaching the rows until somebody happens to read them.
   assert.match(
     readFileSync("src/ops-shared.ts", "utf8"), /await cachedStandard\(root, cfg\)/,
     "`materializeUniverse` no longer folds the standard, and `projectionFor` does not either",
+  );
+  assert.match(
+    readFileSync("src/ops-shared.ts", "utf8"), /await cachedDecisions\(root, cfg\)/,
+    "`materializeUniverse` no longer folds the decisions, and `projectionFor` does not either",
   );
 });
 

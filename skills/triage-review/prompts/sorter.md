@@ -91,9 +91,23 @@ at the code and docs for it: how many sites rely on what the fix would change, a
 would take. Where there are two or more reasonable fixes and choosing one commits the design, that
 is a **level-5 fork**: name each fix and what depends on it.
 
+**Stakes**, for every valid item: `high` or `low`. It decides how many verifiers confirm the fix —
+one for low, two and an arbitrator for high — so it is a judgment about what the defect could do,
+not about how hard the fix is, and never read off a finding's `severity`. If the repository's
+`CLAUDE.md` defines high stakes, use its definition. If not, the owner's: high stakes is "anything
+which:
+  - could lose a business or customer a non-trivial amount of money
+  - causes permanent data loss
+  - could leak PII
+  - causes a credible lawsuit risk
+  - puts the system in a terminal broken state that is difficult or labor intensive to fix, e.g. a
+    bug in an auto-updater which causes it to fail"
+
+Everything else is low. Where the two sorts disagree, the item is high.
+
 **Per item, write:** the findings it covers; its group; for group 1 its kind, the sites counted
 and the command; for group 5 its refutation; what settles it; the level, with a level-5 fork
-spelled out where there is one; and what the "why" rests on.
+spelled out where there is one; its stakes, with the condition it meets; and what the "why" rests on.
 
 While sorting, you will sometimes write a sentence about the work itself: a fix that was already
 wrong once, a rule at more sites than named, growth against a stated limit. **Those sentences go

@@ -59,7 +59,7 @@ export { mirrorNote } from "./notes-publish.js";
 export { sharedKnowsNode, docsVerdict, type DocsVerdict } from "./docs-lookup.js";
 import { docsVerdict } from "./docs-lookup.js";
 import { liveAnchors, liveIndex, anchorFiles } from "./ops/shared.js";
-import { decisionsView } from "./ops/decision-holds.js";
+import { cachedDecisions, decisionsView, forgetDecisionScopesRead } from "./ops/decision-holds.js";
 import { findingWork, findingMark } from "./ops/finding-work.js";
 export { mirrorTriage, mirrorTriageBatch, mirrorTriageClear } from "./triage-publish.js";
 import { homed, linkedBranches, prsLinkedTo, writeLocalLink, readSharedNotes, readAnnotations, readAnchorStore, readFindings, loadNodes, loadNodeVersions, nodeIdsWithPublishableVersions, derivationLookup, workIndexFor, readLocalTriage, replaceLocalTriage, coveredTriageTargets, attributeLocalWalkthrough, readBlockedScopes, findingCountsByPr, readUnpublishedWalkthroughs, readStoreMeta, writeStoreMeta, foldedScopes, hasFoldedFromSidecar, SIDECAR_LINEAGE, type SidecarMark } from "./store.js";
@@ -304,6 +304,16 @@ async function materializeUniverse(root: string, cfg: SidecarConfig): Promise<Ma
   } catch (e: any) {
     out.blocked.push({ scope: `standard/${cfg.universe}`, reason: `could not fold: ${e?.message ?? e}` });
   }
+  // Decisions, explicitly, for the standard's reason: every decisions scope folds together.
+  out.scanned++;
+  try {
+    const { status, folded, fresh } = await cachedDecisions(root, cfg);
+    if (folded) out.folded++;
+    if (status.status === "blocked") out.blocked.push({ scope: `decisions/${cfg.universe}`, reason: status.diagnostic?.detail ?? "blocked" });
+    else if (!fresh) out.blocked.push({ scope: `decisions/${cfg.universe}`, reason: "rows are behind the log; the next sync will retry" });
+  } catch (e: any) {
+    out.blocked.push({ scope: `decisions/${cfg.universe}`, reason: `could not fold: ${e?.message ?? e}` });
+  }
   for (const scope of await scopesOnDisk(cfg.path)) {
     const which = projectionFor(scope);
     if (!which || !inUniverse(scope, cfg.universe)) continue;
@@ -490,6 +500,7 @@ export async function adoptSidecar(root: string) {
   const was = readStoreMeta<SidecarMark>(root, SIDECAR_LINEAGE);
   const stranded = await strandedScopes(root, cfg);
   writeStoreMeta(root, SIDECAR_LINEAGE, { lineage, path: cfg.path } satisfies SidecarMark);
+  forgetDecisionScopesRead(root);
   return {
     ok: true as const,
     universe: cfg.universe,

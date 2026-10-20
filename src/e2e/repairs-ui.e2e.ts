@@ -261,3 +261,45 @@ test("a released sort shows the rulings it was released on and both readers' ver
     assert.deepEqual(errors, []);
   } finally { await browser?.close(); server?.stop(); discard(root); discard(side); discard(tx); }
 });
+
+test("a ruled sort says it was released on the ruling, never by readers it did not have", {
+  skip: pw ? false : "playwright not resolvable (set CODEMAP_E2E_PLAYWRIGHT)",
+}, async () => {
+  const root = mkdtempSync(join(tmpdir(), "codemap-ruled-ui-"));
+  const side = mkdtempSync(join(tmpdir(), "codemap-ruled-ui-side-"));
+  let browser: any, server: Awaited<ReturnType<typeof startServer>> | undefined;
+  try {
+    const git = (...args: string[]) => assert.equal(spawnSync("git", args, { cwd: root }).status, 0);
+    git("init", "-q", "-b", "main"); git("config", "user.email", "alice@x.test"); git("config", "user.name", "Alice");
+    mkdirSync(join(root, ".codemap")); mkdirSync(join(root, "src"));
+    writeFileSync(join(root, ".codemap", "sidecar"), side);
+    writeFileSync(join(root, "src", "credits.ts"), "export function credit(n: number) { return n; }\n");
+    git("add", "-A"); git("commit", "-qm", "seed");
+    await ops.init(root);
+    const search = await ops.search(root, "credit") as any;
+    const finding = await shareFinding(root, 7, { targetKind: "anchor", targetId: search.anchors[0].id, text: "Negative credits are accepted." }) as any;
+    const ok = (v: any) => assert.equal(v?.error, undefined, JSON.stringify(v));
+    ok(finding);
+    ok(await ops.postRound(root, { round: { id: "R-ruled", source: "the owner" }, decisions: [{ id: "D-ruled", round: "R-ruled", ref: "D1", kind: "options",
+      payload: { question: `D1: fix ${finding.id}?`, options: [{ label: "Fix it" }, { label: "Not a defect" }] },
+      options: [{ label: "Fix it", effects: [{ findings: [finding.id], on: "unblock" }] }, { label: "Not a defect", effects: [{ findings: [finding.id], on: "settle", as: "refuted" }] }] }] } as any));
+    ok(await ops.answerDirect(root, { decision: "D-ruled", option: "Fix it" }));
+    const decision = ((await ops.decisionRound(root, "R-ruled")) as any).decisions[0].id;
+    const held = await ops.postRepairSort(root, 7, { classification: "design-defect", kind: "isolated", coverage: [{ findingId: finding.id, claimIds: [`${finding.id}:original`] }],
+      restsOn: [`decision:${decision}`], source: "owner worklist", provenance: "owner-reviewed", assessments: [], disagreements: [] }) as any;
+    ok(held);
+    const released = await ops.releaseRuledSort(root, 7, { sort: held.id }) as any;
+    ok(released);
+    server = await startServer(root); browser = await launchPlaywright(pw);
+    const universe = (await (await fetch(`${server.url}/api/universes`)).json() as any).primary;
+    const page = await browser.newPage(), errors: string[] = [];
+    page.on("pageerror", (error: Error) => errors.push(error.message));
+    await page.goto(`${server.url}/#/u/${universe}/repairs/7/`, { waitUntil: "networkidle" });
+    await page.waitForSelector(".sort-release", { timeout: 10_000 });
+    const card = await page.locator(".sort-version").filter({ hasText: released.id }).textContent();
+    assert.ok(card.includes("answered “Fix it”"), card);
+    assert.ok(!/two readers|Reader /.test(card), `a ruled release names readers it never had: ${card}`);
+    assert.ok(card.includes("Released on the person's ruling"), card);
+    assert.deepEqual(errors, []);
+  } finally { await browser?.close(); server?.stop(); discard(root); discard(side); }
+});

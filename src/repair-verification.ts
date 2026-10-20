@@ -45,6 +45,14 @@ export interface RepairVerificationRecords {
   arbitrations: RepairVerificationArbitration[]; applications: RepairVerificationApplication[]; rejected: { eventId: string; reason: string }[];
 }
 
+/**
+ * The slots a request needs (plan 2026-10-19 V2): one for a low-stakes sort, two — and an
+ * arbitrator where they disagree — for a high one. Absent is high: sorts from before stakes, and
+ * owner-reviewed ones without it. Read off the request's FROZEN sort, so a later correction
+ * stakes nothing here; it makes the request stale instead (`repairRecords`, "sort changed").
+ */
+export const slotsFor = (c: Pick<RepairVerificationCapsule, "sort">): (1 | 2)[] => c.sort.stakes === "low" ? [1] : [1, 2];
+
 export const repairVerificationHash = (value: unknown): string => createHash("sha256").update(canonical(value) ?? "null").digest("hex");
 
 const text = (s: unknown): s is string => typeof s === "string" && !!s.trim();
@@ -154,7 +162,8 @@ export function foldRepairVerification(events: LogEvent[]): RepairVerificationRe
           if (verifierIdentityKey(d.identity) === verifierIdentityKey(request.capsule.orchestrator)) error = "the orchestrator cannot verify its own request";
           else if (e.kind === "repair.verification-recorded") {
             const previous = out.runs.filter((x) => x.requestId === d.requestId);
-            if (![1, 2].includes(d.slot) || previous.some((x) => x.slot === d.slot || x.id === d.id || verifierIdentityKey(x.identity) === verifierIdentityKey(d.identity))) error = "each of the two blind slots needs its own verifier";
+            if (!slotsFor(request.capsule).includes(d.slot)) error = `a ${request.capsule.sort.stakes ?? "high"}-stakes request has slot${slotsFor(request.capsule).length > 1 ? "s 1 and 2" : " 1 only"}`;
+            else if (previous.some((x) => x.slot === d.slot || x.id === d.id || verifierIdentityKey(x.identity) === verifierIdentityKey(d.identity))) error = "each blind slot needs its own verifier";
             else if (!Array.isArray(d.results) || !d.results.length || new Set(d.results.map(key)).size !== d.results.length) error = "run needs unique per-claim outcomes";
             else error = d.results.map((r) => resultError(r, request.capsule)).find(Boolean);
             if (!error) out.runs.push(structuredClone(d));
@@ -193,7 +202,9 @@ export function repairVerificationDecision(records: RepairVerificationRecords, r
   const request = records.requests.find((x) => x.id === requestId);
   const runs = records.runs.filter((x) => x.requestId === requestId);
   const unresolved = (reason: string): RepairDecision => ({ verdict: "unknown", complete: false, grade: "none", reasons: [reason] });
-  if (!request || runs.length !== 2) return unresolved("two independent runs are required");
+  if (!request) return unresolved("unknown request");
+  const slots = slotsFor(request.capsule).length;
+  if (runs.length !== slots) return unresolved(slots === 2 ? "two independent runs are required" : "its one independent run is required");
   const claims = request.capsule.claims.filter((x) => x.findingId === findingId);
   if (!claims.length) return unresolved("finding is outside immutable request");
   const arbitration = records.arbitrations.find((x) => x.requestId === requestId);
@@ -203,7 +214,8 @@ export function repairVerificationDecision(records: RepairVerificationRecords, r
   let inspection = false;
   for (const claim of claims) {
     const a = runs[0]!.results.find((x) => x.findingId === findingId && x.claimId === claim.id);
-    const b = runs[1]!.results.find((x) => x.findingId === findingId && x.claimId === claim.id);
+    // Low stakes: the one run stands for both (V2).
+    const b = (runs[1] ?? runs[0]!).results.find((x) => x.findingId === findingId && x.claimId === claim.id);
     if (!a || !b) return unresolved("partial coverage cannot resolve a whole finding");
     const result = a.verdict === b.verdict ? a.verdict : arbitration?.addresses.find((x) => x.findingId === findingId && x.claimId === claim.id)?.verdict;
     if (!result) return unresolved("disagreement awaits substantive arbitration");

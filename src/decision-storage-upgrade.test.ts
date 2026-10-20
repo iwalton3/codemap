@@ -12,7 +12,7 @@ import { MATERIALIZER_VERSION, foldCount, scopeFingerprint } from "./materialize
 import { resolveSidecar, sidecarIdentity, universeKey } from "./sidecar-config.js";
 import { findingScope } from "./shared-findings.js";
 import { bugScope } from "./shared-bugs.js";
-import { decisionScope } from "./shared-decisions.js";
+import { DECISIONS_SCOPE, decisionScope } from "./shared-decisions.js";
 import { shareFinding, sharedFindings, shareDoc, sharedDocs, sharedSync, backlogFinding } from "./ops-shared.js";
 import { reportBug, listBugs, backlogBugOp } from "./ops/bugs.js";
 import { postRound, answerDirect, reviseDecision, decisionRound, logQuestion } from "./ops/decisions.js";
@@ -135,7 +135,9 @@ test("old cached decision and ruling projections re-fold unchanged shards withou
     }) as any;
     assert.equal(bugApplied.ok, true, JSON.stringify(bugApplied));
     ok(await sharedSync(root));
-    const ds = decisionScope(cfg.universe), fs = findingScope(`${cfg.universe}/pr-7`), bs = bugScope(cfg.universe);
+    // The decisions shard is the workspace's; its rows are stored under the universe's legacy key.
+    const ds = DECISIONS_SCOPE, fs = findingScope(`${cfg.universe}/pr-7`), bs = bugScope(cfg.universe);
+    const key = (scope: string) => scope === ds ? decisionScope(cfg.universe) : scope;
     const before = new Map(await Promise.all([ds, fs, bs].map(async (scope) => [scope, await scopeFingerprint(cfg.path, scope, sidecarIdentity(cfg))] as const)));
     const bytes = new Map([ds, fs, bs].map((scope) => [scope, shardBytes(cfg.path, scope)]));
     assert.ok(row(root, "decision_records", otherDecision)?.body.includes(revised.revision));
@@ -150,7 +152,7 @@ test("old cached decision and ruling projections re-fold unchanged shards withou
     d.prepare("UPDATE bugs SET state = 'issued', body = json_remove(json_remove(body, '$.applications'), '$.closed') WHERE id = ?").run(targetBug.id);
     d.prepare("DELETE FROM ruling_applications WHERE issue_id = ?").run(targetBug.id);
     for (const scope of [ds, fs, bs]) d.prepare("UPDATE shared_scope SET fingerprint = ? WHERE scope = ?")
-      .run(oldFingerprint(cfg.path, scope, sidecarIdentity(cfg)), scope);
+      .run(oldFingerprint(cfg.path, scope, sidecarIdentity(cfg)), key(scope));
     assert.equal(JSON.parse(row(root, "findings", target.id)!.body).closed, undefined, "the stale projection really lacks the application");
     assert.equal((d.prepare("SELECT COUNT(*) AS n FROM ruling_applications WHERE issue_id = ?").get(target.id) as any).n, 0);
     assert.equal(JSON.parse(row(root, "bugs", targetBug.id)!.body).closed, undefined);
@@ -204,7 +206,7 @@ test("missing and wrong sidecars serve marked cached rows and refuse a new rulin
     point(sidecar);
     ok(await sharedSync(root));
     assert.equal((await decisionRound(root, "R1") as any).status, "complete");
-    const scope = decisionScope(universeKey(root));
+    const scope = DECISIONS_SCOPE;
     const shard = join(sidecar, scope, readdirSync(join(sidecar, scope)).find((name) => name.endsWith(SHARD_EXT))!);
     const intact = readFileSync(shard);
     writeFileSync(shard, Buffer.concat([Buffer.from("\x00\x01 garbage\n"), intact]));

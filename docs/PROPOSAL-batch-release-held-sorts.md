@@ -1,5 +1,13 @@
 # Batch release: one reader pair for every held sort that cites the same decision
 
+> **Superseded** by work plan `2026-10-19-batch-release-held-sorts` (owner, 2026-10-19: "yes these
+> are fine"). Release readers are not batched: they become break-glass for headless backlog work.
+> The normal path out of a hold is the ruling itself — `release_ruled_sort`, when the person's
+> verified standing answer unblocks every finding the sort covers — and decisions are
+> workspace-scoped (`law/decisions`), which answers the cross-repository case below. Close-out
+> cost moved to batched verification by stakes. See `docs/repair-records.md` and
+> `docs/repair-verification.md`. Kept as the record of the problem.
+
 ## Problem
 
 Releasing a held sort takes two reader subagents: `release_reader_brief` for slot 1 and slot 2, each

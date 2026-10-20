@@ -85,12 +85,15 @@ export async function readCachedMerged<T>(
   identity: string,
   fold: (events: LogEvent[], opts: { readable: Set<string> }) => T,
   proj: Projection<T>,
+  /** Called inside the transaction that stores the rows, with the scopes the fold read at least
+   *  one event from — so a record of them never disagrees with the rows. Never for an overlay fold. */
+  onStore?: (scopesRead: string[]) => void,
 ): Promise<Cached<T> & { fresh: boolean; folded: boolean }> {
   assertNotLockedOut([logRoot]);
   fold = locking(logRoot, scopes, fold);
   const d = db(root);
   let checked: ScopeDiagnostic | null | undefined;
-  const unusable = () => (checked !== undefined ? checked : (checked = logRootMissing(logRoot) ?? unmigrated(logRoot) ?? wrongSidecar(root, logRoot)));
+  const unusable = () => (checked !== undefined ? checked : (checked = sidecarUnusable(root, logRoot)));
   const decline = (gone: ScopeDiagnostic) => {
     try { return { value: proj.read(d, key), fresh: false, folded: false, status: "blocked" as const, diagnostic: gone }; }
     catch { return { value: fold([], { readable: new Set() }), fresh: false, folded: false, status: "blocked" as const, diagnostic: gone }; }
@@ -142,6 +145,7 @@ export async function readCachedMerged<T>(
         + "events=excluded.events, status=excluded.status, diagnostic=excluded.diagnostic")
         .run(key, after, new Date().toISOString(), events.length,
           status.status, status.diagnostic ? JSON.stringify(status.diagnostic) : null);
+      onStore?.(reads.filter((r) => r.events.length).map((r) => r.sc));
       d.exec("COMMIT");
     } catch (e) {
       d.exec("ROLLBACK");
@@ -344,6 +348,11 @@ function unmigrated(logRoot: string): ScopeDiagnostic | null {
   } : null;
 }
 
+/** Why this sidecar must not be folded at all — missing, unmigrated, or not this store's. Asked
+ *  before any judgement about one scope, so the diagnostic names the repair that applies. */
+export const sidecarUnusable = (root: string, logRoot: string): ScopeDiagnostic | null =>
+  logRootMissing(logRoot) ?? unmigrated(logRoot) ?? wrongSidecar(root, logRoot);
+
 function logRootMissing(logRoot: string): ScopeDiagnostic | null {
   if (existsSync(logRoot)) return null;
   return {
@@ -386,7 +395,7 @@ export async function readCached<T>(
   // every scope — which is precisely the work the materializer exists to avoid. Memoised
   // per call because the retry loop below can come round again.
   let checked: ScopeDiagnostic | null | undefined;
-  const unusable = () => (checked !== undefined ? checked : (checked = logRootMissing(logRoot) ?? unmigrated(logRoot) ?? wrongSidecar(root, logRoot)));
+  const unusable = () => (checked !== undefined ? checked : (checked = sidecarUnusable(root, logRoot)));
   /** Serve what is stored, fold nothing, discard nothing. See `logRootMissing`. */
   const decline = (gone: ScopeDiagnostic): Cached<T> => {
     try { return { value: proj.read(d, scope), status: "blocked", diagnostic: gone }; }

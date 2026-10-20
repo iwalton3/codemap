@@ -12,7 +12,7 @@ import { postRound, answerDirect, readerBrief, submitVerdict, recordReading,
 import { decisionsView } from "./ops/decision-holds.js";
 import { discard } from "./test-tmp.js";
 import { readScope } from "./eventlog.js";
-import { decisionScope } from "./shared-decisions.js";
+import { DECISIONS_SCOPE } from "./shared-decisions.js";
 import { universeKey } from "./sidecar-config.js";
 
 const alice = "alice@acme.test", bob = "bob@acme.test";
@@ -140,7 +140,7 @@ test("two clones preserve an issued brief through a delayed verdict and related 
       const answer = d.answers.find((entry: any) => entry.id === answerId);
       assert.equal(answer.reading.agree, false);
       assert.deepEqual(answer.reading.reader.maps, [{ decision: q1Id, option: "Fix" }]);
-      const reading = (await readScope(member.sidecar, decisionScope(universeKey(member.repo))))
+      const reading = (await readScope(member.sidecar, DECISIONS_SCOPE))
         .find((event) => event.kind === "decision.reading.recorded" && (event.data as any)?.answer === answerId);
       assert.ok(reading, "accepted reading remains an append-only event");
       assert.equal((reading!.data as any).reader.brief, prompt);

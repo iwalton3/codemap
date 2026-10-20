@@ -17,7 +17,7 @@ import "./damage-scan.js";
 import { emitEvent, emitEventChecked, emitEvents } from "./write.js";
 import * as queue from "./sync-queue.js";
 import { attemptGone, begin, discard as discardTx, dropOp, localConflicts, staged, syncSession } from "./sync-engine.js";
-import { withSession } from "./sync-session.js";
+import { withSession, withoutOverlay } from "./sync-session.js";
 import { ensureSidecar, pullLinear, sync, syncLinear, PUSHES_PER_MINUTE } from "./sidecar.js";
 import { lockoutOf } from "./lockout.js";
 import {
@@ -349,6 +349,22 @@ test("a crash between the push and its bookkeeping: the next attempt finds the o
     assert.deepEqual(out.map((o) => o.outcome), ["landed"]);
     const onRemote = git(s.origin, "show", `main:${CLAIMS}/${LINEAR_SHARD}`).stdout;
     assert.equal(onRemote.split("\n").filter((l) => l.includes(id)).length, 1, "exactly one copy on the remote");
+  } finally { s.dispose(); }
+});
+
+test("a session reads its own act while a sync holds it in flight; the replay does not, and it lands once", async () => {
+  const s = await scenario(["ana@x.com"]);
+  try {
+    const ana = who(s, "ana@x.com");
+    begin(ana.sidecar);
+    const e = await emitEvent(ana.sidecar, CLAIMS, ana.actor, "claim", "mine");
+    // As a sync leaves it between `markInflight` and appending it: held, not yet on disk.
+    queue.markInflight(ana.sidecar, [e.id]);
+    assert.ok((await readScope(ana.sidecar, CLAIMS)).some((x) => x.id === e.id), "the session's own read keeps its act");
+    assert.ok(!(await withoutOverlay(() => readScope(ana.sidecar, CLAIMS))).some((x) => x.id === e.id), "a replay reads the tip alone");
+    assert.ok(!("error" in await syncSession(ana.sidecar, ana.actor)));
+    const onRemote = git(s.origin, "show", `main:${CLAIMS}/${LINEAR_SHARD}`).stdout;
+    assert.equal(onRemote.split("\n").filter((l) => l.includes(e.id)).length, 1, "exactly one copy on the remote");
   } finally { s.dispose(); }
 });
 

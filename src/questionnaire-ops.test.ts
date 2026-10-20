@@ -9,7 +9,7 @@ import { indexBlob } from "./repo.js";
 import { writeStore, writeStoreMeta } from "./store.js";
 import { shareFinding } from "./ops-shared.js";
 import { postRound, questionnaireDetail, questionnaireList, noteWebPresence, submitQuestionnaire, reviseDecision, revisionRelayBrief, reviseDecisionRelayed, withdrawDecision } from "./ops/decisions.js";
-import { decisionScope, foldDecisions, currentAnswersForIssue } from "./shared-decisions.js";
+import { DECISIONS_SCOPE, foldDecisions, currentAnswersForIssue } from "./shared-decisions.js";
 import { readScope } from "./eventlog.js";
 import { questionnaireVersion, type Questionnaire, type QuestionnaireAnswer } from "./questionnaire.js";
 import { universeKey } from "./sidecar-config.js";
@@ -110,7 +110,7 @@ test("selected questionnaire batch is one event, with retry identity and pending
     assert.equal(first.answers.length, 2);
     assert.deepEqual(first.answers.find((a: any) => a.questionId === "list")?.approvals, ["fix-item"]);
     assert.equal(first.answers.find((a: any) => a.questionId === "list")?.corrections[0].verdict, "pending");
-    const scope = decisionScope(universeKey(u.root));
+    const scope = DECISIONS_SCOPE;
     assert.equal((await readScope(u.side, scope)).filter((e) => e.kind === "decision.questionnaire.submitted").length, 1);
     await env("alice@x.com", false, async () => {
       const retry = await submitQuestionnaire(u.root, submit(u.q, "attempt-1", [...answers].reverse())) as any;
@@ -232,7 +232,7 @@ test("a list revision keeps per-item corrections and refuses incomplete or misma
     const scope = { decision: decision.id, revises: [source], findings: [u.finding] };
     const reviewed = { items: ["fix-item", "reject-item"], approveUnmarked: true as const,
       marked: [{ itemId: "reject-item", correction: "The claim needs qualification" }] };
-    const count = async () => (await readScope(u.side, decisionScope(universeKey(u.root)))
+    const count = async () => (await readScope(u.side, DECISIONS_SCOPE)
       ).filter((e) => e.kind === "decision.answer.revised").length;
     await env("alice@x.com", false, async () => {
       for (const bad of [
@@ -255,7 +255,7 @@ test("a list revision keeps per-item corrections and refuses incomplete or misma
     const detail = await questionnaireDetail(u.root, u.q.id, "alice@x.com") as any;
     assert.equal(detail.questions.find((q: any) => q.questionId === "list").answers.find((a: any) => a.id === answer.id)
       .source.corrections[0].text, "The claim needs qualification");
-    const events = await readScope(u.side, decisionScope(universeKey(u.root)));
+    const events = await readScope(u.side, DECISIONS_SCOPE);
     const forged = events.map((e) => e.id === answer.id
       ? { ...e, data: { ...(e.data as any), list: { ...reviewed, marked: [{ itemId: "reject-item", correction: "" }] } } } : e);
     // Neither is a revision a conforming build writes, so a log holding one halts on it (plan 1.2).
@@ -314,7 +314,7 @@ test("a list relay shows source corrections and records only the person's exact 
       assert.deepEqual(recorded.questionnaire?.approvals, ["reject-item"]);
       assert.deepEqual(recorded.questionnaire?.corrections,
         [{ itemId: "fix-item", text: "Fix item needs a boundary check", verdict: "pending" }]);
-      const events = await readScope(u.side, decisionScope(universeKey(u.root)));
+      const events = await readScope(u.side, DECISIONS_SCOPE);
       const changed = events.map((event) => event.id === revised.revision
         ? { ...event, data: { ...(event.data as any), list: { ...((event.data as any).list),
           marked: [{ itemId: "fix-item", correction: "agent-authored change" }] } } } : event);

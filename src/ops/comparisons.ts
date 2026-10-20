@@ -2,9 +2,9 @@
 import { createHash, randomUUID } from "node:crypto";
 import { bindDecisions, type Via } from "../ops-shared.js";
 import { decisionsView } from "./decision-holds.js";
-import { canonicalIssueKey, resolveDecisionIssue, type CanonicalIssueReference } from "../decision-issues.js";
-import { decisionScope, foldDecisions, intentCandidates, comparisonRequestFor, comparisonBriefText, comparisonCurrentVersions, comparisonSourcesCurrent, resolutionShownHash,
-  decisionsDoor, type FoldedComparison } from "../shared-decisions.js";
+import { canonicalIssueKey, canonicalIssues, resolveDecisionIssue, type CanonicalIssueReference } from "../decision-issues.js";
+import { foldDecisions, intentCandidates, comparisonRequestFor, comparisonBriefText, comparisonCurrentVersions, comparisonSourcesCurrent, resolutionShownHash,
+  decisionHome, pairHome, comparisonHome, decisionsDoorAt, acrossDecisions, type FoldedComparison } from "../shared-decisions.js";
 import { emitEventChecked } from "../write.js";
 import { isAgentActor } from "../identity.js";
 import { saveReaderRequest, readerRequest, holdReaderReceipt, readerReceipts,
@@ -51,12 +51,9 @@ export async function requestComparison(root: string,
   if (!candidate) return { error: "those answers are not a current independent comparison candidate; nominate their overlap first" };
   const requested: CanonicalIssue[] = [];
   if (input.issues?.length) {
-    for (const issue of input.issues) {
-      const resolved = await resolveDecisionIssue(root, issue);
-      if (!resolved.ok) return { error: resolved.error };
-      if (canonicalIssueKey(resolved.ref) !== canonicalIssueKey(issue)) return { error: "issue reference must be canonical" };
-      requested.push(resolved.ref);
-    }
+    const resolved = await canonicalIssues(root, bound.cfg.path, bound.cfg.universe, input.issues);
+    if (!resolved.ok) return { error: resolved.error };
+    requested.push(...resolved.refs);
   } else {
     requested.push(...(candidate.issues ?? []));
     for (const id of candidate.findings) {
@@ -65,8 +62,10 @@ export async function requestComparison(root: string,
       requested.push(resolved.ref);
     }
   }
-  if (!requested.length) for (const id of candidate.decisionScope ?? [])
-    requested.push({ kind: "decision", universe: bound.cfg.universe, scope: decisionScope(bound.cfg.universe), id });
+  if (!requested.length) for (const id of candidate.decisionScope ?? []) {
+    const round = view.s.rounds.find((r) => r.id === view.s.decisions.find((d) => d.id === id)?.round);
+    requested.push({ kind: "decision", universe: round?.universe ?? bound.cfg.universe, scope: await decisionHome(bound.cfg.path, id), id });
+  }
   if (!requested.length || new Set(requested.map((x) => `${x.kind}\0${x.scope}\0${x.id}`)).size !== requested.length)
     return { error: "comparison requires distinct canonical affected scope" };
   const ids = [...input.answers].sort() as [string, string];
@@ -74,7 +73,9 @@ export async function requestComparison(root: string,
   if (!source) return { error: "both exact verified answer sources are required" };
   const id = `cmp_${hash({ pair: ids, scope: requested.map((x) => [x.kind, x.scope, x.id]).sort(),
     versions: [source.left.version, source.right.version] }).slice(0, 24)}`;
-  const result = await emitEventChecked(bound.cfg.path, decisionScope(bound.cfg.universe), bound.actor, async (events) => {
+  const sides = ids.map((id) => view.s.decisions.find((d) => d.answers.some((a) => a.id === id))?.id ?? "");
+  const scope = await pairHome(bound.cfg.path, sides[0]!, sides[1]!);
+  const result = await emitEventChecked(bound.cfg.path, scope, bound.actor, acrossDecisions(bound.cfg.path, scope, async (events) => {
     const current = foldDecisions(events);
     const existing = events.find((e) => e.kind === "decision.comparison.requested" && e.subject === id);
     if (existing) return { existing };
@@ -83,7 +84,7 @@ export async function requestComparison(root: string,
     if (!request || request.contextHash !== source.contextHash)
       return { error: "answer source changed before comparison request" };
     return { kind: "decision.comparison.requested", subject: id, data: { request } };
-  }, decisionsDoor);
+  }), decisionsDoorAt(bound.cfg.path, scope));
   if ("error" in result) return result;
   const after = await comparisonDetail(root, id);
   if ("error" in after) return { error: `comparison ${id} was not accepted on replay: ${after.error}`, event: result.id };
@@ -153,7 +154,8 @@ export async function recordComparisonJudgment(root: string, input: { request: s
       reader: { principal: body.principal, agent: reader.agentId, session: reader.session,
         request: reader.toolUseId, receipt: held.receipt },
     };
-    const event = await emitEventChecked(bound.cfg.path, decisionScope(bound.cfg.universe), bound.actor, async (events) => {
+    const scope = await comparisonHome(bound.cfg.path, input.request);
+    const event = await emitEventChecked(bound.cfg.path, scope, bound.actor, acrossDecisions(bound.cfg.path, scope, async (events) => {
       const current = foldDecisions(events).comparisons.find((x) => x.request.id === input.request);
       if (!current || current.request.contextHash !== comparison.request.contextHash
         || current.projection.state === "resolved") return { error: "comparison changed before judgment append" };
@@ -162,7 +164,7 @@ export async function recordComparisonJudgment(root: string, input: { request: s
       if (old) return { existing: old };
       // Sources, independence and the derivation are the door's to check (`comparisonActRefusal`).
       return { kind: "decision.comparison.judged", subject: input.request, data: { judgment, proof } };
-    }, decisionsDoor);
+    }), decisionsDoorAt(bound.cfg.path, scope));
     if ("error" in event) return event;
     settleReaderReceipt(root, key, held.receipt, "recorded", undefined, call.callId);
     return { ok: true as const, recorded: true as const, event: event.id,
@@ -236,7 +238,8 @@ export async function resolveComparison(root: string,
     contextHash: comparison.request.contextHash, shownHash: input.shownHash,
     receipt, session, ...(input.source === "question" ? { toolUseId: request } : {}), shown: brief.shown,
     executionsHash: brief.executionsHash };
-  const event = await emitEventChecked(bound.cfg.path, decisionScope(bound.cfg.universe), bound.actor, async (events) => {
+  const scope = await comparisonHome(bound.cfg.path, input.request);
+  const event = await emitEventChecked(bound.cfg.path, scope, bound.actor, acrossDecisions(bound.cfg.path, scope, async (events) => {
     const current = foldDecisions(events).comparisons.find((x) => x.request.id === input.request);
     if (!current || current.request.contextHash !== comparison.request.contextHash)
       return { error: "comparison changed before resolution append" };
@@ -247,7 +250,7 @@ export async function resolveComparison(root: string,
     // Sources and the derivation are the door's to check (`comparisonActRefusal`); the executed
     // closures above read this machine's store, so they stay here.
     return { kind: "decision.comparison.resolved", subject: input.request, data: { resolution, proof } };
-  }, decisionsDoor);
+  }), decisionsDoorAt(bound.cfg.path, scope));
   if ("error" in event) return event;
   return { ok: true as const, event: event.id, comparison: await comparisonDetail(root, input.request) };
 }

@@ -3,13 +3,16 @@ import assert from "node:assert/strict";
 import { team, settle } from "./oracle.js";
 import { shareFinding } from "./ops-shared.js";
 import { postRepairSort, recordRepairClaims, recordRepairEvidence, repairRecords } from "./ops/repairs.js";
-import { releaseReaderBrief, submitReleaseVerdict, releaseHeldSort } from "./ops/repair-release.js";
+import { releaseReaderBrief, submitReleaseVerdict, releaseHeldSort, releaseRuledSort } from "./ops/repair-release.js";
 import { readerTranscript } from "./test-transcripts.js";
 import { RepairConnection } from "./verifier-boundary.js";
 import { repairFindingCompleteness, type RepairSortInput, type RepairEvidenceInput } from "./repair-records.js";
 import { readFinding } from "./store.js";
 import { rpc } from "./test-mcp.js";
-import { postRound, answerDirect } from "./ops/decisions.js";
+import { postRound, answerDirect, relayAnswer } from "./ops/decisions.js";
+import { appendUnfolded } from "./test-door.js";
+import { prefixReader, referencesFor, tipReader } from "./eventlog.js";
+import { scanSidecar } from "./damage-scan.js";
 import { decisionsView } from "./ops/decision-holds.js";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -234,4 +237,110 @@ test("D2 through the op: a held sort re-pointed to its decision is released by t
     assert.match(String(refused.error), /stays held/);
     assert.match(String((await postRepairSort(root, 7, { ...sort("x", []), provenance: "released" } as never) as { error?: string }).error), /release_held_sort/);
   } finally { t.dispose(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("R1, R2: a held sort leaves its hold on a verified standing ruling that unblocks every finding it covers, and on nothing less", async () => {
+  const t = await team(["alice@acme.test"]);
+  try {
+    const root = t.all[0]!.repo, side = t.all[0]!.sidecar;
+    const findings = async (n: number, name: string) => {
+      const out: string[] = [];
+      for (let i = 0; i < n; i++) {
+        const f = await shareFinding(root, 7, { targetKind: "anchor", targetId: `src/pay.ts#${name}${i}`, text: `${name} ${i}` }) as { id: string };
+        ok(f); out.push(f.id);
+      }
+      return out;
+    };
+    /** One decision over `fs` with these options, answered `pick` unless `pick` is undefined. */
+    const ruled = async (label: string, fs: string[], options: { label: string; effects: any[] }[], pick?: string) => {
+      ok(await postRound(root, { round: { id: `R-${label}`, source: "a review round" }, decisions: [{ id: label, round: `R-${label}`, ref: "D1", kind: "options",
+        payload: { question: `D1: what of ${fs.join(", ")}?`, options: options.map((o) => ({ label: o.label })) }, options }] }));
+      if (pick) ok(await answerDirect(root, { decision: label, option: pick }));
+      const id = (await decisionsView(root)).s.decisions.find((d) => d.label === label)!.id;
+      const held = await postRepairSort(root, 7, { ...sort(fs[0]!, []), coverage: fs.map((f) => ({ findingId: f, claimIds: [`${f}:original`] })),
+        classification: "design-defect", restsOn: [`decision:${id}`] }) as { id: string };
+      ok(held);
+      return { decision: id, sort: held.id };
+    };
+    const unblock = (fs: string[]) => ({ findings: fs, on: "unblock" as const });
+    const refute = (fs: string[]) => ({ findings: fs, on: "settle" as const, as: "refuted" as const });
+
+    const all = await findings(3, "all");
+    const happy = await ruled("d-all", all, [{ label: "Fix all", effects: [unblock(all)] }, { label: "Refute", effects: [refute(all)] }], "Fix all");
+    const released = await releaseRuledSort(root, 7, { sort: happy.sort }) as any;
+    ok(released);
+    const s = released.records.sorts.find((x: any) => x.input.id === released.id);
+    assert.equal(s.input.provenance, "ruled");
+    assert.deepEqual(s.input.restsOn, []);
+    assert.equal(s.eligible, true, s.holds.join());
+
+    const two = await findings(3, "two");
+    const partial = await ruled("d-two", two, [{ label: "Fix two", effects: [unblock(two.slice(0, 2)), refute(two.slice(2))] }, { label: "Refute", effects: [refute(two)] }], "Fix two");
+    assert.match(String((await releaseRuledSort(root, 7, { sort: partial.sort }) as any).error), new RegExp(`does not unblock ${two[2]}`));
+    const settled = await findings(1, "settled");
+    const settle = await ruled("d-settle", settled, [{ label: "Fix", effects: [unblock(settled)] }, { label: "Refute", effects: [refute(settled)] }], "Refute");
+    assert.match(String((await releaseRuledSort(root, 7, { sort: settle.sort }) as any).error), /does not unblock/);
+
+    // R1: words the transcript could not confirm are unverified, and release nothing.
+    const relayed = await findings(1, "relayed");
+    const unverified = await ruled("d-unv", relayed, [{ label: "Fix", effects: [unblock(relayed)] }, { label: "Refute", effects: [refute(relayed)] }]);
+    const words = await relayAnswer(root, { round: "R-d-unv", decision: "d-unv", words: "Fix" }) as any;
+    assert.equal(words.recorded, true, JSON.stringify(words));
+    assert.equal(words.verified, false);
+    assert.match(String((await releaseRuledSort(root, 7, { sort: unverified.sort }) as any).error), /no verified standing answer/);
+    assert.match(String((await postRepairSort(root, 7, { ...sort("x", []), provenance: "ruled" } as never) as { error?: string }).error), /release_ruled_sort/);
+
+    // The FOLD half: an event no conforming build writes is refused on read, against the log before it.
+    const scope = (released as { scope: string }).scope;
+    const view = (await decisionsView(root)).s;
+    const answerOf = (decision: string) => view.decisions.find((d) => d.id === decision)!.answers[0]!;
+    const plant = async (held: { decision: string; sort: string }, fs: string[]) => {
+      const answer = answerOf(held.decision);
+      const ruling = { decision: held.decision, answer: answer.id, question: "D1", words: answer.words };
+      const data = { ...sort(fs[0]!, []), id: `rs_planted_${held.sort}`, prior: held.sort, reason: "planted", coverage: fs.map((f) => ({ findingId: f, claimIds: [`${f}:original`] })),
+        provenance: "ruled", release: { rulings: [ruling] } };
+      const e = await appendUnfolded(side, scope, { principal: "alice@acme.test" }, "repair.sort-recorded", data.id, data);
+      return (await referencesFor(scope)!(scope, e, [], prefixReader(tipReader(side), e.seq!))).map((r) => r.why);
+    };
+    assert.match((await plant(partial, two)).join(), new RegExp(`does not unblock ${two[2]}`));
+    assert.match((await plant(unverified, relayed)).join(), /not the standing answer/);
+    assert.ok((await scanSidecar(side)).damage, "and the damage scan, which runs that check on every read of the sidecar, finds it");
+  } finally { t.dispose(); }
+});
+
+test("R2: a ruled release refuses while an intent comparison restricts a covered finding — at the op, and on read", async () => {
+  const t = await team(["alice@acme.test"]);
+  const prior = process.env.CODEMAP_PRINCIPAL;
+  try {
+    const root = t.all[0]!.repo, side = t.all[0]!.sidecar;
+    const f = await shareFinding(root, 7, { targetKind: "anchor", targetId: "src/pay.ts#compared", text: "compared" }) as { id: string };
+    ok(f);
+    const decision = (id: string) => ({ id, round: `R-${id}`, ref: "D1", kind: "options" as const,
+      payload: { question: `D1: what of ${f.id}?`, options: [{ label: "Fix" }, { label: "Refute" }] },
+      options: [{ label: "Fix", effects: [{ findings: [f.id], on: "unblock" as const }] }, { label: "Refute", effects: [{ findings: [f.id], on: "settle" as const, as: "refuted" as const }] }] });
+    for (const id of ["d-cmp", "d-other"]) ok(await postRound(root, { round: { id: `R-${id}`, source: "a review round" }, decisions: [decision(id)] }));
+    ok(await answerDirect(root, { decision: "d-cmp", option: "Fix" }));
+    // A second person's verified answer on ANOTHER decision naming the same finding: an intent
+    // comparison nobody has run.
+    process.env.CODEMAP_PRINCIPAL = "bob@acme.test";
+    ok(await answerDirect(root, { decision: "d-other", option: "Fix" }));
+    if (prior === undefined) delete process.env.CODEMAP_PRINCIPAL; else process.env.CODEMAP_PRINCIPAL = prior;
+    const view = (await decisionsView(root)).s;
+    const d = view.decisions.find((x) => x.label === "d-cmp")!;
+    const held = await postRepairSort(root, 7, { ...sort(f.id, []), classification: "design-defect", restsOn: [`decision:${d.id}`] }) as { id: string };
+    ok(held);
+
+    assert.match(String((await releaseRuledSort(root, 7, { sort: held.id }) as any).error), /intent comparison/);
+
+    const scope = (await repairRecords(root, 7) as { scope: string }).scope;
+    const answer = d.answers.find((a) => a.verified)!;
+    const data = { ...sort(f.id, []), id: "rs_planted_cmp", prior: held.id, reason: "planted", provenance: "ruled",
+      release: { rulings: [{ decision: d.id, answer: answer.id, question: "D1", words: answer.words }] } };
+    const e = await appendUnfolded(side, scope, { principal: "alice@acme.test" }, "repair.sort-recorded", data.id, data);
+    const why = (await referencesFor(scope)!(scope, e, [], prefixReader(tipReader(side), e.seq!))).map((r) => r.why).join();
+    assert.match(why, /intent comparison/);
+  } finally {
+    if (prior === undefined) delete process.env.CODEMAP_PRINCIPAL; else process.env.CODEMAP_PRINCIPAL = prior;
+    t.dispose();
+  }
 });

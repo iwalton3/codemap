@@ -112,7 +112,7 @@ test("C-2 (D2): a ruling no longer releases what a held sort rests on — a free
     const held = sort({ classification: "design-defect", restsOn: [entry] });
     const freed = sort({ id: "next", prior: "s1", reason: "ruled", restsOn: [], classification: "implementation-defect", ruling: "ans1" });
     const records = foldRepairRecords(chain([sorted(held), sorted(freed)]));
-    assert.match(records.rejected[0]?.reason ?? "", /released only by two readers/, entry);
+    assert.match(records.rejected[0]?.reason ?? "", /released only by its ruling \(release_ruled_sort\) or two readers/, entry);
     assert.equal(records.sorts.find(s => s.input.id === "next"), undefined);
   }
 });
@@ -123,7 +123,7 @@ test("Q2: a free label is re-pointed to its decision for free, and stays held; d
   assert.deepEqual(repointed.rejected, []);
   assert.match(repointed.sorts.find(s => s.input.id === "next")!.holds.join(), /dependency remains/);
   const dropped = foldRepairRecords(chain([sorted(held), sorted(sort({ id: "next", prior: "s1", reason: "gone", classification: "design-defect", restsOn: ["other"] }))]));
-  assert.match(dropped.rejected[0]?.reason ?? "", /released only by two readers/);
+  assert.match(dropped.rejected[0]?.reason ?? "", /released only by its ruling \(release_ruled_sort\) or two readers/);
   const bare = foldRepairRecords(chain([sorted(sort({ restsOn: ["decision:"] }))]));
   assert.match(bare.rejected[0]?.reason ?? "", /names its decision/);
 });
@@ -153,13 +153,23 @@ test("D2: two readers' yes on the exact brief release a held sort; anything less
   refused(release([reader(1), reader(2)], { coverage: [] }), /coverage/);
   refused(release([reader(1)]), /two readers/);
   refused(sort({ id: "next", prior: "s1", reason: "r", restsOn: ["label"], classification: "implementation-defect", provenance: "released" }), /carries the release/);
-  refused(sort({ id: "next", prior: "s1", reason: "r", restsOn: ["decision:d1", "label"], release: { rulings, readers: [reader(1), reader(2)] } }), /only to a released sort/);
+  refused(sort({ id: "next", prior: "s1", reason: "r", restsOn: ["decision:d1", "label"], release: { rulings, readers: [reader(1), reader(2)] } }), /only to a released or ruled sort/);
   // Evidence carries the release's rulings, so verification re-checks their authority.
   const ev2 = (rulingIds: string[]) => proof(ev({ id: "proof2", sortId: "next", rulingIds }));
   const cleanChain = (rulingIds: string[]) => foldRepairRecords(chain([sorted(sort({ classification: "design-defect", restsOn: ["decision:d1"] })),
     sorted(sort({ id: "next", prior: "s1", reason: "released", classification: "implementation-defect", restsOn: [], provenance: "released", release: { rulings, readers: [reader(1), reader(2)] } }), agent), ev2(rulingIds)]));
   assert.match(cleanChain([]).rejected[0]?.reason ?? "", /ans1.*rulingIds/);
   assert.deepEqual(cleanChain(["ans1"]).rejected, []);
+  // R2: a ruled release has the same shape and no readers; whether the ruling covers the sort is
+  // the decisions log's, checked by `repairSortReferences` (repair-ops.test.ts).
+  const ruled = (over: Partial<RepairSortInput> = {}) => sort({ id: "next", prior: "s1", reason: "ruled", classification: "implementation-defect",
+    restsOn: ["label"], provenance: "ruled", release: { rulings }, ...over });
+  assert.deepEqual(run(ruled()).rejected, []);
+  refused(ruled({ release: { rulings, readers: [reader(1), reader(2)] } }), /no readers/);
+  refused(ruled({ restsOn: [] }), /drops decision entries only/);
+  refused(ruled({ coverage: [] }), /coverage/);
+  refused(ruled({ release: { rulings: [] } }), /one ruling/);
+  refused(ruled({ assessments: [{ identity: who, classification: "mechanical", reason: "r" }] }), /its rulings alone/);
 });
 
 test("A8 (D2): a decision entry and a release ruling must exist in the decisions log, checked at the door and on read", async () => {
@@ -171,10 +181,20 @@ test("A8 (D2): a decision entry and a release ruling must exist in the decisions
   const event = (data: Record<string, unknown>) => testChain("w", [{ id: "e1", kind: "repair.sort-recorded", subject: "s", actor, data }])[0]!;
   const why = async (data: Record<string, unknown>) => (await check("findings/acme/api/pr-7", event(data), [], read)).map(r => r.why);
   assert.deepEqual(await why({ restsOn: ["decision:r1:d1", "free label"] }), []);
-  assert.deepEqual(await why({ restsOn: ["decision:r1:d9"] }), ["no decision r1:d9 in decisions/acme/api"]);
+  assert.deepEqual(await why({ restsOn: ["decision:r1:d9"] }), ["no decision r1:d9 in the decisions log"]);
   const release = (answer: string) => ({ restsOn: [], release: { rulings: [{ decision: "r1:d1", answer }] } });
   assert.deepEqual(await why(release("ans1")), []);
-  assert.deepEqual(await why(release("ans9")), ["no answer ans9 to r1:d1 in decisions/acme/api"]);
+  assert.deepEqual(await why(release("ans9")), ["no answer ans9 to r1:d1 in the decisions log"]);
+});
+
+test("V1: a correction may raise stakes and never lower them; a sort without stakes is high", () => {
+  const corrected = (first: Partial<RepairSortInput>, next: Partial<RepairSortInput>) =>
+    foldRepairRecords(chain([sorted(sort(first)), sorted(sort({ id: "s2", prior: "s1", reason: "restaked", ...next }))])).rejected.map(r => r.reason);
+  assert.deepEqual(corrected({ stakes: "low" }, { stakes: "high" }), []);
+  assert.deepEqual(corrected({ stakes: "low" }, { stakes: "low" }), []);
+  assert.match(corrected({ stakes: "high" }, { stakes: "low" }).join(), /raise stakes, never lower/);
+  assert.match(corrected({}, { stakes: "low" }).join(), /raise stakes, never lower/);
+  assert.match(foldRepairRecords(chain([sorted(sort({ stakes: "medium" as never }))])).rejected[0]?.reason ?? "", /high or low/);
 });
 
 test("arbitration must address each disagreement and unresolved dependency holds", () => {
@@ -226,7 +246,7 @@ test("unchanged shards replay old materializer cache and atomically persist repa
     const result = await readCached(root, log, scope, "identity", foldFindings, findingsProjection);
     assert.equal((result.value as import("./repair-records.js").RepairFindingMap<import("./shared-findings.js").SharedFinding>).repairRecords!.evidence.length, 1);
     assert.equal(readRepairRecords(root, scope).claims[0]!.text, created.data.text);
-    assert.equal(MATERIALIZER_VERSION, 58);
+    assert.equal(MATERIALIZER_VERSION, 59);
     assert.equal((d.prepare("SELECT fingerprint FROM shared_scope WHERE scope=?").get(scope) as {fingerprint:string}).fingerprint, await scopeFingerprint(log, scope, "identity"));
     d.prepare("UPDATE repair_records SET body='{}' WHERE scope=?").run(scope);
     assert.throws(() => readRepairRecords(root, scope), /malformed shape/);

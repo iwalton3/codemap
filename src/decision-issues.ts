@@ -1,6 +1,7 @@
 /** Exact shared issue identities used by ruling application. */
 import { createHash } from "node:crypto";
 import { readBug, readFinding, lookupFinding } from "./store.js";
+import { readScopeChecked } from "./eventlog.js";
 import { universeKey } from "./sidecar-config.js";
 import { findingKeyScope, normalizeFindingKey } from "./review-target.js";
 import { findingScope, type SharedFinding } from "./shared-findings.js";
@@ -19,7 +20,7 @@ export type ResolvedIssue =
 
 export type IssueRefusal = {
   ok: false;
-  reason: "invalid-reference" | "wrong-universe" | "not-found" | "ambiguous" | "local-only" | "wrong-scope";
+  reason: "invalid-reference" | "wrong-universe" | "not-found" | "ambiguous" | "local-only" | "wrong-scope" | "unreadable";
   error: string;
 };
 
@@ -30,6 +31,57 @@ export function canonicalIssueKey(ref: CanonicalIssueReference): string {
   return "issue_" + createHash("sha256")
     .update(JSON.stringify(["codemap-issue-v1", ref.kind, ref.universe, ref.scope, ref.id]))
     .digest("hex");
+}
+
+/**
+ * Whether a finding ref's `review` resolves to the scope it names (`findingKeyScope`, as
+ * `resolveDecisionIssue` derives it). `canonicalIssueKey` does not hash `review`, so a ref whose two
+ * disagree keys correctly and still states a review the finding is not on. Compares NORMALIZED
+ * forms: an older build wrote `"#7"`, and refusing it in the fold locks every upgraded clone.
+ */
+export function findingReviewMatchesScope(ref: { universe: string; review: string; scope: string }): boolean {
+  try {
+    const review = normalizeFindingKey(ref.review);
+    return findingScope(findingKeyScope({ path: "", universe: ref.universe }, review)) === ref.scope;
+  } catch { return false; }
+}
+
+/**
+ * An issue in ANOTHER universe of the workspace, for a decision to name (a decision is
+ * workspace-scoped; `shared-decisions.ts DECISIONS_SCOPE`). This store has no rows for it, so it
+ * is checked against the sidecar's log, as the door checks it: the exact scope, and its creation
+ * there. Carrying a ruling out happens in the issue's own universe, which resolves it locally.
+ */
+export async function resolveWorkspaceIssue(logRoot: string, input: CanonicalIssueReference): Promise<{ ok: true; ref: CanonicalIssueReference } | IssueRefusal> {
+  if (!input || typeof input.id !== "string" || !input.id.trim() || typeof input.universe !== "string" || !input.universe.trim() || typeof input.scope !== "string")
+    return refuse("invalid-reference", "an issue in another universe needs its kind, universe, exact ID and scope");
+  if (input.kind === "bug" ? input.scope !== bugScope(input.universe)
+    : input.kind !== "finding" || typeof input.review !== "string" || !input.scope.startsWith(`findings/${input.universe}/`))
+    return refuse("wrong-scope", `${input.scope} is not a ${input.kind} scope in ${input.universe}`);
+  if (input.kind === "finding" && !findingReviewMatchesScope(input as { universe: string; review: string; scope: string }))
+    return refuse("wrong-scope", `review ${input.review} does not resolve to ${input.scope}`);
+  const created = input.kind === "bug" ? "bug.filed" : "finding.created";
+  const read = await readScopeChecked(logRoot, input.scope);
+  if (read.status === "blocked") return refuse("unreadable", `${input.scope} cannot be read${read.diagnostic?.detail ? `: ${read.diagnostic.detail}` : ""}`);
+  if (!read.events.some((e) => e.kind === created && e.subject === input.id))
+    return refuse("not-found", `no ${input.kind} ${input.id} in ${input.scope}`);
+  return { ok: true, ref: input.kind === "finding" ? { ...input, review: normalizeFindingKey(input.review) } : input };
+}
+
+/**
+ * A caller's issues as the refs their resolvers return, so the log holds one spelling per issue:
+ * this universe's through `resolveDecisionIssue`, another's through `resolveWorkspaceIssue`.
+ */
+export async function canonicalIssues(root: string, logRoot: string | undefined, universe: string | undefined,
+  issues: CanonicalIssueReference[]): Promise<{ ok: true; refs: CanonicalIssueReference[] } | IssueRefusal> {
+  const refs: CanonicalIssueReference[] = [];
+  for (const issue of issues) {
+    const found = logRoot && issue?.universe !== universe ? await resolveWorkspaceIssue(logRoot, issue) : await resolveDecisionIssue(root, issue);
+    if (!found.ok) return found;
+    if (canonicalIssueKey(found.ref) !== canonicalIssueKey(issue)) return refuse("wrong-scope", `${issue.id} did not resolve to the stated scope`);
+    refs.push(found.ref);
+  }
+  return { ok: true, refs };
 }
 
 /** Resolve only an exact store ID. The source scope, not a display ref, owns the issue. */

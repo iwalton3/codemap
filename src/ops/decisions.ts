@@ -15,12 +15,13 @@ import { isAgentActor } from "../identity.js";
 import { bindDecisions, type Bound, type Via } from "../ops-shared.js";
 import { lookupFinding, readStoreMeta, rulingApplicationsForAnswer, writeStoreMeta } from "../store.js";
 import { resolveSidecar } from "../sidecar-config.js";
-import { canonicalIssueKey, resolveDecisionIssue, type CanonicalIssueReference } from "../decision-issues.js";
+import { canonicalIssueKey, canonicalIssues, resolveDecisionIssue, type CanonicalIssueReference } from "../decision-issues.js";
 import {
   CONFIRM_NO, CONFIRM_YES, NONE, canonicalMaps, briefManifest, briefListing, briefRefusal, readingRefusal, readerBrief as briefFor, bindRefusal, checkDecision, checkQuestionnaireDecisions, confirmPayload, confirmState, confirmedWords, decisionHash, logQuestionEvent,
   mapsKey, named, namedIssues, possiblySuperseded, postConfirmEvent, postRoundEvent, validMaps, loggedQuestionOnce,
   revisionRelayQuestion, withdrawalQuestion, withdrawalBriefContent, withdrawalBriefHash, withdrawalReviewRefusal, WITHDRAW_IT, type WithdrawalReview, type WithdrawalReviewReceipt, standingForIssue, checkListRevision, listRevisionItemIds, parseListRelayAnswer, type ListRevision,
   readingsInDispute, intentCandidates, nominateComparisonEvent, recordAnswerEvent, submitQuestionnaireEvent, recordReadingEvent, ruledNotCarriedOut, standing, standingForFinding, waitingOnMe, awaitingReading, parked, withdrawDecisionEvent, reviseAnswerEvent, rulerOf,
+  DECISIONS_SCOPE, decisionHome, pairHome,
   type AnswerVia, type BriefEntry, type FoldedDecision, type Mapping, type SharedDecisions,
 } from "../shared-decisions.js";
 import { decisionsView } from "./decision-holds.js";
@@ -70,8 +71,8 @@ const resolveMaps = (s: SharedDecisions, input: Mapping[] | undefined): Mapping[
 
 export interface NewRound { round: Omit<DecisionRound, "postedBy" | "at" | "universe" | "prevalidated">; decisions: Decision[] }
 
-/** What posting refuses, shared by `postRound` and the import. */
-export async function checkRound(root: string, r: NewRound): Promise<string | null> {
+/** What posting refuses, or the decisions to post with each issue as its resolver returned it. */
+export async function checkRound(root: string, r: NewRound): Promise<string | { decisions: Decision[] }> {
   const w = await writable(root);
   if ("error" in w) return w.error;
   const existing = w.s;
@@ -81,7 +82,7 @@ export async function checkRound(root: string, r: NewRound): Promise<string | nu
     const qError = checkQuestionnaireDecisions(r.round.questionnaire, r.decisions);
     if (qError) return qError;
   }
-  const refs = new Set<string>(), ids = new Set<string>();
+  const refs = new Set<string>(), ids = new Set<string>(), canonical: Decision[] = [];
   for (const d of r.decisions) {
     if (d?.round !== r.round.id) return `decision ${String(d?.id)} names round ${String(d?.round)}, not ${r.round.id}`;
     const bad = checkDecision(d);
@@ -115,18 +116,27 @@ export async function checkRound(root: string, r: NewRound): Promise<string | nu
       // On this map only, the team's clones could not carry a ruling on it out (bulk 10).
       if (!found.finding.origin) return `decision ${d.ref} names ${f}, which is on this map only — publish it first (\`codemap unify-findings\`)`;
     }
-    for (const o of d.options) for (const e of o.effects) for (const issue of e.issues ?? []) {
-      const found = await resolveDecisionIssue(root, issue);
-      if (!found.ok) return `decision ${d.ref}: ${found.error}`;
-      if (canonicalIssueKey(found.ref) !== canonicalIssueKey(issue)) return `decision ${d.ref}: ${issue.id} did not resolve to the stated scope`;
+    // A decision is the workspace's: it may name an issue in any universe sharing the sidecar.
+    const cfg = resolveSidecar(root);
+    const options: Decision["options"] = [];
+    for (const o of d.options) {
+      const effects: typeof o.effects = [];
+      for (const e of o.effects) {
+        if (!e.issues) { effects.push(e); continue; }
+        const found = await canonicalIssues(root, cfg?.path, cfg?.universe, e.issues);
+        if (!found.ok) return `decision ${d.ref}: ${found.error}`;
+        effects.push({ ...e, issues: found.refs });
+      }
+      options.push({ ...o, effects });
     }
+    canonical.push({ ...d, options });
     if (d.supersedes) return `decision ${d.ref}: automatic question supersession is retired; use follows for context and withdraw a question explicitly`;
     if (d.follows && decisionMatches(existing, d.follows).length !== 1)
       return decisionMatches(existing, d.follows).length > 1
         ? ambiguous("decision", d.follows, decisionMatches(existing, d.follows))
         : `decision ${d.ref} follows ${d.follows}, which is not posted`;
   }
-  return null;
+  return { decisions: canonical };
 }
 
 /** Post a round of decisions, each with the exact `AskUserQuestion` payload it will be asked with. */
@@ -135,12 +145,12 @@ export async function postRound(root: string, r: NewRound, via: Via = {}, dir: s
   if ("error" in b) return b;
   await recordHeld(root, b, dir);
   if ((r?.round as any)?.prevalidated !== undefined) return { error: "prevalidated is historical provenance only — record findings and repair sorts separately before posting the round" };
-  const bad = await checkRound(root, r);
-  if (bad) return { error: bad };
+  const checked = await checkRound(root, r);
+  if (typeof checked === "string") return { error: checked };
   const before = (await decisionsView(root)).s;
-  const decisions = r.decisions.map((d) => d.follows
+  const decisions = checked.decisions.map((d) => d.follows
     ? { ...d, follows: decisionMatches(before, d.follows)[0]!.id } : d);
-  const event = await postRoundEvent(b.cfg.path, b.cfg.universe, b.actor, { ...r.round, universe: b.cfg.universe }, decisions);
+  const event = await postRoundEvent(b.cfg.path, DECISIONS_SCOPE, b.actor, { ...r.round, universe: b.cfg.universe }, decisions);
   if ("error" in event) return event;
   const { s } = await decisionsView(root);
   return {
@@ -276,7 +286,7 @@ export async function submitQuestionnaire(root: string,
   if (!q) return { error: `no published questionnaire on round ${String(input?.round)}` };
   const staged = stageSubmission(q, input.submission);
   if (!staged.ok) return { error: staged.errors.join("; ") };
-  const event = await submitQuestionnaireEvent(b.cfg.path, b.cfg.universe, b.actor, round!.id, staged.value);
+  const event = await submitQuestionnaireEvent(b.cfg.path, await decisionHome(b.cfg.path, round!.id), b.actor, round!.id, staged.value);
   if ("error" in event) return event;
   const after = await decisionsView(root);
   const answers = after.s.decisions.flatMap((d) => d.answers)
@@ -396,14 +406,10 @@ export async function nominateComparison(root: string,
   if (!Array.isArray(findings) || !findings.every((id) => typeof id === "string" && id.trim())
     || new Set(findings).size !== findings.length || !Array.isArray(issues) || (!findings.length && !issues.length))
     return { error: "name distinct exact finding IDs or canonical issues in the affected scope" };
-  const issueKeys = new Set<string>();
-  for (const issue of issues) {
-    const resolved = await resolveDecisionIssue(root, issue);
-    if (!resolved.ok) return { error: resolved.error };
-    const key = canonicalIssueKey(resolved.ref);
-    if (key !== canonicalIssueKey(issue) || issueKeys.has(key)) return { error: `${issue.id} has a duplicate or mismatched issue scope` };
-    issueKeys.add(key);
-  }
+  const resolved = await canonicalIssues(root, b.cfg.path, b.cfg.universe, issues);
+  if (!resolved.ok) return { error: resolved.error };
+  const issueKeys = new Set(resolved.refs.map(canonicalIssueKey));
+  if (issueKeys.size !== issues.length) return { error: "an issue is named twice" };
   const pair = ids.map((id) => found(w.s, id));
   if (pair.some((x) => !x?.a.verified || x.a.sourceAnswer)) return { error: "both answers must be verified original response ids" };
   const [left, right] = pair as [{ d: FoldedDecision; a: FoldedDecision["answers"][number] }, { d: FoldedDecision; a: FoldedDecision["answers"][number] }];
@@ -430,8 +436,8 @@ export async function nominateComparison(root: string,
       && findings.every((id) => n.findings.includes(id))
       && [...issueKeys].every((key) => n.issues?.some((issue) => canonicalIssueKey(issue) === key)));
   if (existing) return { ok: true as const, nomination: existing.id, existing: true as const };
-  const e = await nominateComparisonEvent(b.cfg.path, b.cfg.universe, b.actor,
-    { answers: ids, findings, ...(issues.length ? { issues } : {}), reason: input.reason.trim() });
+  const e = await nominateComparisonEvent(b.cfg.path, await pairHome(b.cfg.path, left.d.id, right.d.id), b.actor,
+    { answers: ids, findings, ...(issues.length ? { issues: resolved.refs } : {}), reason: input.reason.trim() });
   if ("error" in e) return e;
   const after = await decisionsView(root);
   const candidate = intentCandidates(after.s).find((x) => x.nomination?.id === e.id);
@@ -450,7 +456,7 @@ async function record(root: string, b: Bound, d: FoldedDecision, via: AnswerVia,
   if (d.withdrawn || d.answers.some((a) => a.withdrawn))
     return { decision: d.id, ref: d.ref, recorded: false as const, why: `${d.ref} has a withdrawal; ask a fresh question` };
   const { s } = await decisionsView(root);
-  const e = await recordAnswerEvent(b.cfg.path, b.cfg.universe, b.actor, { decision: d.id, hash: d.hash, via, ...(relayedBy ? { relayedBy } : {}) });
+  const e = await recordAnswerEvent(b.cfg.path, await decisionHome(b.cfg.path, d.id), b.actor, { decision: d.id, hash: d.hash, via, ...(relayedBy ? { relayedBy } : {}) });
   if ("error" in e) return { decision: d.id, ref: d.ref, recorded: false as const, why: e.error };
   return outcome(root, d, e.id);
 }
@@ -570,7 +576,7 @@ export async function logQuestion(root: string, input: { toolUseId?: string; rou
     else if (hits.length) bound[q.question] = hits[0]!.id;
   }
   if (!rounds.length) return { error: refused.map((x) => x.why).join("; ") + " (nothing was written)" };
-  const loggedEvent = prior ?? await logQuestionEvent(b.cfg.path, b.cfg.universe, b.actor, {
+  const loggedEvent = prior ?? await logQuestionEvent(b.cfg.path, DECISIONS_SCOPE, b.actor, {
     session: call.session, toolUseId: call.toolUseId, questions: call.questions, answers: call.answers, transcript: session,
     rounds: rounds.map((r) => r.id), bound, answeredAt: call.at,
   });
@@ -886,7 +892,7 @@ async function settleAnswer(root: string, b: Bound, answer: string, dir: string)
     const why = readingRefusal(byId, d, a, { verdict: v.maps, unclear: v.unclear, session: req.maps,
       launchedAt: r.launchedAt, brief: req.brief, manifest: req.manifest });
     if (why) { bad(why); continue; }
-    const written = await recordReadingEvent(b.cfg.path, b.cfg.universe, b.actor, {
+    const written = await recordReadingEvent(b.cfg.path, await decisionHome(b.cfg.path, d.id), b.actor, {
       answer, session: { ...(req.reading ? { reading: req.reading } : {}), maps: req.maps },
       reader: { agent: r.agentId, verdict: v.maps, ...(v.unclear ? { unclear: v.unclear } : {}), launchedAt: r.launchedAt, brief: req.brief, manifest: req.manifest, verified: { session: r.session, toolUseId: r.toolUseId, call: call.callId,
         ...(h.requestId ? { requestId: h.requestId } : {}), ...(h.receipt ? { receipt: h.receipt } : {}) } },
@@ -993,7 +999,7 @@ export async function confirmReading(root: string, input: { answer: string; maps
   const id = confirmId(a.id, posted), decision = { id, ...posted };
   const bad = checkDecision(decision);
   if (bad) return { error: `the confirm could not be posted: ${bad}` };
-  const event = await postConfirmEvent(b.cfg.path, b.cfg.universe, b.actor, decision);
+  const event = await postConfirmEvent(b.cfg.path, await decisionHome(b.cfg.path, d.id), b.actor, decision);
   if ("error" in event) return { error: `the confirm could not be posted: ${event.error}` };
   const after = (await decisionsView(root)).s.decisions.find((y) => y.id === event.id);
   if (!after || after.confirms?.invalid) return { ok: false, posted: event.id, why: `the fold does not accept it as a confirm${after?.confirms?.invalid ? `: ${after.confirms.invalid}` : ""} — it stays visible but cannot act; ask a valid question` };
@@ -1061,7 +1067,7 @@ export async function withdrawDecision(root: string, input: { decision: string; 
   const relays = input.relay ? decisionMatches(w.s, input.relay) : [];
   if (input.relay && relays.length !== 1) return { error: relays.length ? ambiguous("decision", input.relay, relays) : `no question ${input.relay}` };
   const relay = relays[0]?.id;
-  const e = await withdrawDecisionEvent(b.cfg.path, b.cfg.universe, b.actor,
+  const e = await withdrawDecisionEvent(b.cfg.path, await decisionHome(b.cfg.path, d.id), b.actor,
     { decision: d.id, ...(input.answer ? { answer: input.answer } : {}), reason, knownAnswers: sources.map((a) => a.id),
       ...(relay ? { relay } : {}), ...(review ? { review } : {}) });
   if ("error" in e) return e;
@@ -1088,7 +1094,8 @@ export async function reportRuling(root: string, input: { decision: string; answ
   const question = withdrawalQuestion(d, ruling, input.reason.trim(), "D1");
   const decision: Decision = { id: "withdraw", round: id, ref: "D1", kind: "options", payload: question,
     options: question.options.map((o) => ({ label: o.label, effects: [] })) };
-  const event = await postRoundEvent(b.cfg.path, b.cfg.universe, b.actor, { id, source: "report_ruling", universe: b.cfg.universe }, [decision]);
+  // Beside the ruling it asks about: the withdrawal goes there too, and must have read its answer.
+  const event = await postRoundEvent(b.cfg.path, await decisionHome(b.cfg.path, d.id), b.actor, { id, source: "report_ruling", universe: b.cfg.universe }, [decision]);
   if ("error" in event) return event;
   return { ok: true as const, round: event.id, relay: `${event.id}:withdraw`, ask: question,
     next: `ask the person this question verbatim (log_question), or send them to the decisions page; on "${WITHDRAW_IT}", call withdraw_decision with relay` };
@@ -1159,6 +1166,17 @@ function verifiedWithdrawalReview(root: string, d: FoldedDecision, reason: strin
   return why ? { error: why } : review;
 }
 
+/** A caller's issues as the decision's own named refs, each once; undefined when one is malformed,
+ *  repeated, or not named. The relay brief and its recorder both map through this: the question
+ *  embeds the issues, so mapping them differently would record a question the person was not shown. */
+function namedIssueRefs(d: FoldedDecision, issues: unknown): CanonicalIssueReference[] | undefined {
+  if (!Array.isArray(issues) || !issues.every((x) => x && typeof x === "object")) return undefined;
+  const byKey = new Map(namedIssues(d).map((x) => [canonicalIssueKey(x), x]));
+  const keys = issues.map((issue) => canonicalIssueKey(issue));
+  if (new Set(keys).size !== keys.length || !keys.every((k) => byKey.has(k))) return undefined;
+  return keys.map((k) => byKey.get(k)!);
+}
+
 /** Give an agent the exact question that a later transcript must prove was shown. */
 export async function revisionRelayBrief(root: string,
   input: { decision: string; revises: string[]; findings: string[]; issues?: CanonicalIssueReference[] }, via: Via = {}) {
@@ -1174,7 +1192,9 @@ export async function revisionRelayBrief(root: string,
   const sources = input.revises?.map((id) => d.answers.find((a) => a.id === id));
   if (!sources?.length || sources.some((a) => !a?.verified || a.sourceAnswer || a.cancelled))
     return { error: "relay revision needs exact current verified source answers" };
-  const scope = { findings: input.findings ?? [], ...(input.issues?.length ? { issues: input.issues } : {}) };
+  const issues = namedIssueRefs(d, input.issues ?? []);
+  if (!issues) return { error: "issues must be distinct canonical references the question names" };
+  const scope = { findings: input.findings ?? [], ...(issues.length ? { issues } : {}) };
   if (d.presentation?.question.kind === "list" && !listRevisionItemIds(d, scope).length)
     return { error: "list revision needs selected items in its exact scope" };
   return { ok: true as const, decision: d.id, revises: input.revises, scope,
@@ -1198,7 +1218,9 @@ export async function reviseDecisionRelayed(root: string,
   const sources = input.revises?.map((id) => d.answers.find((a) => a.id === id));
   if (!sources?.length || sources.some((a) => !a?.verified || a.sourceAnswer || a.cancelled))
     return { error: "relay revision needs exact current verified source answers" };
-  const scope = { findings: input.findings ?? [], ...(input.issues?.length ? { issues: input.issues } : {}) };
+  const issues = namedIssueRefs(d, input.issues ?? []);
+  if (!issues) return { error: "issues must be distinct canonical references the question names" };
+  const scope = { findings: input.findings ?? [], ...(issues.length ? { issues } : {}) };
   const expected = revisionRelayQuestion(d, sources as NonNullable<typeof sources[number]>[], b.actor.principal, scope);
   // The agent cannot see the call's id (I12): find the call that asked `expected`, in a session
   // decision_revision_relay_brief handed it to, after that (owner, D1, Q1).
@@ -1217,11 +1239,11 @@ export async function reviseDecisionRelayed(root: string,
   const parsed = isList ? parseListRelayAnswer(answer) : null;
   if (isList && !parsed) return { error: "list relay answer must approve all or give exact per-item correction JSON" };
   const list = parsed ? { items: listRevisionItemIds(d, scope), ...parsed } : undefined;
-  const event = await reviseAnswerEvent(b.cfg.path, b.cfg.universe, b.actor, {
+  const event = await reviseAnswerEvent(b.cfg.path, await decisionHome(b.cfg.path, d.id), b.actor, {
     decision: d.id, hash: d.hash, via: { kind: "revision-relay", proof },
     ...(list ? { list } : {}),
     revision: { of: input.revises, findings: scope.findings,
-      ...(input.issues?.length ? { issues: input.issues } : {}) },
+      ...(issues.length ? { issues } : {}) },
   });
   if ("error" in event) return event;
   const result = await outcome(root, d, event.id);
@@ -1231,7 +1253,7 @@ export async function reviseDecisionRelayed(root: string,
     return { error: accepted?.revisionInvalid ?? result.why, revision: event.id };
   return { ok: true as const, revision: event.id, givenAt: call.at,
     sourceReceipt: call.entryId, standing: scope.findings.every((f) => standingForFinding(after!, f)?.id === event.id)
-      && (input.issues ?? []).every((issue) => standingForIssue(after!, issue)?.id === event.id) };
+      && issues.every((issue) => standingForIssue(after!, issue)?.id === event.id) };
 }
 
 /** Explicitly correct named source answers for named findings; untouched findings keep
@@ -1250,12 +1272,11 @@ export async function reviseDecision(root: string, input: { decision: string; re
   const d = matches[0];
   if (!d) return { error: `no decision ${String(input?.decision)}` };
   if (d.withdrawn || d.answers.some((a) => a.withdrawn)) return { error: `${d.ref} was withdrawn; ask a fresh question` };
-  const issues = input.issues ?? [];
+  const issues = namedIssueRefs(d, input.issues ?? []);
   if (!Array.isArray(input.revises) || !input.revises.length || new Set(input.revises).size !== input.revises.length
     || !Array.isArray(input.findings) || new Set(input.findings).size !== input.findings.length
-    || !Array.isArray(issues) || new Set(issues.map(canonicalIssueKey)).size !== issues.length
+    || !issues
     || !input.findings.every((f) => named(d).length ? named(d).includes(f) : d.kind === "words" && f === d.id)
-    || !issues.every((issue) => namedIssues(d).some((named) => canonicalIssueKey(named) === canonicalIssueKey(issue)))
     || (!input.resolves && !input.findings.length && !issues.length))
     return { error: "revision needs exact source answer ids and named canonical scope" };
   const sources = input.revises.map((id) => d.answers.find((a) => a.id === id));
@@ -1274,7 +1295,7 @@ export async function reviseDecision(root: string, input: { decision: string; re
   const viaAnswer = isList
     ? { kind: "direct" as const, checked: checked.length ? checked : [d.options.find((o) => o.approveAll)!.label] }
     : input.option ? { kind: "direct" as const, option: input.option } : { kind: "direct" as const, words: input.words! };
-  const event = await reviseAnswerEvent(b.cfg.path, b.cfg.universe, b.actor,
+  const event = await reviseAnswerEvent(b.cfg.path, await decisionHome(b.cfg.path, d.id), b.actor,
     { decision: d.id, hash: d.hash, via: viaAnswer,
       ...(isList ? { list: input.list } : {}),
       revision: { of: input.revises, findings: input.findings,

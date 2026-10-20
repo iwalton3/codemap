@@ -14,7 +14,7 @@ import { decisionsView } from "./ops/decision-holds.js";
 import { readScope } from "./eventlog.js";
 import { appendUnfolded } from "./test-door.js";
 import { isLogDamage } from "./log-damage.js";
-import { decisionScope, foldDecisions, comparisonBriefText } from "./shared-decisions.js";
+import { DECISIONS_SCOPE, foldDecisions, comparisonBriefText } from "./shared-decisions.js";
 import { resolveDecisionIssue } from "./decision-issues.js";
 import { universeKey } from "./sidecar-config.js";
 import { discard } from "./test-tmp.js";
@@ -232,7 +232,7 @@ test("resolution refuses a newly arrived judgment and replay rejects a subset pr
     const id = await requestAndJudge(u, "incompatible");
     const old = await comparisonResolutionBrief(u.root, id) as any;
     const request = old.shown.request;
-    const scope = decisionScope(universeKey(u.root));
+    const scope = DECISIONS_SCOPE;
     await appendUnfolded(u.side, scope, { principal: "another-reader" }, "decision.comparison.judged", id, {
       judgment: { requestId: id, contextHash: request.contextHash, issues: request.issues,
         answerVersions: [`${request.left.answerId}\0${request.left.version}`, `${request.right.answerId}\0${request.right.version}`],
@@ -311,7 +311,7 @@ test("a judgment staged against a comparison resolved meanwhile is refused at th
         shownHash: brief.shownHash, executionsHash: brief.executionsHash, source: "web" }) as any;
       assert.equal(resolved.ok, true, JSON.stringify(resolved));
     });
-    const scope = decisionScope(universeKey(u.root));
+    const scope = DECISIONS_SCOPE;
     const tip = await readScope(u.side, scope);
     const late = { ...tip.at(-1)!, id: "late-judgment", seq: (tip.at(-1)!.seq ?? 0) + 1, kind: "decision.comparison.judged", subject: id,
       actor: { principal: "another-reader" }, data: {
@@ -332,7 +332,7 @@ test("O4: a resolution that did not see a judgment earlier in the log is refused
     const id = await requestAndJudge(u, "incompatible");
     const old = await comparisonResolutionBrief(u.root, id) as any;
     const request = old.shown.request;
-    const scope = decisionScope(universeKey(u.root));
+    const scope = DECISIONS_SCOPE;
     const seen = (await readScope(u.side, scope)).at(-1)!.id;
     const second = await appendUnfolded(u.side, scope, { principal: "another-reader" }, "decision.comparison.judged", id, {
       judgment: { requestId: id, contextHash: request.contextHash, issues: request.issues,
