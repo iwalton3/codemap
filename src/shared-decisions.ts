@@ -60,8 +60,16 @@ export const decisionScopes = async (logRoot: string): Promise<string[]> =>
 export const validDecisionIssueScope = (scope: string, universe: string): boolean =>
   scope === DECISIONS_SCOPE || scope === decisionScope(universe);
 
-const otherDecisionEvents = async (logRoot: string, scope: string): Promise<LogEvent[]> =>
-  (await Promise.all((await decisionScopes(logRoot)).filter((s) => s !== scope).map((s) => readScope(logRoot, s)))).flat();
+/** The other decisions scopes' events, or why one cannot be read: a door that folded past a
+ *  damaged shard would judge the act against a log that is not the one on disk. */
+const otherDecisionEvents = async (logRoot: string, scope: string): Promise<{ events: LogEvent[] } | { blocked: string }> => {
+  const others = (await decisionScopes(logRoot)).filter((s) => s !== scope);
+  const reads = await Promise.all(others.map((s) => readScopeChecked(logRoot, s)));
+  const bad = reads.findIndex((r) => r.status === "blocked");
+  return bad >= 0 ? { blocked: unreadable(others[bad]!, reads[bad]!) } : { events: reads.flatMap((r) => r.events) };
+};
+const unreadable = (scope: string, r: ScopeRead): string =>
+  `${scope} cannot be read${r.diagnostic?.detail ? `: ${r.diagnostic.detail}` : ""}`;
 
 /** Every decisions scope, read and merged in `seq` order: what every reader of decisions folds. */
 export async function readDecisionLog(logRoot: string): Promise<ScopeRead> {
@@ -91,14 +99,21 @@ export async function pairHome(logRoot: string, a: string, b: string): Promise<s
 export const comparisonHome = (logRoot: string, request: string): Promise<string> =>
   homeOf(logRoot, (e) => e.kind === "decision.comparison.requested" && e.subject === request);
 async function homeOf(logRoot: string, match: (e: LogEvent) => boolean): Promise<string> {
-  for (const scope of await decisionScopes(logRoot))
-    if ((await readScope(logRoot, scope)).some(match)) return scope;
+  for (const scope of await decisionScopes(logRoot)) {
+    const r = await readScopeChecked(logRoot, scope);
+    // Never "not found, so the workspace's": the event may be the line that cannot be read.
+    if (r.status === "blocked") throw new Error(unreadable(scope, r));
+    if (r.events.some(match)) return scope;
+  }
   return DECISIONS_SCOPE;
 }
 
 /** A check that folds decisions sees every decisions scope, not only the one it writes to. */
 export const acrossDecisions = (logRoot: string, scope: string, check: AdmissionCheck): AdmissionCheck =>
-  async (events) => check(sortEvents([...events, ...await otherDecisionEvents(logRoot, scope)]));
+  async (events) => {
+    const other = await otherDecisionEvents(logRoot, scope);
+    return "blocked" in other ? { error: other.blocked } : check(sortEvents([...events, ...other.events]));
+  };
 
 export const loggedQuestionOnce = (q: Pick<LoggedQuestion, "session" | "toolUseId">): string => `q:${q.session}\0${q.toolUseId}`;
 
@@ -2664,8 +2679,10 @@ async function decisionReferences(read: ScopeReader, scope: string, events: LogE
 }
 
 /** The decisions fold at the door of one decisions scope, folded with the others as a read folds them. */
-export const decisionsDoorAt = (logRoot: string, scope: string): DoorFold => async (events, minted) =>
-  decisionsDoor(sortEvents([...events, ...await otherDecisionEvents(logRoot, scope)]), minted);
+export const decisionsDoorAt = (logRoot: string, scope: string): DoorFold => async (events, minted) => {
+  const other = await otherDecisionEvents(logRoot, scope);
+  return "blocked" in other ? { refused: [{ id: minted.id, why: other.blocked }] } : decisionsDoor(sortEvents([...events, ...other.events]), minted);
+};
 
 /** Prior events of every decisions scope, as the references check reads them: the scope's own
  *  `own` and the rest through `read` (the tip at the door, the prefix before `e` on read). */

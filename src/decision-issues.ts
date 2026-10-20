@@ -1,7 +1,7 @@
 /** Exact shared issue identities used by ruling application. */
 import { createHash } from "node:crypto";
 import { readBug, readFinding, lookupFinding } from "./store.js";
-import { readScope } from "./eventlog.js";
+import { readScopeChecked } from "./eventlog.js";
 import { universeKey } from "./sidecar-config.js";
 import { findingKeyScope, normalizeFindingKey } from "./review-target.js";
 import { findingScope, type SharedFinding } from "./shared-findings.js";
@@ -20,7 +20,7 @@ export type ResolvedIssue =
 
 export type IssueRefusal = {
   ok: false;
-  reason: "invalid-reference" | "wrong-universe" | "not-found" | "ambiguous" | "local-only" | "wrong-scope";
+  reason: "invalid-reference" | "wrong-universe" | "not-found" | "ambiguous" | "local-only" | "wrong-scope" | "unreadable";
   error: string;
 };
 
@@ -46,7 +46,9 @@ export async function resolveWorkspaceIssue(logRoot: string, input: CanonicalIss
     : input.kind !== "finding" || typeof input.review !== "string" || !input.scope.startsWith(`findings/${input.universe}/`))
     return refuse("wrong-scope", `${input.scope} is not a ${input.kind} scope in ${input.universe}`);
   const created = input.kind === "bug" ? "bug.filed" : "finding.created";
-  if (!(await readScope(logRoot, input.scope)).some((e) => e.kind === created && e.subject === input.id))
+  const read = await readScopeChecked(logRoot, input.scope);
+  if (read.status === "blocked") return refuse("unreadable", `${input.scope} cannot be read${read.diagnostic?.detail ? `: ${read.diagnostic.detail}` : ""}`);
+  if (!read.events.some((e) => e.kind === created && e.subject === input.id))
     return refuse("not-found", `no ${input.kind} ${input.id} in ${input.scope}`);
   return { ok: true, ref: input };
 }

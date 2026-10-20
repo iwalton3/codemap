@@ -4,7 +4,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -14,9 +14,9 @@ import type { Decision, State } from "./schema.js";
 import { shareFinding, bindDecisions } from "./ops-shared.js";
 import { postRound, answerDirect } from "./ops/decisions.js";
 import { cachedDecisions, decisionsView } from "./ops/decision-holds.js";
-import { resolveDecisionIssue, type CanonicalIssueReference } from "./decision-issues.js";
+import { resolveDecisionIssue, resolveWorkspaceIssue, type CanonicalIssueReference } from "./decision-issues.js";
 import { DECISIONS_SCOPE, decisionScope, foldDecisions, heldFindings, postRoundEvent, readDecisionLog, recordAnswerEvent } from "./shared-decisions.js";
-import { readScope } from "./eventlog.js";
+import { LINEAR_SHARD, readScope } from "./eventlog.js";
 import { universeKey } from "./sidecar-config.js";
 import { stable } from "./oracle-properties.js";
 import { discard } from "./test-tmp.js";
@@ -169,5 +169,40 @@ test("a bare finding id holds only in its round's universe, though two universes
     // What repair verification's `rulingContext` asks, over the same merged log.
     const s = foldDecisions((await readDecisionLog(side)).events);
     assert.equal(heldFindings(s, universeKey(settlement.root), () => true).has("f_collision"), false);
+  } finally { discard(api.root); discard(settlement.root); discard(side); }
+});
+
+/** An unparseable line ahead of a shard's events: damage, not a torn tail `readShard` skips. */
+const damage = (side: string, scope: string) => {
+  const file = join(side, scope, LINEAR_SHARD);
+  writeFileSync(file, "not json {\n" + readFileSync(file, "utf8"), "utf8");
+};
+
+test("a damaged scope another universe's decision reads is refused as unreadable, never folded past", async () => {
+  const side = mkdtempSync(join(tmpdir(), "codemap-ws-damage-side-"));
+  const api = await repo(side, "api"), settlement = await repo(side, "settlement");
+  try {
+    damage(side, settlement.ref.scope);
+    const r = await resolveWorkspaceIssue(side, settlement.ref);
+    assert.ok(!r.ok && r.reason === "unreadable" && r.error.includes(settlement.ref.scope), JSON.stringify(r));
+
+    const b = bindDecisions(api.root);
+    assert.ok(!("error" in b));
+    const legacy = decisionScope(b.cfg.universe);
+    const first = await postRoundEvent(b.cfg.path, legacy, b.actor, { id: "R1", source: "api", universe: b.cfg.universe }, [{
+      id: "d1", round: "R1", ref: "D1", kind: "options",
+      payload: { question: `D1: is ${api.finding} real?`, options: [{ label: "Yes" }, { label: "No" }] },
+      options: [{ label: "Yes", effects: [{ findings: [api.finding], on: "unblock" }] }, { label: "No", effects: [] }],
+    }]);
+    assert.ok(!("error" in first), JSON.stringify(first));
+    damage(side, legacy);
+    const s = bindDecisions(settlement.root);
+    assert.ok(!("error" in s));
+    const next = await postRoundEvent(s.cfg.path, DECISIONS_SCOPE, s.actor, { id: "R2", source: "settlement", universe: s.cfg.universe }, [{
+      id: "d2", round: "R2", ref: "D2", kind: "options",
+      payload: { question: `D2: is ${settlement.finding} real?`, options: [{ label: "Yes" }, { label: "No" }] },
+      options: [{ label: "Yes", effects: [{ findings: [settlement.finding], on: "unblock" }] }, { label: "No", effects: [] }],
+    }]);
+    assert.ok("error" in next && next.error.includes(`${legacy} cannot be read`), JSON.stringify(next));
   } finally { discard(api.root); discard(settlement.root); discard(side); }
 });
