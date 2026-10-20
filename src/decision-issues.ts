@@ -34,6 +34,18 @@ export function canonicalIssueKey(ref: CanonicalIssueReference): string {
 }
 
 /**
+ * Whether a finding ref's `review` resolves to the scope it names (`findingKeyScope`, as
+ * `resolveDecisionIssue` derives it). `canonicalIssueKey` does not hash `review`, so a ref whose two
+ * disagree keys correctly and still states a review the finding is not on.
+ */
+export function findingReviewMatchesScope(ref: { universe: string; review: string; scope: string }): boolean {
+  try {
+    const review = normalizeFindingKey(ref.review);
+    return review === ref.review && findingScope(findingKeyScope({ path: "", universe: ref.universe }, review)) === ref.scope;
+  } catch { return false; }
+}
+
+/**
  * An issue in ANOTHER universe of the workspace, for a decision to name (a decision is
  * workspace-scoped; `shared-decisions.ts DECISIONS_SCOPE`). This store has no rows for it, so it
  * is checked against the sidecar's log, as the door checks it: the exact scope, and its creation
@@ -45,6 +57,8 @@ export async function resolveWorkspaceIssue(logRoot: string, input: CanonicalIss
   if (input.kind === "bug" ? input.scope !== bugScope(input.universe)
     : input.kind !== "finding" || typeof input.review !== "string" || !input.scope.startsWith(`findings/${input.universe}/`))
     return refuse("wrong-scope", `${input.scope} is not a ${input.kind} scope in ${input.universe}`);
+  if (input.kind === "finding" && !findingReviewMatchesScope(input as { universe: string; review: string; scope: string }))
+    return refuse("wrong-scope", `review ${input.review} does not resolve to ${input.scope}`);
   const created = input.kind === "bug" ? "bug.filed" : "finding.created";
   const read = await readScopeChecked(logRoot, input.scope);
   if (read.status === "blocked") return refuse("unreadable", `${input.scope} cannot be read${read.diagnostic?.detail ? `: ${read.diagnostic.detail}` : ""}`);

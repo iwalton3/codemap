@@ -33,7 +33,7 @@ import { isAgentActor } from "./identity.js";
 import { verifierIdentityKey } from "./verifier-boundary.js";
 import { questionnaireAnswerId } from "./ruling-application.js";
 import { registerRuledCheck } from "./ruling-references.js";
-import { canonicalIssueKey, type CanonicalIssueReference } from "./decision-issues.js";
+import { canonicalIssueKey, findingReviewMatchesScope, type CanonicalIssueReference } from "./decision-issues.js";
 import { questionnaireVersion, stageSubmission, validateQuestionnaire, type Questionnaire, type QuestionnaireAnswer, type StagedSubmission } from "./questionnaire.js";
 import { canonical, codeUnitOrder, normalizeQuestion, sameQuestion } from "./transcript.js";
 import { ISO_DATE, type Actor, type AskedQuestion, type Decision, type DecisionEffect, type DecisionOption, type DecisionRound, type LoggedQuestion } from "./schema.js";
@@ -330,7 +330,8 @@ const validIssue = (value: unknown): value is CanonicalIssueReference => {
   const x = value as Record<string, unknown>;
   if (!str(x.id) || !str(x.universe) || !str(x.scope)) return false;
   if (x.kind === "bug") return x.scope === `bugs/${x.universe}`;
-  return x.kind === "finding" && str(x.review) !== undefined && (x.scope as string).startsWith(`findings/${x.universe}/`);
+  return x.kind === "finding" && str(x.review) !== undefined
+    && findingReviewMatchesScope({ universe: x.universe as string, review: x.review as string, scope: x.scope as string });
 };
 const issueKey = (issue: CanonicalIssueReference) => canonicalIssueKey(issue);
 const effectIssues = (e: DecisionEffect) => e.issues ?? [];

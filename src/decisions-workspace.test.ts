@@ -14,12 +14,15 @@ import type { Decision, State } from "./schema.js";
 import { shareFinding, bindDecisions } from "./ops-shared.js";
 import { postRound, answerDirect } from "./ops/decisions.js";
 import { cachedDecisions, decisionsView } from "./ops/decision-holds.js";
-import { resolveDecisionIssue, resolveWorkspaceIssue, type CanonicalIssueReference } from "./decision-issues.js";
-import { DECISIONS_SCOPE, decisionScope, foldDecisions, heldFindings, postRoundEvent, readDecisionLog, recordAnswerEvent } from "./shared-decisions.js";
+import { findingReviewMatchesScope, resolveDecisionIssue, resolveWorkspaceIssue, type CanonicalIssueReference } from "./decision-issues.js";
+import { DECISIONS_SCOPE, decisionScope, foldDecisions, foldDecisionsReport, heldFindings, postRoundEvent, readDecisionLog, recordAnswerEvent } from "./shared-decisions.js";
 import { LINEAR_SHARD, readScope } from "./eventlog.js";
 import { universeKey } from "./sidecar-config.js";
 import { stable } from "./oracle-properties.js";
 import { discard } from "./test-tmp.js";
+import { appendUnfolded } from "./test-door.js";
+import { findingKeyScope } from "./review-target.js";
+import { findingScope } from "./shared-findings.js";
 
 const SRC = "export function creditLine(cents) {\n  return cents * 2;\n}\n";
 const state = { schemaVersion: 1, lastVerifiedCommit: null, branch: null } as State;
@@ -204,5 +207,34 @@ test("a damaged scope another universe's decision reads is refused as unreadable
       options: [{ label: "Yes", effects: [{ findings: [settlement.finding], on: "unblock" }] }, { label: "No", effects: [] }],
     }]);
     assert.ok("error" in next && next.error.includes(`${legacy} cannot be read`), JSON.stringify(next));
+  } finally { discard(api.root); discard(settlement.root); discard(side); }
+});
+
+test("a finding ref whose review contradicts its scope is refused at the op, the door and on read", async () => {
+  const side = mkdtempSync(join(tmpdir(), "codemap-ws-review-side-"));
+  const api = await repo(side, "api"), settlement = await repo(side, "settlement");
+  try {
+    const wrong = { ...settlement.ref, review: "999" } as CanonicalIssueReference;
+    assert.ok(settlement.ref.kind === "finding" && settlement.ref.scope.endsWith("/pr-7"), "precondition: a valid scope, review 7");
+    const op = await resolveWorkspaceIssue(side, wrong);
+    assert.ok(!op.ok && op.reason === "wrong-scope", JSON.stringify(op));
+    assert.ok((await resolveWorkspaceIssue(side, settlement.ref)).ok, "the matching ref still resolves");
+
+    const b = bindDecisions(api.root);
+    assert.ok(!("error" in b));
+    const round = (issue: CanonicalIssueReference) => ({ publication: 2, round: { id: "R1", source: "x", universe: b.cfg.universe }, decisions: [{
+      id: "d1", round: "R1", ref: "D1", kind: "options",
+      payload: { question: `D1: is ${issue.id} real?`, options: [{ label: "Yes" }, { label: "No" }] },
+      options: [{ label: "Yes", effects: [{ findings: [], issues: [issue], on: "unblock" }] }, { label: "No", effects: [] }],
+    }] });
+    const door = await postRoundEvent(b.cfg.path, DECISIONS_SCOPE, b.actor, round(wrong).round, round(wrong).decisions as Decision[]);
+    assert.ok("error" in door, JSON.stringify(door));
+    const planted = await appendUnfolded(b.cfg.path, DECISIONS_SCOPE, b.actor, "decision.round.posted", "R1", round(wrong));
+    const read = foldDecisionsReport(await readScope(side, DECISIONS_SCOPE));
+    assert.ok(read.refused.some((r) => r.id === planted.id), JSON.stringify(read.refused));
+
+    // Every key kind's own scope still matches, so the refusal is the mismatch and not the shape.
+    for (const review of ["7", "branch:feat/x", "topic:settlement-rules"])
+      assert.ok(findingReviewMatchesScope({ universe: "u", review, scope: findingScope(findingKeyScope({ path: "", universe: "u" }, review)) }), review);
   } finally { discard(api.root); discard(settlement.root); discard(side); }
 });
