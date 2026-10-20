@@ -2,7 +2,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { bindDecisions, type Via } from "../ops-shared.js";
 import { decisionsView } from "./decision-holds.js";
-import { canonicalIssueKey, resolveDecisionIssue, type CanonicalIssueReference } from "../decision-issues.js";
+import { canonicalIssueKey, canonicalIssues, resolveDecisionIssue, type CanonicalIssueReference } from "../decision-issues.js";
 import { foldDecisions, intentCandidates, comparisonRequestFor, comparisonBriefText, comparisonCurrentVersions, comparisonSourcesCurrent, resolutionShownHash,
   decisionHome, pairHome, comparisonHome, decisionsDoorAt, acrossDecisions, type FoldedComparison } from "../shared-decisions.js";
 import { emitEventChecked } from "../write.js";
@@ -51,12 +51,9 @@ export async function requestComparison(root: string,
   if (!candidate) return { error: "those answers are not a current independent comparison candidate; nominate their overlap first" };
   const requested: CanonicalIssue[] = [];
   if (input.issues?.length) {
-    for (const issue of input.issues) {
-      const resolved = await resolveDecisionIssue(root, issue);
-      if (!resolved.ok) return { error: resolved.error };
-      if (canonicalIssueKey(resolved.ref) !== canonicalIssueKey(issue)) return { error: "issue reference must be canonical" };
-      requested.push(resolved.ref);
-    }
+    const resolved = await canonicalIssues(root, bound.cfg.path, bound.cfg.universe, input.issues);
+    if (!resolved.ok) return { error: resolved.error };
+    requested.push(...resolved.refs);
   } else {
     requested.push(...(candidate.issues ?? []));
     for (const id of candidate.findings) {

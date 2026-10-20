@@ -16,6 +16,7 @@ import { postRound, answerDirect, readerBrief } from "./ops/decisions.js";
 import { isLogDamage } from "./log-damage.js";
 import { cachedDecisions, decisionsView } from "./ops/decision-holds.js";
 import { adoptSidecar } from "./ops-shared.js";
+import { requestComparison } from "./ops/comparisons.js";
 import { begin, discard as discardStaged } from "./sync-engine.js";
 import { draftSpec, addOperation } from "./requirements.js";
 import { operationSignoffReaderBrief } from "./ops/operation-signoff.js";
@@ -422,4 +423,23 @@ test("a reading on a workspace question cannot bind onto a legacy decision: refu
     assert.match(refused?.why ?? "", /not a question in round/, JSON.stringify(refused));
     assert.throws(() => foldDecisions(events), (e: unknown) => isLogDamage(e) && e.entry.id === planted.id);
   } finally { discard(api.root); discard(side); }
+});
+
+test("a comparison request may name another universe's issue explicitly, as nominate and the fold accept it", async () => {
+  const side = mkdtempSync(join(tmpdir(), "codemap-ws-compare-side-"));
+  const api = await repo(side, "api"), settlement = await repo(side, "settlement");
+  try {
+    const posted = await asAgent(() => postRound(api.root, { round: { id: "R1", source: "x" }, decisions: [{
+      id: "d1", round: "R1", ref: "D1", kind: "options",
+      payload: { question: `D1: is ${settlement.finding} real?`, options: [{ label: "Yes" }, { label: "No" }] },
+      options: [{ label: "Yes", effects: [{ findings: [], issues: [settlement.ref], on: "unblock" }] },
+        { label: "No", effects: [{ findings: [], issues: [settlement.ref], on: "settle", as: "refuted" }] }],
+    }] })) as any;
+    assert.equal(posted.ok, true, JSON.stringify(posted));
+    const alice = await asPerson(() => answerDirect(api.root, { decision: "d1", option: "Yes" })) as any;
+    const bob = await withEnv({ CODEMAP_AGENT_MODEL: undefined, CODEMAP_PRINCIPAL: "bob@x.com" }, () => answerDirect(api.root, { decision: "d1", option: "No" })) as any;
+    assert.ok(alice.recorded && bob.recorded, JSON.stringify([alice, bob]));
+    const requested = await asAgent(() => requestComparison(api.root, { answers: [alice.answer, bob.answer], issues: [settlement.ref] })) as { error?: string };
+    assert.equal(requested.error, undefined, JSON.stringify(requested));
+  } finally { discard(api.root); discard(settlement.root); discard(side); }
 });
