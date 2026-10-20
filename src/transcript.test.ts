@@ -7,10 +7,11 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { classifyAnswer, findAskCalls, findCarriers, findMessages, isUnverified, readCall, readMessage, transcriptDir } from "./transcript.js";
+import { classifyAnswer, findAskCalls, findCarriers, findMessages, isUnverified, readCall, readMessage, readReader, transcriptDir } from "./transcript.js";
+import { readerTranscript, requestLog } from "./test-transcripts.js";
 import type { AskedQuestion } from "./schema.js";
 
 const S = "0f0e0d0c-aaaa-bbbb-cccc-000000000001";
@@ -226,4 +227,22 @@ test("submit_verdict calls pair with their own successful result and receipt", a
   const found = findVerdictCalls("a1", "D1 → A", 0, dir);
   assert.deepEqual(found.map((x) => [x.callId, x.result, x.receipt]),
     [["refused", "failed", undefined], ["held", "held", "opaque-1"], ["delayed", "missing", undefined]]);
+});
+
+test("readReader: the harness's request log is not a foreign entry, and nothing else without isSidechain passes", () => {
+  const A = "a0cbd35be4af188c9";
+  const fresh = (extra: Record<string, unknown>[] = []) => {
+    const dir = mkdtempSync(join(tmpdir(), "codemap-reader-"));
+    const callId = readerTranscript(dir, S, A, "the launch line", "repair_verification", {}, { held: true, receipt: "r1" });
+    if (extra.length) appendFileSync(join(dir, S, "subagents", `agent-${A}.jsonl`), extra.map((e) => JSON.stringify(e) + "\n").join(""));
+    return readReader(A, callId, dir);
+  };
+  const ok = fresh();
+  assert.ok(!isUnverified(ok), JSON.stringify(ok));
+  assert.equal(ok.agentId, A);
+  // The skip is by type, not a pass on the ids: a request log carrying another agent's id refuses.
+  assert.match(JSON.stringify(fresh(requestLog("aOtherAgent123", S))), /not all its own sidechain/);
+  // And a type nobody measured still fails closed, the way a fork's opening entry must.
+  assert.match(JSON.stringify(fresh([{ type: "fork-context-ref", agentId: A, sessionId: S }])), /not all its own sidechain/);
+  assert.match(JSON.stringify(fresh([{ type: "user", agentId: A, sessionId: S, message: { content: "no isSidechain" } }])), /not all its own sidechain/);
 });

@@ -1252,6 +1252,14 @@ Measured on this machine's own transcripts, for P1.4's two channels the ruling d
   first entry are tool results only, so `record_reading` refuses a reader whose sidechain holds a
   `user` entry with an `origin`, or with no tool result, after the first. What this cannot see:
   text riding inside a tool result, and anything the harness does not record in the sidechain.
+- **The harness's request log** (written since 2026-10-16, measured 2026-10-20 on Claude Code
+  2.1.303): `api-request`, `api-request-blob` and `api-request-shape` entries carry the agent's
+  `agentId` and `sessionId` and no `isSidechain`. `readReader` skips exactly these three by name, and
+  only when the ids are the agent's own, so any other new type still refuses. Until the skip, every
+  reader was refused as "not all its own sidechain". A blob is the request body the model received,
+  so it could make a stronger fork check, but it is unused: the format is undocumented and
+  content-addressed. `src/e2e/transcript-drift.e2e.ts` runs `readReader` on the newest real
+  transcript, so the next harness change fails the suite instead of every verifier.
 
 ### What a reader's own MCP call leaves — measured 2026-09-24 (Codex-round Step 6)
 
