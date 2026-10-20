@@ -45,7 +45,8 @@ fix never closes the whole finding.
   `decision:<id>`. If it still holds a free label, re-point it first: a correction with the held
   sort as prior and the label replaced by the decision entry. Then `release_ruled_sort`: it
   releases the sort when every decision it rests on has a **verified** standing answer whose chosen
-  options **unblock every finding the sort covers**. codemap writes the correction itself,
+  options **unblock every finding the sort covers**, and no open intent comparison restricts one of
+  them (compare the readings first). codemap writes the correction itself,
   `implementation-defect`, provenance `ruled`, with the rulings in it; evidence lists them in
   `rulingIds`, and the blind verifiers still answer `decision-needed` where a ruling does not
   decide a claim. It refuses an unverified answer (relayed words the transcript could not confirm

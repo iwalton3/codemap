@@ -44,7 +44,9 @@ rulings in `rulingIds`. Two ways (plan 2026-10-19-batch-release-held-sorts, R1-R
   **verified** standing answer whose chosen options **unblock every finding the sort covers**. A
   ruling made with the person present needs no reader to say what it means. An unverified relayed
   answer only unblocks decision holds (C8), never a sort; a settle, or an unblock that misses a
-  covered finding, releases nothing. The decisions half is checked by `repairSortReferences`, at
+  covered finding, releases nothing — nor does a ruling an open intent comparison restricts on a
+  covered finding (another person's verified answer on another decision naming it), which repair
+  verification would refuse anyway (`answerRestricted`). The decisions half is checked by `repairSortReferences`, at
   the door and on read against the log before the event, through a check the decisions fold
   registers — so a hand-written event is refused on read, not only by the op.
 - **`released`, break-glass for headless backlog work** (owner, D2, now "a break-glass solution

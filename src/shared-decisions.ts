@@ -2095,6 +2095,22 @@ export function comparisonRestricts(s: SharedDecisions, candidate: IntentCandida
   return choices.size > 1;
 }
 
+/** An intent comparison over `answer` still restricts work on `issue` — one test for the ruled
+ *  release (op and door) and repair verification, so a ruling one refuses none accepts. */
+export const answerRestricted = (s: SharedDecisions, answer: string,
+  issue: Pick<CanonicalIssue, "kind" | "id"> & Partial<CanonicalIssue>, candidates = intentCandidates(s)): boolean =>
+  candidates.some((c) => c.answers.includes(answer) && comparisonRestricts(s, c, issue));
+
+/** Whether a bare-id hold applies to exact `ref`: a comparison hold only while its comparison
+ *  still restricts that issue; every other hold always. */
+export const comparisonHoldApplies = (s: SharedDecisions, hold: Hold,
+  ref: Pick<CanonicalIssue, "kind" | "id"> & Partial<CanonicalIssue>, candidates = intentCandidates(s)): boolean => {
+  if (hold.why !== "comparison" || !hold.answers) return true;
+  const pair = hold.answers.slice().sort().join("\0");
+  const candidate = candidates.find((c) => c.answers.slice().sort().join("\0") === pair && c.findings.includes(ref.id));
+  return !candidate || comparisonRestricts(s, candidate, ref);
+};
+
 // --- the views --------------------------------------------------------------------------
 //
 // The three things the person asked to be able to see (owner, 2026-09-23). Each is a function
@@ -2720,8 +2736,17 @@ registerRuledCheck((events, r, findings, scope) => {
   const unblocks = d.options.filter((o) => a.options.includes(o.label)).flatMap((o) => o.effects).filter((e) => e.on === "unblock");
   const missing = findings.filter((f) => !unblocks.some((e) => (e.findings.includes(f) && scope.startsWith(`findings/${universe}/`))
     || (e.issues ?? []).some((i) => i.kind === "finding" && i.id === f && i.scope === scope)));
-  return missing.length ? `the ruling on ${d.ref} does not unblock ${missing.join(", ")}: a ruled release needs every finding the sort covers unblocked` : null;
+  if (missing.length) return `the ruling on ${d.ref} does not unblock ${missing.join(", ")}: a ruled release needs every finding the sort covers unblocked`;
+  return ruledComparisonRefusal(s, a.id, findings, universe, scope);
 });
+
+/** Why a ruled release on `answer` is refused while an intent comparison restricts a finding it
+ *  covers, or null. The op and the door both ask it; repair verification refuses the same ruling. */
+export function ruledComparisonRefusal(s: SharedDecisions, answer: string, findings: string[], universe: string | undefined, scope: string): string | null {
+  const candidates = intentCandidates(s);
+  const restricted = findings.filter((f) => answerRestricted(s, answer, { kind: "finding", id: f, ...(universe !== undefined ? { universe } : {}), scope }, candidates));
+  return restricted.length ? `an intent comparison over ${answer} restricts ${restricted.join(", ")}: the readings are compared before a release rests on it` : null;
+}
 
 /** One write, folded at the door: refused with the fold's reason, never appended to be refused later. */
 const put = (logRoot: string, scope: string, actor: Actor, kind: string, subject: string, data: Record<string, unknown>) =>

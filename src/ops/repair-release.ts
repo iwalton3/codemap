@@ -16,7 +16,7 @@ import { decisionOfEntry, releaseBriefContent, releaseBriefHash, type ReleaseRec
 import { holdReaderReceipt, readerReceipts, readerRequest, saveReaderRequest } from "../reader-local.js";
 import { isUnverified, readReceiptCall, readSubagentCall, transcriptDir } from "../transcript.js";
 import { verifierIdentityKey } from "../verifier-boundary.js";
-import { standing } from "../shared-decisions.js";
+import { ruledComparisonRefusal, standing } from "../shared-decisions.js";
 import { decisionsView } from "./decision-holds.js";
 import { recordSort, repairRecords } from "./repairs.js";
 
@@ -44,7 +44,19 @@ async function heldSort(root: string, review: number | string, sortId: string) {
     rulings.push({ decision: id, answer: a.id, question: d.payload.question, words: a.words });
   }
   const claims = r.records.claims.filter((c) => sort.input.coverage.some((ref) => ref.findingId === c.findingId && ref.claimIds.includes(c.id)));
-  return { sort: sort.input, content: releaseBriefContent(sort.input, claims, rulings), rulings };
+  return { sort: sort.input, content: releaseBriefContent(sort.input, claims, rulings), rulings, scope: r.scope, decisions: view.s };
+}
+
+/** The correction a release records: the held sort's coverage, kind, predicate and sites as an
+ *  implementation defect, its decision entries dropped. */
+function releaseCorrection(prior: RepairSortInput, provenance: "ruled" | "released", reason: string, release: NonNullable<RepairSortInput["release"]>): Omit<RepairSortInput, "id"> {
+  return {
+    prior: prior.id, reason, classification: "implementation-defect", kind: prior.kind, coverage: prior.coverage,
+    ...(prior.predicate !== undefined ? { predicate: prior.predicate } : {}), ...(prior.sites !== undefined ? { sites: prior.sites } : {}),
+    restsOn: prior.restsOn.filter((x) => !decisionOfEntry(x)), source: prior.source, provenance,
+    ...(prior.stakes !== undefined ? { stakes: prior.stakes } : {}),
+    assessments: [], disagreements: [], release,
+  };
 }
 
 /** Release the held sort on its rulings alone: each answer's chosen options unblock every finding
@@ -52,15 +64,13 @@ async function heldSort(root: string, review: number | string, sortId: string) {
 export async function releaseRuledSort(root: string, review: number | string, input: { sort: string }) {
   const held = await heldSort(root, review, input?.sort);
   if ("error" in held) return held;
-  const prior = held.sort;
-  return recordSort(root, review, {
-    prior: prior.id, reason: `released by ruling ${held.rulings.map((r) => r.answer).join(", ")}`,
-    classification: "implementation-defect", kind: prior.kind, coverage: prior.coverage,
-    ...(prior.predicate !== undefined ? { predicate: prior.predicate } : {}), ...(prior.sites !== undefined ? { sites: prior.sites } : {}),
-    restsOn: prior.restsOn.filter((x) => !decisionOfEntry(x)), source: prior.source, provenance: "ruled",
-    ...(prior.stakes !== undefined ? { stakes: prior.stakes } : {}),
-    assessments: [], disagreements: [], release: { rulings: held.rulings },
-  });
+  const covered = held.sort.coverage.map((c) => c.findingId);
+  for (const ruling of held.rulings) {
+    const round = held.decisions.decisions.find((d) => d.id === ruling.decision)?.round;
+    const why = ruledComparisonRefusal(held.decisions, ruling.answer, covered, held.decisions.rounds.find((x) => x.id === round)?.universe, held.scope);
+    if (why) return { error: why };
+  }
+  return recordSort(root, review, releaseCorrection(held.sort, "ruled", `released by ruling ${held.rulings.map((r) => r.answer).join(", ")}`, { rulings: held.rulings }));
 }
 
 /** The exact prompt to launch release reader `slot` with: a new background subagent, blind to the other. */
@@ -129,14 +139,5 @@ export async function releaseHeldSort(root: string, review: number | string, inp
     .some((r) => (r.state === "pending" || r.state === "recorded") && (JSON.parse(r.body) as { verdict?: string }).verdict === "no");
   if (said || readers.some((r) => r.verdict !== "yes"))
     return { error: "a reader said no: the sort stays held — a person-led /ez-plan over it asks sharper questions, and their answers start a new release" };
-  const prior = held.sort;
-  const release: Omit<RepairSortInput, "id"> = {
-    prior: prior.id, reason: `released on ${held.rulings.map((r) => r.answer).join(", ")} by two readers`,
-    classification: "implementation-defect", kind: prior.kind, coverage: prior.coverage,
-    ...(prior.predicate !== undefined ? { predicate: prior.predicate } : {}), ...(prior.sites !== undefined ? { sites: prior.sites } : {}),
-    restsOn: prior.restsOn.filter((x) => !decisionOfEntry(x)), source: prior.source, provenance: "released",
-    ...(prior.stakes !== undefined ? { stakes: prior.stakes } : {}),
-    assessments: [], disagreements: [], release: { rulings: held.rulings, readers },
-  };
-  return recordSort(root, review, release);
+  return recordSort(root, review, releaseCorrection(held.sort, "released", `released on ${held.rulings.map((r) => r.answer).join(", ")} by two readers`, { rulings: held.rulings, readers }));
 }

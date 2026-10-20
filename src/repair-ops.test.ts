@@ -307,3 +307,40 @@ test("R1, R2: a held sort leaves its hold on a verified standing ruling that unb
     assert.ok((await scanSidecar(side)).damage, "and the damage scan, which runs that check on every read of the sidecar, finds it");
   } finally { t.dispose(); }
 });
+
+test("R2: a ruled release refuses while an intent comparison restricts a covered finding — at the op, and on read", async () => {
+  const t = await team(["alice@acme.test"]);
+  const prior = process.env.CODEMAP_PRINCIPAL;
+  try {
+    const root = t.all[0]!.repo, side = t.all[0]!.sidecar;
+    const f = await shareFinding(root, 7, { targetKind: "anchor", targetId: "src/pay.ts#compared", text: "compared" }) as { id: string };
+    ok(f);
+    const decision = (id: string) => ({ id, round: `R-${id}`, ref: "D1", kind: "options" as const,
+      payload: { question: `D1: what of ${f.id}?`, options: [{ label: "Fix" }, { label: "Refute" }] },
+      options: [{ label: "Fix", effects: [{ findings: [f.id], on: "unblock" as const }] }, { label: "Refute", effects: [{ findings: [f.id], on: "settle" as const, as: "refuted" as const }] }] });
+    for (const id of ["d-cmp", "d-other"]) ok(await postRound(root, { round: { id: `R-${id}`, source: "a review round" }, decisions: [decision(id)] }));
+    ok(await answerDirect(root, { decision: "d-cmp", option: "Fix" }));
+    // A second person's verified answer on ANOTHER decision naming the same finding: an intent
+    // comparison nobody has run.
+    process.env.CODEMAP_PRINCIPAL = "bob@acme.test";
+    ok(await answerDirect(root, { decision: "d-other", option: "Fix" }));
+    if (prior === undefined) delete process.env.CODEMAP_PRINCIPAL; else process.env.CODEMAP_PRINCIPAL = prior;
+    const view = (await decisionsView(root)).s;
+    const d = view.decisions.find((x) => x.label === "d-cmp")!;
+    const held = await postRepairSort(root, 7, { ...sort(f.id, []), classification: "design-defect", restsOn: [`decision:${d.id}`] }) as { id: string };
+    ok(held);
+
+    assert.match(String((await releaseRuledSort(root, 7, { sort: held.id }) as any).error), /intent comparison/);
+
+    const scope = (await repairRecords(root, 7) as { scope: string }).scope;
+    const answer = d.answers.find((a) => a.verified)!;
+    const data = { ...sort(f.id, []), id: "rs_planted_cmp", prior: held.id, reason: "planted", provenance: "ruled",
+      release: { rulings: [{ decision: d.id, answer: answer.id, question: "D1", words: answer.words }] } };
+    const e = await appendUnfolded(side, scope, { principal: "alice@acme.test" }, "repair.sort-recorded", data.id, data);
+    const why = (await referencesFor(scope)!(scope, e, [], prefixReader(tipReader(side), e.seq!))).map((r) => r.why).join();
+    assert.match(why, /intent comparison/);
+  } finally {
+    if (prior === undefined) delete process.env.CODEMAP_PRINCIPAL; else process.env.CODEMAP_PRINCIPAL = prior;
+    t.dispose();
+  }
+});

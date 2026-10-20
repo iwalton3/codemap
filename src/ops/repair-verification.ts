@@ -27,7 +27,7 @@ import { readCached } from "../materialize.js";
 import { readScopeChecked, type LogEvent } from "../eventlog.js";
 import { emitEventChecked } from "../write.js";
 import { foldRepairRecords, type RepairFindingMap } from "../repair-records.js";
-import { readDecisionLog, foldDecisions, answerHasCurrentAuthority, intentCandidates, comparisonRestricts, heldFindings, heldIssues } from "../shared-decisions.js";
+import { readDecisionLog, foldDecisions, answerHasCurrentAuthority, answerRestricted, comparisonHoldApplies, intentCandidates, heldFindings, heldIssues } from "../shared-decisions.js";
 import { canonicalIssueKey } from "../decision-issues.js";
 import { workEligibility } from "./decision-holds.js";
 import { issueClaimHash } from "../ruling-application.js";
@@ -74,11 +74,7 @@ async function rulingContext(root: string, review: number | string, findings: Sh
   const typed = heldIssues(state, (key) => openKeys.has(key));
   const candidates = intentCandidates(state);
   const eligibility = refs.map((ref) => {
-    const exactLegacy = (legacy.get(ref.id) ?? []).filter((hold) => {
-      if (hold.why !== "comparison" || !hold.answers) return true;
-      const candidate = candidates.find((c) => c.answers.slice().sort().join("\0") === hold.answers!.slice().sort().join("\0") && c.findings.includes(ref.id));
-      return !candidate || comparisonRestricts(state, candidate, ref);
-    });
+    const exactLegacy = (legacy.get(ref.id) ?? []).filter((hold) => comparisonHoldApplies(state, hold, ref, candidates));
     const held = [...exactLegacy, ...(typed.get(canonicalIssueKey(ref)) ?? [])];
     const finding = findings.find((f) => f.id === ref.id)!;
     return { findingId: ref.id, work: workEligibility({ held }, finding.assignment), ...(held.length ? { assignment: finding.assignment } : {}) };
@@ -90,7 +86,7 @@ async function rulingContext(root: string, review: number | string, findings: Sh
     if (!pair || !pair.a.verified || pair.a.cancelled || pair.a.withdrawn || pair.a.sourceAnswer || pair.a.resolvedOutBy || pair.a.elsewhere || pair.a.revisionInvalid || pair.d.withdrawn) return { error: `ruling ${id} has no current verified authority` };
     for (const ref of refs) {
       if (!answerHasCurrentAuthority(pair.d, pair.a, ref)
-        || candidates.some((c) => c.answers.includes(id) && comparisonRestricts(state, c, ref))) return { error: `ruling ${id} is held or does not govern ${ref.id}` };
+        || answerRestricted(state, id, ref, candidates)) return { error: `ruling ${id} is held or does not govern ${ref.id}` };
     }
   }
   // Only the rulings this repair CITES (D4: F19, F46). The whole decisions state made any decision

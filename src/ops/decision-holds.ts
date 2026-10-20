@@ -14,7 +14,7 @@ import { readCachedMerged } from "../materialize.js";
 import { decisionsProjection } from "../shared-projections.js";
 import { resolveSidecar, sidecarIdentity, universeKey } from "../sidecar-config.js";
 import { isClosed, type FindingState } from "../shared-findings.js";
-import { decisionScope, decisionScopes, foldDecisions, heldFindings, heldIssues, intentCandidates, comparisonRestricts, supersededFindings, type Hold, type SharedDecisions } from "../shared-decisions.js";
+import { comparisonHoldApplies, decisionScope, decisionScopes, foldDecisions, heldFindings, heldIssues, supersededFindings, type Hold, type SharedDecisions } from "../shared-decisions.js";
 import type { ScopeDiagnostic, ScopeStatus } from "../eventlog.js";
 
 /** What a row carries: its holds, or `"unknown"`, and whether its decision may be superseded. */
@@ -118,12 +118,7 @@ export async function decisionsView(root: string): Promise<DecisionsView> {
       if (ref.kind === "bug") return typed === "unknown" || typed.length ? { held: typed } : {};
       const legacy = mark(ref.id);
       if (typed === "unknown" || legacy.held === "unknown") return { ...legacy, held: "unknown" };
-      const exactLegacy = (legacy.held ?? []).filter((hold) => {
-        if (hold.why !== "comparison" || !hold.answers) return true;
-        const candidate = intentCandidates(s).find((c) => c.answers.slice().sort().join("\0") === hold.answers!.slice().sort().join("\0")
-          && c.findings.includes(ref.id));
-        return !candidate || comparisonRestricts(s, candidate, ref);
-      });
+      const exactLegacy = (legacy.held ?? []).filter((hold) => comparisonHoldApplies(s, hold, ref));
       const combined = [...exactLegacy, ...typed];
       return { ...legacy, ...(combined.length ? { held: combined } : {}) };
     };
