@@ -431,11 +431,15 @@ export async function arbitrateRepairVerification(root: string, review: number |
   });
 }
 
+/** `universe` only routes the MCP call, and the receipt is already in that universe's store; any
+ *  other key the held submission lacks still refuses. */
+const withoutUniverse = (input: any) => { const { universe: _u, ...rest } = input ?? {}; return rest; };
+
 /**
  * Record a subagent's held verification or arbitration. Its transcript must show it was launched
  * with exactly the issued prompt, made the submit call with exactly what was held, and got the
  * held receipt back. The call is found from the receipt (`readReceiptCall`): `pending` only while
- * it may still be on its way to disk, an error once it will never count. Recorded as the
+ * it may still be on its way to disk, an error once it does not pass — re-checked on every record, never spent. Recorded as the
  * subagent — `child` — on the connection it submitted on.
  */
 export async function recordRepairVerification(root: string, review: number | string,
@@ -445,7 +449,7 @@ export async function recordRepairVerification(root: string, review: number | st
   const launch = readerRequest(root, key);
   const held = readerReceipts(root, key).find((r) => r.receipt === input.receipt);
   if (!launch || !held) return { error: "no held submission with that receipt for this job" };
-  if (held.state !== "pending") return { error: `reader receipt is ${held.state}${held.why ? `: ${held.why}` : ""}; it will never record again, so launch a new verifier` };
+  if (held.state !== "pending" && held.state !== "invalid") return { error: `reader receipt is ${held.state}${held.why ? `: ${held.why}` : ""}` };
   const { body, session } = JSON.parse(held.body) as { body: Record<string, unknown>; session: string };
   const call = readReceiptCall(job.role === "verifier" ? /(^|__)repair_verification$/ : /(^|__)repair_arbitration$/, input.receipt, held.heldAt, dir);
   if ("pending" in call) return { pending: true as const, reason: call.pending };
@@ -455,7 +459,7 @@ export async function recordRepairVerification(root: string, review: number | st
   }
   const expected = { review: String(review), requestId: job.requestId, ...(job.slot ? { slot: job.slot } : {}), ...body };
   const reason = !launchedFor(root, review, job, launch, call.reader.prompt) ? "the subagent was not launched with exactly the issued prompt, or one holding its batch's launch line"
-    : canonical({ ...call.input, review: String(call.input?.review) }) !== canonical(expected) ? "the subagent's submission differs from what was held"
+    : canonical({ ...withoutUniverse(call.input), review: String(call.input?.review) }) !== canonical(expected) ? "the subagent's submission differs from what was held"
     : call.result?.receipt !== input.receipt ? "the subagent's call did not return this receipt" : undefined;
   if (reason) {
     settleReaderReceipt(root, key, input.receipt, "invalid", reason, call.callId);

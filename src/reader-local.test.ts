@@ -49,6 +49,11 @@ test("purpose-keyed reader persistence upgrades an existing store without changi
     assert.deepEqual(settleReaderReceipt(root, interpretation, "receipt-two", "invalid", "wrong purpose"), { settled: false });
     assert.equal(readerReceipts(root, comparison)[0]?.call, "tool-call-two");
     assert.equal(readerReceipts(root, interpretation)[0]?.state, "pending");
+    // A refusal is not final — a later record re-checks it — but a recording is.
+    assert.deepEqual(settleReaderReceipt(root, interpretation, "receipt-one", "invalid", "refused"), { settled: true });
+    assert.deepEqual(settleReaderReceipt(root, interpretation, "receipt-one", "recorded", undefined, "tool-call-one"), { settled: true });
+    assert.deepEqual(settleReaderReceipt(root, interpretation, "receipt-one", "invalid", "too late"), { settled: false });
+    assert.equal(readerReceipts(root, interpretation)[0]?.state, "recorded");
 
     const d = db(root);
     assert.deepEqual(readerReceipts(root, { purpose: "issue-application", requestId: "legacy-work" }),

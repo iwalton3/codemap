@@ -845,17 +845,20 @@ async function recordHeld(root: string, b: Bound, dir: string): Promise<void> {
  * keeps its place, so everything held after it waits (Codex plan review, 5); invalid means its
  * call was found and failed a check, or was never found within the grace.
  */
-async function settleAnswer(root: string, b: Bound, answer: string, dir: string): Promise<void> {
+async function settleAnswer(root: string, b: Bound, answer: string, dir: string, recheck = false): Promise<void> {
   const w = await writable(root);
   if ("error" in w) return;
   const held = heldFor(root, answer), x = found(w.s, answer);
-  const pending = held.filter((h) => h.state === "pending");
+  // Only the answer a caller names re-checks its refused receipts: the sweep would rescan every
+  // transcript for every dead receipt on every call.
+  const pending = held.filter((h) => h.state === "pending" || (recheck && h.state === "invalid" && !!h.receipt));
   if (!x) { for (const h of pending) settle(root, h, "invalid", `answer ${answer} is no longer words here`); return; }
   if (x.a.cancelled) { for (const h of pending) settle(root, h, "invalid", x.a.cancelled.reason); return; }
   if (x.a.reading) { for (const h of pending) settle(root, h, "superseded", `answer ${answer} is already read (${x.a.reading.id})`); return; }
   const { d, a } = x;
   const byId = new Map(w.s.decisions.map((y) => [y.id, y]));
-  const claimed = new Set(held.map((h) => h.call).filter(Boolean));
+  // A receipt being re-checked keeps its own call: claiming it would expire it as "not found".
+  const claimed = new Set(held.filter((h) => !pending.includes(h)).map((h) => h.call).filter(Boolean));
   for (const h of pending) {
     const req = h.requestId ? requestOf(root, answer, h.requestId) : legacyRequestOf(root, answer) ?? requestOf(root, answer);
     if (!req) { settle(root, h, "invalid", "the exact issued reader request is missing"); continue; }
@@ -918,6 +921,9 @@ export async function recordReading(root: string, input: { answer: string }, via
   const b = bindDecisions(root, via);
   if ("error" in b) return b;
   await recordHeld(root, b, dir);
+  if (typeof input?.answer === "string") {
+    try { await settleAnswer(root, b, input.answer, dir, true); } catch { /* as recordHeld: what is held is reported below */ }
+  }
   const w = await writable(root);
   if ("error" in w) return w;
   const x = found(w.s, input?.answer);

@@ -324,6 +324,23 @@ test("a result row holding two results is read by the matching block, not the ro
   } finally { discard(dir); f.t.dispose(); }
 });
 
+test("a verifier in a non-primary universe passes `universe` on its call, and that alone does not make it differ", async () => {
+  const f = await fixture();
+  const dir = mkdtempSync(join(tmpdir(), "codemap-repair-tx-"));
+  try {
+    const hold = async (slot: 1 | 2, agentId: string, extra: Record<string, unknown>) => {
+      const brief = await repairVerificationBrief(f.root, 7, { requestId: f.requestId, role: "verifier", slot }, f.orchestrator) as { launch: string };
+      ok(brief);
+      const results = f.results();
+      const held = await submitRepairVerification(f.root, 7, { requestId: f.requestId, slot, results }, f.orchestrator) as { held: boolean; receipt: string };
+      subagentTranscript(dir, agentId, brief.launch, "repair_verification", { review: "7", requestId: f.requestId, slot, results, ...extra }, held);
+      return recordRepairVerification(f.root, 7, { requestId: f.requestId, role: "verifier", slot, receipt: held.receipt }, dir);
+    };
+    ok(await hold(1, "a7777777", { universe: "settlement" }));
+    assert.match((await hold(2, "a8888888", { note: "anything else" }) as { error: string }).error, /differs from what was held/);
+  } finally { discard(dir); f.t.dispose(); }
+});
+
 test("F15: the brief sends the verifier to a scratch worktree, never a live checkout — a subagent shares the launcher's", async () => {
   const f = await fixture();
   try {
@@ -333,7 +350,7 @@ test("F15: the brief sends the verifier to a scratch worktree, never a live chec
   } finally { f.t.dispose(); }
 });
 
-test("D3: a recording is `pending` only while its call may still reach disk; never found, or a fork, is an error that burns the receipt", async () => {
+test("D3: a recording is `pending` only while its call may still reach disk; never found, or a fork, is an error — and a refusal is re-checked, never spent", async () => {
   const f = await fixture();
   const dir = mkdtempSync(join(tmpdir(), "codemap-repair-tx-"));
   const grace = process.env.CODEMAP_VERDICT_GRACE_MS;
@@ -351,8 +368,13 @@ test("D3: a recording is `pending` only while its call may still reach disk; nev
     process.env.CODEMAP_VERDICT_GRACE_MS = "0";
     // A transcript directory codemap cannot see looks exactly like this, for ever.
     assert.match((await unwritten.record() as { error: string }).error, /no subagent call that returned receipt .* past the grace/);
-    assert.match((await unwritten.record() as { error: string }).error, /^reader receipt is invalid: no subagent call that returned receipt .* past the grace; it will never record again/, "and the receipt is spent, saying why");
+    assert.match((await unwritten.record() as { error: string }).error, /no subagent call that returned receipt .* past the grace/, "a second record re-checks, and repeats the reason");
     delete process.env.CODEMAP_VERDICT_GRACE_MS;
+    // A refusal that was codemap's own defect (here: a transcript it could not see) records once
+    // the cause is gone, from the same receipt — and a recorded receipt is final.
+    subagentTranscript(dir, "a4444444", unwritten.brief.launch, "repair_verification", { review: "7", requestId: f.requestId, slot: 1, results: unwritten.results }, unwritten.held);
+    ok(await unwritten.record());
+    assert.match((await unwritten.record() as { error: string }).error, /^reader receipt is recorded/);
     const forked = await hold(2);
     subagentTranscript(dir, "a5555555", forked.brief.launch, "repair_verification", { review: "7", requestId: f.requestId, slot: 2, results: forked.results }, forked.held);
     writeFileSync(join(dir, "5e55a0a0-0000-0000-0000-000000000005", "subagents", "agent-a5555555.meta.json"), JSON.stringify({ agentType: "fork", isFork: true, toolUseId: "launch_a5555555" }));

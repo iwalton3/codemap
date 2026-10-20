@@ -373,7 +373,7 @@ test("O4: a resolution that did not see a judgment earlier in the log is refused
   } finally { u.cleanup(); }
 });
 
-test("a refused comparison reader says why, on the refusing call and every one after", async () => {
+test("a refused comparison reader says why on every call, and is re-checked rather than spent", async () => {
   const u = await fixture();
   try {
     await env("reader", true, async () => {
@@ -390,6 +390,10 @@ test("a refused comparison reader says why, on the refusing call and every one a
         assert.deepEqual(r.refused, [`reader receipt ${held.receipt} is invalid: reader did not receive the exact brief`], attempt);
         assert.match(r.note, /every receipt was refused/, attempt);
       }
+      // Not spent: the same receipt records once its transcript passes.
+      readerTranscript(u.transcripts, brief.prompt, id, "equivalent", "read both", held.receipt);
+      const fixed = await recordComparisonJudgment(u.root, { request: id }, {}, u.transcripts) as any;
+      assert.equal(fixed.recorded, true, JSON.stringify(fixed));
     });
   } finally { u.cleanup(); }
 });

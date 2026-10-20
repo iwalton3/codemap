@@ -366,7 +366,7 @@ const tools: Tool[] = [
   },
   {
     name: "record_repair_verification",
-    description: "Record a subagent verifier's held submission by the receipt it got back. Codemap finds the subagent's repair_verification (or repair_arbitration) call that returned it and checks its transcript: launched with exactly the issued prompt (or a prompt holding the launch line of a repair_batch_brief listing this job), and submitted exactly what was held." + " `pending`: the call is not in its transcript yet — call again in a moment (for up to a minute). An error: it will never count (a fork, a message sent after launch, a call this machine's transcripts do not show) — launch a new one.",
+    description: "Record a subagent verifier's held submission by the receipt it got back. Codemap finds the subagent's repair_verification (or repair_arbitration) call that returned it and checks its transcript: launched with exactly the issued prompt (or a prompt holding the launch line of a repair_batch_brief listing this job), and submitted exactly what was held." + " `pending`: the call is not in its transcript yet — call again in a moment (for up to a minute). An error repeats on every call unless codemap itself changes (a fork, a message sent after launch, a call this machine's transcripts do not show) — launch a new one. The receipt is not spent: if the refusal was codemap's defect, it records after the fix.",
     inputSchema: obj({ review: { type: "string" }, requestId: { type: "string" }, role: { type: "string", enum: ["verifier", "arbitrator"] }, slot: { type: "integer", enum: [1, 2] },
       receipt: { type: "string" } }, ["review", "requestId", "role", "receipt"]),
     mutates: true,
@@ -1399,7 +1399,7 @@ const tools: Tool[] = [
   },
   {
     name: "record_operation_signoff_verdict",
-    description: "Record a reader's held verdict by its receipt: codemap finds the reader's submit call that returned it and checks its transcript (launched with the exact brief, its own call). Returns the agentId and callId that apply_operation_signoff's reader ref takes." + " `pending`: the call is not in its transcript yet — call again in a moment (for up to a minute). An error: it will never count (a fork, a message sent after launch, a call this machine's transcripts do not show) — launch a new one.",
+    description: "Record a reader's held verdict by its receipt: codemap finds the reader's submit call that returned it and checks its transcript (launched with the exact brief, its own call). Returns the agentId and callId that apply_operation_signoff's reader ref takes." + " `pending`: the call is not in its transcript yet — call again in a moment (for up to a minute). An error repeats on every call unless codemap itself changes (a fork, a message sent after launch, a call this machine's transcripts do not show) — launch a new one. The receipt is not spent: if the refusal was codemap's defect, it records after the fix.",
     inputSchema: RECORD_BY_RECEIPT,
     mutates: true,
     handler: async (a, c) => ops.recordOperationSignoffVerdict(c.universe.path, a as never),
@@ -1437,7 +1437,7 @@ const tools: Tool[] = [
   },
   {
     name: "record_application_verdict",
-    description: "Record a reader's held verdict by its receipt: codemap finds the reader's submit call that returned it and checks its transcript (launched with the exact brief, its own call). Returns the agentId and callId that apply_ruling's reader refs take." + " `pending`: the call is not in its transcript yet — call again in a moment (for up to a minute). An error: it will never count (a fork, a message sent after launch, a call this machine's transcripts do not show) — launch a new one.",
+    description: "Record a reader's held verdict by its receipt: codemap finds the reader's submit call that returned it and checks its transcript (launched with the exact brief, its own call). Returns the agentId and callId that apply_ruling's reader refs take." + " `pending`: the call is not in its transcript yet — call again in a moment (for up to a minute). An error repeats on every call unless codemap itself changes (a fork, a message sent after launch, a call this machine's transcripts do not show) — launch a new one. The receipt is not spent: if the refusal was codemap's defect, it records after the fix.",
     inputSchema: RECORD_BY_RECEIPT,
     mutates: true,
     handler: async (a, c) => recordApplicationVerdict(c.universe.path, a as never),

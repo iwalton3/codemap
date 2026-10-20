@@ -165,7 +165,7 @@ test('a genuinely recorded unsound reader cannot grant sign-off', async () => {
   } finally {u.cleanup();}
 });
 
-test('D3: a sign-off reader whose call never reaches disk is pending only within the grace, then an error that spends the receipt', async () => {
+test('D3: a sign-off reader whose call never reaches disk is pending only within the grace, then an error that is re-checked, never spent', async () => {
   const u = await fixture();
   const grace = process.env.CODEMAP_VERDICT_GRACE_MS;
   try {
@@ -175,7 +175,9 @@ test('D3: a sign-off reader whose call never reaches disk is pending only within
     assert.equal((recordOperationSignoffVerdict(u.b.repo, ref, u.tx) as any).pending, true);
     process.env.CODEMAP_VERDICT_GRACE_MS = '0';
     assert.match(String((recordOperationSignoffVerdict(u.b.repo, ref, u.tx) as any).error), /past the grace/);
-    assert.match(String((recordOperationSignoffVerdict(u.b.repo, ref, u.tx) as any).error), /reader receipt is invalid/);
+    assert.match(String((recordOperationSignoffVerdict(u.b.repo, ref, u.tx) as any).error), /past the grace/, 'a second record re-checks, and repeats the reason');
+    transcript(u.tx, brief.prompt, brief.requestId, held.receipt);
+    assert.equal((recordOperationSignoffVerdict(u.b.repo, ref, u.tx) as any).recorded, true, 'the call turning up records the same receipt');
   } finally {
     if (grace === undefined) delete process.env.CODEMAP_VERDICT_GRACE_MS; else process.env.CODEMAP_VERDICT_GRACE_MS = grace;
     u.cleanup();
