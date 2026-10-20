@@ -70,7 +70,7 @@ async function rulingContext(root: string, review: number | string, findings: Sh
   const refs = findings.map((f) => ({ kind: "finding" as const, universe: cfg.universe, review: String(review), scope: findingScope(findingKeyScope(cfg, review)), id: f.id }));
   const open = new Set(findings.filter((f) => !isClosed(f.state)).map((f) => f.id));
   const openKeys = new Set(refs.filter((ref) => open.has(ref.id)).map(canonicalIssueKey));
-  const legacy = heldFindings(state, (id) => open.has(id));
+  const legacy = heldFindings(state, cfg.universe, (id) => open.has(id));
   const typed = heldIssues(state, (key) => openKeys.has(key));
   const candidates = intentCandidates(state);
   const eligibility = refs.map((ref) => {

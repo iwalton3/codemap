@@ -103,7 +103,7 @@ export async function decisionsView(root: string): Promise<DecisionsView> {
     // (P2.2 (7)).
     let marks: { held?: Map<string, Hold[]>; issues?: Map<string, Hold[]>; flagged: ReturnType<typeof supersededFindings> } | undefined;
     const built = () => {
-      if (!marks) { builds++; marks = { ...(unknown ? {} : { held: heldFindings(s, isOpen), issues: heldIssues(s, isOpenIssue) }), flagged: supersededFindings(s) }; }
+      if (!marks) { builds++; marks = { ...(unknown ? {} : { held: heldFindings(s, universe, isOpen), issues: heldIssues(s, isOpenIssue) }), flagged: supersededFindings(s, universe) }; }
       return marks;
     };
     const mark = (id: string): HoldMark => {

@@ -83,7 +83,7 @@ const h = (d: any) => decisionHash(d);
 /** `d` re-asked as `id` in `round`, with its ref in the text as posting requires. */
 const reask = (d: any, id: string, ref: string, rnd: string, extra: any = {}) =>
   ({ ...d, id, ref, round: rnd, payload: { ...d.payload, question: d.payload.question.replace(d.ref, ref) }, ...extra });
-const post = (id: string, decisions: any[], extra: any = {}) => ev("decision.round.posted", { round: { id, source: "x", ...extra }, decisions });
+const post = (id: string, decisions: any[], extra: any = {}) => ev("decision.round.posted", { round: { id, source: "x", universe: "u", ...extra }, decisions });
 
 type B = Record<string, FoldedDecision>;
 /** Folds `evs`. A reading built without a brief is given the one codemap writes for its answer,
@@ -181,8 +181,8 @@ const others = () => [page(d2, { option: "None — approve all" }), page(d3, { o
 const ruled = (d: FoldedDecision) => standing(d)?.ruled ?? [];
 const rules = (d: FoldedDecision, f: string, on: string) => ruled(d).some((r) => r.finding === f && r.on === on);
 const waits = (out: SharedDecisions, id: string, re?: RegExp, today = "2026-09-23") => waitingOnMe(out, today).some((w) => lbl(out, w.decision) === id && (!re || re.test(w.why)));
-const held = (out: SharedDecisions, f: string, why?: string, isOpen = (_: string) => true) => (heldFindings(out, isOpen).get(f) ?? []).some((x) => !why || x.why === why);
-const since = (out: SharedDecisions, f: string) => (heldFindings(out, () => true).get(f) ?? []).map((x) => x.since);
+const held = (out: SharedDecisions, f: string, why?: string, isOpen = (_: string) => true) => (heldFindings(out, "u", isOpen).get(f) ?? []).some((x) => !why || x.why === why);
+const since = (out: SharedDecisions, f: string) => (heldFindings(out, "u", () => true).get(f) ?? []).map((x) => x.since);
 const flagged = (d: FoldedDecision) => sup(d).length > 0;
 
 // --- what an answer rules
@@ -319,7 +319,7 @@ run("c2: a verified copy onto D2 is not displaced by an agent's later unverified
 
 run("P4.1: a click, then unread words — the click stands, D1 and every finding it names are flagged", () => [page(d1, { option: "Settle" }), msg(d1, "D1 — hmm, not sure anymore")],
   (b, out) => rules(b.d1!, "F3", "settle") && flagged(b.d1!) && sup(b.d1!)[0]!.state === "unread"
-    && supersededFindings(out).has("F3") && supersededFindings(out).has("F7") && awaitingReading(out).length === 1);
+    && supersededFindings(out, "u").has("F3") && supersededFindings(out, "u").has("F7") && awaitingReading(out).length === 1);
 run("P4.1: ...read as unclear — the click still stands, flagged, and it waits on you", () => {
   const P = page(d1, { option: "Settle" }), M = msg(d1, "D1 — hmm");
   return [P, M, reading(M, [], [{ decision: "d1", option: "No" }], { unclear: "not an answer to anything" })];
@@ -331,13 +331,13 @@ run("P4.1: ...read two ways — flagged, and in dispute", () => {
 run("P4.1: ...bound to another option — it rules, and the flag clears", () => {
   const P = page(d1, { option: "Settle" }), M = msg(d1, "D1 — no");
   return [P, M, reading(M, [{ decision: "d1", option: "No" }])];
-}, (b, out) => standing(b.d1!)!.options[0] === "No" && !flagged(b.d1!) && !supersededFindings(out).size);
+}, (b, out) => standing(b.d1!)!.options[0] === "No" && !flagged(b.d1!) && !supersededFindings(out, "u").size);
 run("A3: a later verified answer clears the flag; the moot words wait on nobody", () => {
   const P = page(d1, { option: "Settle" }), M = msg(d1, "D1 — hmm");
   return [P, M, page(d1, { option: "No" }), ...others()];
 }, (b, out) => standing(b.d1!)!.options[0] === "No" && !flagged(b.d1!) && !awaitingReading(out).length && !waits(out, "d1"));
 run("S0.8(a): the flag reaches a finding the ruling released — marked, never held", () => [page(d4, { option: "B" }), msg(d4, "D4 hmm, maybe not")],
-  (b, out) => !held(out, "F30") && supersededFindings(out).has("F30"));
+  (b, out) => !held(out, "F30") && supersededFindings(out, "u").has("F30"));
 
 // --- confirm-this-reading: a posted decision (the impl-2 discussion; P2.1 (1), (2); P3.1–P3.5)
 
@@ -365,7 +365,7 @@ const leave: Mapping[][] = [[{ decision: "d1", option: "No" }]];
 
 withConfirm("S0.1: Yes on the agent's own reading of unread words binds it — at the time TYPED — and the confirm releases its hold", clicked, "d1", leave, CONFIRM_YES,
   (b, out) => standing(b.d1!)!.options[0] === "No" && standing(b.d1!)!.givenAt === at(3) && !!standing(b.d1!)!.confirmed && !flagged(b.d1!) && !held(out, "F3", "ruled")
-    && !(heldFindings(out, () => true).get("F3") ?? []).some((h) => lbl(out, h.decision) === "c1") && !waits(out, "c1"));
+    && !(heldFindings(out, "u", () => true).get("F3") ?? []).some((h) => lbl(out, h.decision) === "c1") && !waits(out, "c1"));
 withConfirm("S0.2: No — the rejected reading is recorded, the old ruling stands, flagged, and you are asked to answer again", clicked, "d1", leave, CONFIRM_NO,
   (b, out) => rules(b.d1!, "F3", "settle") && flagged(b.d1!) && sup(b.d1!)[0]!.rejected?.length === 1 && waits(out, "d1", /not what you meant/));
 withConfirm("the discussion: Other on a confirm is words on the confirm, read by a reader like any reply — it binds nothing about the original words", clicked, "d1", leave, "I meant fix F7 only",
@@ -377,7 +377,7 @@ withConfirm("S0.2: a dispute's confirm offers both readings; picking one binds i
 }, "d1", null, "Reading 1",
   (b, out) => standing(b.d1!)!.options[0] === "No" && !readingsInDispute(out).length, (b) => b.d1!.answers.find((a) => a.via === "message")!.id);
 withConfirm("the discussion: while open, the confirm holds the findings its reading acts on — from its own posting — and waits on you", clicked, "d1", leave, undefined,
-  (b, out) => (heldFindings(out, () => true).get("F3") ?? []).some((h) => lbl(out, h.decision) === "c1" && h.why === "undecided" && h.since === b.c1!.postedAt)
+  (b, out) => (heldFindings(out, "u", () => true).get("F3") ?? []).some((h) => lbl(out, h.decision) === "c1" && h.why === "undecided" && h.since === b.c1!.postedAt)
     && b.c1!.postedAt !== round.at && waits(out, "c1", /confirm what your words on D1 meant/) && !waits(out, "c1", /not answered/));
 test("A confirmed action must match its complete frozen presentation", () => {
   n = 1;
@@ -434,7 +434,7 @@ test("P3.3: once the words are moot, an open confirm stops holding and waiting, 
   const { b, out } = fold([...evs, C, later]);
   const byId = new Map(out.decisions.map((d) => [d.id, d]));
   assert.equal(confirmState(byId, b.c1!), "no longer needed");
-  assert.ok(!waits(out, "c1") && !(heldFindings(out, () => true).get("F3") ?? []).some((h) => lbl(out, h.decision) === "c1") && !!b.c1, dump(b, out));
+  assert.ok(!waits(out, "c1") && !(heldFindings(out, "u", () => true).get("F3") ?? []).some((h) => lbl(out, h.decision) === "c1") && !!b.c1, dump(b, out));
 });
 // --- Q1.3 (owner, "The request only"): a confirm's state describes the request
 
@@ -455,7 +455,7 @@ test("Q1.3 (A3, F10): words typed on a confirm after a No never reopen it — re
   const R = reading(w, [{ decision: "c1", option: null }]);
   for (const order of [[...evs, C, ...no, other, R], [...evs, C, other, R, ...no]]) {
     const { b, out } = fold(order);
-    assert.ok(standing(b.c1!)!.nothing && stateOf(out, "c1") === "answered" && !(heldFindings(out, () => true).get("F3") ?? []).some((h) => lbl(out, h.decision) === "c1")
+    assert.ok(standing(b.c1!)!.nothing && stateOf(out, "c1") === "answered" && !(heldFindings(out, "u", () => true).get("F3") ?? []).some((h) => lbl(out, h.decision) === "c1")
       && !waits(out, "c1") && waits(out, "d1", /not what you meant/), dump(b, out));
   }
 });
@@ -480,7 +480,7 @@ test("Q2.3 (2) (C1): an open confirm offering 'D1 → (none)' holds D1's finding
   const evs = clicked(), first = fold(evs), a = first.b.d1!.answers.at(-1)!.id;
   const C = confirmOf(first.b, "d1", a, [[{ decision: "d1", option: null }]]);
   const { b, out } = fold([...evs, C]);
-  assert.ok(stateOf(out, "c1") === "open" && ["F3", "F7"].every((f) => (heldFindings(out, () => true).get(f) ?? []).some((h) => lbl(out, h.decision) === "c1" && h.why === "undecided" && h.since === b.c1!.postedAt)), dump(b, out));
+  assert.ok(stateOf(out, "c1") === "open" && ["F3", "F7"].every((f) => (heldFindings(out, "u", () => true).get(f) ?? []).some((h) => lbl(out, h.decision) === "c1" && h.why === "undecided" && h.since === b.c1!.postedAt)), dump(b, out));
 });
 test("Q2.3 (1) (F6): one reading given in two orders is one confirm text", () => {
   n = 1;
@@ -860,7 +860,7 @@ test("R16: a round with no time keeps its questions; nothing typed binds to them
   assert.throws(() => fold([R, M, reading(M, [{ decision: "dt", option: "A" }])]), (e: unknown) => isLogDamage(e) && e.entry.id === M.id);
   const { b, out } = fold([R]);
   assert.ok(b.dt && !b.dt.answers.length, dump(b, out));
-  const mine = (heldFindings(out, () => true).get("F30") ?? []).filter((x) => lbl(out, x.decision) === "dt");
+  const mine = (heldFindings(out, "u", () => true).get("F30") ?? []).filter((x) => lbl(out, x.decision) === "dt");
   assert.ok(mine.length === 1 && Number.isNaN(Date.parse(mine[0]!.since)), "held, from a start no assignment can be after");
   const P = fold([R, page(dt, { option: "A" })]);
   assert.ok(rules(P.b.dt!, "F30", "settle"), dump(P.b, P.out));
@@ -1095,8 +1095,8 @@ test("Q2 human conflict: concurrent proven rulings hold work until a shown human
   const candidates = intentCandidates(before);
   assert.equal(candidates.length, 1);
   assert.deepEqual(candidates[0]!.answers, ["a-one", "a-two"]);
-  assert.ok(heldFindings(before, () => true).get("F3")?.length);
-  assert.ok(heldFindings(before, () => true).get("F3")?.some((h) => h.why === "comparison"
+  assert.ok(heldFindings(before, "u", () => true).get("F3")?.length);
+  assert.ok(heldFindings(before, "u", () => true).get("F3")?.some((h) => h.why === "comparison"
     && h.answers?.includes("a-one") && h.answers?.includes("a-two") && h.since === at(21)));
   assert.ok(!ruledNotCarriedOut(before, () => true).some((x) => x.finding === "F3"));
   const payload = q(`D9: Alice said ${JSON.stringify("Settle")} in a-one; Bob said ${JSON.stringify("No")} in a-two. Which answer should be preserved for F3 and F7?`, ["Preserve a-one", "Preserve a-two"]);
@@ -1153,7 +1153,7 @@ test("Q2 human conflict: concurrent proven rulings hold work until a shown human
         verified: { session: "sess-X", toolUseId: "t" } } } };
   const changed = foldDecisions([base, a, b, R, newWords, read]);
   assert.equal(intentCandidates(changed).length, 0, "verified new intent resolves the shown pair");
-  assert.ok(heldFindings(changed, () => true).get("F3")?.length, "affected work stays held until the new intent has an actionable question");
+  assert.ok(heldFindings(changed, "u", () => true).get("F3")?.length, "affected work stays held until the new intent has an actionable question");
   assert.ok(waits(changed, "resolve-1", /new intent.*fresh valid question/));
   assert.equal(changed.decisions.find((d) => d.label === "resolve-1")!.answers[0]!.words, "Keep the work open and ask for a narrower fix");
 });
@@ -1172,7 +1172,7 @@ test("Round five: a causally later independent answer still needs comparison", (
   assert.equal(pair.length, 1);
   assert.deepEqual(pair[0]!.answers, [alice.id, bob.id]);
   assert.equal(pair[0]!.evidence, "independent-principals");
-  assert.ok(heldFindings(before, () => true).get("F3")?.some((x) => x.why === "comparison"));
+  assert.ok(heldFindings(before, "u", () => true).get("F3")?.some((x) => x.why === "comparison"));
 
   const correction: any = { ...alice, id: "later-alice-correction", at: at(22), writerPrev: alice.id,
     after: [bob.id], data: { ...alice.data, via: { kind: "direct", option: "No" } } };
@@ -1197,7 +1197,7 @@ test("Round five: completed reading is cancelled by changed words, with its evid
     assert.equal(standing(b.d1!), undefined);
     assert.ok(!ruledNotCarriedOut(out, () => true).some((x) => x.answer === W.id));
     assert.deepEqual(awaitingReading(out).map((x) => x.answer), [changed.id]);
-    assert.ok(heldFindings(out, () => true).get("F3")?.some((h) => h.why === "undecided"));
+    assert.ok(heldFindings(out, "u", () => true).get("F3")?.some((h) => h.why === "undecided"));
   }
 });
 
@@ -1249,7 +1249,7 @@ test("round five: nominated cross-question scope holds work without choosing an 
   assert.equal(candidates[0]!.nomination?.id, nomination.id);
   assert.equal(candidates[0]!.sources[0].question.question, d1.payload.question);
   assert.deepEqual(candidates[0]!.sources[0].effects, d1.options);
-  assert.ok(heldFindings(out, () => true).get("F3")?.some((x) => x.why === "comparison"));
+  assert.ok(heldFindings(out, "u", () => true).get("F3")?.some((x) => x.why === "comparison"));
   const outside = ev("decision.comparison.nominated", { answers: [alice.id, bob.id], findings: ["unrelated"], reason: "wrong scope" });
   outside.subject = nomination.subject;
   assert.throws(() => foldDecisions([round, alice, bob, outside]), (e: unknown) => isLogDamage(e) && e.entry.id === outside.id,
@@ -1327,8 +1327,8 @@ test("scoped revision keeps the older answer on untouched findings and its sourc
   assert.equal(d.answers[1]!.revisionInvalid, undefined);
   assert.equal(standingForFinding(d, "F3")?.id, revised.id);
   assert.equal(standingForFinding(d, "F7")?.id, first.id);
-  assert.equal(heldFindings(s, () => true).get("F3")?.[0]?.why, "ruled");
-  assert.equal(heldFindings(s, () => true).get("F7"), undefined);
+  assert.equal(heldFindings(s, "u", () => true).get("F3")?.[0]?.why, "ruled");
+  assert.equal(heldFindings(s, "u", () => true).get("F7"), undefined);
   assert.equal(ruledNotCarriedOut(s, () => true).find((x) => x.finding === "F3")?.answer, revised.id);
 });
 
@@ -1425,7 +1425,7 @@ test("Q4: withdrawing your own ruling while a colleague's answer stands withdraw
   assert.ok(d.answers.find((a) => a.id === alice.id)!.withdrawn, "hers is withdrawn");
   assert.equal(d.answers.find((a) => a.id === bob.id)!.cancelled, undefined, "his stands");
   assert.equal(standing(d)?.id, bob.id);
-  assert.ok(!heldFindings(out, () => true).get("F3")?.some((x) => x.why === "comparison"), "nothing left to compare");
+  assert.ok(!heldFindings(out, "u", () => true).get("F3")?.some((x) => x.why === "comparison"), "nothing left to compare");
   const later: any = { ...bob, id: "c-bob-later", at: at(26), after: [own.id], data: { ...bob.data, via: { kind: "direct", option: "Settle" } } };
   const after = d1Of(foldDecisions([base, alice, bob, own, later]));
   // His answer stood through the withdrawal, so he may still re-answer (owner, O2).

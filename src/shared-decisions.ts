@@ -2413,14 +2413,25 @@ function holdSince(d: FoldedDecision, finding: string): string | undefined {
   return since;
 }
 /**
+ * Whether a decision's bare finding ids are `universe`'s: a bare id is in its round's universe
+ * (`decisionReferences`), and the merged fold holds every universe's decisions, whose random ids
+ * may still coincide. Canonical issue refs carry their own universe and need no such test.
+ */
+const bareIdsIn = (s: SharedDecisions, universe: string) => {
+  const of = new Map(s.rounds.map((r) => [r.id, r.universe]));
+  return (d: FoldedDecision | undefined): boolean => !!d && of.get(d.round) === universe;
+};
+
+/**
  * Findings not to be offered as open work, and why: a decision on them is undecided, or a
  * standing settle ruling holds them for the verifier (owner: "Held for the verifier"). An
  * unblock ruling releases them. Derived, never stored — and the finding record decides whether
  * a ruled one has since closed.
  */
-export function heldFindings(s: SharedDecisions, isOpen: (finding: string) => boolean): Map<string, Hold[]> {
+export function heldFindings(s: SharedDecisions, universe: string, isOpen: (finding: string) => boolean): Map<string, Hold[]> {
   const out = new Map<string, Hold[]>();
   const byId = new Map(s.decisions.map((x) => [x.id, x]));
+  const local = bareIdsIn(s, universe);
   const add = (d: FoldedDecision, f: string, why: Hold["why"]) => {
     // A closed finding is held by nothing (bulk item 1): the hold was on offering it as work.
     if (!isOpen(f)) return;
@@ -2431,7 +2442,7 @@ export function heldFindings(s: SharedDecisions, isOpen: (finding: string) => bo
   };
   const byAnswer = new Map(s.decisions.flatMap((d) => d.answers.map((a) => [a.sourceAnswer ?? a.id, a] as const)));
   for (const c of intentCandidates(s)) for (const f of c.findings) {
-    if (!isOpen(f)) continue;
+    if (!isOpen(f) || !c.decisions.every((id) => local(byId.get(id)))) continue;
     const d = byId.get(c.decisions[0])!;
     const times = c.answers.map((id) => byAnswer.get(id)?.givenAt ?? "");
     const list = out.get(f) ?? [];
@@ -2445,10 +2456,13 @@ export function heldFindings(s: SharedDecisions, isOpen: (finding: string) => bo
     // fine"), from its own posting (S0.4, P3.5).
     if (d.confirms) {
       if (confirmState(byId, d) !== "open") continue;
-      for (const r of d.confirms.readings) for (const m of r) for (const f of named(byId.get(m.decision)!)) add(d, f, "undecided");
+      for (const r of d.confirms.readings) for (const m of r) {
+        const source = byId.get(m.decision)!;
+        if (local(source)) for (const f of named(source)) add(d, f, "undecided");
+      }
       continue;
     }
-    if (d.withdrawn || d.answers.some((a) => a.withdrawn)) continue;
+    if (d.withdrawn || d.answers.some((a) => a.withdrawn) || !local(d)) continue;
     for (const f of named(d)) {
       const issue = { kind: "finding" as const, id: f };
       const authorities = currentAnswersForIssue(d, issue);
@@ -2536,10 +2550,12 @@ export function heldIssues(s: SharedDecisions, isOpen: (key: string) => boolean)
 
 /** Every finding a possibly-superseded decision names, whether it holds it or not — a mark
  *  on the queues and catalogues that never withholds (owner, S0.8(a)). */
-export function supersededFindings(s: SharedDecisions): Map<string, { decision: string; words: string[] }[]> {
+export function supersededFindings(s: SharedDecisions, universe: string): Map<string, { decision: string; words: string[] }[]> {
   const out = new Map<string, { decision: string; words: string[] }[]>();
   const byId = new Map(s.decisions.map((x) => [x.id, x]));
+  const local = bareIdsIn(s, universe);
   for (const d of s.decisions) {
+    if (!local(d)) continue;
     const p = possiblySuperseded(d, byId);
     if (!p.length) continue;
     for (const f of named(d)) out.set(f, [...(out.get(f) ?? []), { decision: d.id, words: p.map((x) => x.words) }]);

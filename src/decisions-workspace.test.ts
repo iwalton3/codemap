@@ -10,12 +10,12 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { indexBlob } from "./repo.js";
 import { writeStore } from "./store.js";
-import type { State } from "./schema.js";
+import type { Decision, State } from "./schema.js";
 import { shareFinding, bindDecisions } from "./ops-shared.js";
 import { postRound, answerDirect } from "./ops/decisions.js";
 import { cachedDecisions, decisionsView } from "./ops/decision-holds.js";
 import { resolveDecisionIssue, type CanonicalIssueReference } from "./decision-issues.js";
-import { DECISIONS_SCOPE, decisionScope, foldDecisions, postRoundEvent, recordAnswerEvent } from "./shared-decisions.js";
+import { DECISIONS_SCOPE, decisionScope, foldDecisions, heldFindings, postRoundEvent, readDecisionLog, recordAnswerEvent } from "./shared-decisions.js";
 import { readScope } from "./eventlog.js";
 import { universeKey } from "./sidecar-config.js";
 import { stable } from "./oracle-properties.js";
@@ -35,7 +35,7 @@ const asAgent = <T>(fn: () => Promise<T>) => withEnv({ CODEMAP_AGENT_MODEL: "cla
 const asPerson = <T>(fn: () => Promise<T>) => withEnv({ CODEMAP_AGENT_MODEL: undefined }, fn);
 
 /** A repo whose universe is its directory's name, pointed at `side`. */
-async function repo(side: string, name: string) {
+async function repo(side: string, name: string, id?: string) {
   const root = mkdtempSync(join(tmpdir(), `codemap-ws-${name}-`));
   const git = (...a: string[]) => spawnSync("git", a, { cwd: root });
   git("init", "-q", "-b", "main");
@@ -48,7 +48,7 @@ async function repo(side: string, name: string) {
   await writeStore(root, anchors, state);
   writeFileSync(join(root, ".codemap", "sidecar"), side, "utf8");
   const finding = await asAgent(async () =>
-    ((await shareFinding(root, 7, { targetKind: "anchor", targetId: anchors[0]!.id, text: `${name}: creditLine doubles` })) as { id: string }).id);
+    ((await shareFinding(root, 7, { ...(id ? { id } : {}), targetKind: "anchor", targetId: anchors[0]!.id, text: `${name}: creditLine doubles` })) as { id: string }).id);
   const resolved = await resolveDecisionIssue(root, { kind: "finding", universe: universeKey(root), id: finding, review: 7 });
   assert.ok(resolved.ok, JSON.stringify(resolved));
   return { root, finding, ref: resolved.ref as CanonicalIssueReference };
@@ -143,5 +143,31 @@ test("absent is not empty, over every decisions scope: another universe's legacy
     const view = await decisionsView(api.root);
     assert.equal(view.status.status, "blocked");
     assert.equal(view.s.decisions.length, 1, "the stored rows are served, never overwritten with empty");
+  } finally { discard(api.root); discard(settlement.root); discard(side); }
+});
+
+test("a bare finding id holds only in its round's universe, though two universes' ids coincide", async () => {
+  const side = mkdtempSync(join(tmpdir(), "codemap-ws-collide-side-"));
+  const api = await repo(side, "api", "f_collision"), settlement = await repo(side, "settlement", "f_collision");
+  try {
+    const b = bindDecisions(api.root);
+    assert.ok(!("error" in b));
+    const question = (r: string): Decision[] => [{
+      id: "d1", round: r, ref: "D1", kind: "options",
+      payload: { question: "D1: is f_collision real?", options: [{ label: "Yes" }, { label: "No" }] },
+      options: [{ label: "Yes", effects: [{ findings: ["f_collision"], on: "unblock" }] },
+        { label: "No", effects: [{ findings: ["f_collision"], on: "settle", as: "refuted" }] }],
+    }];
+    const legacy = await postRoundEvent(b.cfg.path, decisionScope(b.cfg.universe), b.actor, { id: "R1", source: "legacy", universe: b.cfg.universe }, question("R1"));
+    assert.ok(!("error" in legacy), JSON.stringify(legacy));
+    const workspace = await postRoundEvent(b.cfg.path, DECISIONS_SCOPE, b.actor, { id: "R2", source: "workspace", universe: b.cfg.universe }, question("R2"));
+    assert.ok(!("error" in workspace), JSON.stringify(workspace));
+
+    assert.equal((await decisionsView(api.root)).work("f_collision").allowed, false, "precondition: the api's own finding is held");
+    const work = (await decisionsView(settlement.root)).work("f_collision");
+    assert.equal(work.allowed, true, JSON.stringify(work));
+    // What repair verification's `rulingContext` asks, over the same merged log.
+    const s = foldDecisions((await readDecisionLog(side)).events);
+    assert.equal(heldFindings(s, universeKey(settlement.root), () => true).has("f_collision"), false);
   } finally { discard(api.root); discard(settlement.root); discard(side); }
 });
