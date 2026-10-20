@@ -30,8 +30,12 @@ import type { StagedEvent } from "./eventlog.js";
  */
 export type QueueState = "staged" | "inflight" | "unknown" | "landed" | "conflict";
 
-/** What a session reads on top of the log (plan C7: an unconfirmed push is "shown on the overlay"). */
-export const onOverlay = (s: QueueState): boolean => s === "staged" || s === "unknown";
+/**
+ * What a session reads on top of the log (plan C7: an unconfirmed push is "shown on the overlay").
+ * `inflight` included: a tab reading while its own sync pushes must still see its act. The replay
+ * itself cannot see it — `syncLinear` runs under `withoutOverlay`.
+ */
+export const onOverlay = (s: QueueState): boolean => s === "staged" || s === "inflight" || s === "unknown";
 
 export interface QueuedOp {
   /** Queue position. Replay order within a session, and never rewritten. */
