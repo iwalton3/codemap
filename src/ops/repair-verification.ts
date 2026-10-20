@@ -444,7 +444,8 @@ export async function recordRepairVerification(root: string, review: number | st
   const key = { purpose: purposeOf(job), requestId: jobKey(job) };
   const launch = readerRequest(root, key);
   const held = readerReceipts(root, key).find((r) => r.receipt === input.receipt);
-  if (!launch || !held || held.state !== "pending") return { error: "no pending held submission with that receipt for this job" };
+  if (!launch || !held) return { error: "no held submission with that receipt for this job" };
+  if (held.state !== "pending") return { error: `reader receipt is ${held.state}${held.why ? `: ${held.why}` : ""}; it will never record again, so launch a new verifier` };
   const { body, session } = JSON.parse(held.body) as { body: Record<string, unknown>; session: string };
   const call = readReceiptCall(job.role === "verifier" ? /(^|__)repair_verification$/ : /(^|__)repair_arbitration$/, input.receipt, held.heldAt, dir);
   if ("pending" in call) return { pending: true as const, reason: call.pending };

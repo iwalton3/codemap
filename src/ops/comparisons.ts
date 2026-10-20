@@ -170,8 +170,13 @@ export async function recordComparisonJudgment(root: string, input: { request: s
     return { ok: true as const, recorded: true as const, event: event.id,
       comparison: (await comparisonDetail(root, input.request)) };
   }
-  return { ok: false as const, pending: pending.length > 0,
-    note: pending.length ? "The reader's successful call/result is not yet verified in this machine's transcript" : "No pending reader judgment; issue a brief and have an independent reader submit one" };
+  const after = readerReceipts(root, key);
+  const still = after.some((x) => x.state === "pending");
+  const refused = after.filter((x) => x.state === "invalid").map((x) => `reader receipt ${x.receipt} is invalid: ${x.why ?? "not actionable"}`);
+  return { ok: false as const, pending: still, ...(refused.length ? { refused } : {}),
+    note: still ? "The reader's successful call/result is not yet verified in this machine's transcript"
+      : refused.length ? "No pending reader judgment: every receipt was refused (see refused) and will never record, so launch a new reader"
+      : "No pending reader judgment; issue a brief and have an independent reader submit one" };
 }
 
 const resolutionExecutions = (root: string, comparison: FoldedComparison) =>

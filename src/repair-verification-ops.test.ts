@@ -351,7 +351,7 @@ test("D3: a recording is `pending` only while its call may still reach disk; nev
     process.env.CODEMAP_VERDICT_GRACE_MS = "0";
     // A transcript directory codemap cannot see looks exactly like this, for ever.
     assert.match((await unwritten.record() as { error: string }).error, /no subagent call that returned receipt .* past the grace/);
-    assert.match((await unwritten.record() as { error: string }).error, /no pending held submission/, "and the receipt is spent");
+    assert.match((await unwritten.record() as { error: string }).error, /^reader receipt is invalid: no subagent call that returned receipt .* past the grace; it will never record again/, "and the receipt is spent, saying why");
     delete process.env.CODEMAP_VERDICT_GRACE_MS;
     const forked = await hold(2);
     subagentTranscript(dir, "a5555555", forked.brief.launch, "repair_verification", { review: "7", requestId: f.requestId, slot: 2, results: forked.results }, forked.held);
