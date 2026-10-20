@@ -31,6 +31,16 @@ export function sessionFile(dir: string, session: string) {
 }
 
 /**
+ * The harness's request log, which it writes into every subagent transcript since 2026-10-16:
+ * the agent's ids and no `isSidechain` (keys measured 2026-10-20, values elided).
+ */
+export const requestLog = (agentId: string, sessionId: string) => [
+  { type: "api-request-shape", agentId, sessionId, shapeHash: "h0", timestamp: new Date().toISOString(), version: "2.1.303", shape: {} },
+  { type: "api-request-blob", agentId, sessionId, hash: "b0", message: { role: "user", content: [] } },
+  { type: "api-request", agentId, sessionId, id: "r0", timestamp: new Date().toISOString(), version: "2.1.303", shapeHash: "h0", params: {}, tail: [], keep: 0 },
+];
+
+/**
  * A reader subagent launched from `session` with `prompt` that made its own `tool` call with
  * `input` and got `result` — the launch in the parent's file, the call in its own sidechain.
  */
@@ -40,6 +50,7 @@ export function readerTranscript(dir: string, session: string, agentId: string, 
   writeFileSync(join(dir, session, "subagents", `agent-${agentId}.meta.json`), JSON.stringify({ agentType: "general-purpose", toolUseId: launch }));
   writeFileSync(join(dir, session, "subagents", `agent-${agentId}.jsonl`), lines([
     { type: "user", isSidechain: true, agentId, sessionId: session, message: { role: "user", content: prompt } },
+    ...requestLog(agentId, session),
     { type: "assistant", isSidechain: true, agentId, sessionId: session, message: { content: [{ type: "tool_use", id: callId, name: `mcp__codemap__${tool}`, input }] } },
     { type: "user", isSidechain: true, agentId, sessionId: session, message: { content: [{ type: "tool_result", tool_use_id: callId, content: JSON.stringify(result) }] } },
   ]));

@@ -287,6 +287,7 @@ export interface ReaderAgent {
 }
 
 const AGENT = /^a[A-Za-z0-9]{6,63}$/;
+const REQUEST_LOG = new Set(["api-request", "api-request-blob", "api-request-shape"]);
 
 function jsonl(file: string): Record<string, any>[] | undefined {
   let raw: string;
@@ -330,7 +331,10 @@ export function readReader(agentId: string, callId: string, dir: string = transc
   // A fork inherits the conversation, and with it the agent's own reading (measured 2026-09-23:
   // its meta says `isFork`, and its transcript opens on a `fork-context-ref`, not its sidechain).
   if (meta?.isFork === true || meta?.agentType === "fork") return { unverified: `subagent ${agentId} is a fork: it inherits the conversation, so it is not blind to your reading` };
-  if (!own.length || own.some((e) => e.isSidechain !== true || e.agentId !== agentId || e.sessionId !== session)) {
+  // The harness's request log carries the ids but no `isSidechain` (measured 2026-10-20; written
+  // since 2026-10-16). Skipped by NAME so any other new type still refuses: an allowlist of
+  // conversation types would wave through the next `fork-context-ref`.
+  if (!own.length || own.some((e) => (e.isSidechain !== true && !REQUEST_LOG.has(e.type)) || e.agentId !== agentId || e.sessionId !== session)) {
     return { unverified: `subagent ${agentId}'s transcript is not all its own sidechain` };
   }
   const at = own.findIndex((e) => callsTool(e, callId));
