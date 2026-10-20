@@ -36,12 +36,13 @@ export function canonicalIssueKey(ref: CanonicalIssueReference): string {
 /**
  * Whether a finding ref's `review` resolves to the scope it names (`findingKeyScope`, as
  * `resolveDecisionIssue` derives it). `canonicalIssueKey` does not hash `review`, so a ref whose two
- * disagree keys correctly and still states a review the finding is not on.
+ * disagree keys correctly and still states a review the finding is not on. Compares NORMALIZED
+ * forms: an older build wrote `"#7"`, and refusing it in the fold locks every upgraded clone.
  */
 export function findingReviewMatchesScope(ref: { universe: string; review: string; scope: string }): boolean {
   try {
     const review = normalizeFindingKey(ref.review);
-    return review === ref.review && findingScope(findingKeyScope({ path: "", universe: ref.universe }, review)) === ref.scope;
+    return findingScope(findingKeyScope({ path: "", universe: ref.universe }, review)) === ref.scope;
   } catch { return false; }
 }
 
@@ -64,7 +65,23 @@ export async function resolveWorkspaceIssue(logRoot: string, input: CanonicalIss
   if (read.status === "blocked") return refuse("unreadable", `${input.scope} cannot be read${read.diagnostic?.detail ? `: ${read.diagnostic.detail}` : ""}`);
   if (!read.events.some((e) => e.kind === created && e.subject === input.id))
     return refuse("not-found", `no ${input.kind} ${input.id} in ${input.scope}`);
-  return { ok: true, ref: input };
+  return { ok: true, ref: input.kind === "finding" ? { ...input, review: normalizeFindingKey(input.review) } : input };
+}
+
+/**
+ * A caller's issues as the refs their resolvers return, so the log holds one spelling per issue:
+ * this universe's through `resolveDecisionIssue`, another's through `resolveWorkspaceIssue`.
+ */
+export async function canonicalIssues(root: string, logRoot: string | undefined, universe: string | undefined,
+  issues: CanonicalIssueReference[]): Promise<{ ok: true; refs: CanonicalIssueReference[] } | IssueRefusal> {
+  const refs: CanonicalIssueReference[] = [];
+  for (const issue of issues) {
+    const found = logRoot && issue?.universe !== universe ? await resolveWorkspaceIssue(logRoot, issue) : await resolveDecisionIssue(root, issue);
+    if (!found.ok) return found;
+    if (canonicalIssueKey(found.ref) !== canonicalIssueKey(issue)) return refuse("wrong-scope", `${issue.id} did not resolve to the stated scope`);
+    refs.push(found.ref);
+  }
+  return { ok: true, refs };
 }
 
 /** Resolve only an exact store ID. The source scope, not a display ref, owns the issue. */

@@ -1857,6 +1857,57 @@ test("round five: real relay revision verifies exact shown source and human give
 });
 
 
+test("an issue ref written with review \"#7\" is posted, relayed and nominated as its canonical ref", async () => {
+  const u = await universe();
+  try {
+    const f = await withFinding(u);
+    const { resolveDecisionIssue } = await import("./decision-issues.js");
+    const { universeKey } = await import("./sidecar-config.js");
+    const resolved = await resolveDecisionIssue(u.root, { kind: "finding", universe: universeKey(u.root), id: f, review: 7 });
+    assert.ok(resolved.ok, JSON.stringify(resolved));
+    const spelled = { ...resolved.ref, review: "#7" };
+    const issueDecision = { id: "d1", round: "R1", ref: "D1", kind: "options" as const, payload: payloadFor(f),
+      options: [{ label: "Not a defect", effects: [{ findings: [], issues: [spelled], on: "settle" as const, as: "refuted" as const }] },
+        { label: "Real, fix it", effects: [{ findings: [], issues: [spelled], on: "unblock" as const }] }] };
+    await asAgent(async () => {
+      const posted = await postRound(u.root, { round: { id: "R1", source: "review spelling" }, decisions: [issueDecision, decision("d2", f, {}, "D2")] }) as any;
+      assert.equal(posted.ok, true, JSON.stringify(posted));
+    });
+    const b = bindDecisions(u.root) as any;
+    const events = () => readScope(b.cfg.path, DECISIONS_SCOPE);
+    const round = (await events()).find((e) => e.kind === "decision.round.posted")!;
+    assert.equal((round.data as any).decisions[0].options[0].effects[0].issues[0].review, "7", "the log holds the canonical ref");
+
+    let first: any, second: any;
+    await asPerson(async () => { first = await answerDirect(u.root, { decision: "d1", option: "Not a defect" }); });
+    assert.equal(first.recorded, true, JSON.stringify(first));
+    await withEnv({ CODEMAP_AGENT_MODEL: undefined, CODEMAP_PRINCIPAL: "bob@x.com" }, async () => {
+      second = await answerDirect(u.root, { decision: "d2", option: "Real, fix it" });
+    });
+    assert.equal(second.recorded, true, JSON.stringify(second));
+    await asAgent(async () => {
+      const nominated = await nominateComparison(u.root, { answers: [first.answer, second.answer], issues: [spelled], reason: "same finding" }) as any;
+      assert.equal(nominated.ok, true, JSON.stringify(nominated));
+    });
+    const nomination = (await events()).find((e) => e.kind === "decision.comparison.nominated")!;
+    assert.equal((nomination.data as any).issues[0].review, "7");
+
+    // The brief and the recorder map through one helper, so the question recorded is the one shown.
+    await withEnv({ CODEMAP_AGENT_MODEL: "relay-model", CODEMAP_PRINCIPAL: "carol@x.com" }, async () => {
+      const input = { decision: "d1", revises: [first.answer], findings: [], issues: [spelled] };
+      const brief = await revisionRelayBrief(u.root, input) as any;
+      assert.equal(brief.ok, true, JSON.stringify(brief));
+      assert.equal(brief.scope.issues[0].review, "7");
+      transcript(u.transcripts).ask("toolu_spelled", [brief.question], { [brief.question.question]: "Real, fix it" }, later(2));
+      const revised = await reviseDecisionRelayed(u.root, input, {}, u.transcripts) as any;
+      assert.equal(revised.ok, true, JSON.stringify(revised));
+    });
+    const revision = (await events()).find((e) => e.kind === "decision.answer.revised")!;
+    assert.equal((revision.data as any).revision.issues[0].review, "7");
+  } finally { u.cleanup(); }
+});
+
+
 test("round five: interpretation request identity changes with source and shown context", () => {
   const base = { answer: "a1", responseHash: "response-v1", brief: "exact reader prompt",
     manifest: [{ id: "d1", hash: "question-v1", ref: "D1" }],

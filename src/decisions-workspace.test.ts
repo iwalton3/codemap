@@ -238,3 +238,35 @@ test("a finding ref whose review contradicts its scope is refused at the op, the
       assert.ok(findingReviewMatchesScope({ universe: "u", review, scope: findingScope(findingKeyScope({ path: "", universe: "u" }, review)) }), review);
   } finally { discard(api.root); discard(settlement.root); discard(side); }
 });
+
+test("a finding ref whose review is spelled unnormalized but resolves to its scope is accepted at the op and on read, and posted canonical", async () => {
+  const side = mkdtempSync(join(tmpdir(), "codemap-ws-spelling-side-"));
+  const api = await repo(side, "api"), settlement = await repo(side, "settlement");
+  try {
+    for (const review of ["#12", " 12"])
+      assert.equal(findingReviewMatchesScope({ universe: "acme", review, scope: "findings/acme/pr-12" }), true, review);
+    assert.equal(findingReviewMatchesScope({ universe: "acme", review: "999", scope: "findings/acme/pr-12" }), false, "a contradiction is still refused");
+
+    const across = await resolveWorkspaceIssue(side, { ...settlement.ref, review: "#7" } as CanonicalIssueReference);
+    assert.ok(across.ok, JSON.stringify(across));
+    assert.equal((across.ref as { review: string }).review, "7", "the cross-universe arm returns the canonical ref");
+
+    const b = bindDecisions(api.root);
+    assert.ok(!("error" in b));
+    const round = (issue: CanonicalIssueReference, id: string) => ({ publication: 2, round: { id, source: "x", universe: b.cfg.universe }, decisions: [{
+      id: "d1", round: id, ref: "D1", kind: "options",
+      payload: { question: `D1: is ${issue.id} real?`, options: [{ label: "Yes" }, { label: "No" }] },
+      options: [{ label: "Yes", effects: [{ findings: [], issues: [issue], on: "unblock" }] }, { label: "No", effects: [] }],
+    }] });
+    // What an older build could have pushed: the fold must take it, or every upgraded clone locks.
+    const planted = await appendUnfolded(b.cfg.path, decisionScope(b.cfg.universe), b.actor, "decision.round.posted", "R0",
+      round({ ...api.ref, review: "#7" } as CanonicalIssueReference, "R0"));
+    const read = foldDecisionsReport(await readScope(side, decisionScope(b.cfg.universe)));
+    assert.ok(!read.refused.some((r) => r.id === planted.id), JSON.stringify(read.refused));
+
+    const posted = await asAgent(() => postRound(api.root, { round: { id: "R1", source: "x" }, decisions: round({ ...settlement.ref, review: "#7" } as CanonicalIssueReference, "R1").decisions as Decision[] })) as any;
+    assert.equal(posted.ok, true, JSON.stringify(posted));
+    const ev = (await readScope(side, DECISIONS_SCOPE)).find((e) => e.kind === "decision.round.posted")!;
+    assert.equal((ev.data as any).decisions[0].options[0].effects[0].issues[0].review, "7", "the log holds the canonical ref");
+  } finally { discard(api.root); discard(settlement.root); discard(side); }
+});
