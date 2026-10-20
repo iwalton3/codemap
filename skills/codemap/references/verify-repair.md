@@ -123,7 +123,7 @@ and say so). For each slot with open jobs:
    call that returned that receipt, and checks that its transcript shows the exact prompt and the
    exact held submission. `pending` means the call is not on disk yet: record again in a moment
    (for up to a minute). After an error, record once more: some failures (writing to the sidecar,
-   say) leave the receipt usable. If the second answer is `no pending held submission…`, the run
+   say) leave the receipt usable. If the second answer is `reader receipt is invalid: …`, the run
    will never count — a fork, a message sent to it after launch, or a call this machine's
    transcripts do not show. Say so, and launch a new verifier rather than resubmitting. Any other
    error that repeats, report as it is.
