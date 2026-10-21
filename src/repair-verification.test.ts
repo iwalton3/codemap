@@ -143,6 +143,17 @@ test("two blind slots take two verifiers, once each, and the orchestrator is nei
   assert.match(self.rejected(self.verify(1, conn("orch"), self.verdict("fixed", observedFix))) ?? "", /orchestrator cannot verify/);
 });
 
+test("P3: a second slot-1 run with its own run id is refused, and the first run is the one the decision reads", () => {
+  const f = fixture({ stakes: "low" }); f.request();
+  f.verify(1, conn("v1"), f.verdict("fixed", observedFix));
+  // Two subagents on one batch mint distinct `run_<uuid>` ids, so the id clause cannot be what refuses it.
+  const second = f.add("e-second", "repair.verification-recorded", "run-other", { id: "run-other", requestId: "rq", capsuleHash: repairVerificationHash(f.capsule),
+    slot: 1, identity: conn("v2"), results: [f.verdict("unknown", [], "none")] });
+  assert.match(f.rejected(second) ?? "", /its own verifier/);
+  assert.deepEqual(f.folded().runs.map((r) => r.id), ["run-rq-1"]);
+  assert.equal(repairVerificationDecision(f.folded(), "rq", "f").verdict, "fixed");
+});
+
 test("V2: a low-stakes request closes on its one run and has no slot 2; high, or no stakes, still needs two", () => {
   const low = fixture({ stakes: "low" }); low.request();
   low.verify(1, conn("v1"), low.verdict("fixed", observedFix));
