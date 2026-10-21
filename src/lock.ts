@@ -11,7 +11,7 @@
  * (older than staleMs) — so a crashed writer never wedges the map. Zero deps.
  */
 
-import { open, readFile, rm, rename, mkdir, stat } from "node:fs/promises";
+import { open, readFile, rm, rename, mkdir, stat, writeFile, link } from "node:fs/promises";
 import { realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createHash, randomBytes } from "node:crypto";
@@ -107,6 +107,26 @@ export function holdsLock(root: string): boolean {
   return chainHolds.getStore()?.has(lockPath(root)) ?? false;
 }
 
+/**
+ * Create the lock WITH its content, or throw EEXIST: written aside and hard-linked into place,
+ * so the lock never exists empty. An empty one names no pid and is stolen only once stale, so a
+ * writer killed between creating and filling it stalled every later writer past its timeout.
+ * A filesystem without hard links falls back to create-then-write.
+ */
+async function acquire(p: string, content: string): Promise<void> {
+  const staged = `${p}.${process.pid}.${randomBytes(4).toString("hex")}`;
+  try {
+    await writeFile(staged, content, { flag: "wx" });
+    await link(staged, p);
+  } catch (e: any) {
+    if (e?.code === "EEXIST" || !["EPERM", "ENOTSUP", "ENOSYS", "EXDEV"].includes(e?.code)) throw e;
+    const fh = await open(p, "wx");
+    try { await fh.writeFile(content); } finally { await fh.close(); }
+  } finally {
+    await rm(staged, { force: true }).catch(() => {});
+  }
+}
+
 async function hold<T>(p: string, label: string, fn: () => Promise<T>, opts: LockOpts = {}): Promise<T> {
   const timeoutMs = opts.timeoutMs ?? 30_000;
   const staleMs = opts.staleMs ?? 60_000;
@@ -114,9 +134,16 @@ async function hold<T>(p: string, label: string, fn: () => Promise<T>, opts: Loc
   const deadline = Date.now() + timeoutMs;
 
   for (;;) {
-    let fh;
+    // A TOKEN, so release can tell our own lock from one somebody else has since
+    // taken, and a HEARTBEAT, so a legitimately-long holder is never mistaken for a
+    // dead one. Without both, work that outlives `staleMs` was stolen mid-flight and
+    // the original holder then deleted the thief's lock on its way out — admitting a
+    // third writer. Reachable in normal use: publishing to a pull request is one
+    // `gh` call per viewed file at a 120s timeout each, and a first `/api/pr` on a
+    // large repo holds this across a fetch and two full-tree indexes.
+    const token = randomBytes(8).toString("hex");
     try {
-      fh = await open(p, "wx"); // exclusive create — the atomic arbiter
+      await acquire(p, JSON.stringify({ pid: process.pid, at: Date.now(), token }));
     } catch (e: any) {
       if (e?.code !== "EEXIST") throw e;
       // Held. Steal only if the owner is dead or the lock is stale.
@@ -145,17 +172,7 @@ async function hold<T>(p: string, label: string, fn: () => Promise<T>, opts: Loc
       continue;
     }
 
-    // A TOKEN, so release can tell our own lock from one somebody else has since
-    // taken, and a HEARTBEAT, so a legitimately-long holder is never mistaken for a
-    // dead one. Without both, work that outlives `staleMs` was stolen mid-flight and
-    // the original holder then deleted the thief's lock on its way out — admitting a
-    // third writer. Reachable in normal use: publishing to a pull request is one
-    // `gh` call per viewed file at a 120s timeout each, and a first `/api/pr` on a
-    // large repo holds this across a fetch and two full-tree indexes.
-    const token = randomBytes(8).toString("hex");
     try {
-      await fh.writeFile(JSON.stringify({ pid: process.pid, at: Date.now(), token }));
-      await fh.close();
       heldLocks.set(p, token);
       // Well inside `staleMs`, whatever it is set to — a floor that exceeded it would
       // leave the heartbeat useless exactly where the window is tightest.
