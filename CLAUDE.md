@@ -374,8 +374,11 @@ Two blind readers (`release_held_sort`, owner D2) are break-glass for headless b
 `restsOn` label to `decision:<id>` is the one free move. **Stakes is raise-only**: a correction
 may raise a sort's `stakes`, never lower it, so sorters' disagreement-means-high cannot be undone in
 one step — with one exception (owner, F15: "agreed"): a sort that has NO stakes (one from before
-they existed; every sort posted now must state them) may be set `low` by a `dual-sorted` correction
-whose sorters are not the prior sort's. The close-out rules of EVENT_SCHEMA 6 (stakes, the evidence
+they existed; every sort posted now must state them) and no explicitly `high` ancestor may be set
+`low` by a `dual-sorted` correction whose sorters are not the prior sort's. **A leftover finding is
+made by the findings fold from its application**, with no `finding.created`, so "does this finding
+exist" goes through `findingIds` (`src/leftover-findings.ts`), never a scan for `finding.created`
+(`src/finding-created-sweep.test.ts`). The close-out rules of EVENT_SCHEMA 6 (stakes, the evidence
 bar at filing, mutation runs, leftovers, slot 2's derived check) bind only events stamped 6 or
 above (`closeoutRules`): the first fold rules to grandfather by `eventSchema`, so nothing already
 in a log becomes damage. **A decision answer is read only from a

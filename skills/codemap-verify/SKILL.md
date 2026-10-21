@@ -57,9 +57,10 @@ anyone's live checkout — a fresh, clean one per commit, so no run sees a file 
 - **fixed**: run the check yourself. It must fail at the witness commit and pass at the fix commit,
   using the same command, and you record both runs. Run every check the fixer pinned this way. An
   echo of the fixer's result does not count. A check that finds no test to run ("No tests found")
-  is not a failure. Where the evidence lists `mutations` (a claim that a test was missing), apply
-  the named change at the fix commit and record the run failing as `phase: "mutation"`, beside its
-  pass without the change; say whether that mutation tests this claim.
+  is not a failure. Where the sort is marked `testGap` (its sorters read the claims as a missing
+  test), a mutation run stands in for the witness failure: apply the named change at the fix commit
+  and record the run failing as `phase: "mutation"`, beside its pass without the change; say whether
+  that mutation tests this claim. On an unmarked sort a mutation run does not count.
 - **factually-refuted**: run the check at the old code (the witness). It must show no defect there.
 - **inspection**: only when there is no runnable check. Write why, and cite the commit and source
   you read.
