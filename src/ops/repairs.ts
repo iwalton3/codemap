@@ -11,7 +11,7 @@ import { findingsProjection } from "../shared-projections.js";
 import { readCached } from "../materialize.js";
 import { readScopeChecked } from "../eventlog.js";
 import { emitEventChecked } from "../write.js";
-import { emptyRepairRecords, foldRepairRecords, priorsOf, repairFindingCompleteness, type RepairFindingMap, type RepairSortInput, type RepairEvidenceInput, type RepairRecords } from "../repair-records.js";
+import { emptyRepairRecords, foldRepairRecords, priorsOf, readingShape, repairFindingCompleteness, type RepairFindingMap, type RepairSortInput, type RepairEvidenceInput, type RepairRecords } from "../repair-records.js";
 import type { RepairConnection } from "../verifier-boundary.js";
 import { earlierUnfavourableRuns, emptyRepairVerificationState, isRepairVerificationState, repairVerificationDecision, repairVerificationHash } from "../repair-verification.js";
 import { issueClaimHash } from "../ruling-application.js";
@@ -167,11 +167,12 @@ export async function postRepairSort(root: string, review: number | string, sort
 }
 
 /**
- * F5: a correction that changes no READING — the same classification, stakes (absent is high) and
- * refutation, and either no assessments or the prior's own classifications and reasons — keeps the
- * readers who made it, identities and all. Re-filled from this connection, re-pointing `restsOn`
- * re-attributed both sorters to the correcting session, which made two sorters one. A correction
- * that changes a reading needs new readers, and the fold refuses copied ones where stakes move (F15).
+ * F5: a correction that changes no READING keeps the readers who made it, identities and all — the
+ * same classification, stakes (absent is high), refutation and `readingShape`, and either no
+ * assessments or the prior's own classifications and reasons. Otherwise the sorters are re-filled
+ * from this connection, and re-pointing `restsOn` would make two sorters one. A correction that
+ * changes a reading needs new readers; the fold refuses copied ones only where stakes move (F15),
+ * because a session sorter re-sorting a widened correction has the same identity key by right.
  */
 async function keptReading(root: string, review: number | string, sort: Omit<RepairSortInput, "id">) {
   const named = priorsOf(sort);
@@ -179,7 +180,8 @@ async function keptReading(root: string, review: number | string, sort: Omit<Rep
   const r = await repairRecords(root, review);
   const prior = r.error === undefined ? r.records.sorts.find(s => s.input.id === named[0])?.input : undefined;
   if (!prior || prior.provenance !== sort.provenance || prior.classification !== sort.classification
-    || (prior.stakes ?? "high") !== (sort.stakes ?? "high") || prior.refutationSubtype !== sort.refutationSubtype) return undefined;
+    || (prior.stakes ?? "high") !== (sort.stakes ?? "high") || prior.refutationSubtype !== sort.refutationSubtype
+    || readingShape(prior) !== readingShape(sort)) return undefined;
   const reading = (xs: { classification: string; reason: string }[]) => canonical(xs.map(x => [x.classification, x.reason]));
   if (sort.assessments.length && reading(sort.assessments) !== reading(prior.assessments)) return undefined;
   if (sort.arbitration && (!prior.arbitration || canonical([sort.arbitration.reason, sort.arbitration.addresses]) !== canonical([prior.arbitration.reason, prior.arbitration.addresses]))) return undefined;

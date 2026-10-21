@@ -99,6 +99,14 @@ export function evidenceBarError(evidence: Pick<RepairEvidenceInput, "reproducer
   if (m) return `mutation run ${JSON.stringify(m.command)} runs at the fix commit and names the site it mutates and the change`;
 }
 
+/**
+ * What a sort reads: the claims it covers, and as one defect or a pattern of sites. A correction
+ * that changes it is a new reading, so it does not keep the prior's sorters (`keptReading`), and a
+ * release must keep it.
+ */
+export const readingShape = (s: Pick<RepairSortInput, "coverage" | "kind" | "predicate" | "sites">): string =>
+  canonical({ coverage: s.coverage, kind: s.kind, predicate: s.predicate ?? null, sites: s.sites ?? null });
+
 /** The sorter and arbitrator identities a sort was read by, for "fresh readers" (F15). */
 const readersOf = (d: Pick<RepairSortInput, "assessments" | "arbitration">): string[] =>
   [...d.assessments.map((a) => a.identity), ...(d.arbitration ? [d.arbitration.identity] : [])].map((i) => verifierIdentityKey(i));
@@ -160,8 +168,7 @@ export function foldRepairRecords(input: LogEvent[]): RepairRecords {
     if (!["mechanical", "implementation-defect"].includes(d.classification)) return "a release settles a sort only as mechanical or implementation-defect";
     if (d.assessments.length || d.disagreements.length || d.arbitration || d.ruling !== undefined || d.refutationSubtype !== undefined)
       return ruled ? "a ruled sort's provenance is its rulings alone" : "a released sort's provenance is its two readers alone";
-    const shape = (s: RepairSortInput) => canonical({ coverage: s.coverage, kind: s.kind, predicate: s.predicate ?? null, sites: s.sites ?? null });
-    if (shape(d) !== shape(prior)) return "a release keeps the held sort's coverage, kind, predicate and sites";
+    if (readingShape(d) !== readingShape(prior)) return "a release keeps the held sort's coverage, kind, predicate and sites";
     if (!Array.isArray(r.rulings) || !r.rulings.length || r.rulings.some(x => !x || ![x.decision, x.answer, x.question, x.words].every(nonempty))
       || !unique(r.rulings.map(x => x.decision))) return "a release names one ruling, with its question and words, for each decision it drops";
     const dropped = prior.restsOn.filter(x => !d.restsOn.includes(x));

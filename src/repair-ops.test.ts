@@ -378,6 +378,14 @@ test("F5: re-pointing what a dual-sorted sort rests on keeps its two sorters, wh
       assessments: [reading(undefined, "a different reading"), reading("a7654321", "a different reading")] }, later) as { id: string };
     ok(reread);
     assert.equal((await ids(reread.id))[0].session, later.session, "a changed reading is a new reading: new readers");
+    const g = await shareFinding(root, 7, { targetKind: "anchor", targetId: "src/pay.ts#f5b", text: "the same defect again" }) as { id: string };
+    ok(g);
+    const widened = await postRepairSort(root, 7, { ...sort(f.id, []), coverage: [f.id, g.id].map((id) => ({ findingId: id, claimIds: [`${id}:original`] })),
+      provenance: "dual-sorted", prior: reread.id, reason: "g is the same defect", restsOn: ["needs the owner's call"],
+      assessments: [reading(undefined, "a different reading"), reading("a1111111", "a different reading")] }, first) as { id: string };
+    ok(widened);
+    assert.deepEqual((await ids(widened.id)).map((i: any) => [i.session, i.child]), [[first.session, undefined], [first.session, "a1111111"]],
+      "a correction that widens coverage reads the new claims: its readers are the ones who posted it");
   } finally { t.dispose(); }
 });
 
