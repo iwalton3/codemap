@@ -47,6 +47,7 @@ const SKILL_VOCAB = new Set([
   "verified", "checked", "invalid",                          // review trust levels, a sort classification
   "changed", "blocked", "words", "state", "maps", "arbitrator", "ruling", "child",     // asking / repair fields
   "stakes", "high", "ruled",                                 // a repair sort's stakes and a release provenance
+  "leftovers", "problem", "note", "filed", "mutations", "universe", "issues", // close-out fields: leftovers, mutation runs, routing
   "unread", "disputed", "unclear",                           // possiblySuperseded states
   // rules in a cut-over repo: add_operation kinds, the standard_queue name, a rule's fields, values
   "add_requirement", "amend_statement", "amend_standing", "retire_requirement", "pending_specs",

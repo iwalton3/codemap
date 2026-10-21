@@ -22,6 +22,7 @@ const TOPIC_ARM = /topicOf\(|isTopicKey\(|topicKey\(|["']topic:["']|startsWith\(
 const SITES: Record<string, { count: number; arm?: true; why?: string }> = {
   "src/findings-unify.ts#replay": { count: 2, arm: true },
   "src/ops-shared.ts#shareFinding": { count: 1, arm: true },
+  "src/ops/repair-verification.ts#fileLeftover": { count: 1, arm: true },
   "src/ops-shared.ts#headOf": { count: 1, arm: true },
   "src/ops-shared.ts#sharedFindings": { count: 1, arm: true },
   "src/ops-shared.ts#sharedHub": { count: 1, arm: true },
