@@ -21,6 +21,10 @@ export interface RepairSortInput {
    *  arbitrator on disagreement. Judged by /triage-review's sorters; they disagree → high; absent → high
    *  (`slotsFor`). A correction may raise it and never lower it. */
   stakes?: "high" | "low";
+  /** The sorters read every claim this sort covers as a missing test (C6): only then does a mutation run
+   *  red at the fix stand in for the witness red. Schema 6, never on a refutation. Sorters who disagree mean
+   *  no marker, and a sort mixing a behaviour claim with a test gap is split — skill rules, not checked. */
+  testGap?: true;
   /** A logged decisions answer on why the sites or claims this correction removes are not instances (R5, plan 5.2). */
   ruling?: string;
   /** Only on a sort that left its hold, built by codemap: the rulings that answered its decision entries. `ruled`

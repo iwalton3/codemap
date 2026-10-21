@@ -381,6 +381,7 @@ function jobBrief(root: string, records: RepairVerificationRecords, job: Job) {
     claims: c.claims.map(({ id, findingId, text, parentId, witness, asFiled }) => ({ id, findingId, text, parentId, witness, asFiled })),
     sort: { id: c.sort.id, classification: c.sort.classification, kind: c.sort.kind, coverage: c.sort.coverage,
       predicate: c.sort.predicate, sites: c.sort.sites, refutationSubtype: c.sort.refutationSubtype, restsOn: c.sort.restsOn,
+      ...(c.sort.testGap ? { testGap: true } : {}),
       ...(c.sort.ruling ? { ruling: c.sort.ruling } : {}), ...(c.sort.release ? { release: { rulings: c.sort.release.rulings } } : {}) },
     evidence: { id: c.evidence.id, witnessCommit: c.evidence.witnessCommit, baseCommit: c.evidence.baseCommit, fixCommit: c.evidence.fixCommit,
       checks: [...new Set(c.evidence.reproducer.map((x) => x.command))], regression: c.evidence.regression.map(({ command, commit }) => ({ command, commit })),
@@ -400,8 +401,8 @@ function jobBrief(root: string, records: RepairVerificationRecords, job: Job) {
       + "commit, so nothing one run wrote (a test file, a build output) is in the tree another runs in. For \"fixed\", run each "
       + "check yourself: it must FAIL at the witness commit (phase witness) and PASS at the fix commit (phase fix), and "
       + "you record both results. A witness failure counts only as the claim's failure: a check that finds no test to run "
-      + "(\"No tests found\", a spec file absent at the witness) is not a red. Where the evidence pins `mutations` (a claim that a "
-      + "test was missing), a mutation run stands in for that red: apply the named change at the fix commit, run the command and "
+      + "(\"No tests found\", a spec file absent at the witness) is not a red. Where the sort is marked `testGap` (its sorters read "
+      + "the claims as a missing test), a mutation run stands in for that red: apply the named change at the fix commit, run the command and "
       + "record it failing (phase mutation, with `mutation` naming the site and change) beside its pass at the fix without the "
       + "change, and say in `reason` whether that mutation tests this claim. To refute (\"factually-refuted\", or \"invalid\" when the sort says the reviewer "
       + "assumed), first state in `basis` whether and why each pinned check actually tests the claim; if it does not, "

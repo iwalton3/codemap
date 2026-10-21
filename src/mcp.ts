@@ -304,7 +304,7 @@ const reportedSortReceipt = obj({ id: repairString, source: repairString, conten
 const repairCoverage = { findingId: repairString, claimIds: repairStrings };
 const repairResult = { type: "string", enum: ["complete", "partial", "unknown"] };
 const repairRun = obj({ id: repairString, command: repairString, commit: repairString, environment: repairString,
-  phase: { type: "string", enum: ["witness", "fix", "regression", "mutation"], description: "mutation: run at the fix commit with the change named in `mutation` applied; it must fail. For a claim that a test was missing, it stands in for the witness failure." },
+  phase: { type: "string", enum: ["witness", "fix", "regression", "mutation"], description: "mutation: run at the fix commit with the change named in `mutation` applied; it must fail. It stands in for the witness failure only on a sort marked `testGap`." },
   outcome: { type: "string", enum: ["passed", "failed", "unknown"] },
   exitCode: { type: "integer" }, stdout: repairString, stderr: repairString, reason: repairString,
   mutation: obj({ site: { ...repairString, description: "file:line or symbol mutated" }, change: { ...repairString, description: "what was changed, exactly" } }, ["site", "change"], false) },
@@ -316,6 +316,7 @@ const repairSortSchema = obj({ prior: repairString,
   predicate: repairString, sites: repairStrings, refutationSubtype: { type: "string", enum: ["factual", "scope", "assumed"] },
   restsOn: repairStrings, source: repairString, provenance: { type: "string", enum: ["owner-reviewed", "dual-sorted"] },
   stakes: { type: "string", enum: ["high", "low"], description: "Required. How many verifiers close it: low, one; high, two and an arbitrator on disagreement. The sorters' judgment against a standing CLAUDE.md definition, else the owner's five conditions; sorters disagree → high. A correction may raise it, never lower it, with one exception: a sort posted before stakes existed reads as high, and a dual-sorted correction by fresh sorters (not the prior sort's) may set it low." },
+  testGap: { type: "boolean", enum: [true], description: "Set only when the sorters agree every claim this sort covers is a missing test: a mutation run red at the fix then stands in for the witness red. Sorters who disagree mean no marker; a sort that would mix a behaviour claim and a test gap is split into two. Not on a refutation." },
   assessments: { type: "array", items: obj({ identity: repairIdentity, classification: repairString, reason: repairString, receipt: reportedSortReceipt }, ["identity", "classification", "reason"], false) },
   disagreements: { type: "array", items: obj({ id: repairString, text: repairString }, ["id", "text"], false) },
   arbitration: obj({ addresses: repairStrings, reason: repairString, identity: repairIdentity, receipt: reportedSortReceipt }, ["addresses", "reason", "identity"], false),

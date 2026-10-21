@@ -12,7 +12,7 @@ import { foldFindings } from "./shared-findings.js";
 import { issueClaimHash } from "./ruling-application.js";
 import { testChain } from "./test-events.js";
 import {
-  foldRepairVerification, repairVerificationDecision, repairVerificationHash, earlierUnfavourableRuns, isRepairVerificationState, leftoversOf,
+  foldRepairVerification, repairVerificationDecision, repairVerificationHash, earlierUnfavourableRuns, isRepairVerificationState, leftoversOf, resultError,
   type RepairVerificationCapsule, type RepairClaimVerdict,
 } from "./repair-verification.js";
 import type { VerifierIdentity } from "./verifier-boundary.js";
@@ -27,11 +27,11 @@ const run = (command: string, commit: string, phase: RepairExecution["phase"], o
 const CHECK = "node --test guard.test.js";
 const observedFix = [run(CHECK, W, "witness", "failed"), run(CHECK, F, "fix", "passed")];
 
-function fixture(opts: { pinned?: RepairExecution[]; classification?: string; refutationSubtype?: "factual" | "assumed"; stakes?: "high" | "low" | "none" } = {}) {
+function fixture(opts: { pinned?: RepairExecution[]; classification?: string; refutationSubtype?: "factual" | "assumed"; stakes?: "high" | "low" | "none"; testGap?: true } = {}) {
   const sort: RepairSortInput = { id: "sort", classification: opts.classification ?? "mechanical", kind: "isolated", coverage: [{ findingId: "f", claimIds: ["f:original"] }],
     restsOn: [], source: "owner reviewed", provenance: "owner-reviewed", assessments: [], disagreements: [], ...(opts.refutationSubtype ? { refutationSubtype: opts.refutationSubtype } : {}),
     // "none": a sort from before stakes existed, which only a build before EVENT_SCHEMA 6 wrote.
-    ...(opts.stakes === "none" ? {} : { stakes: opts.stakes ?? "high" }) };
+    ...(opts.stakes === "none" ? {} : { stakes: opts.stakes ?? "high" }), ...(opts.testGap ? { testGap: true as const } : {}) };
   const evidence: RepairEvidenceInput = { id: "proof", sortId: "sort", witnessCommit: W, baseCommit: "b".repeat(40), fixCommit: F,
     coverage: [{ findingId: "f", claimIds: ["f:original"], result: "complete", reason: "r", claimResults: [{ claimId: "f:original", result: "complete", reason: "r" }] }],
     reproducer: opts.pinned ?? [], regression: [], inspected: [], rulingIds: [], attribution: [] };
@@ -70,7 +70,7 @@ test("fixed is the verifier's own fail-then-pass observation; an echo of the fix
   const f = fixture(); f.request();
   f.verify(1, conn("v1"), f.verdict("fixed", observedFix));
   const echo = f.verify(2, conn("v2"), f.verdict("fixed", [run(CHECK, F, "fix", "passed")]));
-  assert.match(f.rejected(echo) ?? "", /own observation of the check failing \(at the witness, or as a mutation run at the fix\) and passing at the fix/);
+  assert.match(f.rejected(echo) ?? "", /own observation of the check failing at the witness and passing at the fix/);
   f.verify(2, conn("v3"), f.verdict("fixed", observedFix));
   const d = repairVerificationDecision(f.folded(), "rq", "f");
   assert.deepEqual([d.verdict, d.complete, d.grade], ["fixed", true, "executable"]);
@@ -229,20 +229,23 @@ test("a projected verification state with a broken record fails closed", () => {
   assert.equal(isRepairVerificationState(state), false, "a subagent identity names its subagent");
 });
 
-test("2c: a mutation run red at the fix stands in for the witness red; it names its change, and only schema 6 runs carry one", () => {
+test("2c: on a sort marked testGap a mutation run red at the fix stands in for the witness red; it names its change, and only schema 6 runs carry one", () => {
   const mutation = { site: "auth.ts:12", change: "ValidIssuer widened" };
   const mutated = (extra = {}): RepairExecution => ({ ...run(CHECK, F, "fix", "failed"), id: "mutation-c", phase: "mutation", mutation, ...extra });
-  const f = fixture({ pinned: [mutated(), run(CHECK, F, "fix", "passed")], stakes: "low" }); f.request();
+  const f = fixture({ pinned: [mutated(), run(CHECK, F, "fix", "passed")], stakes: "low", testGap: true }); f.request();
   const closes = f.verify(1, conn("v1"), f.verdict("fixed", [mutated(), run(CHECK, F, "fix", "passed")]));
   assert.equal(f.rejected(closes), undefined, "no witness red, and it closes");
   assert.equal(repairVerificationDecision(f.folded(), "rq", "f").verdict, "fixed");
-  const g = fixture({ pinned: [mutated(), run(CHECK, F, "fix", "passed")], stakes: "low" }); g.request();
+  const g = fixture({ pinned: [mutated(), run(CHECK, F, "fix", "passed")], stakes: "low", testGap: true }); g.request();
   assert.match(g.rejected(g.verify(1, conn("v1"), g.verdict("fixed", [mutated({ mutation: undefined }), run(CHECK, F, "fix", "passed")]))) ?? "", /names the site it mutates/);
-  assert.match(g.rejected(g.verify(1, conn("v2"), g.verdict("fixed", [run(CHECK, F, "fix", "passed")]))) ?? "", /failing \(at the witness, or as a mutation run at the fix\)/);
-  const old = fixture({ pinned: [mutated(), run(CHECK, F, "fix", "passed")], stakes: "low" }); old.request();
+  assert.match(g.rejected(g.verify(1, conn("v2"), g.verdict("fixed", [run(CHECK, F, "fix", "passed")]))) ?? "", /failing at the witness .*stands in.*marked testGap/);
+  const old = fixture({ pinned: [mutated(), run(CHECK, F, "fix", "passed")], stakes: "low", testGap: true }); old.request();
   const stamped = old.verify(1, conn("v1"), old.verdict("fixed", [mutated(), run(CHECK, F, "fix", "passed")]));
   old.events.find((e) => e.id === stamped)!.eventSchema = 5;
   assert.match(old.rejected(stamped) ?? "", /actual consistent result/, "a build before schema 6 never wrote a mutation phase");
+  // C6: on an unmarked sort the same run is not refused for its phase; it just does not count.
+  const unmarked = fixture({ stakes: "low" });
+  assert.match(resultError(unmarked.verdict("fixed", [mutated(), run(CHECK, F, "fix", "passed")]), unmarked.capsule) ?? "", /counts only on a sort its sorters marked testGap/);
 });
 
 test("F19: leftovers are unioned at apply, a problem in either slot wins, and an application that drops one is refused", () => {

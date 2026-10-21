@@ -113,6 +113,7 @@ class RepairsPage extends Component {
           ${this.provenance(record)}${this.coverage(record.input.coverage)}
           ${when(!!record.input.predicate, () => html`<p>Pattern predicate: ${record.input.predicate}</p><div class="fs">Original sites: ${(record.input.sites || []).join(', ')}</div>`)}
           ${when(!!record.input.refutationSubtype, () => html`<div class="fs">Refutation subtype: ${record.input.refutationSubtype}</div>`)}
+          ${when(!!record.input.testGap, () => html`<div class="fs">Test gap: a mutation run at the fix stands in for the witness failure</div>`)}
           <div class="fs">Depends on: ${record.input.restsOn.join(', ') || 'none recorded'}</div>
           ${each(record.holds, (hold) => html`<div class="fs qbadge drift">${hold}</div>`, (hold) => hold)}
           ${each(record.input.assessments, (assessment) => html`<div class="fs">Sorter ${identityText(assessment.identity)} · ${assessment.classification}: ${assessment.reason}${when(!!assessment.receipt, () => html`<details><summary>Reported receipt ${assessment.receipt.id} · ${assessment.receipt.source}</summary><pre>${assessment.receipt.content}</pre></details>`)}</div>`, (assessment, i) => i)}

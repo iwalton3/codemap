@@ -81,31 +81,32 @@ export const closeoutRules = (e: Pick<LogEvent, "eventSchema">): boolean => (e.e
 
 /**
  * Whether evidence's OWN reproducer runs could ever meet the evidence bar for its sort (F13): per
- * command it pins (any run with an outcome), a fix needs a red — at the witness, or a mutation run
- * at the fix — and a pass at the fix under that exact command string; a refutation needs a pass at
+ * command it pins (any run with an outcome), a fix needs a red — at the witness, or, on a sort
+ * marked `testGap`, a mutation run at the fix — and a pass at the fix under that exact command string; a refutation needs a pass at
  * the witness. Evidence that cannot meet it cost a verifier run each time it was filed (C3: "same
  * command as …", a check passing at both commits). Regression and inspection are not checks here.
  */
-export function evidenceBarError(evidence: Pick<RepairEvidenceInput, "reproducer" | "witnessCommit" | "fixCommit">, sort: Pick<RepairSortInput, "refutationSubtype">): string | undefined {
+export function evidenceBarError(evidence: Pick<RepairEvidenceInput, "reproducer" | "witnessCommit" | "fixCommit">, sort: Pick<RepairSortInput, "refutationSubtype" | "testGap">): string | undefined {
   const runs = evidence.reproducer;
   const ran = (command: string, phase: RepairExecution["phase"], outcome: RepairExecution["outcome"]) => runs.some((x) => x.command === command && x.phase === phase && x.outcome === outcome);
   for (const command of [...new Set(runs.filter((x) => x.outcome !== "unknown").map((x) => x.command))]) {
     if (sort.refutationSubtype !== undefined) {
       if (!ran(command, "witness", "passed")) return `reproducer ${JSON.stringify(command)} cannot meet the bar: a refutation needs it passing at the witness commit`;
-    } else if (!ran(command, "fix", "passed") || !(ran(command, "witness", "failed") || ran(command, "mutation", "failed")))
-      return `reproducer ${JSON.stringify(command)} cannot meet the bar: a fix needs it failing at the witness (or, for a missing test, a mutation run failing at the fix) and passing at the fix, under this exact command`;
+    } else if (!ran(command, "fix", "passed") || !(ran(command, "witness", "failed") || (sort.testGap === true && ran(command, "mutation", "failed"))))
+      return `reproducer ${JSON.stringify(command)} cannot meet the bar: a fix needs it failing at the witness (or, on a sort its sorters marked testGap, a mutation run failing at the fix) and passing at the fix, under this exact command`;
   }
   const m = runs.find((x) => x.phase === "mutation" && (x.commit !== evidence.fixCommit || !x.mutation || !nonempty(x.mutation.site) || !nonempty(x.mutation.change)));
   if (m) return `mutation run ${JSON.stringify(m.command)} runs at the fix commit and names the site it mutates and the change`;
 }
 
 /**
- * What a sort reads: the claims it covers, and as one defect or a pattern of sites. A correction
+ * What a sort reads: the claims it covers, as one defect or a pattern of sites, and whether they
+ * are a missing test. A correction
  * that changes it is a new reading, so it does not keep the prior's sorters (`keptReading`), and a
  * release must keep it.
  */
-export const readingShape = (s: Pick<RepairSortInput, "coverage" | "kind" | "predicate" | "sites">): string =>
-  canonical({ coverage: s.coverage, kind: s.kind, predicate: s.predicate ?? null, sites: s.sites ?? null });
+export const readingShape = (s: Pick<RepairSortInput, "coverage" | "kind" | "predicate" | "sites" | "testGap">): string =>
+  canonical({ coverage: s.coverage, kind: s.kind, predicate: s.predicate ?? null, sites: s.sites ?? null, testGap: s.testGap ?? null });
 
 /** The sorter and arbitrator identities a sort was read by, for "fresh readers" (F15). */
 const readersOf = (d: Pick<RepairSortInput, "assessments" | "arbitration">): string[] =>
@@ -168,7 +169,7 @@ export function foldRepairRecords(input: LogEvent[]): RepairRecords {
     if (!["mechanical", "implementation-defect"].includes(d.classification)) return "a release settles a sort only as mechanical or implementation-defect";
     if (d.assessments.length || d.disagreements.length || d.arbitration || d.ruling !== undefined || d.refutationSubtype !== undefined)
       return ruled ? "a ruled sort's provenance is its rulings alone" : "a released sort's provenance is its two readers alone";
-    if (readingShape(d) !== readingShape(prior)) return "a release keeps the held sort's coverage, kind, predicate and sites";
+    if (readingShape(d) !== readingShape(prior)) return "a release keeps the held sort's coverage, kind, predicate, sites and test-gap marker";
     if (!Array.isArray(r.rulings) || !r.rulings.length || r.rulings.some(x => !x || ![x.decision, x.answer, x.question, x.words].every(nonempty))
       || !unique(r.rulings.map(x => x.decision))) return "a release names one ruling, with its question and words, for each decision it drops";
     const dropped = prior.restsOn.filter(x => !d.restsOn.includes(x));
@@ -218,6 +219,8 @@ export function foldRepairRecords(input: LogEvent[]): RepairRecords {
         if (!error && priorsOf(data).length && (!nonempty(data.reason) || priorsOf(data).some(p => !out.sorts.some(s => s.input.id === p)))) error = "correction needs predecessor and reason";
         if (!error && data.ruling !== undefined && (!nonempty(data.ruling) || !priorsOf(data).length)) error = "a cited ruling belongs to a correction: it names a logged answer and a prior sort";
         if (!error && data.stakes !== undefined && data.stakes !== "high" && data.stakes !== "low") error = "stakes is high or low";
+        if (!error && data.testGap !== undefined && (data.testGap !== true || !closeoutRules(e) || data.refutationSubtype !== undefined))
+          error = "testGap is true or absent, and marks only a sort that closes as fixed";
         // Released and ruled sorts are codemap's, and inherit the held sort's stakes, absent included.
         if (!error && closeoutRules(e) && data.stakes === undefined && (data.provenance === "owner-reviewed" || data.provenance === "dual-sorted"))
           error = "a sort states its stakes, high or low";

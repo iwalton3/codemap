@@ -382,10 +382,21 @@ test("F13: evidence whose own runs could never meet the bar is refused under sch
   // A refutation's check passes at the witness: the bar's other half.
   assert.equal(why([run(CHECK, W, "witness", "passed")], sort({ classification: "factual-refutation", refutationSubtype: "factual" })), "");
   assert.match(why([run(CHECK, W, "witness", "failed")], sort({ classification: "factual-refutation", refutationSubtype: "factual" })), /refutation needs it passing at the witness/);
-  // A mutation run stands in for the witness red: a missing test has nothing to fail at the witness.
+  // On a sort its sorters marked a test gap, a mutation run stands in for the witness red: a missing
+  // test has nothing to fail at the witness. On any other sort it meets nothing (C6).
   const mutated = run(CHECK, F, "mutation", "failed", { mutation: { site: "auth.ts:12", change: "ValidIssuer widened to any issuer" } });
-  assert.equal(why([mutated, run(CHECK, F, "fix", "passed")]), "");
-  assert.match(why([{ ...mutated, mutation: undefined }, run(CHECK, F, "fix", "passed")]), /names the site it mutates/);
-  assert.match(why([{ ...mutated, commit: W }, run(CHECK, F, "fix", "passed")]), /at the fix commit/);
+  const gap = sort({ testGap: true });
+  assert.equal(why([mutated, run(CHECK, F, "fix", "passed")], gap), "");
+  assert.match(why([mutated, run(CHECK, F, "fix", "passed")]), /cannot meet the bar/, "an unmarked sort");
+  assert.match(why([{ ...mutated, mutation: undefined }, run(CHECK, F, "fix", "passed")], gap), /names the site it mutates/);
+  assert.match(why([{ ...mutated, commit: W }, run(CHECK, F, "fix", "passed")], gap), /at the fix commit/);
   assert.match(why([mutated, run(CHECK, F, "fix", "passed")], sort(), before6), /execution phase is required/, "a build before schema 6 never wrote one");
+});
+
+test("C6: testGap is true or absent, schema 6 only, and never on a refutation", () => {
+  const reasons = (s: RepairSortInput, stamp = (e: ReturnType<typeof sorted>) => e) => foldRepairRecords(chain([stamp(sorted(s))])).rejected.map(r => r.reason).join();
+  assert.equal(reasons(sort({ testGap: true })), "");
+  assert.match(reasons(sort({ testGap: false as never })), /testGap is true or absent/);
+  assert.match(reasons(sort({ testGap: true, classification: "factual-refutation", refutationSubtype: "factual" })), /closes as fixed/);
+  assert.match(reasons(sort({ testGap: true }), before6), /testGap is true or absent/);
 });

@@ -157,13 +157,16 @@ export function resultError(r: RepairClaimVerdict, c: RepairVerificationCapsule,
       ? undefined : "a refutation needs the verifier's own passing run of each pinned check at the witness commit";
   }
   const commands = pinned.length ? pinned : [...new Set(r.executions.map((x) => x.command))];
-  // A red at the witness, or (schema 6) a mutation run red at the fix: whether that mutation proves
-  // THIS claim is the verifier's judgment, stated in its reason — nothing marks a claim a test gap.
+  // A red at the witness, or (schema 6) a mutation run red at the fix on a sort its sorters marked a
+  // test gap. On an unmarked sort a mutation run is not refused; it does not count.
+  const gap = closeout && c.sort.testGap === true;
   const red = (command: string) => observed(command, c.evidence.witnessCommit, "witness", "failed")
-    || (closeout && observed(command, c.evidence.fixCommit, "mutation", "failed"));
+    || (gap && observed(command, c.evidence.fixCommit, "mutation", "failed"));
   const both = (command: string) => red(command) && observed(command, c.evidence.fixCommit, "fix", "passed");
   if (!commands.length || (pinned.length ? !pinned.every(both) : !commands.some(both)))
-    return "fixed needs the verifier's own observation of the check failing (at the witness, or as a mutation run at the fix) and passing at the fix";
+    return "fixed needs the verifier's own observation of the check failing at the witness and passing at the fix"
+      + (gap ? " (a mutation run at the fix stands in for the witness failure: the sort is marked testGap)"
+        : r.executions.some((x) => x.phase === "mutation") ? "; a mutation run counts only on a sort its sorters marked testGap" : "");
   return undefined;
 }
 
