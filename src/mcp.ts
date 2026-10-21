@@ -26,7 +26,7 @@ import { METHODOLOGY } from "./guide.js";
 import { analyzeMarten } from "./analyzers/marten.js";
 import { enableAnalyzer } from "./analyzers/run.js";
 import { markReviewed, markReviewedBatch, unmarkReviewed } from "./reviews.js";
-import { withLock } from "./lock.js";
+import { withLock, holdsLock } from "./lock.js";
 import { SIGN_OFF_AXES, EVIDENCE_KINDS, OPERATION_KINDS } from "./schema.js";
 import { applicationReaderBrief, submitApplicationVerdict, recordApplicationVerdict, applyRuling } from "./ops/ruling-application.js";
 import { questionnaireStatus, waitQuestionnaireStatus } from "./ops/questionnaire-status.js";
@@ -376,11 +376,16 @@ const tools: Tool[] = [
   },
   {
     name: "repair_batch_brief",
-    description: "One brief for a round's verification: every open job of one role and slot on the review (or of the `requests` named), each entry exactly repair_brief's. A low-stakes request has no slot 2, so slot 1's batch carries it alone. Submit each entry as its own repair_verification (or repair_arbitration). To delegate, put the returned `launch` line, whole and on a line of its own, in a subagent's prompt — a reviewer's prompt may carry it beside its review instructions; launch slot 1 and slot 2 as different subagents. Called with `batch` it re-reads that batch: what the subagent does first.",
+    description: "One brief for a round's verification: every open job of one role and slot on the review (or of the `requests` named), each entry exactly repair_brief's. A low-stakes request has no slot 2, so slot 1's batch carries it alone. Submit each entry as its own repair_verification (or repair_arbitration). To delegate, put the returned `launch` line, whole and on a line of its own, in a subagent's prompt — a reviewer's prompt may carry it beside its review instructions; launch slot 1 and slot 2 as different subagents. Called with `batch` it re-reads that batch: what the subagent does first. For a review that spans repos, `workspace: true` returns every universe's batch for the slot at once: one subagent per slot carries all their lines.",
     inputSchema: obj({ review: { type: "string" }, role: { type: "string", enum: ["verifier", "arbitrator"] }, slot: { type: "integer", enum: [1, 2] },
-      requests: { type: "array", items: { type: "string" } }, batch: { type: "string" } }, ["review"]),
+      requests: { type: "array", items: { type: "string" } }, batch: { type: "string" },
+      workspace: { type: "boolean", description: "With role and slot, every universe's batch for that slot of a review that spans repos, in one answer: put all of their launch lines in ONE subagent's prompt." } }, ["review"]),
     mutates: true,
-    handler: (a, c) => ops.repairBatchBrief(c.universe.path, a.review, a as never, connection),
+    handler: async (a, c) => a.workspace
+      ? (a.batch !== undefined || a.requests !== undefined ? { error: "the workspace form takes role and slot only" }
+        : ops.workspaceRepairBatchBriefs(c.ws.universes.map((u) => ({ id: u.id, root: u.path })), a.review, a as never, connection,
+          (root, fn) => (holdsLock(root) ? fn() : withLock(root, fn))))
+      : ops.repairBatchBrief(c.universe.path, a.review, a as never, connection),
   },
   {
     name: "repair_verification",
@@ -2621,7 +2626,7 @@ async function handle(msg: any): Promise<void> {
         const run = () => tool.handler(args, { ws, universe });
         const locked = typeof tool.mutates === "function" ? tool.mutates(args) : tool.mutates;
         const answered = locked ? await withLock(universe.path, run) : await run();
-        const out = BRIEF_TOOLS.has(tool.name) && ws.universes.length > 1 && answered && typeof answered === "object" && !Array.isArray(answered) && !("error" in answered)
+        const out = BRIEF_TOOLS.has(tool.name) && !args.workspace && ws.universes.length > 1 && answered && typeof answered === "object" && !Array.isArray(answered) && !("error" in answered)
           ? { ...answered, universe: universe.id } : answered;
         // Every call from a session holding staged writes says so (plan 4.1): "sync and push often".
         const held = shared.stagedCount(ws.universes.map((u) => u.path));

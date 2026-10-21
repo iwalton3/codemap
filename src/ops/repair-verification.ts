@@ -316,6 +316,29 @@ export async function repairBatchBrief(root: string, review: number | string,
       + `To hand this batch to a subagent, put this line, whole and on a line of its own, in its launch prompt: ${launch}` };
 }
 
+/**
+ * Every universe's batch for one role and slot of a review that spans repos (F16): one call, so
+ * the coordinator can put every launch line in ONE subagent's prompt — one verifier per slot for
+ * the cluster, not one per universe. A universe with no open job for that slot is left out.
+ * Batches are still per universe; it is the subagent that spans them.
+ */
+export async function workspaceRepairBatchBriefs(universes: { id: string; root: string }[], review: number | string,
+  input: { role?: "verifier" | "arbitrator"; slot?: 1 | 2 }, connection: RepairConnection,
+  locked: <T>(root: string, fn: () => Promise<T>) => Promise<T> = (_root, fn) => fn()) {
+  if (connection.claimed()) return { error: "a dedicated verifier connection holds one batch; the workspace form is for the session that launches verifiers" };
+  const batches = [], skipped = [];
+  for (const u of universes) {
+    const b = await locked(u.root, () => repairBatchBrief(u.root, review, { role: input?.role, slot: input?.slot }, connection));
+    if ("batch" in b) batches.push({ universe: u.id, ...b });
+    else skipped.push({ universe: u.id, reason: String(b.error) });
+  }
+  if (!batches.length) return { error: `no universe has an open ${input?.role === "arbitrator" ? "arbitration" : `slot ${input?.slot}`} on review ${String(review)}`, skipped };
+  const lines = batches.map((b) => b.launch);
+  return { review: String(review), batches, skipped, launch: lines.join("\n"),
+    instruction: `Launch ONE subagent for this ${input?.role === "arbitrator" ? "arbitration" : `slot`} with every line of \`launch\`, each whole and on a line of its own, in its prompt; `
+      + "it does each batch's entries, passing that batch's `universe` on its calls. Launch slot 1 and slot 2 as different subagents." };
+}
+
 /** One job's blind brief: what the verifier reads, and nothing it may not. */
 function jobBrief(records: RepairVerificationRecords, job: Job) {
   const request = records.requests.find((r) => r.id === job.requestId);

@@ -228,3 +228,28 @@ test("F10: an answer reader's submit_verdict and record_reading without `univers
     assert.notDeepEqual(routed, primary, "only settlement holds the verdict, so the routing is observable");
   } finally { discard(dir); w.dispose(); }
 });
+
+test("F16: repair_batch_brief with `workspace` returns every universe's slot-1 batch in one answer, and one subagent on its lines records both", async () => {
+  const w = await twoUniverses();
+  const dir = mkdtempSync(join(tmpdir(), "codemap-xu-tx-"));
+  try {
+    const orchestrator = new RepairConnection(PRINCIPAL);
+    const jobs = [{ u: w.api, r: await repairable(w.api, orchestrator) }, { u: w.settlement, r: await repairable(w.settlement, orchestrator) }];
+    const [both, none] = await mcp(w.manifest, dir, [{ name: "repair_batch_brief", arguments: { review: "7", role: "verifier", slot: 1, workspace: true } },
+      { name: "repair_batch_brief", arguments: { review: "7", role: "verifier", slot: 2, workspace: true } }]);
+    ok(both);
+    assert.deepEqual(both.batches.map((b: { universe: string }) => b.universe), ["api", "settlement"]);
+    assert.equal(both.universe, undefined, "a workspace answer is not stamped with one universe");
+    assert.match(String(none.error), /no universe has an open slot 2/, "low stakes: no slot 2 anywhere");
+    const calls = [];
+    for (const { u, r } of jobs) {
+      const results = fixedBy(u, r.finding);
+      const input = { review: "7", requestId: r.requestId, slot: 1, results, universe: u.id };
+      const held = await submitRepairVerification(u.root, 7, { requestId: r.requestId, slot: 1, results }, orchestrator) as { held: boolean; receipt: string };
+      assert.equal(held.held, true, JSON.stringify(held));
+      calls.push({ u, r, input, held });
+    }
+    batchTranscript(dir, "a9500001", `Verify the cluster.\n${both.launch}\n`, calls.map((c) => ({ input: c.input, result: c.held })));
+    for (const c of calls) ok(await recordRepairVerification(c.u.root, 7, { requestId: c.r.requestId, role: "verifier", slot: 1, receipt: c.held.receipt }, dir));
+  } finally { discard(dir); w.dispose(); }
+});
