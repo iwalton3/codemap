@@ -1057,7 +1057,7 @@ function foldFindingsInternal(events: LogEvent[], replay: ApplicationReplay): Ma
         f.closed = { eventId: e.id, at: e.at, by: e.actor, reason: application.reason };
         const held = application.leftoversHeld ? application.leftovers?.problems ?? [] : [];
         f.repairClosure = { requestId: application.requestId, applicationId: application.id, outcome: application.outcome,
-          attention: held.length ? ["The topic was retired, so the verifier's leftover problems were not filed as findings: file them where they belong."] : [],
+          attention: held.length ? [`The topic was retired, so the verifier's leftover problems were not filed as findings: file them where they belong — ${held.join("; ")}`] : [],
           ...(application.leftovers?.notes.length ? { notes: application.leftovers.notes } : {}), ...(held.length ? { problems: held } : {}) };
         f.pending = undefined;
         break;
