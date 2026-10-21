@@ -28,8 +28,12 @@ export interface RepairClaimVerdict {
   /** A pattern's sites, from the SORT: each fixed (no bug) or filed as a bug (plan 3.4). */
   sites?: { site: string; bug?: string }[];
 }
+/** What a verifier found beside the claim (F19, owner: "if it is a real problem it becomes a newer,
+ *  narrower scoped finding, otherwise it is a note during closure"). */
+export interface RepairLeftover { kind: "problem" | "note"; text: string }
 export interface RepairVerificationRun {
   id: string; requestId: string; capsuleHash: string; slot: 1 | 2; identity: VerifierIdentity; results: RepairClaimVerdict[];
+  leftovers?: RepairLeftover[];
 }
 export interface RepairVerificationArbitration {
   id: string; requestId: string; capsuleHash: string; identity: VerifierIdentity;
@@ -39,6 +43,8 @@ export interface RepairVerificationArbitration {
 export interface RepairVerificationApplication {
   id: string; requestId: string; capsuleHash: string; findingId: string; openEpoch: string; claimHash: string;
   outcome: "fixed" | "factually-refuted" | "invalid"; contextHash: string; reason: string; identity: VerifierIdentity;
+  /** Every slot's leftovers, as `leftoversOf` derives them (schema 6): problems are filed as findings. */
+  leftovers?: { problems: string[]; notes: string[] };
 }
 export interface RepairVerificationRecords {
   requests: RepairVerificationRequest[]; runs: RepairVerificationRun[];
@@ -52,6 +58,18 @@ export interface RepairVerificationRecords {
  * stakes nothing here; it makes the request stale instead (`repairRecords`, "sort changed").
  */
 export const slotsFor = (c: Pick<RepairVerificationCapsule, "sort">): (1 | 2)[] => c.sort.stakes === "low" ? [1] : [1, 2];
+
+/**
+ * The leftovers of a request's runs, unioned by text: called a problem by ANY slot, it is a problem
+ * (owner: "this is *probably* fine"). On a low-stakes request the one verifier is the only judge.
+ */
+export function leftoversOf(runs: Pick<RepairVerificationRun, "slot" | "leftovers">[]): { problems: string[]; notes: string[] } {
+  const all = [...runs].sort((a, b) => a.slot - b.slot).flatMap((r) => r.leftovers ?? []);
+  const texts = [...new Set(all.map((x) => x.text.trim()))];
+  const problems = texts.filter((t) => all.some((x) => x.text.trim() === t && x.kind === "problem"));
+  return { problems, notes: texts.filter((t) => !problems.includes(t)) };
+}
+const leftoversValid = (v: unknown): boolean => Array.isArray(v) && v.every((x) => !!x && (x.kind === "problem" || x.kind === "note") && text(x.text));
 
 export const repairVerificationHash = (value: unknown): string => createHash("sha256").update(canonical(value) ?? "null").digest("hex");
 
@@ -160,6 +178,9 @@ export function foldRepairVerification(events: LogEvent[]): RepairVerificationRe
           const workers = [...out.runs.filter((x) => x.requestId === d.requestId), ...out.arbitrations.filter((x) => x.requestId === d.requestId)];
           if (workers.some((x) => verifierIdentityKey(x.identity) === verifierIdentityKey(d.identity))) error = "a verifier cannot apply the verdict it gave";
           else error = repairVerificationApplicationError(out, d) ?? repairVerificationSnapshotError(ordered.slice(0, at), request.capsule);
+          // The application carries exactly its runs' leftovers, so nothing a verifier left can be dropped.
+          if (!error && closeoutRules(e) && canonical(d.leftovers ?? null) !== canonical(leftoversOf(out.runs.filter((x) => x.requestId === d.requestId))))
+            error = "an application carries every leftover its runs recorded";
           // One-shot is spent in the FINDINGS arm, only when a closure actually happens (F34):
           // this fold cannot see whether the finding closed, and must not call that fold.
           if (!error) out.applications.push(structuredClone(d));
@@ -171,6 +192,7 @@ export function foldRepairVerification(events: LogEvent[]): RepairVerificationRe
             if (!slotsFor(request.capsule).includes(d.slot)) error = `a ${request.capsule.sort.stakes ?? "high"}-stakes request has slot${slotsFor(request.capsule).length > 1 ? "s 1 and 2" : " 1 only"}`;
             else if (previous.some((x) => x.slot === d.slot || x.id === d.id || verifierIdentityKey(x.identity) === verifierIdentityKey(d.identity))) error = "each blind slot needs its own verifier";
             else if (!Array.isArray(d.results) || !d.results.length || new Set(d.results.map(key)).size !== d.results.length) error = "run needs unique per-claim outcomes";
+            else if (d.leftovers !== undefined && (!closeoutRules(e) || !leftoversValid(d.leftovers))) error = "leftovers are a list of { kind: problem | note, text }";
             else error = d.results.map((r) => resultError(r, request.capsule, closeoutRules(e))).find(Boolean);
             if (!error) out.runs.push(structuredClone(d));
           } else {

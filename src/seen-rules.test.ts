@@ -93,7 +93,7 @@ function repair() {
   for (const slot of [1, 2]) add(`run-${slot}`, "repair.verification-recorded", `run-${slot}`, { id: `run-${slot}`, requestId: "request", capsuleHash: repairVerificationHash(c), slot, identity: identity(`verifier-${slot}`),
     results: [{ findingId: "f", claimId: "f:original", verdict: "fixed", reason: "guard rejects negatives", grade: "inspection", executions: [], inspected: [{ source: "guard", commit: evidence.fixCommit, reasoning: "negative branch returns" }], noCheckReason: "no runnable target" }] }, verifier);
   const tip = events.at(-1)!.id;
-  const data = { id: "application", requestId: "request", capsuleHash: repairVerificationHash(c), findingId: "f", openEpoch: finding.openEpoch, claimHash: issueClaimHash("finding", finding), outcome: "fixed", contextHash: repairVerificationHash(c.rulingContext), reason: "independent inspection covers exact whole claim", identity: identity("orchestrator") };
+  const data = { id: "application", requestId: "request", capsuleHash: repairVerificationHash(c), findingId: "f", openEpoch: finding.openEpoch, claimHash: issueClaimHash("finding", finding), outcome: "fixed", contextHash: repairVerificationHash(c.rulingContext), reason: "independent inspection covers exact whole claim", identity: identity("orchestrator"), leftovers: { problems: [], notes: [] } };
   const apply = (after: string[]) => add("A", "finding.repairApplied", "f", data, verifier, after);
   /** The read's state, and whether the registered findings door — what replay asks — refuses the act. */
   const judge = async () => {

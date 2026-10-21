@@ -390,8 +390,9 @@ const tools: Tool[] = [
   },
   {
     name: "repair_verification",
-    description: "Submit your results for one verifier slot: your own run of each check (fails at the witness, passes at the fix), or an inspection with a no-check reason. A subagent's submission is held until its launcher records it.",
-    inputSchema: obj({ review: { type: "string" }, requestId: { type: "string" }, slot: { type: "integer", enum: [1, 2] }, results: { type: "array", items: repairClaimVerdictSchema } }, ["review", "requestId", "slot", "results"]),
+    description: "Submit your results for one verifier slot: your own run of each check (fails at the witness, passes at the fix), or an inspection with a no-check reason. A subagent's submission is held until its launcher records it. Anything real you found beside the claim goes in `leftovers`, not in a reason: a `problem` becomes a new, narrower finding when the verdict is applied; a `note` stays on the closure.",
+    inputSchema: obj({ review: { type: "string" }, requestId: { type: "string" }, slot: { type: "integer", enum: [1, 2] }, results: { type: "array", items: repairClaimVerdictSchema },
+      leftovers: { type: "array", items: obj({ kind: { type: "string", enum: ["problem", "note"] }, text: { type: "string" } }, ["kind", "text"], false) } }, ["review", "requestId", "slot", "results"]),
     mutates: true,
     handler: (a, c) => ops.submitRepairVerification(c.universe.path, a.review, a, connection),
   },

@@ -31,7 +31,7 @@ function fixture(verdict: "fixed" | "factually-refuted" | "invalid" | "unknown" 
   const result:RepairClaimVerdict={findingId:"f",claimId:"f:original",verdict,reason:verdict === "factually-refuted" || verdict === "invalid" ? "guard already exists at cited target" : "guard rejects negatives",grade:verdict === "unknown" ? "none":"inspection",executions:[],inspected:verdict === "unknown" ? []:[{source:"guard",commit:verdict === "factually-refuted" || verdict === "invalid" ? evidence.witnessCommit : evidence.fixCommit,reasoning:"negative branch returns before mutation"}],noCheckReason:"no runnable target"};
   append("repair.verification-recorded",`run-${slot}`,{id:`run-${slot}`,requestId:"request",capsuleHash:repairVerificationHash(c),slot,identity:who,results:[result]},verifier);
  }
- const apply=()=>append("finding.repairApplied","f",{id:`application-${events.length}`,requestId:"request",capsuleHash:repairVerificationHash(c),findingId:"f",openEpoch:finding.openEpoch,claimHash:issueClaimHash("finding",finding),outcome:verdict === "unknown" ? "fixed":verdict,contextHash:repairVerificationHash(c.rulingContext),reason:"independent inspection covers exact whole claim",identity:identity("orchestrator")},verifier);
+ const apply=()=>append("finding.repairApplied","f",{id:`application-${events.length}`,requestId:"request",capsuleHash:repairVerificationHash(c),findingId:"f",openEpoch:finding.openEpoch,claimHash:issueClaimHash("finding",finding),outcome:verdict === "unknown" ? "fixed":verdict,contextHash:repairVerificationHash(c.rulingContext),reason:"independent inspection covers exact whole claim",identity:identity("orchestrator"),leftovers:{problems:[],notes:[]}},verifier);
  return {events,append,apply,sort,c,identity};
 }
 

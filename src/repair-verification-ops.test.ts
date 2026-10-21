@@ -341,6 +341,27 @@ test("a verifier in a non-primary universe passes `universe` on its call, and th
   } finally { discard(dir); f.t.dispose(); }
 });
 
+test("F19 through the ops: one slot's problem and the other's note on the same text file one finding citing its parent, and keep no note", async () => {
+  const f = await fixture();
+  try {
+    const slot = async (n: 1 | 2, leftovers: { kind: "problem" | "note"; text: string }[]) => {
+      const h = f.host(`v${n}`);
+      ok(await repairVerificationBrief(f.root, 7, { requestId: f.requestId, role: "verifier", slot: n }, h));
+      ok(await submitRepairVerification(f.root, 7, { requestId: f.requestId, slot: n, results: f.results(), leftovers }, h));
+    };
+    await slot(1, [{ kind: "problem", text: "the guard's 403 has no body" }]);
+    await slot(2, [{ kind: "note", text: "the guard's 403 has no body" }, { kind: "note", text: "never run against a real lapse" }]);
+    const applied = await applyRepairVerification(f.root, 7, { requestId: f.requestId, findingId: f.ids[0]!, reason: "two inspections agree" }, f.orchestrator) as { filed?: string[] };
+    ok(applied);
+    assert.equal(applied.filed?.length, 1, JSON.stringify(applied));
+    const leftover = (await readFinding(f.root, applied.filed![0]!, { pr: 7 }))!;
+    assert.match(leftover.text, new RegExp(`Left over from ${f.ids[0]}.*the guard's 403 has no body`));
+    assert.equal(leftover.target.id, (await readFinding(f.root, f.ids[0]!, { pr: 7 }))!.target.id, "it cites the same code");
+    const records = await repairRecords(f.root, 7) as { historicalClosures: { findingId: string; notes?: string[] }[] };
+    assert.deepEqual(records.historicalClosures.find((c) => c.findingId === f.ids[0])?.notes, ["never run against a real lapse"]);
+  } finally { f.t.dispose(); }
+});
+
 test("F17: the brief runs each check in a clean worktree per commit, and a missing test is not a red", async () => {
   const f = await fixture();
   try {

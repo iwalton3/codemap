@@ -151,6 +151,7 @@ class RepairsPage extends Component {
         <div class="sec">Recorded closure history (${detail.historicalClosures.length})</div>
         ${each(detail.historicalClosures, (closure) => html`<div class="op-card historical-repair-closure"><div class="fs">Recorded historical closure ${closure.applicationId}: finding ${closure.findingId} · ${closure.outcome} · current finding state ${closure.state}. Request ${closure.requestId}. The completed act remains history.</div>
           ${each(closure.attention, (reason) => html`<div class="fs qbadge drift repair-closure-attention">Closure needs attention: ${reason}</div>`, (reason) => reason)}
+          ${each(closure.notes ?? [], (note) => html`<div class="fs repair-closure-note">Verifier's note: ${note}</div>`, (note) => note)}
         </div>`, (closure) => closure.applicationId)}
         ${when(!!detail.verification, () => this.verificationHistory(detail.verification, detail.verificationResults))}
         ${when(!!detail.records.rejected.length, () => html`<div class="sec">Rejected records</div>${each(detail.records.rejected, (rejection) => html`<div class="fs">${rejection.eventId}: ${rejection.reason}</div>`, (rejection) => rejection.eventId)}`)}

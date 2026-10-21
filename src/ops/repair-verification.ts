@@ -18,8 +18,8 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { requireActor, resolvePrincipal } from "../identity.js";
 import { sidecarWriteDoor, resolveSidecar, sidecarIdentity } from "../sidecar-config.js";
-import { findingKeyScope } from "../review-target.js";
-import { findingScope, foldFindings, isClosed, isStandingBehind, type SharedFinding } from "../shared-findings.js";
+import { findingKeyScope, branchOf, topicOf } from "../review-target.js";
+import { createFinding, findingScope, foldFindings, isClosed, isStandingBehind, type SharedFinding } from "../shared-findings.js";
 import { cachedBugs } from "../bugs-publish.js";
 import { readAnchorStore } from "../store.js";
 import { findingsProjection } from "../shared-projections.js";
@@ -37,7 +37,7 @@ import { saveReaderRequest, readerRequest, readerRequests, holdReaderReceipt, re
 import { verifierIdentityKey, type RepairConnection, type VerifierIdentity } from "../verifier-boundary.js";
 import {
   foldRepairVerification, repairVerificationHash, repairVerificationDecision, repairVerificationDisagreements,
-  isRepairVerificationState, emptyRepairVerificationState, resultError, slotsFor,
+  isRepairVerificationState, emptyRepairVerificationState, resultError, slotsFor, leftoversOf, type RepairLeftover,
   type RepairVerificationCapsule, type RepairVerificationRun, type RepairVerificationArbitration,
   type RepairVerificationApplication, type RepairClaimVerdict, type RepairVerificationRecords,
 } from "../repair-verification.js";
@@ -433,7 +433,7 @@ async function submit(root: string, review: number | string, job: Job, body: Rec
     next: "held on this machine: the session that launched you records it with record_repair_verification, giving your agent id and this call's id" };
 }
 
-export async function submitRepairVerification(root: string, review: number | string, input: { requestId: string; slot: 1 | 2; results: RepairClaimVerdict[] }, connection: RepairConnection) {
+export async function submitRepairVerification(root: string, review: number | string, input: { requestId: string; slot: 1 | 2; results: RepairClaimVerdict[]; leftovers?: RepairLeftover[] }, connection: RepairConnection) {
   input = structuredClone(input);
   // Validated BEFORE holding (G8: F37): a subagent otherwise got a held receipt for results the
   // fold would reject, and learned it only when its launcher tried to record them.
@@ -444,13 +444,16 @@ export async function submitRepairVerification(root: string, review: number | st
   if (!request) return { error: "unknown repair verification request" };
   const invalid = input.results.map((r) => resultError(r, request.capsule)).find(Boolean);
   if (invalid) return { error: invalid };
+  if (input.leftovers !== undefined && (!Array.isArray(input.leftovers) || input.leftovers.some((x) => !x || (x.kind !== "problem" && x.kind !== "note") || typeof x.text !== "string" || !x.text.trim())))
+    return { error: "leftovers: each { kind: problem | note, text } — a problem becomes a new, narrower finding when this is applied; a note stays on the closure" };
   const job: Job = { requestId: input.requestId, role: "verifier", slot: input.slot };
-  return submit(root, review, job, { results: input.results }, connection, (identity) => async (events) => {
+  const left = input.leftovers?.length ? { leftovers: input.leftovers } : {};
+  return submit(root, review, job, { results: input.results, ...left }, connection, (identity) => async (events) => {
     const request = foldRepairVerification(events).requests.find((r) => r.id === input.requestId);
     if (!request) return { error: "unknown request" };
     const sites = await siteBugRefusal(root, events, input.results);
     if (sites) return { error: sites };
-    const data: RepairVerificationRun = { id: `run_${randomUUID()}`, requestId: request.id, capsuleHash: request.capsuleHash, slot: input.slot, identity, results: input.results };
+    const data: RepairVerificationRun = { id: `run_${randomUUID()}`, requestId: request.id, capsuleHash: request.capsuleHash, slot: input.slot, identity, results: input.results, ...left };
     return { kind: "repair.verification-recorded", subject: data.id, data: { ...data } };
   });
 }
@@ -509,7 +512,8 @@ export async function recordRepairVerification(root: string, review: number | st
     if (job.role === "verifier") {
       const sites = await siteBugRefusal(root, events, body.results as RepairClaimVerdict[]);
       if (sites) return { error: sites };
-      const data: RepairVerificationRun = { id: `run_${randomUUID()}`, requestId: request.id, capsuleHash: request.capsuleHash, slot: job.slot!, identity, results: body.results as RepairClaimVerdict[] };
+      const data: RepairVerificationRun = { id: `run_${randomUUID()}`, requestId: request.id, capsuleHash: request.capsuleHash, slot: job.slot!, identity, results: body.results as RepairClaimVerdict[],
+        ...(body.leftovers ? { leftovers: body.leftovers as RepairLeftover[] } : {}) };
       return { kind: "repair.verification-recorded", subject: data.id, data: { ...data } };
     }
     const data: RepairVerificationArbitration = { id: `arb_${randomUUID()}`, requestId: request.id, capsuleHash: request.capsuleHash, identity,
@@ -523,7 +527,8 @@ export async function recordRepairVerification(root: string, review: number | st
 export async function applyRepairVerification(root: string, review: number | string, input: { requestId: string; findingId: string; reason: string }, connection: RepairConnection) {
   input = structuredClone(input);
   const identity = identityIn(connection, root);
-  return append(root, review, identity, async (events) => {
+  let toFile: { problems: string[]; target: { targetKind: "anchor" | "node"; targetId: string }; findingId: string; requestId: string } | undefined;
+  const applied = await append(root, review, identity, async (events) => {
     const records = foldRepairVerification(events);
     const request = records.requests.find((r) => r.id === input.requestId);
     if (!request) return { error: "unknown repair verification request" };
@@ -539,9 +544,41 @@ export async function applyRepairVerification(root: string, review: number | str
     // "Still open at closure": a site bug closed since the runs means the site is neither.
     const sites = await siteBugRefusal(root, events, records.runs.filter((x) => x.requestId === request.id).flatMap((x) => x.results.filter((r) => r.findingId === target.findingId)));
     if (sites) return { error: sites };
+    const leftovers = leftoversOf(records.runs.filter((x) => x.requestId === request.id));
+    // Filed once per request: the first application of it files; a sibling finding's does not.
+    const parent = foldFindings(events).get(target.findingId);
+    if (!records.applications.some((a) => a.requestId === request.id) && parent)
+      toFile = { problems: leftovers.problems, target: { targetKind: parent.target.kind, targetId: parent.target.id }, findingId: target.findingId, requestId: request.id };
     const data: RepairVerificationApplication = { id: `apply_${randomUUID()}`, requestId: request.id, capsuleHash: request.capsuleHash,
       findingId: target.findingId, openEpoch: target.openEpoch, claimHash: target.claimHash, outcome: decision.verdict as "fixed" | "factually-refuted" | "invalid",
-      contextHash: repairVerificationHash(current.rulingContext), reason: input.reason, identity };
+      contextHash: repairVerificationHash(current.rulingContext), reason: input.reason, identity, leftovers };
     return { kind: "finding.repairApplied", subject: target.findingId, data: { ...data } };
   });
+  if (!("ok" in applied) || !toFile?.problems.length) return applied;
+  // The apply files the problems itself, so no session can apply and forget to (F19). Each stays on
+  // the application record either way, so one that fails to file here is not lost.
+  const filed: string[] = [], unfiled: { text: string; error: string }[] = [];
+  for (const text of toFile.problems) {
+    const f = await fileLeftover(root, review, { ...toFile.target,
+      text: `Left over from ${toFile.findingId} when repair verification ${toFile.requestId} closed it: ${text}` });
+    if ("id" in f) filed.push(f.id); else unfiled.push({ text, error: f.error });
+  }
+  if (filed.length) await repairVerificationRecords(root, review);   // re-folds the scope, so a read sees them
+  return { ...applied, filed, ...(unfiled.length ? { unfiled } : {}) };
+}
+
+/**
+ * A leftover problem as a new finding on the review: `shareFinding`'s write, minus its projection
+ * refresh, which the caller does once for all of them. Not `shareFinding` itself — ops-shared reaches this module
+ * through repair-presentation, so importing it is an ES-module cycle (import-cycles.test.ts).
+ */
+async function fileLeftover(root: string, review: number | string, f: { targetKind: "anchor" | "node"; targetId: string; text: string }): Promise<{ id: string } | { error: string }> {
+  const door = sidecarWriteDoor(root);
+  if (!door.cfg) return { error: door.error ?? "a leftover needs this universe's sidecar" };
+  const actor = requireActor(root);
+  if ("error" in actor) return actor;
+  const branch = branchOf(String(review)), topic = topicOf(String(review));
+  try {
+    return { id: await createFinding(door.cfg.path, findingKeyScope(door.cfg, review), actor, { ...f, ...(branch !== null ? { branch } : {}), ...(topic !== null ? { topic } : {}) }) };
+  } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
 }

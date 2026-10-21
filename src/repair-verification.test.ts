@@ -12,7 +12,7 @@ import { foldFindings } from "./shared-findings.js";
 import { issueClaimHash } from "./ruling-application.js";
 import { testChain } from "./test-events.js";
 import {
-  foldRepairVerification, repairVerificationDecision, repairVerificationHash, earlierUnfavourableRuns, isRepairVerificationState,
+  foldRepairVerification, repairVerificationDecision, repairVerificationHash, earlierUnfavourableRuns, isRepairVerificationState, leftoversOf,
   type RepairVerificationCapsule, type RepairClaimVerdict,
 } from "./repair-verification.js";
 import type { VerifierIdentity } from "./verifier-boundary.js";
@@ -51,12 +51,13 @@ function fixture(opts: { pinned?: RepairExecution[]; classification?: string; re
   const request = (id = "rq") => add(`e-${id}`, "repair.verification-requested", id, { id, capsule, capsuleHash: repairVerificationHash(capsule) });
   const verdict = (v: RepairClaimVerdict["verdict"], executions: RepairExecution[], grade: RepairClaimVerdict["grade"] = "executable", inspected: RepairClaimVerdict["inspected"] = []): RepairClaimVerdict =>
     ({ findingId: "f", claimId: "f:original", verdict: v, reason: "checked", grade, executions, inspected, ...(grade === "inspection" ? { noCheckReason: "nothing runs" } : {}) });
-  const verify = (slot: 1 | 2, identity: VerifierIdentity, result: RepairClaimVerdict, requestId = "rq") =>
+  const verify = (slot: 1 | 2, identity: VerifierIdentity, result: RepairClaimVerdict, requestId = "rq", extra: Record<string, unknown> = {}) =>
     add(`e-run-${requestId}-${slot}-${identity.session}-${identity.child ?? ""}`, "repair.verification-recorded", `run-${requestId}-${slot}`,
-      { id: `run-${requestId}-${slot}`, requestId, capsuleHash: repairVerificationHash(capsule), slot, identity, results: [result] });
+      { id: `run-${requestId}-${slot}`, requestId, capsuleHash: repairVerificationHash(capsule), slot, identity, results: [result], ...extra });
   const apply = (identity: VerifierIdentity, outcome = "fixed") => add(`e-apply-${events.length}`, "finding.repairApplied", "f",
     { id: `apply-${events.length}`, requestId: "rq", capsuleHash: repairVerificationHash(capsule), findingId: "f", openEpoch: finding.openEpoch,
-      claimHash: issueClaimHash("finding", finding), outcome, contextHash: repairVerificationHash("ctx"), reason: "verified", identity });
+      claimHash: issueClaimHash("finding", finding), outcome, contextHash: repairVerificationHash("ctx"), reason: "verified", identity,
+      leftovers: leftoversOf(foldRepairVerification(events).runs.filter((r) => r.requestId === "rq")) });
   const folded = () => foldRepairVerification(events);
   const rejected = (eventId: string) => folded().rejected.find((r) => r.eventId === eventId)?.reason;
   return { events, request, verdict, verify, apply, folded, rejected, add, capsule };
@@ -239,4 +240,21 @@ test("2c: a mutation run red at the fix stands in for the witness red; it names 
   const stamped = old.verify(1, conn("v1"), old.verdict("fixed", [mutated(), run(CHECK, F, "fix", "passed")]));
   old.events.find((e) => e.id === stamped)!.eventSchema = 5;
   assert.match(old.rejected(stamped) ?? "", /actual consistent result/, "a build before schema 6 never wrote a mutation phase");
+});
+
+test("F19: leftovers are unioned at apply, a problem in either slot wins, and an application that drops one is refused", () => {
+  assert.deepEqual(leftoversOf([{ slot: 2, leftovers: [{ kind: "note", text: "x" }, { kind: "note", text: "y" }] }, { slot: 1, leftovers: [{ kind: "problem", text: " x " }] }]),
+    { problems: ["x"], notes: ["y"] });
+  const f = fixture(); f.request();
+  f.verify(1, conn("v1"), f.verdict("fixed", observedFix), "rq", { leftovers: [{ kind: "problem", text: "the 403 has no body" }] });
+  f.verify(2, conn("v2"), f.verdict("fixed", observedFix), "rq", { leftovers: [{ kind: "note", text: "the 403 has no body" }, { kind: "note", text: "never run against a real lapse" }] });
+  const dropped = f.add("e-dropped", "finding.repairApplied", "f", { id: "apply-dropped", requestId: "rq", capsuleHash: repairVerificationHash(f.capsule), findingId: "f",
+    openEpoch: foldFindings(f.events).get("f")!.openEpoch, claimHash: issueClaimHash("finding", foldFindings(f.events).get("f")!), outcome: "fixed",
+    contextHash: repairVerificationHash("ctx"), reason: "verified", identity: conn("applier"), leftovers: { problems: [], notes: ["never run against a real lapse"] } });
+  assert.match(f.rejected(dropped) ?? "", /carries every leftover/);
+  const applied = f.apply(conn("applier"));
+  assert.equal(f.rejected(applied), undefined);
+  assert.deepEqual(foldFindings(f.events).get("f")!.repairClosure?.notes, ["never run against a real lapse"], "the closure shows the note, not the problem");
+  const bad = fixture(); bad.request();
+  assert.match(bad.rejected(bad.verify(1, conn("v1"), bad.verdict("fixed", observedFix), "rq", { leftovers: [{ kind: "worry", text: "?" }] })) ?? "", /leftovers are a list/);
 });

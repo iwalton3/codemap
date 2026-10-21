@@ -367,7 +367,7 @@ export interface SharedFinding {
    * and the agent that did the work keeps its attribution.
    */
   applications?: ApplicationAttempt[];
-  repairClosure?: { requestId: string; applicationId: string; outcome: "fixed" | "factually-refuted" | "invalid"; attention: string[] };
+  repairClosure?: { requestId: string; applicationId: string; outcome: "fixed" | "factually-refuted" | "invalid"; attention: string[]; notes?: string[] };
   /** Last accepted opening act; captured by a ruling application. */
   openEpoch?: string;
   closed?: {
@@ -1034,7 +1034,8 @@ function foldFindingsInternal(events: LogEvent[], replay: ApplicationReplay): Ma
         repairSpent.add(once);
         f.state = application.outcome === "fixed" ? "resolved" : application.outcome === "invalid" ? "invalid" : "refuted";
         f.closed = { eventId: e.id, at: e.at, by: e.actor, reason: application.reason };
-        f.repairClosure = { requestId: application.requestId, applicationId: application.id, outcome: application.outcome, attention: [] };
+        f.repairClosure = { requestId: application.requestId, applicationId: application.id, outcome: application.outcome, attention: [],
+          ...(application.leftovers?.notes.length ? { notes: application.leftovers.notes } : {}) };
         f.pending = undefined;
         break;
       }
