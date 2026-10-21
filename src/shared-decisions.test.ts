@@ -883,6 +883,10 @@ test("posting refuses what the rulings forbid, and accepts the same decision wit
   assert.equal(refused({ ...multiPark, payload: { ...multiPark.payload, multiSelect: false } }), null);
   assert.match(refused(multiPark)!, /multi-select question cannot offer a park/);
   assert.match(refused({ ...good, options: [{ ...good.options[0], park: "2026-10-15" }, good.options[1]] })!, /without its date/);
+  // F2, F4: a malformed field is named with its format, not reported as something missing.
+  assert.match(refused({ ...multiPark, payload: { ...multiPark.payload, multiSelect: false }, options: [{ ...multiPark.options[0], park: true }, multiPark.options[1]] })!, /park is the date it parks until, an ISO date string/);
+  assert.match(refused({ ...good, ref: "D3a" })!, /ref is D<n>.*got "D3a"/);
+  assert.match(refused({ ...good, round: "" })!, /needs a round/);
   assert.equal(refused(d2), null);
   assert.match(refused({ ...d2, payload: { ...d2.payload, multiSelect: false } })!, /bulk decision is a multi-select/);
   assert.match(refused({ ...d2, options: d2.options.map((o: any) => ({ ...o, approveAll: undefined })) })!, /exactly one approve-all/);
@@ -1603,4 +1607,15 @@ test("D4: two withdrawal readers launched from one session are independent; one 
   const readers = [1, 2].map((n) => ({ id: "r" + n, launch: "l" + n, session: "parent", briefHash, verdict: "sound" as const, rationale: reason }));
   assert.equal(withdrawalReviewRefusal(d, reason, { readers }, "alice"), null);
   assert.match(String(withdrawalReviewRefusal(d, reason, { readers: [readers[0]!, { ...readers[1]!, launch: "l1" }] }, "alice")), /not independently launched/);
+});
+
+test("F3: a wrong-shaped event names the field that is wrong, down through lists", () => {
+  assert.equal(decisionEventShape({ ...round, data: { ...round.data, publication: 2 } }), null, "the positive every refusal below varies");
+  const notes = ev("decision.round.posted", { publication: 2, round: { id: "R1", source: "x", notes: "one note" }, decisions: [d1] });
+  assert.match(decisionEventShape(notes)!, /`round\.notes` is missing or the wrong type/);
+  const label = ev("decision.round.posted", { publication: 2, round: { id: "R1", source: "x" }, decisions: [d1, { ...d4, options: [{ label: 3, effects: [] }] }] });
+  assert.match(decisionEventShape(label)!, /`decisions\[1\]\.options\[0\]\.label`/);
+  const pair = ev("decision.comparison.nominated", { answers: ["a"], findings: [], reason: "r" });
+  assert.match(decisionEventShape(pair)!, /`answers` is missing/, "a rule on the whole list names the list");
+  assert.match(decisionEventShape(ev("decision.round.posted", 3))!, /written in$/, "a value that is not an object names no field");
 });

@@ -13,14 +13,27 @@
  */
 import type { LogEvent } from "./eventlog.js";
 
-type Check = (v: unknown) => boolean;
+/** Passes (true), fails right here (false), or names the path beneath it that failed — so the
+ *  refusal can say which field, not just that the event is wrong (F3). Compose with `both`,
+ *  never `&&`: a failure under a field is a truthy object. */
+type Check = (v: unknown) => boolean | { at: string };
+const failure = (c: Check, v: unknown): string | undefined => { const r = c(v); return r === true ? undefined : r === false ? "" : r.at; };
+const under = (k: string, rest: string) => !rest ? k : rest.startsWith("[") ? k + rest : `${k}.${rest}`;
 const obj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 const text: Check = (v) => typeof v === "string" && v.trim().length > 0;
 const string: Check = (v) => typeof v === "string";
 const opt = (c: Check): Check => (v) => v === undefined || c(v);
-const list = (c: Check): Check => (v) => Array.isArray(v) && v.every(c);
-const record = (fields: Record<string, Check>): Check => (v) =>
-  obj(v) && Object.entries(fields).every(([k, c]) => c(v[k]));
+const both = (a: Check, b: Check): Check => (v) => { const r = a(v); return r === true ? b(v) : r; };
+const list = (c: Check): Check => (v) => {
+  if (!Array.isArray(v)) return false;
+  for (const [i, x] of v.entries()) { const f = failure(c, x); if (f !== undefined) return { at: under(`[${i}]`, f) }; }
+  return true;
+};
+const record = (fields: Record<string, Check>): Check => (v) => {
+  if (!obj(v)) return false;
+  for (const [k, c] of Object.entries(fields)) { const f = failure(c, v[k]); if (f !== undefined) return { at: under(k, f) }; }
+  return true;
+};
 const anyObj: Check = obj;
 const bool: Check = (v) => typeof v === "boolean";
 
@@ -44,10 +57,10 @@ const DECISION_SHAPES: Record<string, Check> = {
   }),
   "decision.confirm.posted": record({
     publication: (v) => v === 2, round: text,
-    decision: (v) => decision(v) && record({ confirms: record({ answer: text, readings: list(list(mapping)) }) })(v),
+    decision: both(decision, record({ confirms: record({ answer: text, readings: list(list(mapping)) }) })),
   }),
   "decision.question.logged": record({
-    session: text, toolUseId: text, answeredAt: text, rounds: (v) => list(text)(v) && (v as unknown[]).length > 0,
+    session: text, toolUseId: text, answeredAt: text, rounds: both(list(text), (v) => (v as unknown[]).length > 0),
     bound: (v) => obj(v) && Object.values(v).every(text),
     questions: list(record({ question: string, options: list(record({ label: string })) })),
     answers: anyObj, transcript: opt(string),
@@ -58,9 +71,8 @@ const DECISION_SHAPES: Record<string, Check> = {
   }),
   "decision.answer.revised": record({
     decision: text, hash: text,
-    via: (v) => record({ kind: (k) => k === "direct" || k === "revision-relay" })(v)
-      && ((v as { kind: string }).kind !== "revision-relay"
-        || record({ proof: record({ answer: string, question: opt(anyObj) }) })(v)),
+    via: both(record({ kind: (k) => k === "direct" || k === "revision-relay" }),
+      (v) => (v as { kind: string }).kind !== "revision-relay" || record({ proof: record({ answer: string, question: opt(anyObj) }) })(v)),
     // A revision without the answers it revises is wrong-shaped (owner, batch 6 default 6).
     // A resolution's correction names no findings; the fold reads an absent list as empty.
     revision: record({ of: list(text), findings: opt(list(string)), issues, resolves: opt(anyObj) }),
@@ -71,7 +83,7 @@ const DECISION_SHAPES: Record<string, Check> = {
     staged: record({ attemptId: text, payloadHash: text, questionnaireId: text, answers: list(anyObj), listApprovals: list(anyObj) }),
   }),
   "decision.comparison.nominated": record({
-    answers: (v) => list(text)(v) && (v as unknown[]).length === 2, findings: list(text), issues, reason: text,
+    answers: both(list(text), (v) => (v as unknown[]).length === 2), findings: list(text), issues, reason: text,
   }),
   "decision.comparison.requested": record({
     request: record({ id: text, left: anyObj, right: anyObj, issues: list(anyObj), contextHash: text }),
@@ -128,7 +140,8 @@ const check = (shapes: Record<string, Check>, e: LogEvent): string | null => {
   const shape = shapes[e.kind];
   if (!shape) return null;
   if (typeof e.subject !== "string") return "its subject is not text";
-  return shape(e.data) ? null : `its data is not the shape a ${e.kind} is written in`;
+  const at = failure(shape, e.data);
+  return at === undefined ? null : `its data is not the shape a ${e.kind} is written in${at ? `: \`${at}\` is missing or the wrong type` : ""}`;
 };
 
 /**
