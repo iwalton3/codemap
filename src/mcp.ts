@@ -101,7 +101,7 @@ interface Ctx {
 
 /**
  * Reader work is saved in the store of the universe that issued it, and no launch prompt names
- * that universe, so a subagent's call without `universe` used to reach the primary and be told
+ * that universe, so a subagent's call without `universe` would reach the primary and be told
  * there was no such brief (F6). These tools take the universe that holds the ids they carry.
  */
 const READER_TOOLS = new Set(["repair_brief", "repair_batch_brief", "repair_derived_check", "repair_verification", "repair_arbitration", "record_repair_verification",

@@ -106,7 +106,7 @@ export function readerReceipts(root: string, key: ReaderKey): ReaderReceipt[] {
 }
 
 /** Called only after an external transcript check has reached a verdict. `invalid` is not final: a
- *  refusal can be codemap's own defect (2026-10-20: two in a day, each a lost verifier run), so a
+ *  refusal can be codemap's own defect, which would cost a verifier run each time, so a
  *  later record re-checks it. `recorded` and `cancelled` are final. */
 export function settleReaderReceipt(
   root: string, key: ReaderKey, receipt: string, state: Exclude<ReaderReceiptState, "pending">,

@@ -2,8 +2,7 @@
  * `readReader` against the newest real subagent transcript on this machine, so a harness that
  * changes its transcript shape fails here rather than as every verifier refused in production.
  * The fixtures are frozen measurements, so the unit suite stays green through exactly that
- * drift: the request log Claude Code began writing on 2026-10-16 refused every reader for four
- * days before anyone looked.
+ * drift — a new entry type in the transcript refuses every reader, and only this notices.
  *
  * e2e, and skipping when there are no transcripts, for the same reason as the rest of this
  * directory: the transcripts are not this project's. `CODEMAP_TRANSCRIPT_ROOT` overrides the root.
