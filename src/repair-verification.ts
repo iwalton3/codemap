@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { sortEvents, type LogEvent } from "./eventlog.js";
 import { canonical } from "./transcript.js";
-import { foldRepairRecords } from "./repair-records.js";
+import { closeoutRules, foldRepairRecords } from "./repair-records.js";
 import type { RepairClaim, RepairSortInput, RepairEvidenceInput, RepairExecution, RepairCoverage } from "./repair-records.js";
 import { verifierIdentityKey, type VerifierIdentity } from "./verifier-boundary.js";
 
@@ -69,15 +69,17 @@ const coverageKeys = (coverage: RepairCoverage[]) => coverage.flatMap((c) => c.c
  * the verifier, never an echo of the fixer's outcomes. Every check the fixer pinned is one the
  * verifier must run that way. A factual refutation needs an execution at the witness that passes.
  */
-export function resultError(r: RepairClaimVerdict, c: RepairVerificationCapsule): string | undefined {
+export function resultError(r: RepairClaimVerdict, c: RepairVerificationCapsule, closeout = true): string | undefined {
   if (!r || !text(r.reason) || !verdicts.includes(r.verdict) || !["executable", "inspection", "none"].includes(r.grade)
     || !Array.isArray(r.executions) || !Array.isArray(r.inspected)) return "invalid claim verdict";
   if (!coverageKeys(c.sort.coverage).includes(key(r))) return "verdict exceeds immutable coverage";
   if (r.executions.some((x) => !text(x.id) || !text(x.command) || !text(x.environment) || !sha(x.commit)
-    || !["witness", "fix", "regression"].includes(x.phase) || !["passed", "failed", "unknown"].includes(x.outcome)
+    || !["witness", "fix", "regression", ...(closeout ? ["mutation"] : [])].includes(x.phase) || !["passed", "failed", "unknown"].includes(x.outcome)
     || (x.outcome === "unknown" ? !text(x.reason) : !Number.isInteger(x.exitCode))
     || (x.outcome === "passed" && x.exitCode !== 0) || (x.outcome === "failed" && x.exitCode === 0))) return "execution requires an actual consistent result";
   if (r.inspected.some((x) => !text(x.source) || ![c.evidence.witnessCommit, c.evidence.fixCommit].includes(x.commit) || !text(x.reasoning))) return "inspection must bind the witness or fix commit";
+  if (r.executions.some((x) => x.phase === "mutation" && (x.commit !== c.evidence.fixCommit || !x.mutation || !text(x.mutation.site) || !text(x.mutation.change))))
+    return "a mutation run is at the fix commit and names the site it mutates and the change";
   if (r.verdict !== "fixed" && r.verdict !== "factually-refuted" && r.verdict !== "invalid") return undefined;
   if (r.verdict !== "fixed" && c.sort.refutationSubtype === "scope") return "code evidence cannot refute a scope or requirement judgment";
   if (r.verdict === "invalid" && c.sort.refutationSubtype !== "assumed") return "only a reviewer's refuted assumption closes as invalid";
@@ -116,9 +118,13 @@ export function resultError(r: RepairClaimVerdict, c: RepairVerificationCapsule)
       ? undefined : "a refutation needs the verifier's own passing run of each pinned check at the witness commit";
   }
   const commands = pinned.length ? pinned : [...new Set(r.executions.map((x) => x.command))];
-  const both = (command: string) => observed(command, c.evidence.witnessCommit, "witness", "failed") && observed(command, c.evidence.fixCommit, "fix", "passed");
+  // A red at the witness, or (schema 6) a mutation run red at the fix: whether that mutation proves
+  // THIS claim is the verifier's judgment, stated in its reason — nothing marks a claim a test gap.
+  const red = (command: string) => observed(command, c.evidence.witnessCommit, "witness", "failed")
+    || (closeout && observed(command, c.evidence.fixCommit, "mutation", "failed"));
+  const both = (command: string) => red(command) && observed(command, c.evidence.fixCommit, "fix", "passed");
   if (!commands.length || (pinned.length ? !pinned.every(both) : !commands.some(both)))
-    return "fixed needs the verifier's own observation of the check failing at the witness and passing at the fix";
+    return "fixed needs the verifier's own observation of the check failing (at the witness, or as a mutation run at the fix) and passing at the fix";
   return undefined;
 }
 
@@ -165,7 +171,7 @@ export function foldRepairVerification(events: LogEvent[]): RepairVerificationRe
             if (!slotsFor(request.capsule).includes(d.slot)) error = `a ${request.capsule.sort.stakes ?? "high"}-stakes request has slot${slotsFor(request.capsule).length > 1 ? "s 1 and 2" : " 1 only"}`;
             else if (previous.some((x) => x.slot === d.slot || x.id === d.id || verifierIdentityKey(x.identity) === verifierIdentityKey(d.identity))) error = "each blind slot needs its own verifier";
             else if (!Array.isArray(d.results) || !d.results.length || new Set(d.results.map(key)).size !== d.results.length) error = "run needs unique per-claim outcomes";
-            else error = d.results.map((r) => resultError(r, request.capsule)).find(Boolean);
+            else error = d.results.map((r) => resultError(r, request.capsule, closeoutRules(e))).find(Boolean);
             if (!error) out.runs.push(structuredClone(d));
           } else {
             const runs = out.runs.filter((x) => x.requestId === d.requestId);

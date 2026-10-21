@@ -364,16 +364,23 @@ function jobBrief(records: RepairVerificationRecords, job: Job) {
       checks: [...new Set(c.evidence.reproducer.map((x) => x.command))], regression: c.evidence.regression.map(({ command, commit }) => ({ command, commit })),
       inspected: c.evidence.inspected.map(({ source, commit }) => ({ source, commit })),
       noCheckReason: c.evidence.noCheckReason, rulingIds: c.evidence.rulingIds, attribution: c.evidence.attribution,
-      ...(c.evidence.siteBugs?.length ? { siteBugs: c.evidence.siteBugs } : {}) },
+      ...(c.evidence.siteBugs?.length ? { siteBugs: c.evidence.siteBugs } : {}),
+      ...(c.evidence.reproducer.some((x) => x.phase === "mutation")
+        ? { mutations: c.evidence.reproducer.filter((x) => x.phase === "mutation").map(({ command, mutation }) => ({ command, ...mutation })) } : {}) },
     rulingContext: c.rulingContext };
   return { requestId: request.id, capsuleHash: request.capsuleHash, capsule: neutral,
     ...(job.role === "arbitrator" ? { runs } : {}),
     instruction: "Independently assess only the original claims against the pinned code. Where the sort cites a `ruling`, or was "
       + "released on rulings (`release.rulings`; their text is in `rulingContext`), first judge whether those rulings decide the claim as it is now classified; if they "
       + "do not, the verdict is decision-needed. Work in a scratch worktree "
-      + "at the pinned commits (`git worktree add <scratch> <commit>`), never in anyone's live checkout. For \"fixed\", run each "
+      + "at the pinned commits (`git worktree add <scratch> <commit>`), never in anyone's live checkout — a fresh, clean one for each "
+      + "commit, so nothing one run wrote (a test file, a build output) is in the tree another runs in. For \"fixed\", run each "
       + "check yourself: it must FAIL at the witness commit (phase witness) and PASS at the fix commit (phase fix), and "
-      + "you record both results. To refute (\"factually-refuted\", or \"invalid\" when the sort says the reviewer "
+      + "you record both results. A witness failure counts only as the claim's failure: a check that finds no test to run "
+      + "(\"No tests found\", a spec file absent at the witness) is not a red. Where the evidence pins `mutations` (a claim that a "
+      + "test was missing), a mutation run stands in for that red: apply the named change at the fix commit, run the command and "
+      + "record it failing (phase mutation, with `mutation` naming the site and change) beside its pass at the fix without the "
+      + "change, and say in `reason` whether that mutation tests this claim. To refute (\"factually-refuted\", or \"invalid\" when the sort says the reviewer "
       + "assumed), first state in `basis` whether and why each pinned check actually tests the claim; if it does not, "
       + "you cannot refute on it. Then run it at the witness commit (the old code) and record it passing. If no check "
       + "can be run, grade \"inspection\" with a no-check reason. For a pattern, give every sorted site a "

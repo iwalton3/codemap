@@ -306,6 +306,7 @@ test("repair fold event vocabulary and projection are pinned to the materializer
   // The close-out rules (stakes, the evidence bar at filing, mutation runs) are the fold's
   // vocabulary too: they change what an already-folded scope should say (59 -> 60).
   assert.match(src, /export const CLOSEOUT_SCHEMA = 6;/);
+  assert.match(src, /phase: "witness" \| "fix" \| "regression" \| "mutation";/, "a new execution phase is fold vocabulary");
   assert.equal(MATERIALIZER_VERSION, 60);
 });
 

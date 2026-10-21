@@ -341,6 +341,16 @@ test("a verifier in a non-primary universe passes `universe` on its call, and th
   } finally { discard(dir); f.t.dispose(); }
 });
 
+test("F17: the brief runs each check in a clean worktree per commit, and a missing test is not a red", async () => {
+  const f = await fixture();
+  try {
+    const brief = await repairVerificationBrief(f.root, 7, { requestId: f.requestId, role: "verifier", slot: 1 }, f.host("v")) as { instruction: string };
+    ok(brief);
+    assert.match(brief.instruction, /a fresh, clean one for each commit/);
+    assert.match(brief.instruction, /"No tests found".*is not a red/);
+  } finally { f.t.dispose(); }
+});
+
 test("F15: the brief sends the verifier to a scratch worktree, never a live checkout — a subagent shares the launcher's", async () => {
   const f = await fixture();
   try {

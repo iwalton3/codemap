@@ -66,7 +66,7 @@ test("fixed is the verifier's own fail-then-pass observation; an echo of the fix
   const f = fixture(); f.request();
   f.verify(1, conn("v1"), f.verdict("fixed", observedFix));
   const echo = f.verify(2, conn("v2"), f.verdict("fixed", [run(CHECK, F, "fix", "passed")]));
-  assert.match(f.rejected(echo) ?? "", /own observation of the check failing at the witness and passing at the fix/);
+  assert.match(f.rejected(echo) ?? "", /own observation of the check failing \(at the witness, or as a mutation run at the fix\) and passing at the fix/);
   f.verify(2, conn("v3"), f.verdict("fixed", observedFix));
   const d = repairVerificationDecision(f.folded(), "rq", "f");
   assert.deepEqual([d.verdict, d.complete, d.grade], ["fixed", true, "executable"]);
@@ -223,4 +223,20 @@ test("a projected verification state with a broken record fails closed", () => {
   assert.equal(isRepairVerificationState(state), true);
   state.runs[0].identity = { principal: "owner", harness: "claude-subagent", session: "s" };
   assert.equal(isRepairVerificationState(state), false, "a subagent identity names its subagent");
+});
+
+test("2c: a mutation run red at the fix stands in for the witness red; it names its change, and only schema 6 runs carry one", () => {
+  const mutation = { site: "auth.ts:12", change: "ValidIssuer widened" };
+  const mutated = (extra = {}): RepairExecution => ({ ...run(CHECK, F, "fix", "failed"), id: "mutation-c", phase: "mutation", mutation, ...extra });
+  const f = fixture({ pinned: [mutated(), run(CHECK, F, "fix", "passed")], stakes: "low" }); f.request();
+  const closes = f.verify(1, conn("v1"), f.verdict("fixed", [mutated(), run(CHECK, F, "fix", "passed")]));
+  assert.equal(f.rejected(closes), undefined, "no witness red, and it closes");
+  assert.equal(repairVerificationDecision(f.folded(), "rq", "f").verdict, "fixed");
+  const g = fixture({ pinned: [mutated(), run(CHECK, F, "fix", "passed")], stakes: "low" }); g.request();
+  assert.match(g.rejected(g.verify(1, conn("v1"), g.verdict("fixed", [mutated({ mutation: undefined }), run(CHECK, F, "fix", "passed")]))) ?? "", /names the site it mutates/);
+  assert.match(g.rejected(g.verify(1, conn("v2"), g.verdict("fixed", [run(CHECK, F, "fix", "passed")]))) ?? "", /failing \(at the witness, or as a mutation run at the fix\)/);
+  const old = fixture({ pinned: [mutated(), run(CHECK, F, "fix", "passed")], stakes: "low" }); old.request();
+  const stamped = old.verify(1, conn("v1"), old.verdict("fixed", [mutated(), run(CHECK, F, "fix", "passed")]));
+  old.events.find((e) => e.id === stamped)!.eventSchema = 5;
+  assert.match(old.rejected(stamped) ?? "", /actual consistent result/, "a build before schema 6 never wrote a mutation phase");
 });

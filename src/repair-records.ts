@@ -8,8 +8,11 @@ export type { RepairClaim, RepairCoverage, ReportedSortReceipt, RepairAssessment
 import type { RepairClaim, RepairCoverage, ReportedSortReceipt, RepairSortInput, ReleaseRuling, ReleaseReceipt } from "./repair-sort-types.js";
 export interface RepairExecution {
   id: string; command: string; commit: string; environment: string;
-  phase: "witness" | "fix" | "regression";
+  /** `mutation` (schema 6): the check run at the fix commit with `mutation` applied, which must
+   *  fail — how a missing-test claim shows its new test can fail, when the witness has no test. */
+  phase: "witness" | "fix" | "regression" | "mutation";
   outcome: "passed" | "failed" | "unknown"; exitCode?: number; stdout?: string; stderr?: string; reason?: string;
+  mutation?: { site: string; change: string };
 }
 export interface RepairEvidenceInput {
   id: string; sortId: string; witnessCommit: string; baseCommit: string; fixCommit: string;
@@ -75,6 +78,26 @@ export const priorsOf = (d: Pick<RepairSortInput, "prior" | "priors">): string[]
  */
 export const CLOSEOUT_SCHEMA = 6;
 export const closeoutRules = (e: Pick<LogEvent, "eventSchema">): boolean => (e.eventSchema ?? 0) >= CLOSEOUT_SCHEMA;
+
+/**
+ * Whether evidence's OWN reproducer runs could ever meet the evidence bar for its sort (F13): per
+ * command it pins (any run with an outcome), a fix needs a red — at the witness, or a mutation run
+ * at the fix — and a pass at the fix under that exact command string; a refutation needs a pass at
+ * the witness. Evidence that cannot meet it cost a verifier run each time it was filed (C3: "same
+ * command as …", a check passing at both commits). Regression and inspection are not checks here.
+ */
+export function evidenceBarError(evidence: Pick<RepairEvidenceInput, "reproducer" | "witnessCommit" | "fixCommit">, sort: Pick<RepairSortInput, "refutationSubtype">): string | undefined {
+  const runs = evidence.reproducer;
+  const ran = (command: string, phase: RepairExecution["phase"], outcome: RepairExecution["outcome"]) => runs.some((x) => x.command === command && x.phase === phase && x.outcome === outcome);
+  for (const command of [...new Set(runs.filter((x) => x.outcome !== "unknown").map((x) => x.command))]) {
+    if (sort.refutationSubtype !== undefined) {
+      if (!ran(command, "witness", "passed")) return `reproducer ${JSON.stringify(command)} cannot meet the bar: a refutation needs it passing at the witness commit`;
+    } else if (!ran(command, "fix", "passed") || !(ran(command, "witness", "failed") || ran(command, "mutation", "failed")))
+      return `reproducer ${JSON.stringify(command)} cannot meet the bar: a fix needs it failing at the witness (or, for a missing test, a mutation run failing at the fix) and passing at the fix, under this exact command`;
+  }
+  const m = runs.find((x) => x.phase === "mutation" && (x.commit !== evidence.fixCommit || !x.mutation || !nonempty(x.mutation.site) || !nonempty(x.mutation.change)));
+  if (m) return `mutation run ${JSON.stringify(m.command)} runs at the fix commit and names the site it mutates and the change`;
+}
 
 /** The sorter and arbitrator identities a sort was read by, for "fresh readers" (F15). */
 const readersOf = (d: Pick<RepairSortInput, "assessments" | "arbitration">): string[] =>
@@ -216,8 +239,10 @@ export function foldRepairRecords(input: LogEvent[]): RepairRecords {
         if (!error && ![data.reproducer, data.regression, data.inspected, data.rulingIds, data.attribution].every(Array.isArray)) error = "structured evidence fields are required";
         if (!error && [...data.reproducer, ...data.regression].some(x => !nonempty(x.command) || !commit(x.commit) || !nonempty(x.environment) || !["passed", "failed", "unknown"].includes(x.outcome) || (x.outcome === "unknown" ? !nonempty(x.reason) : !Number.isInteger(x.exitCode)))) error = "execution needs actual result or explicit unknown reason";
         if (!error && data.coverage.some(c => !Array.isArray(c.claimResults) || !unique(c.claimResults.map(r => r.claimId)) || c.claimResults.some(r => !c.claimIds.includes(r.claimId) || !["complete", "partial", "unknown"].includes(r.result) || !nonempty(r.reason)))) error = "per-claim outcomes must cite covered claims and explicit reasons";
-        if (!error && [...data.reproducer, ...data.regression].some(x => !["witness", "fix", "regression"].includes(x.phase))) error = "execution phase is required";
-        if (!error && data.reproducer.some(x => !["witness", "fix"].includes(x.phase))) error = "reproducer runs distinguish witness from fix";
+        const phases = closeoutRules(e) ? ["witness", "fix", "mutation"] : ["witness", "fix"];
+        if (!error && [...data.reproducer, ...data.regression].some(x => ![...phases, "regression"].includes(x.phase))) error = "execution phase is required";
+        if (!error && data.reproducer.some(x => !phases.includes(x.phase))) error = `reproducer runs distinguish ${phases.join(", ")}`;
+        if (!error && closeoutRules(e)) error = evidenceBarError(data, sort!.input);
         if (!error && data.regression.some(x => x.phase !== "regression")) error = "regression runs have a separate phase";
         if (!error && !unique(data.rulingIds)) error = "ruling IDs must be unique";
         if (!error && data.rulingIds.some(x => !nonempty(x))) error = "ruling IDs must be nonempty";

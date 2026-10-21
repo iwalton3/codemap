@@ -360,3 +360,26 @@ test("B15: a correction may ADD a site the original missed; dropping one needs a
   const shrunk = foldRepairRecords(chain([sorted(first), sorted(sort({ id: "s2", prior: "s1", reason: "only api", kind: "pattern", predicate: "missing guard", sites: ["api", "cli"] }))]));
   assert.match(shrunk.rejected[0]!.reason, /removes batch from s1/);
 });
+
+test("F13: evidence whose own runs could never meet the bar is refused under schema 6; the same evidence stamped earlier stays valid", () => {
+  const W = "a".repeat(40), F = "c".repeat(40);
+  const run = (command: string, commit: string, phase: RepairEvidenceInput["reproducer"][number]["phase"], outcome: "passed" | "failed", extra = {}) =>
+    ({ id: `${phase}-${command}`, command, commit, environment: "scratch", phase, outcome, exitCode: outcome === "passed" ? 0 : 1, ...extra });
+  const why = (reproducer: RepairEvidenceInput["reproducer"], s = sort(), stamp = (e: ReturnType<typeof proof>) => e as ReturnType<typeof proof> & { eventSchema?: number }) =>
+    foldRepairRecords(chain([sorted(s), stamp(proof(ev({ reproducer })))])).rejected.map(r => r.reason).join();
+  const CHECK = "npx playwright test guard.spec.ts";
+  assert.equal(why([run(CHECK, W, "witness", "failed"), run(CHECK, F, "fix", "passed")]), "", "the positive every refusal below varies");
+  // C3: the fix run written as a reference to the witness run's command, and a check passing at both commits.
+  assert.match(why([run(CHECK, W, "witness", "failed"), run(`same command as ${CHECK}`, F, "fix", "passed")]), /cannot meet the bar/);
+  assert.match(why([run(CHECK, W, "witness", "passed"), run(CHECK, F, "fix", "passed")]), /cannot meet the bar: a fix needs it failing/);
+  assert.equal(why([run(CHECK, W, "witness", "passed"), run(CHECK, F, "fix", "passed")], sort(), before6), "", "grandfathered");
+  // A refutation's check passes at the witness: the bar's other half.
+  assert.equal(why([run(CHECK, W, "witness", "passed")], sort({ classification: "factual-refutation", refutationSubtype: "factual" })), "");
+  assert.match(why([run(CHECK, W, "witness", "failed")], sort({ classification: "factual-refutation", refutationSubtype: "factual" })), /refutation needs it passing at the witness/);
+  // A mutation run stands in for the witness red: a missing test has nothing to fail at the witness.
+  const mutated = run(CHECK, F, "mutation", "failed", { mutation: { site: "auth.ts:12", change: "ValidIssuer widened to any issuer" } });
+  assert.equal(why([mutated, run(CHECK, F, "fix", "passed")]), "");
+  assert.match(why([{ ...mutated, mutation: undefined }, run(CHECK, F, "fix", "passed")]), /names the site it mutates/);
+  assert.match(why([{ ...mutated, commit: W }, run(CHECK, F, "fix", "passed")]), /at the fix commit/);
+  assert.match(why([mutated, run(CHECK, F, "fix", "passed")], sort(), before6), /execution phase is required/, "a build before schema 6 never wrote one");
+});

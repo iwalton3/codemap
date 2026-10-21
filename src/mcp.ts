@@ -304,9 +304,10 @@ const reportedSortReceipt = obj({ id: repairString, source: repairString, conten
 const repairCoverage = { findingId: repairString, claimIds: repairStrings };
 const repairResult = { type: "string", enum: ["complete", "partial", "unknown"] };
 const repairRun = obj({ id: repairString, command: repairString, commit: repairString, environment: repairString,
-  phase: { type: "string", enum: ["witness", "fix", "regression"] },
+  phase: { type: "string", enum: ["witness", "fix", "regression", "mutation"], description: "mutation: run at the fix commit with `mutation` applied; it must fail. For a claim that a test was missing, it stands in for the witness failure." },
   outcome: { type: "string", enum: ["passed", "failed", "unknown"] },
-  exitCode: { type: "integer" }, stdout: repairString, stderr: repairString, reason: repairString },
+  exitCode: { type: "integer" }, stdout: repairString, stderr: repairString, reason: repairString,
+  mutation: obj({ site: { ...repairString, description: "file:line or symbol mutated" }, change: { ...repairString, description: "what was changed, exactly" } }, ["site", "change"], false) },
   ["id", "command", "commit", "environment", "phase", "outcome"], false);
 const repairSortSchema = obj({ prior: repairString,
   priors: { ...repairStrings, description: "Several current sorts this one replaces at once (a merge); `prior` names one." },
@@ -467,7 +468,7 @@ const tools: Tool[] = [
   },
   {
     name: "record_repair_evidence",
-    description: "Record the fix's evidence: the checks (command, commit, witness/fix phase, actual result), regression runs, pattern enumeration and inspections. Commands are data; nothing is executed. Returns the evidence id.",
+    description: "Record the fix's evidence: the checks (command, commit, witness/fix phase, actual result), regression runs, pattern enumeration and inspections. Commands are data; nothing is executed. Returns the evidence id. Refused when its own runs could never meet the evidence bar: per command, a fix needs it failing at the witness (or a mutation run failing at the fix) and passing at the fix, under the SAME command string; a refutation needs it passing at the witness. Run each at its commit in a clean worktree: a check that finds no test is not a failure.",
     inputSchema: obj({ review: repairString, evidence: repairEvidenceSchema }, ["review", "evidence"]),
     mutates: true,
     handler: (a, c) => ops.recordRepairEvidence(c.universe.path, a.review, a.evidence),

@@ -78,6 +78,11 @@ test("repair ops preserve original scope and sync partial evidence", async () =>
     assert.match((chosen as { error: string }).error, /codemap assigns/);
     const malformed = await recordRepairEvidence(root, 7, { ...evidence, regression: [{ ...evidence.regression[0]!, exitCode: undefined }] });
     assert.match((malformed as { error: string }).error, /execution/);
+    // F13 at the op: C3's evidence, a fix run that names the witness run instead of repeating its command.
+    const c3 = await recordRepairEvidence(root, 7, { ...evidence, reproducer: [
+      { id: "w", command: "npm test -- guard", commit: sha, environment: "scratch", phase: "witness", outcome: "failed", exitCode: 1 },
+      { id: "f", command: "same command as w", commit: sha, environment: "scratch", phase: "fix", outcome: "passed", exitCode: 0 }] });
+    assert.match(String((c3 as { error?: string }).error), /cannot meet the bar/);
     const pointer = join(root, ".codemap", "sidecar"), original = readFileSync(pointer, "utf8");
     try {
       writeFileSync(pointer, join(root, "missing-sidecar"));
