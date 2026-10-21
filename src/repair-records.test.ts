@@ -227,6 +227,12 @@ test("F15: fresh dual sorters may set low on a sort that never had stakes; its o
   assert.match(lower(unset, sort()).join(), /only a dual-sorted correction/, "an owner-reviewed correction may not");
   assert.match(lower(dual(who, other, { stakes: "high" }), dual(s3, s4)).join(), /raise stakes, never lower/, "an explicit high stays");
   assert.match(lower(unset, dual(s3, s4), before6).join(), /only a dual-sorted correction/, "the way down binds only events written under schema 6");
+  const laundered = foldRepairRecords(chain([
+    sorted(dual(who, other, { stakes: "high" })),
+    before6(sorted(dual(who, other, { id: "s2", prior: "s1", reason: "legacy restsOn edit", stakes: undefined }))),
+    sorted(dual(s3, s4, { id: "s3", prior: "s2", reason: "stakes set", stakes: "low" })),
+  ])).rejected.map(r => r.reason);
+  assert.match(laundered.join(), /raise stakes, never lower/, "an explicit high anywhere up the chain stays");
 });
 
 test("arbitration must address each disagreement and unresolved dependency holds", () => {

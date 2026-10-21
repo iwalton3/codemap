@@ -219,7 +219,15 @@ export function foldRepairRecords(input: LogEvent[]): RepairRecords {
         // so a sorting is never re-labelled by the readers who left it without.
         const lowered = !error && data.stakes === "low" ? priorsOf(data).map(p => out.sorts.find(s => s.input.id === p)?.input).filter(p => p?.stakes !== "low") : [];
         if (lowered.length) {
-          const unset = lowered.every(p => p && p.stakes === undefined);
+          // Every ancestor, not only the direct prior: a stakes-less correction between an explicit
+          // high and the way down would otherwise launder the high.
+          const ancestors = new Set<string>(), walk = [...priorsOf(data)];
+          for (let id; (id = walk.pop()) !== undefined;) {
+            const s = ancestors.has(id) ? undefined : out.sorts.find(x => x.input.id === id)?.input;
+            if (s) { ancestors.add(id); walk.push(...priorsOf(s)); }
+          }
+          const unset = lowered.every(p => p && p.stakes === undefined)
+            && ![...ancestors].some(id => out.sorts.find(x => x.input.id === id)!.input.stakes === "high");
           const readers = new Set(lowered.flatMap(p => (p ? readersOf(p) : [])));
           if (!closeoutRules(e) || !unset || data.provenance !== "dual-sorted")
             error = "a correction may raise stakes, never lower them; only a dual-sorted correction may set stakes on a sort that has none";
