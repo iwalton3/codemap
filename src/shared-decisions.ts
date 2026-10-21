@@ -24,6 +24,7 @@
  */
 import { registerKinds, registerReferences, tipReader, type ScopeReader } from "./eventlog.js";
 import { createHash } from "node:crypto";
+import { findingIds } from "./leftover-findings.js";
 import { comparisonContextHash, deriveComparison, validateComparisonRequest, type AnswerSource, type CanonicalIssue, type ComparisonProjection, type ComparisonRequest, type ReaderJudgment, type HumanResolution } from "./decision-comparison.js";
 import { readSets, readScope, readScopeChecked, registerDoor, scopesOnDisk, sortEvents, type AdmissionCheck, type DoorFold, type LogEvent, type ReadSets, type ScopeRead } from "./eventlog.js";
 import { emitEventChecked } from "./write.js";
@@ -2669,7 +2670,10 @@ async function decisionReferences(read: ScopeReader, scope: string, events: LogE
   const findings = new Map<string, Set<string>>();
   const createdIn = async (sc: string) => {
     let s = findings.get(sc);
-    if (!s) { s = new Set((await read.read(sc)).filter((x) => x.kind === "finding.created" || x.kind === "bug.filed").map((x) => x.subject)); findings.set(sc, s); }
+    if (!s) {
+      const evs = await read.read(sc);
+      s = new Set([...findingIds(evs), ...evs.filter((x) => x.kind === "bug.filed").map((x) => x.subject)]); findings.set(sc, s);
+    }
     return s;
   };
   let allFindings: Set<string> | null = null;

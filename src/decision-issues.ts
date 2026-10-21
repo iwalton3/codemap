@@ -2,6 +2,7 @@
 import { createHash } from "node:crypto";
 import { readBug, readFinding, lookupFinding } from "./store.js";
 import { readScopeChecked } from "./eventlog.js";
+import { findingIds } from "./leftover-findings.js";
 import { universeKey } from "./sidecar-config.js";
 import { findingKeyScope, normalizeFindingKey } from "./review-target.js";
 import { findingScope, type SharedFinding } from "./shared-findings.js";
@@ -60,10 +61,9 @@ export async function resolveWorkspaceIssue(logRoot: string, input: CanonicalIss
     return refuse("wrong-scope", `${input.scope} is not a ${input.kind} scope in ${input.universe}`);
   if (input.kind === "finding" && !findingReviewMatchesScope(input as { universe: string; review: string; scope: string }))
     return refuse("wrong-scope", `review ${input.review} does not resolve to ${input.scope}`);
-  const created = input.kind === "bug" ? "bug.filed" : "finding.created";
   const read = await readScopeChecked(logRoot, input.scope);
   if (read.status === "blocked") return refuse("unreadable", `${input.scope} cannot be read${read.diagnostic?.detail ? `: ${read.diagnostic.detail}` : ""}`);
-  if (!read.events.some((e) => e.kind === created && e.subject === input.id))
+  if (input.kind === "bug" ? !read.events.some((e) => e.kind === "bug.filed" && e.subject === input.id) : !findingIds(read.events).has(input.id))
     return refuse("not-found", `no ${input.kind} ${input.id} in ${input.scope}`);
   return { ok: true, ref: input.kind === "finding" ? { ...input, review: normalizeFindingKey(input.review) } : input };
 }

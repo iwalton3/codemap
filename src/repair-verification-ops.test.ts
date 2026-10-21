@@ -23,7 +23,7 @@ import { findingScope } from "./shared-findings.js";
 import { findingKeyScope } from "./review-target.js";
 import { bindDecisions } from "./ops-shared.js";
 import { DECISIONS_SCOPE, decisionScope, postRoundEvent } from "./shared-decisions.js";
-import { LINEAR_SHARD } from "./eventlog.js";
+import { LINEAR_SHARD, readScopeChecked, referencesFor, tipReader } from "./eventlog.js";
 const ok = (result: unknown) => assert.equal((result as { error?: string }).error, undefined, JSON.stringify(result));
 async function fixture(count = 1, decomposed = false, changeEvidence?: (evidence: Omit<RepairEvidenceInput, "id">, root: string) => void, holdBeforeRequest?: "legacy" | "typed", sortOver: Partial<RepairSortInput> = {}) {
   const t = await team(["owner@acme.test", "fixer@acme.test"]);
@@ -388,6 +388,17 @@ test("F19 through the ops: one slot's problem and the other's note on the same t
     assert.equal(leftover.target.id, (await readFinding(f.root, f.ids[0]!, { pr: 7 }))!.target.id, "it cites the same code");
     const records = await repairRecords(f.root, 7) as { historicalClosures: { findingId: string; notes?: string[] }[] };
     assert.deepEqual(records.historicalClosures.find((c) => c.findingId === f.ids[0])?.notes, ["never run against a real lapse"]);
+    // C4/C5: made by the application, as the verifier's, with a comment and the fix commit to judge it by.
+    assert.deepEqual([leftover.comment, leftover.sourceRef, leftover.author?.via?.kind], ["the guard's 403 has no body", f.evidence.fixCommit, "agent"]);
+    const cfg = resolveSidecar(f.root)!;
+    const events = (await readScopeChecked(cfg.path, findingScope(findingKeyScope(cfg, 7)))).events;
+    assert.equal(events.filter((e) => e.kind === "finding.created" && e.subject === leftover.id).length, 0, "no act of its own");
+    // A leftover is a finding like any other to the readers that ask whether one exists.
+    ok(await postRepairSort(f.root, 7, { classification: "mechanical", kind: "isolated", source: "approved owner worklist", coverage: [{ findingId: leftover.id, claimIds: [`${leftover.id}:original`] }],
+      restsOn: [], provenance: "owner-reviewed", stakes: "low", assessments: [], disagreements: [] }));
+    const filed = { id: "e-bug", kind: "bug.filed", subject: "b_left", actor: { principal: "owner@acme.test" }, at: new Date().toISOString(), data: { fromPr: "7", fromFinding: leftover.id } };
+    assert.deepEqual((await referencesFor(`bugs/${cfg.universe}`)!(`bugs/${cfg.universe}`, filed as never, [], tipReader(cfg.path))).map((r) => r.why), [],
+      "a bug filed from it (defer_finding, file_site_bug) finds it");
   } finally { f.t.dispose(); }
 });
 

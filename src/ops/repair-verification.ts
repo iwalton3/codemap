@@ -18,10 +18,13 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { requireActor, resolvePrincipal } from "../identity.js";
 import { sidecarWriteDoor, resolveSidecar, sidecarIdentity } from "../sidecar-config.js";
-import { findingKeyScope, branchOf, topicOf } from "../review-target.js";
-import { createFinding, findingScope, foldFindings, isClosed, isStandingBehind, type SharedFinding } from "../shared-findings.js";
+import { findingKeyScope, topicOf } from "../review-target.js";
+import { findingScope, foldFindings, isClosed, isStandingBehind, type SharedFinding } from "../shared-findings.js";
 import { cachedBugs } from "../bugs-publish.js";
+import { filedFindings, leftoverId } from "../leftover-findings.js";
+import { foldTopicsReport, topicsScope } from "../shared-topics.js";
 import { readAnchorStore } from "../store.js";
+import { bodyHashAtCommit } from "../snapshots.js";
 import { findingsProjection } from "../shared-projections.js";
 import { readCached } from "../materialize.js";
 import { readScopeChecked, type LogEvent } from "../eventlog.js";
@@ -644,7 +647,7 @@ export async function recordRepairVerification(root: string, review: number | st
 export async function applyRepairVerification(root: string, review: number | string, input: { requestId: string; findingId: string; reason: string }, connection: RepairConnection) {
   input = structuredClone(input);
   const identity = identityIn(connection, root);
-  let toFile: { problems: string[]; target: { targetKind: "anchor" | "node"; targetId: string }; findingId: string; requestId: string } | undefined;
+  let filed: string[] = [];
   const applied = await append(root, review, identity, async (events) => {
     const records = foldRepairVerification(events);
     const request = records.requests.find((r) => r.id === input.requestId);
@@ -662,40 +665,31 @@ export async function applyRepairVerification(root: string, review: number | str
     const sites = await siteBugRefusal(root, events, records.runs.filter((x) => x.requestId === request.id).flatMap((x) => x.results.filter((r) => r.findingId === target.findingId)));
     if (sites) return { error: sites };
     const leftovers = leftoversOf(records.runs.filter((x) => x.requestId === request.id));
-    // Filed once per request: the first application of it files; a sibling finding's does not.
-    const parent = foldFindings(events).get(target.findingId);
-    if (!records.applications.some((a) => a.requestId === request.id) && parent)
-      toFile = { problems: leftovers.problems, target: { targetKind: parent.target.kind, targetId: parent.target.id }, findingId: target.findingId, requestId: request.id };
+    // The request's first application makes its problems findings, in the fold (C4); this op gives
+    // it what the fold cannot compute: the parent's anchor at the fix commit, or the topic's hold.
+    const extra: Pick<RepairVerificationApplication, "leftoverWitness" | "leftoversHeld"> = {};
+    const parent = filedFindings(events).find((x) => x.id === target.findingId)?.data;
+    filed = [];
+    if (!records.applications.some((a) => a.requestId === request.id) && leftovers.problems.length && parent) {
+      const slug = topicOf(String(review)), cfg = resolveSidecar(root);
+      const retired = slug !== null && !!cfg
+        && foldTopicsReport((await readScopeChecked(cfg.path, topicsScope(cfg.universe))).events).value.find((t) => t.slug === slug)?.status === "retired";
+      if (retired) extra.leftoversHeld = "topic-retired";
+      else {
+        filed = leftovers.problems.map((text) => leftoverId(request.id, text));
+        if (parent.targetKind === "anchor") {
+          // No witness rather than a wrong one: a commit whose snapshot is refused, or that no longer holds the anchor.
+          const bodyHash = await bodyHashAtCommit(root, request.capsule.evidence.fixCommit, String(parent.targetId)).catch(() => undefined);
+          if (bodyHash) extra.leftoverWitness = { anchorId: String(parent.targetId), bodyHash };
+        }
+      }
+    }
     const data: RepairVerificationApplication = { id: `apply_${randomUUID()}`, requestId: request.id, capsuleHash: request.capsuleHash,
       findingId: target.findingId, openEpoch: target.openEpoch, claimHash: target.claimHash, outcome: decision.verdict as "fixed" | "factually-refuted" | "invalid",
-      contextHash: repairVerificationHash(current.rulingContext), reason: input.reason, identity, leftovers };
+      contextHash: repairVerificationHash(current.rulingContext), reason: input.reason, identity, leftovers, ...extra };
     return { kind: "finding.repairApplied", subject: target.findingId, data: { ...data } };
   });
-  if (!("ok" in applied) || !toFile?.problems.length) return applied;
-  // The apply files the problems itself, so no session can apply and forget to (F19). Each stays on
-  // the application record either way, so one that fails to file here is not lost.
-  const filed: string[] = [], unfiled: { text: string; error: string }[] = [];
-  for (const text of toFile.problems) {
-    const f = await fileLeftover(root, review, { ...toFile.target,
-      text: `Left over from ${toFile.findingId} when repair verification ${toFile.requestId} closed it: ${text}` });
-    if ("id" in f) filed.push(f.id); else unfiled.push({ text, error: f.error });
-  }
-  if (filed.length) await repairVerificationRecords(root, review);   // re-folds the scope, so a read sees them
-  return { ...applied, filed, ...(unfiled.length ? { unfiled } : {}) };
-}
-
-/**
- * A leftover problem as a new finding on the review: `shareFinding`'s write, minus its projection
- * refresh, which the caller does once for all of them. Not `shareFinding` itself — ops-shared reaches this module
- * through repair-presentation, so importing it is an ES-module cycle (import-cycles.test.ts).
- */
-async function fileLeftover(root: string, review: number | string, f: { targetKind: "anchor" | "node"; targetId: string; text: string }): Promise<{ id: string } | { error: string }> {
-  const door = sidecarWriteDoor(root);
-  if (!door.cfg) return { error: door.error ?? "a leftover needs this universe's sidecar" };
-  const actor = requireActor(root);
-  if ("error" in actor) return actor;
-  const branch = branchOf(String(review)), topic = topicOf(String(review));
-  try {
-    return { id: await createFinding(door.cfg.path, findingKeyScope(door.cfg, review), actor, { ...f, ...(branch !== null ? { branch } : {}), ...(topic !== null ? { topic } : {}) }) };
-  } catch (e) { return { error: e instanceof Error ? e.message : String(e) }; }
+  if (!("ok" in applied) || !filed.length) return applied;
+  await repairVerificationRecords(root, review);   // re-folds the scope, so a read sees them
+  return { ...applied, filed };
 }

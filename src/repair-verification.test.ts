@@ -9,6 +9,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { foldRepairRecords, type RepairSortInput, type RepairEvidenceInput, type RepairExecution } from "./repair-records.js";
 import { foldFindings } from "./shared-findings.js";
+import { leftoverId } from "./leftover-findings.js";
 import { issueClaimHash } from "./ruling-application.js";
 import { testChain } from "./test-events.js";
 import {
@@ -57,10 +58,10 @@ function fixture(opts: { pinned?: RepairExecution[]; classification?: string; re
     add(`e-run-${requestId}-${slot}-${identity.session}-${identity.child ?? ""}`, "repair.verification-recorded", `run-${requestId}-${slot}`,
       { id: `run-${requestId}-${slot}`, requestId, capsuleHash: repairVerificationHash(capsule), slot, identity, results: [result],
         ...(slot === 2 && sort.stakes !== "low" ? { derivedCheck: derived } : {}), ...extra });
-  const apply = (identity: VerifierIdentity, outcome = "fixed") => add(`e-apply-${events.length}`, "finding.repairApplied", "f",
+  const apply = (identity: VerifierIdentity, outcome = "fixed", extra: Record<string, unknown> = {}) => add(`e-apply-${events.length}`, "finding.repairApplied", "f",
     { id: `apply-${events.length}`, requestId: "rq", capsuleHash: repairVerificationHash(capsule), findingId: "f", openEpoch: finding.openEpoch,
       claimHash: issueClaimHash("finding", finding), outcome, contextHash: repairVerificationHash("ctx"), reason: "verified", identity,
-      leftovers: leftoversOf(foldRepairVerification(events).runs.filter((r) => r.requestId === "rq")) });
+      leftovers: leftoversOf(foldRepairVerification(events).runs.filter((r) => r.requestId === "rq")), ...extra });
   const folded = () => foldRepairVerification(events);
   const rejected = (eventId: string) => folded().rejected.find((r) => r.eventId === eventId)?.reason;
   return { events, request, verdict, verify, apply, folded, rejected, add, capsule };
@@ -263,6 +264,33 @@ test("F19: leftovers are unioned at apply, a problem in either slot wins, and an
   assert.deepEqual(foldFindings(f.events).get("f")!.repairClosure?.notes, ["never run against a real lapse"], "the closure shows the note, not the problem");
   const bad = fixture(); bad.request();
   assert.match(bad.rejected(bad.verify(1, conn("v1"), bad.verdict("fixed", observedFix), "rq", { leftovers: [{ kind: "worry", text: "?" }] })) ?? "", /leftovers are a list/);
+});
+
+test("C4: the first application carries the leftovers' witness, on the parent's own anchor, or their hold; a held leftover is shown, not derived", () => {
+  const problem = () => {
+    const f = fixture(); f.request();
+    f.verify(1, conn("v1"), f.verdict("fixed", observedFix), "rq", { leftovers: [{ kind: "problem", text: "the 403 has no body" }] });
+    f.verify(2, conn("v2"), f.verdict("fixed", observedFix), "rq", { leftovers: [{ kind: "note", text: "the 403 has no body" }] });
+    return f;
+  };
+  const wrong = problem();
+  assert.match(wrong.rejected(wrong.apply(conn("applier"), "fixed", { leftoverWitness: { anchorId: "other", bodyHash: "sha256:x" } })) ?? "", /parent finding's own anchor/);
+  const right = problem();
+  assert.equal(right.rejected(right.apply(conn("applier"), "fixed", { leftoverWitness: { anchorId: "a", bodyHash: "sha256:x" } })), undefined);
+  assert.deepEqual(foldFindings(right.events).get(leftoverId("rq", "the 403 has no body"))?.witness, { anchorId: "a", bodyHash: "sha256:x" });
+  // The application makes the problem a finding — run on hand-built events, with no finding.created for it.
+  const leftover = foldFindings(right.events).get(leftoverId("rq", "the 403 has no body"));
+  assert.ok(leftover, "the fold derives the leftover finding");
+  assert.equal(right.events.filter((e) => e.kind === "finding.created" && e.subject === leftover.id).length, 0);
+  assert.deepEqual([leftover.comment, leftover.sourceRef, leftover.target.id, leftover.author.via?.kind, leftover.state, leftover.leftover?.parent],
+    ["the 403 has no body", F, "a", "agent", "issued", "f"], "comment, the fix commit, the parent's target, its verifier as author");
+  assert.deepEqual(leftover.leftover?.runs.map((r) => [r.slot, r.kind]), [[1, "problem"], [2, "note"]]);
+  assert.ok(foldRepairRecords(right.events).claims.some((c) => c.id === `${leftover.id}:original`), "and it has an original claim to sort");
+  const held = problem();
+  assert.equal(held.rejected(held.apply(conn("applier"), "fixed", { leftoversHeld: "topic-retired" })), undefined);
+  assert.equal(foldFindings(held.events).get(leftoverId("rq", "the 403 has no body")), undefined, "nothing derived around the topic's retirement");
+  assert.deepEqual(foldFindings(held.events).get("f")!.repairClosure?.problems, ["the 403 has no body"]);
+  assert.match(foldFindings(held.events).get("f")!.repairClosure!.attention.join(), /topic was retired/);
 });
 
 test("F18: slot 2 of a high-stakes request carries the check it derived; slot 1, low stakes, and runs before schema 6 do not", () => {

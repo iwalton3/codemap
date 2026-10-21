@@ -28,6 +28,7 @@
 
 import { registerKinds, registerReferences, tipReader, type ScopeReader } from "./eventlog.js";
 import { createHash } from "node:crypto";
+import { findingIds } from "./leftover-findings.js";
 import { collector, foldJudged, registerReport, staleRevision, wasOf, type RefusalClass, type Refusal } from "./validation.js";
 import { ISO_DATE, type Actor, type Agreement, type BugSeverity, type BugWitness } from "./schema.js";
 import { isAgentActor, isIndependent, isErrorIndependent, reviewerKey } from "./identity.js";
@@ -628,7 +629,7 @@ async function outsideReferences(scope: string, e: LogEvent, _own: LogEvent[], r
     const at = findingScopeOfBugKey(universe, pr);
     if (!at) return [{ id: e.id, kind: e.kind, cls: "shape", why: `"${pr}" is not a pull request number, a branch or a topic key` }];
     const findings = await read.read(at);
-    return findings.some((f) => f.kind === "finding.created" && f.subject === finding) ? [] : refused(`no finding ${finding} in ${at}`);
+    return findingIds(findings).has(finding) ? [] : refused(`no finding ${finding} in ${at}`);
   }
   if (e.kind === "bug.rulingApplied") return rulingReferences(read, e);
   return [];

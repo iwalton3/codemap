@@ -6,8 +6,8 @@ import type { NoteTargetKind } from "../shared-notes.js";
 import { indexFile, indexBlob } from "../repo.js";
 import { headCommit, readBlobs } from "../git.js";
 import { branchKey } from "../review-target.js";
-import { linkedBranches, readAnchorStore, loadNodes, readAnnotations, writeAnnotations, readFindings, readFinding, writeLocalFinding, findAnchorsOutsideWork, readPushes, bodyHashAt, readOrphans, snapshotRefusal, snapshotKey, readSharedNotes, idsStartingWith } from "../store.js";
-import { readSnapshot } from "../snapshots.js";
+import { linkedBranches, readAnchorStore, loadNodes, readAnnotations, writeAnnotations, readFindings, readFinding, writeLocalFinding, findAnchorsOutsideWork, readPushes, readOrphans, readSharedNotes, idsStartingWith } from "../store.js";
+import { bodyHashAtCommit } from "../snapshots.js";
 import { resolveSidecar, universeKey } from "../sidecar-config.js";
 import {
   findingTier, isClosed, mayTransitionFinding, needsHumanAck, ASK_FOR_STATE, REOPEN_STATES,
@@ -162,13 +162,7 @@ export async function witnessAt(
   root: string, anchorId: string, ref?: string,
 ): Promise<{ witness?: { anchorId: string; bodyHash: string }; sourceRef: string }> {
   if (ref) {
-    // The point lookup is raw, so the row must first be one `readSnapshot` would serve;
-    // reading it builds one when it is not. Same refusal as `liveHashes` otherwise.
-    const sha = snapshotKey(root, ref);
-    if (snapshotRefusal(root, sha) && !(await readSnapshot(root, sha))) {
-      throw new Error(`${snapshotRefusal(root, sha)!.message} — witnessing against it would record a body that is not that commit's.`);
-    }
-    const hash = bodyHashAt(root, sha, anchorId);
+    const hash = await bodyHashAtCommit(root, ref, anchorId);
     if (hash) return { witness: { anchorId, bodyHash: hash }, sourceRef: ref };
   }
   const stored = (await readAnchorStore(root)).anchors.find((a) => a.id === anchorId);

@@ -4,6 +4,7 @@ import { canonical } from "./transcript.js";
 import { closeoutRules, foldRepairRecords } from "./repair-records.js";
 import type { RepairClaim, RepairSortInput, RepairEvidenceInput, RepairExecution, RepairCoverage } from "./repair-records.js";
 import { verifierIdentityKey, type VerifierIdentity } from "./verifier-boundary.js";
+import type { BugWitness } from "./schema.js";
 
 export type RepairVerdict = "fixed" | "factually-refuted" | "invalid" | "decision-needed" | "unknown";
 export interface RepairVerificationCapsule {
@@ -46,8 +47,15 @@ export interface RepairVerificationArbitration {
 export interface RepairVerificationApplication {
   id: string; requestId: string; capsuleHash: string; findingId: string; openEpoch: string; claimHash: string;
   outcome: "fixed" | "factually-refuted" | "invalid"; contextHash: string; reason: string; identity: VerifierIdentity;
-  /** Every slot's leftovers, as `leftoversOf` derives them (schema 6): problems are filed as findings. */
+  /** Every slot's leftovers, as `leftoversOf` derives them (schema 6): the first application's
+   *  problems become findings, derived by the findings fold (`leftover-findings.ts`). */
   leftovers?: { problems: string[]; notes: string[] };
+  /** The first application only, on an anchor target: the parent's anchor at the fix commit, which
+   *  the fold has no git to compute (owner, Q1: "Op computes it"). The leftovers' witness. */
+  leftoverWitness?: BugWitness;
+  /** The first application only, on a topic the log shows retired: its problems are not derived,
+   *  because the door would refuse a finding filed there (`outsideReferences` checks it both ways). */
+  leftoversHeld?: "topic-retired";
 }
 export interface RepairVerificationRecords {
   requests: RepairVerificationRequest[]; runs: RepairVerificationRun[];
@@ -205,6 +213,15 @@ export function foldRepairVerification(events: LogEvent[]): RepairVerificationRe
           // The application carries exactly its runs' leftovers, so nothing a verifier left can be dropped.
           if (!error && closeoutRules(e) && canonical(d.leftovers ?? null) !== canonical(leftoversOf(out.runs.filter((x) => x.requestId === d.requestId))))
             error = "an application carries every leftover its runs recorded";
+          if (!error && (d.leftoverWitness !== undefined || d.leftoversHeld !== undefined)) {
+            const first = !out.applications.some((x) => x.requestId === d.requestId) && !!d.leftovers?.problems.length;
+            const filed = request.capsule.claims.find((c) => c.findingId === d.findingId && !c.parentId)?.asFiled;
+            const w = d.leftoverWitness as unknown as Record<string, unknown> | undefined;
+            if (!closeoutRules(e) || !first) error = "only a request's first application, with leftover problems, carries their witness or hold";
+            else if (d.leftoversHeld !== undefined && (d.leftoversHeld !== "topic-retired" || w !== undefined)) error = "leftovers are held only as topic-retired, with no witness";
+            else if (w !== undefined && (!text(w.anchorId) || !text(w.bodyHash) || (w.deleted !== undefined && w.deleted !== true)
+              || filed?.targetKind !== "anchor" || filed.targetId !== w.anchorId)) error = "a leftover's witness is the parent finding's own anchor, as filed";
+          }
           // One-shot is spent in the FINDINGS arm, only when a closure actually happens (F34):
           // this fold cannot see whether the finding closed, and must not call that fold.
           if (!error) out.applications.push(structuredClone(d));

@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { canonical } from "./canonical.js";
 import { sortEvents, type LogEvent } from "./eventlog.js";
 import { verifierIdentityKey, type VerifierIdentity } from "./verifier-boundary.js";
+import { closeoutRules, filedFindings, type FiledFinding } from "./leftover-findings.js";
 
 export type { RepairClaim, RepairCoverage, ReportedSortReceipt, RepairAssessment, RepairSortInput, ReleaseRuling, ReleaseReceipt, RepairRelease } from "./repair-sort-types.js";
 import type { RepairClaim, RepairCoverage, ReportedSortReceipt, RepairSortInput, ReleaseRuling, ReleaseReceipt } from "./repair-sort-types.js";
@@ -70,14 +71,7 @@ const VERIFICATION_KINDS: readonly string[] = ["repair.verification-requested", 
 export const priorsOf = (d: Pick<RepairSortInput, "prior" | "priors">): string[] =>
   [...(typeof d.prior === "string" ? [d.prior] : []), ...(Array.isArray(d.priors) ? d.priors : [])];
 
-/**
- * Whether `e` was written under EVENT_SCHEMA 6's close-out rules (plan 2026-10-20 Phase 2): stakes
- * on every posted sort, evidence that can meet the bar at filing, slot 2's derived check. An event
- * stamped lower keeps the rules it was written under, so a stakes-less sort or evidence filed
- * before the bar stays valid instead of becoming damage. The first rules to condition on the stamp.
- */
-export const CLOSEOUT_SCHEMA = 6;
-export const closeoutRules = (e: Pick<LogEvent, "eventSchema">): boolean => (e.eventSchema ?? 0) >= CLOSEOUT_SCHEMA;
+export { CLOSEOUT_SCHEMA, closeoutRules } from "./leftover-findings.js";
 
 /**
  * Whether evidence's OWN reproducer runs could ever meet the evidence bar for its sort (F13): per
@@ -188,11 +182,17 @@ export function foldRepairRecords(input: LogEvent[]): RepairRecords {
     if (key(a) === key(b) || a.launch === b.launch || a.id === b.id) return "the two release readers were not independently launched";
     if (a.verdict !== "yes" || b.verdict !== "yes") return "a release needs both readers' yes; there is no arbitrator";
   };
+  // A finding's original claim, at the event that filed it: its creation, or the application that
+  // left it over (C4), so a leftover can be sorted and verified like any other.
+  const filedAt = new Map<string, FiledFinding[]>();
+  for (const f of filedFindings(events)) filedAt.set(f.eventId, [...(filedAt.get(f.eventId) ?? []), f]);
   for (const e of events) {
     const d = e.data as any;
-    if (e.kind === "finding.created" && nonempty(d?.text) && nonempty(d.targetId) && ["anchor", "node"].includes(d.targetKind) && !out.claims.some(c => c.findingId === e.subject)) {
-      out.claims.push({ id: `${e.subject}:original`, findingId: e.subject, text: d.text, eventId: e.id, actor: e.actor, at: e.at,
-        asFiled: structuredClone(d), ...(d.witness ? { witness: d.witness } : {}) });
+    for (const f of filedAt.get(e.id) ?? []) {
+      const x = f.data as any;
+      if (nonempty(x?.text) && nonempty(x.targetId) && ["anchor", "node"].includes(x.targetKind) && !out.claims.some(c => c.findingId === f.id))
+        out.claims.push({ id: `${f.id}:original`, findingId: f.id, text: x.text, eventId: e.id, actor: f.actor, at: e.at,
+          asFiled: structuredClone(x), ...(x.witness ? { witness: x.witness } : {}) });
     }
     if (!e.kind.startsWith("repair.") || RETIRED_REPAIR_KINDS.includes(e.kind) || VERIFICATION_KINDS.includes(e.kind)) continue;
     let error: string | undefined;
