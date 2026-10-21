@@ -273,11 +273,11 @@ function subagentTranscript(dir: string, agentId: string, prompt: string, tool: 
 
 /** Brief, held submission and transcript for one subagent slot, launched on `launcher`. */
 async function viaSubagent(f: Awaited<ReturnType<typeof fixture>>, launcher: RepairConnection, slot: 1 | 2, agentId: string, dir: string,
-  tamper: { prompt?: string; results?: RepairClaimVerdict[]; sentMessage?: boolean } = {}) {
+  tamper: { prompt?: string; results?: RepairClaimVerdict[]; sentMessage?: boolean; leftovers?: [] } = {}) {
   const brief = await repairVerificationBrief(f.root, 7, { requestId: f.requestId, role: "verifier", slot }, launcher) as { launch: string };
   ok(brief);
   const results = f.results();
-  const extra = slot === 2 ? { derivedCheck: await f.derive(launcher, f.requestId) } : {};
+  const extra = { ...(slot === 2 ? { derivedCheck: await f.derive(launcher, f.requestId) } : {}), ...(tamper.leftovers ? { leftovers: tamper.leftovers } : {}) };
   const held = await submitRepairVerification(f.root, 7, { requestId: f.requestId, slot, results, ...extra }, launcher) as { held: boolean; receipt: string };
   assert.equal(held.held, true, JSON.stringify(held));
   subagentTranscript(dir, agentId, tamper.prompt ?? brief.launch, "repair_verification",
@@ -301,8 +301,9 @@ test("a subagent verifier counts only from its own transcript; the requester's s
     const before = await pendingRepairJobs(f.root, 7) as { jobs: { requestId: string; role: string; slot?: number }[] };
     assert.deepEqual(before.jobs.map((j) => [j.role, j.slot]), [["verifier", 1], ["verifier", 2]]);
     assert.ok(!JSON.stringify(before).includes("MUST BE HIDDEN"), "the listing is blind");
-    // G2: subagents on the controlled prompt path count, whoever launched them (R2).
-    const recorded = await viaSubagent(f, f.orchestrator, 1, "a3333333", dir);
+    // G2: subagents on the controlled prompt path count, whoever launched them (R2). An empty
+    // `leftovers` is part of what was held (C1).
+    const recorded = await viaSubagent(f, f.orchestrator, 1, "a3333333", dir, { leftovers: [] });
     ok(recorded);
     assert.deepEqual((await pendingRepairJobs(f.root, 7) as { jobs: { slot?: number }[] }).jobs.map((j) => j.slot), [2]);
     assert.ok("run" in recorded && recorded.run);

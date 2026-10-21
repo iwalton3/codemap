@@ -502,7 +502,8 @@ export async function submitRepairVerification(root: string, review: number | st
     const why = derivedCheckError(input.derivedCheck, request.capsule);
     if (why) return { error: why };
   } else if (input.derivedCheck !== undefined) return { error: "only slot 2 of a high-stakes request carries a derived check" };
-  const extra = { ...(input.leftovers?.length ? { leftovers: input.leftovers } : {}), ...(input.derivedCheck ? { derivedCheck: input.derivedCheck } : {}) };
+  // Held as given, an empty list included: the record compares the subagent's call to this exactly.
+  const extra = { ...(input.leftovers !== undefined ? { leftovers: input.leftovers } : {}), ...(input.derivedCheck ? { derivedCheck: input.derivedCheck } : {}) };
   return submit(root, review, job, { results: input.results, ...extra }, connection, (identity) => async (events) => {
     const request = foldRepairVerification(events).requests.find((r) => r.id === input.requestId);
     if (!request) return { error: "unknown request" };
