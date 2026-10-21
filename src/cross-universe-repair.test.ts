@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RepairConnection } from "./verifier-boundary.js";
 import { repairBatchBrief, submitRepairVerification, recordRepairVerification, applyRepairVerification } from "./ops/repair-verification.js";
-import { postRepairSort } from "./ops/repairs.js";
+import { postRepairSort, repairRecords } from "./ops/repairs.js";
 import { releaseRuledSort, releaseReaderBrief } from "./ops/repair-release.js";
 import { rpc } from "./test-mcp.js";
 import { postRound, answerDirect, readerBrief, relayAnswer } from "./ops/decisions.js";
@@ -72,9 +72,9 @@ test("P2: one round posted in one universe releases a held sort in the other thr
       kind: "isolated", source: "approved owner worklist", stakes: "low", coverage: [{ findingId: settlement.finding, claimIds: [`${settlement.finding}:original`] }],
       restsOn: [`decision:${decision}`], provenance: "owner-reviewed", assessments: [], disagreements: [] }) as { id: string };
     ok(held);
-    const released = await releaseRuledSort(w.settlement.root, 7, { sort: held.id }) as { id: string; records: { sorts: { input: { id: string; provenance: string }; eligible: boolean; holds: string[] }[] } };
+    const released = await releaseRuledSort(w.settlement.root, 7, { sort: held.id }) as { id: string };
     ok(released);
-    const s = released.records.sorts.find((x) => x.input.id === released.id)!;
+    const s = ((await repairRecords(w.settlement.root, 7)) as any).records.sorts.find((x: any) => x.input.id === released.id)!;
     assert.equal(s.input.provenance, "ruled");
     assert.equal(s.eligible, true, s.holds.join());
   } finally { w.dispose(); }

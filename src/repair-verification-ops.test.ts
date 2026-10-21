@@ -64,7 +64,7 @@ async function fixture(count = 1, decomposed = false, changeEvidence?: (evidence
   let requestId = "";
   if (holdBeforeRequest) assert.match((requested as { error: string }).error, /held|decision/);
   else if (/is not in this clone/.test(String((requested as { error?: string }).error))) { /* A5: the test asserts it */ }
-  else { ok(requested); assert.ok("request" in requested && requested.request); requestId = requested.request.id; }
+  else { ok(requested); assert.ok("capsuleHash" in requested && requested.capsuleHash && !("request" in requested), "F7: the id and hash, not the capsule"); requestId = requested.id; }
   const results = (verdict: RepairClaimVerdict["verdict"] = "fixed", subset = false): RepairClaimVerdict[] => sort.coverage.flatMap(ref => (subset ? ref.claimIds.slice(0, 1) : ref.claimIds).map(claimId => ({ findingId: ref.findingId, claimId, verdict,
     reason: verdict === "fixed" ? "independently inspected the exact guard and checked its return before mutation" : verdict === "factually-refuted" ? "the exact claimed absent guard is visibly present" : "target evidence unavailable",
     grade: verdict === "unknown" ? "none" : "inspection", executions: [], inspected: verdict === "unknown" ? [] : [{ source: "src/pay.ts", commit: evidence.fixCommit, reasoning: "independent source inspection confirms the exact claim" }], noCheckReason: "synthetic fixture has no useful runnable check" })));
@@ -234,7 +234,7 @@ test("later human assignment preserves the established release of an ordinary de
     assert.equal((await decisionsView(f.root)).work(f.ids[0]!, (await readFinding(f.root, f.ids[0]!, { pr: 7 }))!.assignment).allowed, true);
     const released = await requestRepairVerification(f.root, 7, { sortId: f.sortId, evidenceId: f.evidenceId }, new RepairConnection("owner@acme.test"));
     ok(released);
-    assert.ok("request" in released && released.request);
+    assert.ok("capsuleHash" in released && released.capsuleHash);
   } finally { f.t.dispose(); }
 });
 
@@ -422,11 +422,11 @@ test("I14: a site filed as a bug reaches the blind verifier through the evidence
     const requested = await requestRepairVerification(f.root, 7, { sortId: f.sortId, evidenceId: recorded.id }, new RepairConnection("owner@acme.test")) as any;
     ok(requested);
     const h = new RepairConnection("owner@acme.test"); assert.equal(h.claim().ok, true);
-    const brief = await repairVerificationBrief(f.root, 7, { requestId: requested.request.id, role: "verifier", slot: 1 }, h) as any;
+    const brief = await repairVerificationBrief(f.root, 7, { requestId: requested.id, role: "verifier", slot: 1 }, h) as any;
     ok(brief);
     assert.deepEqual(brief.capsule.evidence.siteBugs, [{ findingId: f.ids[0]!, site: "src/pay.ts", bug: filed.id }]);
     assert.match(brief.instruction, /siteBugs/);
-    ok(await submitRepairVerification(f.root, 7, { requestId: requested.request.id, slot: 1,
+    ok(await submitRepairVerification(f.root, 7, { requestId: requested.id, slot: 1,
       results: f.results().map((r) => ({ ...r, sites: [{ site: "src/pay.ts", bug: brief.capsule.evidence.siteBugs[0].bug }] })) }, h));
   } finally { f.t.dispose(); }
 });
@@ -613,9 +613,9 @@ test("4.1-4.3: one batch per slot — reviewers carry its launch line, low stake
         coverage: [{ findingId: f.id, claimIds: [`${f.id}:original`], result: "complete", reason: "r", claimResults: [{ claimId: `${f.id}:original`, result: "complete", reason: "r" }] }],
         reproducer: [], regression: [], inspected: [{ source: "src/pay.ts", commit: sha, reasoning: "read" }], noCheckReason: "no runnable check", rulingIds: [], attribution: [] }) as { id: string };
       ok(evidence);
-      const requested = await requestRepairVerification(root, 7, { sortId: sorted.id, evidenceId: evidence.id }, orchestrator) as { request: { id: string } };
+      const requested = await requestRepairVerification(root, 7, { sortId: sorted.id, evidenceId: evidence.id }, orchestrator) as { id: string };
       ok(requested);
-      requests.push({ id: requested.request.id, finding: f.id, stakes });
+      requests.push({ id: requested.id, finding: f.id, stakes });
     }
     const results = (finding: string): RepairClaimVerdict[] => [{ findingId: finding, claimId: `${finding}:original`, verdict: "fixed",
       reason: "independently inspected the guard at the fix commit", grade: "inspection", executions: [],

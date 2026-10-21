@@ -70,11 +70,11 @@ export async function repairable(u: Universe, orchestrator: RepairConnection, so
     coverage: coverage.map((c) => ({ ...c, result: "complete", reason: "r", claimResults: [{ claimId: c.claimIds[0]!, result: "complete", reason: "r" }] })),
     reproducer: [], regression: [], inspected: [{ source: "src/credit.js", commit: u.sha, reasoning: "read" }], noCheckReason: "no runnable check", rulingIds: [], attribution: [] }) as { id: string };
   ok(evidence);
-  const requested = await requestRepairVerification(u.root, 7, { sortId: sort.id, evidenceId: evidence.id }, orchestrator) as { request: { id: string } };
+  const requested = await requestRepairVerification(u.root, 7, { sortId: sort.id, evidenceId: evidence.id }, orchestrator) as { id: string };
   ok(requested);
   const ref = await resolveDecisionIssue(u.root, { kind: "finding", universe: universeKey(u.root), id: f.id, review: 7 });
   assert.ok(ref.ok, JSON.stringify(ref));
-  return { finding: f.id, sortId: sort.id, evidenceId: evidence.id, requestId: requested.request.id, ref: ref.ref as CanonicalIssueReference };
+  return { finding: f.id, sortId: sort.id, evidenceId: evidence.id, requestId: requested.id, ref: ref.ref as CanonicalIssueReference };
 }
 
 /** An inspection verdict of `fixed` on the one original claim of `finding`. */

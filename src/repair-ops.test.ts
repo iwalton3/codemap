@@ -23,6 +23,8 @@ const sort = (findingId: string, claims: string[]): Omit<RepairSortInput, "id"> 
   source: "owner worklist: fix both independent obligations", coverage: [{ findingId, claimIds: [`${findingId}:original`, ...claims] }],
   restsOn: [], provenance: "owner-reviewed", assessments: [], disagreements: [] });
 const sha = "a".repeat(40);
+/** A write answers with the record's id (F7); the review is read back with repair_records. */
+const sortsOf = async (root: string): Promise<any[]> => ((await repairRecords(root, 7)) as any).records.sorts;
 
 test("repair ops preserve original scope and sync partial evidence", async () => {
   const t = await team(["alice@acme.test", "bob@acme.test"]);
@@ -59,13 +61,13 @@ test("repair ops preserve original scope and sync partial evidence", async () =>
     assert.notEqual((await readFinding(peer, f.id, { pr: 7 }))!.state, "resolved");
     assert.equal(theirs.records.sorts[0]!.eligible, true);
     const correction = await postRepairSort(root, 7, { ...sort(f.id, [c1, c2]), prior: sortId, reason: "a new classification" });
-    assert.ok("records" in correction && correction.records && "id" in correction);
+    assert.ok("id" in correction && !("records" in correction), JSON.stringify(correction).slice(0, 200));
     const unruled = await postRepairSort(root, 7, { ...sort(f.id, [c1, c2]), prior: sortId, reason: "as ruled", ruling: "ans_that_does_not_exist" });
     assert.match(String((unruled as { error?: string }).error), /not a verified, standing answer/, "R5: the op checks the ruling exists");
     // A retry of the same record is the same record, not a second, competing sort.
     const again = await postRepairSort(root, 7, sort(f.id, [c1, c2]));
     assert.ok("alreadyRecorded" in again && again.alreadyRecorded && again.id === sortId, JSON.stringify(again));
-    assert.equal(again.records.sorts.length, 2);
+    assert.equal((await sortsOf(root)).length, 2);
     const chosen = await postRepairSort(root, 7, { ...sort(f.id, [c1, c2]), id: "s1" } as Omit<RepairSortInput, "id">);
     assert.match((chosen as { error: string }).error, /codemap assigns/);
     const malformed = await recordRepairEvidence(root, 7, { ...evidence, regression: [{ ...evidence.regression[0]!, exitCode: undefined }] });
@@ -94,7 +96,7 @@ test("D4 through the op: the connection fills each sorter's session; a caller's 
       assessments: children.map((child, i) => ({ identity: { principal: "alice@acme.test", ...(child ? { child } : {}) } as never, classification: "implementation-defect", reason: `sorter ${i}` })) });
     const posted = await postRepairSort(root, 7, dual([undefined, "a1234567"], "the session and its subagent"), conn) as any;
     ok(posted);
-    const s = posted.records.sorts.find((x: any) => x.input.id === posted.id);
+    const s = (await sortsOf(root)).find((x: any) => x.input.id === posted.id);
     assert.deepEqual(s.input.assessments.map((a: any) => a.identity), [{ principal: "alice@acme.test", session: conn.session },
       { principal: "alice@acme.test", session: conn.session, child: "a1234567" }]);
     assert.equal(s.eligible, true, s.holds.join());
@@ -141,9 +143,9 @@ test("K3 through the op: a correction removing a site is refused without a rulin
     ok(await answerDirect(root, { decision: "D-sites", option: "No" }));
     const answer = (await decisionsView(root)).s.decisions.flatMap((d) => d.answers).find((a) => a.verified && !a.withdrawn)!;
     assert.ok(answer, "a verified, standing answer to cite");
-    const ruled = await postRepairSort(root, 7, { ...narrow, ruling: answer.id }) as { id: string; records: { sorts: { input: { id: string }; current: boolean }[] } };
+    const ruled = await postRepairSort(root, 7, { ...narrow, ruling: answer.id }) as { id: string };
     ok(ruled);
-    assert.deepEqual(ruled.records.sorts.filter(s => s.current).map(s => s.input.id), [ruled.id]);
+    assert.deepEqual((await sortsOf(root)).filter(s => s.current).map(s => s.input.id), [ruled.id]);
     ok(await postRepairSort(root, 7, { ...pattern(["a.ts", "d.ts"]), prior: ruled.id, reason: "d.ts has it too" }));
   } finally { t.dispose(); }
 });
@@ -157,18 +159,18 @@ test("B16: the same sort posted by an agent and then by its person are two recor
     ok(f);
     const same = sort(f.id, []);
     process.env.CODEMAP_AGENT_MODEL = "claude-opus-5";
-    const byAgent = await postRepairSort(root, 7, same) as { id: string; records: { sorts: { input: { id: string }; holds: string[] }[] } };
+    const byAgent = await postRepairSort(root, 7, same) as { id: string };
     ok(byAgent);
-    assert.ok(byAgent.records.sorts.find(s => s.input.id === byAgent.id)!.holds.some(h => /principal authorship/.test(h)), "an agent's owner-reviewed sort is held");
+    assert.ok((await sortsOf(root)).find(s => s.input.id === byAgent.id)!.holds.some((h: string) => /principal authorship/.test(h)), "an agent's owner-reviewed sort is held");
     delete process.env.CODEMAP_AGENT_MODEL;
     // Not collapsed into the agent's record: it reaches the fold, which refuses a second sort of
     // sorted claims (plan 5.2). The person's authorship enters the log as a correction of it.
     const repost = await postRepairSort(root, 7, same) as { error?: string; alreadyRecorded?: boolean };
     assert.equal(repost.alreadyRecorded, undefined);
     assert.match(String(repost.error), /already sorted by/);
-    const byPerson = await postRepairSort(root, 7, { ...same, prior: byAgent.id, reason: "owner reviewed" }) as { id: string; records: { sorts: { input: { id: string }; eligible: boolean; current: boolean }[] } };
+    const byPerson = await postRepairSort(root, 7, { ...same, prior: byAgent.id, reason: "owner reviewed" }) as { id: string };
     ok(byPerson);
-    const mine = byPerson.records.sorts.find(s => s.input.id === byPerson.id)!;
+    const mine = (await sortsOf(root)).find(s => s.input.id === byPerson.id)!;
     assert.ok(mine.current && mine.eligible);
   } finally {
     if (before === undefined) delete process.env.CODEMAP_AGENT_MODEL; else process.env.CODEMAP_AGENT_MODEL = before;
@@ -186,9 +188,9 @@ test("O19: one sort may replace several current sorts at once, and they all stop
     const b = await postRepairSort(root, 7, sort(f2.id, [])) as { id: string };
     ok(a); ok(b);
     const merged = await postRepairSort(root, 7, { ...sort(f1.id, []), coverage: [...sort(f1.id, []).coverage, ...sort(f2.id, []).coverage],
-      priors: [a.id, b.id], reason: "one defect, sorted twice" }) as { id: string; records: { sorts: { input: { id: string }; current: boolean }[] } };
+      priors: [a.id, b.id], reason: "one defect, sorted twice" }) as { id: string };
     ok(merged);
-    assert.deepEqual(merged.records.sorts.filter((s) => s.current).map((s) => s.input.id), [merged.id]);
+    assert.deepEqual((await sortsOf(root)).filter((s) => s.current).map((s) => s.input.id), [merged.id]);
   } finally { t.dispose(); }
 });
 
@@ -228,7 +230,7 @@ test("D2 through the op: a held sort re-pointed to its decision is released by t
     const yes = await heldFor("guarded");
     const released = await releaseHeldSort(root, 7, { sort: yes, readers: await read(yes, ["yes", "yes"], ["a1111111", "a2222222"]) }, dir) as any;
     ok(released);
-    const s = released.records.sorts.find((x: any) => x.input.id === released.id);
+    const s = (await sortsOf(root)).find((x: any) => x.input.id === released.id);
     assert.equal(s.input.provenance, "released");
     assert.deepEqual(s.input.restsOn, []);
     assert.equal(s.eligible, true, s.holds.join());
@@ -269,7 +271,7 @@ test("R1, R2: a held sort leaves its hold on a verified standing ruling that unb
     const happy = await ruled("d-all", all, [{ label: "Fix all", effects: [unblock(all)] }, { label: "Refute", effects: [refute(all)] }], "Fix all");
     const released = await releaseRuledSort(root, 7, { sort: happy.sort }) as any;
     ok(released);
-    const s = released.records.sorts.find((x: any) => x.input.id === released.id);
+    const s = (await sortsOf(root)).find((x: any) => x.input.id === released.id);
     assert.equal(s.input.provenance, "ruled");
     assert.deepEqual(s.input.restsOn, []);
     assert.equal(s.eligible, true, s.holds.join());
@@ -291,7 +293,7 @@ test("R1, R2: a held sort leaves its hold on a verified standing ruling that unb
     assert.match(String((await postRepairSort(root, 7, { ...sort("x", []), provenance: "ruled" } as never) as { error?: string }).error), /release_ruled_sort/);
 
     // The FOLD half: an event no conforming build writes is refused on read, against the log before it.
-    const scope = (released as { scope: string }).scope;
+    const scope = (await repairRecords(root, 7) as { scope: string }).scope;
     const view = (await decisionsView(root)).s;
     const answerOf = (decision: string) => view.decisions.find((d) => d.id === decision)!.answers[0]!;
     const plant = async (held: { decision: string; sort: string }, fs: string[]) => {

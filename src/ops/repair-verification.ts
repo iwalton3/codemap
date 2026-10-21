@@ -180,7 +180,8 @@ async function append(root: string, review: number | string, identity: VerifierI
   if ("error" in refreshed) return refreshed;
   const r = refreshed.records;
   return { ok: true, eventId: emitted.id, id: emitted.subject, status: refreshed.status,
-    ...(emitted.kind === "repair.verification-requested" ? { request: r.requests.find((x) => x.id === emitted.subject) }
+    // A request's capsule is the whole frozen review; its hash is what binds later acts (F7).
+    ...(emitted.kind === "repair.verification-requested" ? { capsuleHash: r.requests.find((x) => x.id === emitted.subject)?.capsuleHash }
       : emitted.kind === "repair.verification-recorded" ? { run: r.runs.find((x) => x.id === emitted.subject) }
       : emitted.kind === "repair.verification-arbitrated" ? { arbitration: r.arbitrations.find((x) => x.id === emitted.subject) }
       : { application: r.applications.find((x) => x.findingId === emitted.subject && x.id === (emitted.data as { id: string }).id) }) };

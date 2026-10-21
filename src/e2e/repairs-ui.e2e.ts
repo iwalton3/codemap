@@ -145,17 +145,17 @@ test("repair page retains original scope, separate evidence outcomes and the clo
     };
     const closureHost = new RepairConnection(actor.principal);
     const closureRequest = await ops.requestRepairVerification(root, 7, { sortId: closureSortId, evidenceId: closureEvidence.id }, closureHost);
-    assert.ok("request" in closureRequest && closureRequest.request, JSON.stringify(closureRequest));
+    assert.ok("ok" in closureRequest && closureRequest.ok, JSON.stringify(closureRequest));
     for (const slot of [1, 2] as const) {
       const verifierHost = makeHost();
-      const brief = await ops.repairVerificationBrief(root, 7, { requestId: closureRequest.request.id, role: "verifier", slot }, verifierHost);
+      const brief = await ops.repairVerificationBrief(root, 7, { requestId: closureRequest.id, role: "verifier", slot }, verifierHost);
       assert.ok(!("error" in brief), JSON.stringify(brief));
-      const submitted = await ops.submitRepairVerification(root, 7, { requestId: closureRequest.request.id, slot, results: [{ findingId: closureFinding.id, claimId: closureClaim,
+      const submitted = await ops.submitRepairVerification(root, 7, { requestId: closureRequest.id, slot, results: [{ findingId: closureFinding.id, claimId: closureClaim,
         verdict: "fixed", grade: "inspection", reason: "Independent inspection of the fixture's exact source.", executions: [],
         inspected: [{ source: "src/credits.ts", commit, reasoning: "Synthetic independent source inspection." }], noCheckReason: "synthetic inspection fixture" }] }, verifierHost);
       assert.ok("ok" in submitted && submitted.ok, JSON.stringify(submitted));
     }
-    const applied = await ops.applyRepairVerification(root, 7, { requestId: closureRequest.request.id, findingId: closureFinding.id, reason: "Two independent inspections cover the fixture." }, closureHost);
+    const applied = await ops.applyRepairVerification(root, 7, { requestId: closureRequest.id, findingId: closureFinding.id, reason: "Two independent inspections cover the fixture." }, closureHost);
     assert.ok("ok" in applied && applied.ok, JSON.stringify(applied));
     assert.equal((await readFinding(root, closureFinding.id))?.state, "resolved");
     await page.reload({ waitUntil: "networkidle" });

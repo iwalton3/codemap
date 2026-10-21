@@ -105,16 +105,16 @@ async function append(root: string, review: number | string, kind: string, subje
   const current = await repairRecords(root, review);
   if (current.error !== undefined) return { error: current.error };
   if (current.status === "blocked") return { error: "repair scope is blocked; records remain visible but cannot authorize a write" };
-  if (recorded?.(current.records)) return { ...current, ok: true as const, id: subject, alreadyRecorded: true };
+  // The written record's id, not the whole review: that was 60-316 KB per call and overflowed the
+  // caller's context (F7). `repair_records` is the read.
+  if (recorded?.(current.records)) return { ok: true as const, id: subject, alreadyRecorded: true as const };
   const event = await emitEventChecked(cfg.path, scope, actor, async () => {
     const checked = await readScopeChecked(cfg.path, scope);
     if (checked.status === "blocked") return { error: "repair scope became blocked before append" };
     return { kind, subject, data };
   }, (events) => ({ refused: foldRepairRecords(events).rejected.map((r) => ({ id: r.eventId, why: r.reason })) }));
   if ("error" in event) return event;
-  const result = await repairRecords(root, review);
-  if (result.error !== undefined) return { error: result.error };
-  return { ...result, ok: true as const, id: subject, eventId: event.id };
+  return { ok: true as const, id: subject, eventId: event.id };
 }
 
 /**

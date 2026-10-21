@@ -152,7 +152,8 @@ test("D4 over MCP: post_repair_sort fills both sorters' session from the connect
     assert.match(out[1]!, /two independent sorters/, "the session's own reading twice is one reader");
     const posted = json(out[2]!);
     assert.equal(posted.ok, true, out[2]!);
-    const s = posted.records.sorts.find((x: { input: { id: string } }) => x.input.id === posted.id);
+    assert.equal(posted.records, undefined, "F7: a write answers with its id, not the review");
+    const s = json((await u.mcp([{ name: "repair_records", arguments: { review: "7" } }]))[0]!).records.sorts.find((x: { input: { id: string } }) => x.input.id === posted.id);
     const [a, b] = s.input.assessments.map((x: { identity: unknown }) => x.identity);
     assert.ok(a.session && a.session === b.session, "both carry this connection's session");
     assert.equal(a.child, undefined); assert.equal(b.child, "a1234567");
