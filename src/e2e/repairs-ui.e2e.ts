@@ -60,7 +60,9 @@ test("repair page retains original scope, separate evidence outcomes and the clo
     const evidence = await ops.recordRepairEvidence(root, 7, { sortId: sort.id,
       witnessCommit: commit, baseCommit: commit, fixCommit: commit,
       coverage: [{ findingId: finding.id, claimIds: [original, negative], result: "partial", reason: "Duplicate credits remain unchecked.", claimResults: [{ claimId: original, result: "partial", reason: "Duplicate credits remain unchecked." }, { claimId: negative, result: "complete", reason: "The negative claim has a run." }] }],
-      reproducer: [{ id: "repro", command: `touch ${marker}`, phase: "witness", commit, environment: "isolated scratch clone", outcome: "failed", exitCode: 1, stdout: "negative credit persists" }],
+      reproducer: [{ id: "repro", command: `touch ${marker}`, phase: "witness", commit, environment: "isolated scratch clone", outcome: "failed", exitCode: 1, stdout: "negative credit persists" },
+        // A fix needs its pass under the same command, or the evidence is refused at filing (F13).
+        { id: "repro-fix", command: `touch ${marker}`, phase: "fix", commit, environment: "isolated scratch clone", outcome: "passed", exitCode: 0, stdout: "negative credit refused" }],
       regression: [{ id: "suite", command: "npm test", phase: "regression", commit, environment: "isolated scratch clone", outcome: "passed", exitCode: 0 }],
       inspected: [{ source: "src/credits.ts", commit, reasoning: "The source returns the input directly." }],
       noCheckReason: "No useful duplicate-credit fixture exists yet.", rulingIds: [], attribution: [],
