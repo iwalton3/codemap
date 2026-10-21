@@ -11,11 +11,11 @@
  * (older than staleMs) — so a crashed writer never wedges the map. Zero deps.
  */
 
-import { open, readFile, rm, rename, mkdir, stat, writeFile, link } from "node:fs/promises";
+import { open, readFile, rm, rename, mkdir, stat, writeFile, link, readdir } from "node:fs/promises";
 import { realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createHash, randomBytes } from "node:crypto";
-import { join, dirname } from "node:path";
+import { join, dirname, basename } from "node:path";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { admitStore } from "./store-door.js";
 
@@ -127,6 +127,27 @@ async function acquire(p: string, content: string): Promise<void> {
   }
 }
 
+/** Lock paths this process has already swept; see `sweepDead`. */
+const swept = new Set<string>();
+
+/**
+ * Remove the staged copies and steal graves (`acquire`, `hold`) that a writer killed between
+ * creating and removing them left beside the lock. Only a DEAD pid's: removing a live writer's
+ * staged file breaks its `link` with ENOENT, which `acquire` rethrows. Once per process per lock,
+ * because the sidecar lock lives in `tmpdir()`.
+ */
+async function sweepDead(p: string): Promise<void> {
+  if (swept.has(p)) return;
+  swept.add(p);
+  const base = basename(p).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const leftover = new RegExp(`^${base}\\.(?:(\\d+)\\.[0-9a-f]{8}|dead-(\\d+))$`);
+  const names = await readdir(dirname(p)).catch(() => [] as string[]);
+  for (const name of names) {
+    const m = leftover.exec(name);
+    if (m && !pidAlive(Number(m[1] ?? m[2]))) await rm(join(dirname(p), name), { force: true }).catch(() => {});
+  }
+}
+
 async function hold<T>(p: string, label: string, fn: () => Promise<T>, opts: LockOpts = {}): Promise<T> {
   const timeoutMs = opts.timeoutMs ?? 30_000;
   const staleMs = opts.staleMs ?? 60_000;
@@ -173,6 +194,7 @@ async function hold<T>(p: string, label: string, fn: () => Promise<T>, opts: Loc
     }
 
     try {
+      await sweepDead(p);
       heldLocks.set(p, token);
       // Well inside `staleMs`, whatever it is set to — a floor that exceeded it would
       // leave the heartbeat useless exactly where the window is tightest.

@@ -156,3 +156,17 @@ test("a lock file never exists without its holder: a process killed while acquir
     assert.deepEqual((await import("node:fs")).readdirSync(join(root, ".codemap")).filter((f) => f.startsWith(".lock")), [], "nothing staged is left behind");
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test("a dead writer's staged copy and steal grave are swept at acquire; a live writer's are not", async () => {
+  const root = await mkdtemp(join(tmpdir(), "codemap-lock-"));
+  try {
+    const dir = join(root, ".codemap");
+    await mkdir(dir, { recursive: true });
+    const { spawnSync } = await import("node:child_process");
+    const dead = spawnSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"]).stdout.toString();
+    const left = [`.lock.${dead}.deadbeef`, `.lock.dead-${dead}`, `.lock.${process.ppid}.cafebabe`];
+    for (const f of left) await writeFile(join(dir, f), "{}");
+    await withLock(root, async () => {});
+    assert.deepEqual((await import("node:fs")).readdirSync(dir).filter((f) => f.startsWith(".lock")), [left[2]]);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
