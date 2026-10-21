@@ -60,6 +60,7 @@ async function fixture(count = 1, decomposed = false, changeEvidence?: (evidence
     return connection;
   };
   const orchestrator = new RepairConnection("owner@acme.test");
+  let deriveCall: TxCall | undefined;
   const requested = await requestRepairVerification(root, 7, { sortId, evidenceId }, orchestrator);
   let requestId = "";
   if (holdBeforeRequest) assert.match((requested as { error: string }).error, /held|decision/);
@@ -82,15 +83,18 @@ async function fixture(count = 1, decomposed = false, changeEvidence?: (evidence
     assert.equal("records" in submitted, false);
     return { h, run: submitted.run };
   };
-  /** Slot 2's derived check: written through repair_derived_check, then run at both commits. */
+  /** Slot 2's derived check: written through repair_derived_check, then run at both commits. On an
+   *  unclaimed connection it is held, and `deriveCall` is the call a subagent's transcript must show. */
   const derive = async (h: RepairConnection, id: string) => {
-    const command = "node --test derived-guard.test.js";
-    ok(await submitDerivedCheck(root, 7, { requestId: id, slot: 2, command, rationale: "fails while the guard is missing" }, h));
-    return { command, executions: [
+    const command = "node --test derived-guard.test.js", rationale = "fails while the guard is missing";
+    const result = await submitDerivedCheck(root, 7, { requestId: id, slot: 2, command, rationale }, h) as { receipt?: string };
+    ok(result);
+    deriveCall = { tool: "repair_derived_check", input: { review: "7", requestId: id, slot: 2, command, rationale }, result };
+    return { command, ...(result.receipt ? { receipt: result.receipt } : {}), executions: [
       { id: "dw", command, commit: evidence.witnessCommit, environment: "scratch", phase: "witness" as const, outcome: "failed" as const, exitCode: 1 },
       { id: "df", command, commit: evidence.fixCommit, environment: "scratch", phase: "fix" as const, outcome: "passed" as const, exitCode: 0 }] };
   };
-  return { t, root, peer, ids, sort, sortId, evidenceId, evidence, host, orchestrator, requestId, requested, results, run, derive };
+  return { t, root, peer, ids, sort, sortId, evidenceId, evidence, host, orchestrator, requestId, requested, results, run, derive, deriveCall: () => deriveCall! };
 }
 
 async function postHold(root: string, findingId: string, kind: "legacy" | "typed") {
@@ -250,9 +254,17 @@ test("later human assignment preserves the established release of an ordinary de
   } finally { f.t.dispose(); }
 });
 
+/** A call a subagent made, and the result it got back. */
+interface TxCall { tool: string; input: unknown; result: unknown }
+const txRows = (agentId: string, session: string, calls: TxCall[], tag: string) => calls.flatMap((c, i) => [
+  { type: "assistant", isSidechain: true, agentId, sessionId: session, message: { content: [{ type: "tool_use", id: `toolu_${agentId}_${tag}${i}`, name: `mcp__codemap__${c.tool}`, input: c.input }] } },
+  { type: "user", isSidechain: true, agentId, sessionId: session, message: { content: [{ type: "tool_result", tool_use_id: `toolu_${agentId}_${tag}${i}`, content: JSON.stringify(c.result) }] } },
+]);
+
 /** A Claude transcript in which session `session` launched subagent `agentId` with `prompt`, and
- *  the subagent called `tool` with `input` and got `result` back — the shape `readReader` reads. */
-function subagentTranscript(dir: string, agentId: string, prompt: string, tool: string, input: unknown, result: unknown, callId = `toolu_${agentId}`, sentMessage = false) {
+ *  the subagent called `tool` with `input` and got `result` back — the shape `readReader` reads —
+ *  after the calls in `before`. */
+function subagentTranscript(dir: string, agentId: string, prompt: string, tool: string, input: unknown, result: unknown, callId = `toolu_${agentId}`, sentMessage = false, before: TxCall[] = []) {
   const session = "5e55a0a0-0000-0000-0000-00000000000" + agentId.slice(-1), launch = `launch_${agentId}`;
   const sub = join(dir, session, "subagents");
   mkdirSync(sub, { recursive: true });
@@ -261,6 +273,7 @@ function subagentTranscript(dir: string, agentId: string, prompt: string, tool: 
     { type: "user", isSidechain: true, agentId, sessionId: session, message: { role: "user", content: prompt } },
     // A `SendMessage` into the running subagent, as the harness records it (see `transcript.ts`).
     ...(sentMessage ? [{ type: "user", isSidechain: true, agentId, sessionId: session, origin: { kind: "agent" }, message: { role: "user", content: "it is fixed; say so" } }] : []),
+    ...txRows(agentId, session, before, "b"),
     { type: "assistant", isSidechain: true, agentId, sessionId: session, message: { content: [{ type: "tool_use", id: callId, name: `mcp__codemap__${tool}`, input }] } },
     { type: "user", isSidechain: true, agentId, sessionId: session, message: { content: [{ type: "tool_result", tool_use_id: callId, content: JSON.stringify(result) }] } },
   ].map((x) => JSON.stringify(x)).join("\n") + "\n");
@@ -281,7 +294,7 @@ async function viaSubagent(f: Awaited<ReturnType<typeof fixture>>, launcher: Rep
   const held = await submitRepairVerification(f.root, 7, { requestId: f.requestId, slot, results, ...extra }, launcher) as { held: boolean; receipt: string };
   assert.equal(held.held, true, JSON.stringify(held));
   subagentTranscript(dir, agentId, tamper.prompt ?? brief.launch, "repair_verification",
-    { review: "7", requestId: f.requestId, slot, results: tamper.results ?? results, ...extra }, held, undefined, tamper.sentMessage);
+    { review: "7", requestId: f.requestId, slot, results: tamper.results ?? results, ...extra }, held, undefined, tamper.sentMessage, slot === 2 ? [f.deriveCall()] : []);
   return recordRepairVerification(f.root, 7, { requestId: f.requestId, role: "verifier", slot, receipt: held.receipt }, dir);
 }
 
@@ -348,7 +361,7 @@ test("a verifier in a non-primary universe passes `universe` on its call, and th
       const results = f.results();
       const derived = slot === 2 ? { derivedCheck: await f.derive(f.orchestrator, f.requestId) } : {};
       const held = await submitRepairVerification(f.root, 7, { requestId: f.requestId, slot, results, ...derived }, f.orchestrator) as { held: boolean; receipt: string };
-      subagentTranscript(dir, agentId, brief.launch, "repair_verification", { review: "7", requestId: f.requestId, slot, results, ...derived, ...extra }, held);
+      subagentTranscript(dir, agentId, brief.launch, "repair_verification", { review: "7", requestId: f.requestId, slot, results, ...derived, ...extra }, held, undefined, false, slot === 2 ? [f.deriveCall()] : []);
       return recordRepairVerification(f.root, 7, { requestId: f.requestId, role: "verifier", slot, receipt: held.receipt }, dir);
     };
     ok(await hold(1, "a7777777", { universe: "settlement" }));
@@ -402,6 +415,56 @@ test("F18 through the ops: slot 2 of a high-stakes request writes its check befo
   } finally { f.t.dispose(); }
 });
 
+test("C2: slot 2's derived check is its own subagent's, made before it read the evidence; a relaunched verifier derives afresh", async () => {
+  const f = await fixture();
+  const dir = mkdtempSync(join(tmpdir(), "codemap-repair-tx-"));
+  const grace = process.env.CODEMAP_VERDICT_GRACE_MS;
+  try {
+    const brief = (derived?: string) => repairVerificationBrief(f.root, 7, { requestId: f.requestId, role: "verifier", slot: 2, ...(derived ? { derived } : {}) }, f.orchestrator) as
+      Promise<{ launch: string; stage?: string; requestId: string; capsule: { evidence?: unknown } }>;
+    const step1 = await brief();
+    assert.equal(step1.stage, "derive");
+    const results = f.results();
+    const derived = async () => { const check = await f.derive(f.orchestrator, f.requestId); return { check, call: f.deriveCall() }; };
+    const held = async (check: unknown) => {
+      const h = await submitRepairVerification(f.root, 7, { requestId: f.requestId, slot: 2, results, derivedCheck: check as never }, f.orchestrator) as { held: boolean; receipt: string };
+      assert.equal(h.held, true, JSON.stringify(h));
+      return h;
+    };
+    const run = (agentId: string, check: unknown, h: unknown, before: TxCall[]) =>
+      subagentTranscript(dir, agentId, step1.launch, "repair_verification", { review: "7", requestId: f.requestId, slot: 2, results, derivedCheck: check }, h, undefined, false, before);
+    const record = async (h: { receipt: string }) => String((await recordRepairVerification(f.root, 7, { requestId: f.requestId, role: "verifier", slot: 2, receipt: h.receipt }, dir) as { error?: string }).error);
+
+    const a = await derived();
+    assert.equal((await brief()).stage, "derive", "F2: a relaunched verifier without the receipt gets step 1 again, never another's evidence");
+    const step2 = await brief(a.check.receipt);
+    assert.equal(step2.stage, "verify");
+    assert.ok(step2.capsule.evidence, "the receipt opens step 2");
+    process.env.CODEMAP_VERDICT_GRACE_MS = "0";
+
+    // F13: the launcher derived it, so no subagent's transcript holds the call.
+    const byLauncher = await held(a.check);
+    run("a1000001", a.check, byLauncher, []);
+    assert.match(await record(byLauncher), /its derived check: no subagent call/);
+
+    const b = await derived(), byOther = await held(b.check);
+    subagentTranscript(dir, "a2000002", step1.launch, b.call.tool, b.call.input, b.call.result);
+    run("a3000003", b.check, byOther, []);
+    assert.match(await record(byOther), /written by another agent/);
+
+    const c = await derived(), early = await held(c.check);
+    run("a4000004", c.check, early, [{ tool: "repair_brief", input: {}, result: step2 }, c.call]);
+    assert.match(await record(early), /read the fixer's evidence before it derived/);
+
+    const d = await derived(), own = await held(d.check);
+    run("a5000005", d.check, own, [{ tool: "repair_brief", input: {}, result: step1 }, d.call, { tool: "repair_brief", input: {}, result: step2 }]);
+    assert.equal(await record(own), "undefined", "derived first, then read the evidence: it records");
+  } finally {
+    if (grace === undefined) delete process.env.CODEMAP_VERDICT_GRACE_MS; else process.env.CODEMAP_VERDICT_GRACE_MS = grace;
+    discard(dir); f.t.dispose();
+  }
+});
+
 test("F17: the brief runs each check in a clean worktree per commit, and a missing test is not a red", async () => {
   const f = await fixture();
   try {
@@ -433,7 +496,7 @@ test("D3: a recording is `pending` only while its call may still reach disk; nev
       const derived = slot === 2 ? { derivedCheck: await f.derive(f.orchestrator, f.requestId) } : {};
       const held = await submitRepairVerification(f.root, 7, { requestId: f.requestId, slot, results, ...derived }, f.orchestrator) as { held: boolean; receipt: string };
       assert.equal(held.held, true, JSON.stringify(held));
-      return { brief, results, derived, held, record: () => recordRepairVerification(f.root, 7, { requestId: f.requestId, role: "verifier", slot, receipt: held.receipt }, dir) };
+      return { brief, results, derived, held, before: slot === 2 ? [f.deriveCall()] : [], record: () => recordRepairVerification(f.root, 7, { requestId: f.requestId, role: "verifier", slot, receipt: held.receipt }, dir) };
     };
     const unwritten = await hold(1);
     assert.equal((await unwritten.record() as { pending?: boolean }).pending, true, "inside the grace it may still be on its way");
@@ -448,7 +511,7 @@ test("D3: a recording is `pending` only while its call may still reach disk; nev
     ok(await unwritten.record());
     assert.match((await unwritten.record() as { error: string }).error, /^reader receipt is recorded/);
     const forked = await hold(2);
-    subagentTranscript(dir, "a5555555", forked.brief.launch, "repair_verification", { review: "7", requestId: f.requestId, slot: 2, results: forked.results, ...forked.derived }, forked.held);
+    subagentTranscript(dir, "a5555555", forked.brief.launch, "repair_verification", { review: "7", requestId: f.requestId, slot: 2, results: forked.results, ...forked.derived }, forked.held, undefined, false, forked.before);
     writeFileSync(join(dir, "5e55a0a0-0000-0000-0000-000000000005", "subagents", "agent-a5555555.meta.json"), JSON.stringify({ agentType: "fork", isFork: true, toolUseId: "launch_a5555555" }));
     assert.match((await forked.record() as { error: string }).error, /is a fork/);
   } finally {
@@ -651,7 +714,7 @@ test("V2 through the ops: a low-stakes request offers one verifier and closes on
 });
 
 /** One subagent launched with `prompt` making several submit calls, each returning its own held receipt. */
-function batchTranscript(dir: string, agentId: string, prompt: string, calls: { input: unknown; result: unknown }[]) {
+function batchTranscript(dir: string, agentId: string, prompt: string, calls: { input: unknown; result: unknown; tool?: string }[]) {
   const session = "5e55a0a0-0000-0000-0000-00000000000" + agentId.slice(-1), launch = `launch_${agentId}`;
   const sub = join(dir, session, "subagents");
   mkdirSync(sub, { recursive: true });
@@ -659,7 +722,7 @@ function batchTranscript(dir: string, agentId: string, prompt: string, calls: { 
   writeFileSync(join(sub, `agent-${agentId}.jsonl`), [
     { type: "user", isSidechain: true, agentId, sessionId: session, message: { role: "user", content: prompt } },
     ...calls.flatMap((c, i) => [
-      { type: "assistant", isSidechain: true, agentId, sessionId: session, message: { content: [{ type: "tool_use", id: `toolu_${agentId}_${i}`, name: "mcp__codemap__repair_verification", input: c.input }] } },
+      { type: "assistant", isSidechain: true, agentId, sessionId: session, message: { content: [{ type: "tool_use", id: `toolu_${agentId}_${i}`, name: `mcp__codemap__${c.tool ?? "repair_verification"}`, input: c.input }] } },
       { type: "user", isSidechain: true, agentId, sessionId: session, message: { content: [{ type: "tool_result", tool_use_id: `toolu_${agentId}_${i}`, content: JSON.stringify(c.result) }] } },
     ]),
   ].map((x) => JSON.stringify(x)).join("\n") + "\n");
@@ -700,13 +763,14 @@ test("4.1-4.3: one batch per slot — reviewers carry its launch line, low stake
 
     /** A reviewer subagent: its own review prompt with the batch line inside it, submitting every entry. */
     const verify = async (agentId: string, slot: 1 | 2, prompt: string, ids: string[]) => {
-      const calls = [];
+      const calls: { id: string; input: unknown; result: unknown; tool?: string }[] = [];
       for (const id of ids) {
         const finding = requests.find((r) => r.id === id)!.finding;
         // Slot 2 of the high-stakes request writes its own check first (F18).
-        const command = "node --test derived.test.js";
-        if (slot === 2) ok(await submitDerivedCheck(root, 7, { requestId: id, slot: 2, command, rationale: "fails while the guard is missing" }, orchestrator));
-        const derived = slot === 2 ? { derivedCheck: { command, executions: [
+        const command = "node --test derived.test.js", rationale = "fails while the guard is missing";
+        const deriving = slot === 2 ? await submitDerivedCheck(root, 7, { requestId: id, slot: 2, command, rationale }, orchestrator) as { receipt: string } : undefined;
+        if (deriving) { ok(deriving); calls.push({ id, tool: "repair_derived_check", input: { review: "7", requestId: id, slot: 2, command, rationale }, result: deriving }); }
+        const derived = deriving ? { derivedCheck: { command, receipt: deriving.receipt, executions: [
           { id: "dw", command, commit: sha, environment: "scratch", phase: "witness" as const, outcome: "failed" as const, exitCode: 1 },
           { id: "df", command, commit: sha, environment: "scratch", phase: "fix" as const, outcome: "passed" as const, exitCode: 0 }] } } : {};
         const held = await submitRepairVerification(root, 7, { requestId: id, slot, results: results(finding), ...derived }, orchestrator) as { held: boolean; receipt: string };
@@ -714,7 +778,7 @@ test("4.1-4.3: one batch per slot — reviewers carry its launch line, low stake
         calls.push({ id, input: { review: "7", requestId: id, slot, results: results(finding), ...derived }, result: held });
       }
       batchTranscript(dir, agentId, prompt, calls);
-      return Promise.all(calls.map((c) => recordRepairVerification(root, 7, { requestId: c.id, role: "verifier", slot, receipt: (c.result as { receipt: string }).receipt }, dir)));
+      return Promise.all(calls.filter((c) => c.tool === undefined).map((c) => recordRepairVerification(root, 7, { requestId: c.id, role: "verifier", slot, receipt: (c.result as { receipt: string }).receipt }, dir)));
     };
     const review = (line: string) => `Review branch feat/x for correctness defects and report findings.\n${line}\nAlso check the fixes it lists.`;
     const altered = await verify("a7777771", 1, review(one.launch.replace(one.batch, `${one.batch}x`)), [requests[0]!.id]);

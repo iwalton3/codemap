@@ -372,7 +372,8 @@ const tools: Tool[] = [
   {
     name: "repair_brief",
     description: "The blind brief for one verifier slot (1 or 2) or the arbitrator of a repair request, and the exact launch prompt for a subagent verifier, if you are delegating. No other verdict is shown.",
-    inputSchema: obj({ review: { type: "string" }, requestId: { type: "string" }, role: { type: "string", enum: ["verifier", "arbitrator"] }, slot: { type: "integer", enum: [1, 2] } }, ["review", "requestId", "role"]),
+    inputSchema: obj({ review: { type: "string" }, requestId: { type: "string" }, role: { type: "string", enum: ["verifier", "arbitrator"] }, slot: { type: "integer", enum: [1, 2] },
+      derived: { type: "string", description: "Slot 2 of a high-stakes request, step 2: the receipt repair_derived_check returned you. Without it you are given step 1 again." } }, ["review", "requestId", "role"]),
     mutates: true,
     handler: (a, c) => ops.repairVerificationBrief(c.universe.path, a.review, a, connection),
   },
@@ -381,6 +382,7 @@ const tools: Tool[] = [
     description: "One brief for a round's verification: every open job of one role and slot on the review (or of the `requests` named), each entry exactly repair_brief's. A low-stakes request has no slot 2, so slot 1's batch carries it alone. Submit each entry as its own repair_verification (or repair_arbitration). To delegate, put the returned `launch` line, whole and on a line of its own, in a subagent's prompt — a reviewer's prompt may carry it beside its review instructions; launch slot 1 and slot 2 as different subagents. Called with `batch` it re-reads that batch: what the subagent does first. For a review that spans repos, `workspace: true` returns every universe's batch for the slot at once: one subagent per slot carries all their lines.",
     inputSchema: obj({ review: { type: "string" }, role: { type: "string", enum: ["verifier", "arbitrator"] }, slot: { type: "integer", enum: [1, 2] },
       requests: { type: "array", items: { type: "string" } }, batch: { type: "string" },
+      derived: { type: "object", additionalProperties: { type: "string" }, description: "With `batch`, slot 2's step 2: { <requestId>: <receipt repair_derived_check returned you> } for each entry you derived a check for." },
       workspace: { type: "boolean", description: "With role and slot, every universe's batch for that slot of a review that spans repos, in one answer: put all of their launch lines in ONE subagent's prompt." } }, ["review"]),
     mutates: true,
     handler: async (a, c) => a.workspace
@@ -391,7 +393,7 @@ const tools: Tool[] = [
   },
   {
     name: "repair_derived_check",
-    description: "Slot 2 of a HIGH-stakes request only, step 1 of its brief: the check you derived from the claims and the code alone, before you are shown the fixer's evidence. Written once; read the brief again afterwards for the evidence, and submit this check's own runs as `derivedCheck` with your results.",
+    description: "Slot 2 of a HIGH-stakes request only, step 1 of its brief: the check you derived from the claims and the code alone, before you are shown the fixer's evidence. A subagent gets a `receipt`: pass it as `derived` when it reads the brief again for the evidence, and as `derivedCheck.receipt` with its results — its launcher's record checks that the same agent derived the check before reading the evidence. A dedicated verifier session writes it once and gets no receipt. Submit this check's own runs as `derivedCheck` with your results.",
     inputSchema: obj({ review: repairString, requestId: repairString, slot: { type: "integer", enum: [2] }, command: repairString, rationale: { ...repairString, description: "Why this command tests the claims" } }, ["review", "requestId", "slot", "command", "rationale"]),
     mutates: true,
     handler: (a, c) => ops.submitDerivedCheck(c.universe.path, a.review, a as never, connection),
@@ -401,7 +403,8 @@ const tools: Tool[] = [
     description: "Submit your results for one verifier slot: your own run of each check (fails at the witness, passes at the fix), or an inspection with a no-check reason. A subagent's submission is held until its launcher records it. Anything real you found beside the claim goes in `leftovers`, not in a reason: a `problem` becomes a new, narrower finding when the verdict is applied; a `note` stays on the closure.",
     inputSchema: obj({ review: { type: "string" }, requestId: { type: "string" }, slot: { type: "integer", enum: [1, 2] }, results: { type: "array", items: repairClaimVerdictSchema },
       leftovers: { type: "array", items: obj({ kind: { type: "string", enum: ["problem", "note"] }, text: { type: "string" } }, ["kind", "text"], false) },
-      derivedCheck: obj({ command: repairString, executions: { type: "array", items: repairRun } }, ["command", "executions"], false) }, ["review", "requestId", "slot", "results"]),
+      derivedCheck: obj({ command: repairString, executions: { type: "array", items: repairRun },
+        receipt: { ...repairString, description: "The receipt repair_derived_check returned you, if it returned one." } }, ["command", "executions"], false) }, ["review", "requestId", "slot", "results"]),
     mutates: true,
     handler: (a, c) => ops.submitRepairVerification(c.universe.path, a.review, a, connection),
   },
@@ -414,7 +417,7 @@ const tools: Tool[] = [
   },
   {
     name: "record_repair_verification",
-    description: "Record a subagent verifier's held submission by the receipt it got back. Codemap finds the subagent's repair_verification (or repair_arbitration) call that returned it and checks its transcript: launched with exactly the issued prompt (or a prompt holding the launch line of a repair_batch_brief listing this job), and submitted exactly what was held." + " `pending`: the call is not in its transcript yet — call again in a moment (for up to a minute). An error repeats on every call unless codemap itself changes (a fork, a message sent after launch, a call this machine's transcripts do not show) — launch a new one. The receipt is not spent: if the refusal was codemap's defect, it records after the fix.",
+    description: "Record a subagent verifier's held submission by the receipt it got back. Codemap finds the subagent's repair_verification (or repair_arbitration) call that returned it and checks its transcript: launched with exactly the issued prompt (or a prompt holding the launch line of a repair_batch_brief listing this job), and submitted exactly what was held; for slot 2 of a high-stakes request, that the same subagent made the repair_derived_check call its run names, before any brief it read carried the evidence." + " `pending`: the call is not in its transcript yet — call again in a moment (for up to a minute). An error repeats on every call unless codemap itself changes (a fork, a message sent after launch, a call this machine's transcripts do not show) — launch a new one. The receipt is not spent: if the refusal was codemap's defect, it records after the fix.",
     inputSchema: obj({ review: { type: "string" }, requestId: { type: "string" }, role: { type: "string", enum: ["verifier", "arbitrator"] }, slot: { type: "integer", enum: [1, 2] },
       receipt: { type: "string" } }, ["review", "requestId", "role", "receipt"]),
     mutates: true,

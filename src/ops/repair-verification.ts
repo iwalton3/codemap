@@ -32,7 +32,7 @@ import { canonicalIssueKey } from "../decision-issues.js";
 import { decisionsAbsence, workEligibility } from "./decision-holds.js";
 import { issueClaimHash } from "../ruling-application.js";
 import { gitBin } from "../git.js";
-import { canonical, isUnverified, readReceiptCall, transcriptDir } from "../transcript.js";
+import { calledBefore, canonical, isUnverified, readReceiptCall, transcriptDir } from "../transcript.js";
 import { saveReaderRequest, readerRequest, readerRequests, holdReaderReceipt, readerReceipts, settleReaderReceipt, type ReaderPurpose } from "../reader-local.js";
 import { verifierIdentityKey, type RepairConnection, type VerifierIdentity } from "../verifier-boundary.js";
 import {
@@ -250,14 +250,14 @@ export async function pendingRepairJobs(root: string, review: number | string) {
   return { review: String(review), jobs };
 }
 
-export async function repairVerificationBrief(root: string, review: number | string, input: Job, connection: RepairConnection) {
+export async function repairVerificationBrief(root: string, review: number | string, input: Job & { derived?: string }, connection: RepairConnection) {
   if (!["verifier", "arbitrator"].includes(input.role)) return { error: "unknown repair verification role" };
   if (input.role === "verifier" && ![1, 2].includes(input.slot!)) return { error: "a verifier brief is for one slot, 1 or 2" };
   const job: Job = { requestId: input.requestId, role: input.role, ...(input.role === "verifier" ? { slot: input.slot } : {}) };
   const source = await repairVerificationRecords(root, review);
   if ("error" in source) return source;
   if (source.status !== "complete") return { error: "repair scope is blocked" };
-  const brief = jobBrief(root, source.records, job);
+  const brief = jobBrief(root, source.records, job, connection, input.derived);
   if ("error" in brief) return brief;
   if (connection.claimed()) {
     const held = jobs.get(connection);
@@ -278,7 +278,7 @@ export async function repairVerificationBrief(root: string, review: number | str
  * with `batch` it re-reads an issued batch: what the subagent launched with its line does.
  */
 export async function repairBatchBrief(root: string, review: number | string,
-  input: { role?: "verifier" | "arbitrator"; slot?: 1 | 2; requests?: string[]; batch?: string }, connection: RepairConnection) {
+  input: { role?: "verifier" | "arbitrator"; slot?: 1 | 2; requests?: string[]; batch?: string; derived?: Record<string, string> }, connection: RepairConnection) {
   const source = await repairVerificationRecords(root, review);
   if ("error" in source) return source;
   if (source.status !== "complete") return { error: "repair scope is blocked" };
@@ -312,13 +312,13 @@ export async function repairBatchBrief(root: string, review: number | string,
     // Each job's own request too, so its submission is held and recorded exactly as a single brief's.
     const saved = saveReaderRequest(root, { purpose: purposeOf(job), requestId: jobKey(job) }, repairLaunchPrompt(review, job));
     if ("error" in saved) return saved;
-    const brief = jobBrief(root, source.records, job);
+    const brief = jobBrief(root, source.records, job, connection, input?.derived?.[job.requestId]);
     entries.push("error" in brief ? { requestId: job.requestId, skip: brief.error } : brief);
   }
   const launch = repairBatchLaunchLine(review, id);
   return { batch: id, role: batch.role, ...(batch.slot ? { slot: batch.slot } : {}), launch, entries,
     instruction: `Do each entry's instruction, on its own request: one ${batch.role === "verifier" ? `repair_verification per request, slot ${batch.slot}` : "repair_arbitration per request"}. An entry with \`skip\` needs nothing from you. `
-      + "An entry at `stage: derive` is two steps: submit its derived check, then read this batch again for the rest. "
+      + "An entry at `stage: derive` is two steps: submit its derived check, then read this batch again for the rest, passing each receipt it returned as `derived: { <requestId>: <receipt> }`. "
       + `To hand this batch to a subagent, put this line, whole and on a line of its own, in its launch prompt: ${launch}` };
 }
 
@@ -345,16 +345,34 @@ export async function workspaceRepairBatchBriefs(universes: { id: string; root: 
       + "it does each batch's entries, passing that batch's `universe` on its calls. Launch slot 1 and slot 2 as different subagents." };
 }
 
-/** Where slot 2's derived check is kept, local and immutable once saved: it cannot be rewritten
- *  after the evidence is served. Under the job's own key, so a launcher's routing finds it (F6). */
-const derivedKey = (job: Job) => ({ purpose: purposeOf(job), requestId: `${jobKey(job)}:derived` });
-const derivedOf = (root: string, job: Job): { command: string; rationale: string } | undefined => {
-  const body = readerRequest(root, derivedKey(job));
-  return body ? JSON.parse(body) as { command: string; rationale: string } : undefined;
-};
+/**
+ * Slot 2's derived check (F18), local, under the job's own key so a launcher's routing finds it (F6).
+ * A claimed connection is the verifier, so its check is saved once per connection and the op
+ * enforces the order. An unclaimed connection is shared by a launcher and every subagent it starts,
+ * so there the check is HELD like a verdict, any number per job: only its receipt, which the record
+ * ties to one agent's transcript, says who derived it and when (C2).
+ */
+type Derived = { command: string; rationale: string; receipt?: string };
+const deriveKey = (job: Job) => ({ purpose: purposeOf(job), requestId: `${jobKey(job)}:derive` });
+const ownDerivedKey = (job: Job, session: string) => ({ purpose: purposeOf(job), requestId: `${jobKey(job)}:derived:${session}` });
+function derivedFor(root: string, job: Job, connection: RepairConnection, receipt: unknown): Derived | undefined {
+  if (connection.claimed()) {
+    const body = readerRequest(root, ownDerivedKey(job, connection.session));
+    return body ? JSON.parse(body) as Derived : undefined;
+  }
+  const held = typeof receipt === "string" ? readerReceipts(root, deriveKey(job)).find((r) => r.receipt === receipt && r.state !== "cancelled") : undefined;
+  if (!held) return undefined;
+  const { command, rationale } = JSON.parse(held.body) as Derived;
+  return { command, rationale, receipt: held.receipt };
+}
+/** A brief result (one job's, or a batch's entries) that carried this request's evidence. */
+const carriesEvidence = (requestId: string) => (v: unknown): boolean => typeof v === "string"
+  ? v.includes(requestId) && /\\*"evidence\\*"\s*:/.test(v)
+  : !!v && typeof v === "object" && (((v as any).requestId === requestId && (v as any).capsule?.evidence !== undefined)
+    || Object.values(v as object).some((x) => carriesEvidence(requestId)(x)));
 
 /** One job's blind brief: what the verifier reads, and nothing it may not. */
-function jobBrief(root: string, records: RepairVerificationRecords, job: Job) {
+function jobBrief(root: string, records: RepairVerificationRecords, job: Job, connection: RepairConnection, derivedReceipt?: unknown) {
   const request = records.requests.find((r) => r.id === job.requestId);
   if (!request) return { error: "unknown repair verification request" };
   const runs = records.runs.filter((r) => r.requestId === request.id);
@@ -364,8 +382,12 @@ function jobBrief(root: string, records: RepairVerificationRecords, job: Job) {
   if (job.role === "verifier" && runs.some((r) => r.slot === job.slot)) return { error: "that slot already has its run" };
   const c = request.capsule;
   const derives = job.role === "verifier" && derivesCheck(c, job.slot!);
-  const derived = derives ? derivedOf(root, job) : undefined;
+  const derived = derives ? derivedFor(root, job, connection, derivedReceipt) : undefined;
   if (derives && !derived) {
+    if (!connection.claimed()) {
+      const saved = saveReaderRequest(root, deriveKey(job), jobKey(job));
+      if ("error" in saved) return saved;
+    }
     // F18, step 1 of 2: the claim and the code, and nothing of the fixer's — not even what it pinned.
     return { requestId: request.id, capsuleHash: request.capsuleHash, stage: "derive" as const,
       capsule: { scope: c.scope, targets: c.targets, code: { witnessCommit: c.code.witnessCommit, baseCommit: c.code.baseCommit, fixCommit: c.code.fixCommit },
@@ -374,7 +396,8 @@ function jobBrief(root: string, records: RepairVerificationRecords, job: Job) {
       instruction: "Step 1 of 2 — you are slot 2 of a high-stakes request, the second opinion. From the claims and the code at the pinned commits alone, "
         + "write the check YOU would run to test each claim: a command that fails at the witness commit if the claim is true and passes at the fix if it was fixed. "
         + "You are not shown the fixer's evidence yet, on purpose. Call repair_derived_check with this requestId, slot 2, the command and why it tests the claims; "
-        + "then read this brief again — it will carry the fixer's evidence and the rest of the instructions." };
+        + "then read this brief again — it will carry the fixer's evidence and the rest of the instructions. If repair_derived_check returns a `receipt`, "
+        + "pass it as `derived` when you read the brief again (in a batch: `derived: { <requestId>: <receipt> }`); without it you are given this step again." };
   }
   // Blind: no other verdict, and none of the fixer's conclusions — only what they pinned to run.
   const neutral = { scope: c.scope, targets: c.targets, code: c.code,
@@ -393,7 +416,7 @@ function jobBrief(root: string, records: RepairVerificationRecords, job: Job) {
     rulingContext: c.rulingContext };
   return { requestId: request.id, capsuleHash: request.capsuleHash, capsule: neutral,
     ...(job.role === "arbitrator" ? { runs } : {}), ...(derived ? { stage: "verify" as const, derivedCheck: derived } : {}),
-    instruction: (derived ? `Step 2 of 2. Run your derived check (\`${derived.command}\`) at the witness and at the fix as well, and submit it as \`derivedCheck: { command, executions }\` beside your results. ` : "")
+    instruction: (derived ? `Step 2 of 2. Run your derived check (\`${derived.command}\`) at the witness and at the fix as well, and submit it as \`derivedCheck: { command, executions${derived.receipt ? ", receipt" : ""} }\` beside your results. ` : "")
       + "Independently assess only the original claims against the pinned code. Where the sort cites a `ruling`, or was "
       + "released on rulings (`release.rulings`; their text is in `rulingContext`), first judge whether those rulings decide the claim as it is now classified; if they "
       + "do not, the verdict is decision-needed. Work in a scratch worktree "
@@ -415,9 +438,10 @@ function jobBrief(root: string, records: RepairVerificationRecords, job: Job) {
 
 /**
  * F18, between the two steps of slot 2's brief on a high-stakes request: the check its verifier
- * derived from the claim alone. Saved before the evidence is served and never replaced, so what is
- * submitted with the run is checked against what was written first. Order is all this enforces —
- * the fold cannot see it (an accepted gap, docs/repair-verification.md).
+ * derived from the claim alone, which the run must submit. On a claimed connection it is saved once,
+ * before the evidence is served; on an unclaimed one it is held, and the record checks from the
+ * subagent's transcript that the same agent derived it before it read the evidence (C2). The fold
+ * cannot see either (an accepted gap, docs/repair-verification.md).
  */
 export async function submitDerivedCheck(root: string, review: number | string, input: { requestId: string; slot: 2; command: string; rationale: string }, connection: RepairConnection) {
   const job: Job = { requestId: input?.requestId, role: "verifier", slot: input?.slot };
@@ -429,11 +453,19 @@ export async function submitDerivedCheck(root: string, review: number | string, 
   if (source.records.runs.some((r) => r.requestId === request.id && r.slot === 2)) return { error: "that slot already has its run" };
   if (typeof input.command !== "string" || !input.command.trim() || typeof input.rationale !== "string" || !input.rationale.trim())
     return { error: "a derived check is a command and why it tests the claims" };
-  if (connection.claimed() && !jobs.get(connection)?.includes(jobKey(job))) return { error: "read this job's brief (repair_brief, or repair_batch_brief) on this connection first" };
-  if (!readerRequest(root, { purpose: purposeOf(job), requestId: jobKey(job) })) return { error: "no brief was issued for this job; call repair_brief first" };
-  const saved = saveReaderRequest(root, derivedKey(job), JSON.stringify({ command: input.command, rationale: input.rationale }));
-  if ("error" in saved) return { error: "a derived check is written once, before the evidence: this job already has one" };
-  return { ok: true as const, next: "read your brief again (repair_brief, or repair_batch_brief with your batch): it now carries the fixer's evidence" };
+  if (connection.claimed()) {
+    if (!jobs.get(connection)?.includes(jobKey(job))) return { error: "read this job's brief (repair_brief, or repair_batch_brief) on this connection first" };
+    const saved = saveReaderRequest(root, ownDerivedKey(job, connection.session), JSON.stringify({ command: input.command, rationale: input.rationale }));
+    if ("error" in saved) return { error: "a derived check is written once, before the evidence: this job already has one" };
+    return { ok: true as const, next: "read your brief again (repair_brief, or repair_batch_brief with your batch): it now carries the fixer's evidence" };
+  }
+  if (!readerRequest(root, { purpose: purposeOf(job), requestId: jobKey(job) }) || !readerRequest(root, deriveKey(job)))
+    return { error: "no brief was issued for this job; call repair_brief first" };
+  const receipt = randomUUID();
+  const held = holdReaderReceipt(root, deriveKey(job), receipt, JSON.stringify({ command: input.command, rationale: input.rationale, session: connection.session }));
+  if ("error" in held) return held;
+  return { ok: true as const, held: true as const, receipt,
+    next: `read your brief again with \`derived: "${receipt}"\` (repair_brief), or \`derived: { "${job.requestId}": "${receipt}" }\` (repair_batch_brief with your batch): it then carries the fixer's evidence. Submit this receipt as \`derivedCheck.receipt\` with your results.` };
 }
 
 /**
@@ -481,7 +513,7 @@ async function submit(root: string, review: number | string, job: Job, body: Rec
 }
 
 export async function submitRepairVerification(root: string, review: number | string, input: { requestId: string; slot: 1 | 2; results: RepairClaimVerdict[]; leftovers?: RepairLeftover[];
-  derivedCheck?: RepairVerificationRun["derivedCheck"] }, connection: RepairConnection) {
+  derivedCheck?: NonNullable<RepairVerificationRun["derivedCheck"]> & { receipt?: string } }, connection: RepairConnection) {
   input = structuredClone(input);
   // Validated BEFORE holding (G8: F37): a subagent otherwise got a held receipt for results the
   // fold would reject, and learned it only when its launcher tried to record them.
@@ -496,8 +528,9 @@ export async function submitRepairVerification(root: string, review: number | st
     return { error: "leftovers: each { kind: problem | note, text } — a problem becomes a new, narrower finding when this is applied; a note stays on the closure" };
   const job: Job = { requestId: input.requestId, role: "verifier", slot: input.slot };
   if (derivesCheck(request.capsule, input.slot)) {
-    const written = derivedOf(root, job);
-    if (!written) return { error: "slot 2 of a high-stakes request derives its own check first: call repair_derived_check, then read the brief again" };
+    const written = derivedFor(root, job, connection, input.derivedCheck?.receipt);
+    if (!written) return { error: connection.claimed() ? "slot 2 of a high-stakes request derives its own check first: call repair_derived_check, then read the brief again"
+      : "slot 2 of a high-stakes request derives its own check first: call repair_derived_check, read the brief again with its receipt, and submit that receipt as derivedCheck.receipt" };
     if (input.derivedCheck?.command !== written.command) return { error: `submit the check you derived — \`${written.command}\` — as derivedCheck, with its runs at the witness and the fix` };
     const why = derivedCheckError(input.derivedCheck, request.capsule);
     if (why) return { error: why };
@@ -509,7 +542,8 @@ export async function submitRepairVerification(root: string, review: number | st
     if (!request) return { error: "unknown request" };
     const sites = await siteBugRefusal(root, events, input.results);
     if (sites) return { error: sites };
-    const data: RepairVerificationRun = { id: `run_${randomUUID()}`, requestId: request.id, capsuleHash: request.capsuleHash, slot: input.slot, identity, results: input.results, ...extra };
+    const data: RepairVerificationRun = { id: `run_${randomUUID()}`, requestId: request.id, capsuleHash: request.capsuleHash, slot: input.slot, identity, results: input.results,
+      ...extra, ...(input.derivedCheck ? { derivedCheck: withoutReceipt(input.derivedCheck) } : {}) };
     return { kind: "repair.verification-recorded", subject: data.id, data: { ...data } };
   });
 }
@@ -524,6 +558,9 @@ export async function arbitrateRepairVerification(root: string, review: number |
     return { kind: "repair.verification-arbitrated", subject: data.id, data: { ...data } };
   });
 }
+
+/** The derive receipt is a local token with no meaning to teammates; it never reaches the log. */
+const withoutReceipt = (d: NonNullable<RepairVerificationRun["derivedCheck"]> & { receipt?: string }) => { const { receipt: _r, ...rest } = d; return rest; };
 
 /** `universe` only routes the MCP call, and the receipt is already in that universe's store; any
  *  other key the held submission lacks still refuses. */
@@ -552,9 +589,29 @@ export async function recordRepairVerification(root: string, review: number | st
     return { error: call.unverified };
   }
   const expected = { review: String(review), requestId: job.requestId, ...(job.slot ? { slot: job.slot } : {}), ...body };
-  const reason = !launchedFor(root, review, job, launch, call.reader.prompt) ? "the subagent was not launched with exactly the issued prompt, or one holding its batch's launch line"
+  let reason: string | undefined = !launchedFor(root, review, job, launch, call.reader.prompt) ? "the subagent was not launched with exactly the issued prompt, or one holding its batch's launch line"
     : canonical({ ...withoutUniverse(call.input), review: String(call.input?.review) }) !== canonical(expected) ? "the subagent's submission differs from what was held"
     : call.result?.receipt !== input.receipt ? "the subagent's call did not return this receipt" : undefined;
+  // Slot 2's derived check (C2): the same agent derived it, before any brief showed it the evidence.
+  let derive: { key: ReturnType<typeof deriveKey>; receipt: string; callId: string } | undefined;
+  if (!reason && job.role === "verifier") {
+    const source = await repairVerificationRecords(root, review);
+    if ("error" in source) return source;
+    const request = source.records.requests.find((r) => r.id === job.requestId);
+    if (request && derivesCheck(request.capsule, job.slot!)) {
+      const receipt = (body.derivedCheck as { receipt?: unknown } | undefined)?.receipt;
+      const dheld = typeof receipt === "string" ? readerReceipts(root, deriveKey(job)).find((r) => r.receipt === receipt) : undefined;
+      const found = dheld ? readReceiptCall(/(^|__)repair_derived_check$/, dheld.receipt, dheld.heldAt, dir) : undefined;
+      if (found && "pending" in found) return { pending: true as const, reason: `its derived check: ${found.pending}` };
+      reason = !dheld || !found ? "slot 2's run names no derived check held for this job: the verifier derives its own (repair_derived_check)"
+        : isUnverified(found) ? `its derived check: ${found.unverified}`
+        : found.agentId !== call.agentId ? "slot 2's derived check was written by another agent: the verifier derives its own"
+        : found.input?.command !== (JSON.parse(dheld.body) as Derived).command ? "the derive call's command differs from what was held"
+        : !calledBefore(call.agentId, call.reader.session, found.callId, /(^|__)repair_(batch_)?brief$/, carriesEvidence(job.requestId), dir)
+          ? "the verifier read the fixer's evidence before it derived its own check" : undefined;
+      if (!reason) derive = { key: deriveKey(job), receipt: dheld!.receipt, callId: (found as { callId: string }).callId };
+    }
+  }
   if (reason) {
     settleReaderReceipt(root, key, input.receipt, "invalid", reason, call.callId);
     return { error: reason };
@@ -570,14 +627,17 @@ export async function recordRepairVerification(root: string, review: number | st
       if (sites) return { error: sites };
       const data: RepairVerificationRun = { id: `run_${randomUUID()}`, requestId: request.id, capsuleHash: request.capsuleHash, slot: job.slot!, identity, results: body.results as RepairClaimVerdict[],
         ...(body.leftovers ? { leftovers: body.leftovers as RepairLeftover[] } : {}),
-        ...(body.derivedCheck ? { derivedCheck: body.derivedCheck as RepairVerificationRun["derivedCheck"] } : {}) };
+        ...(body.derivedCheck ? { derivedCheck: withoutReceipt(body.derivedCheck as NonNullable<RepairVerificationRun["derivedCheck"]>) } : {}) };
       return { kind: "repair.verification-recorded", subject: data.id, data: { ...data } };
     }
     const data: RepairVerificationArbitration = { id: `arb_${randomUUID()}`, requestId: request.id, capsuleHash: request.capsuleHash, identity,
       runIds: body.runIds as [string, string], addresses: body.addresses as RepairVerificationArbitration["addresses"] };
     return { kind: "repair.verification-arbitrated", subject: data.id, data: { ...data } };
   });
-  if (!("error" in recorded)) settleReaderReceipt(root, key, input.receipt, "recorded", undefined, call.callId);
+  if (!("error" in recorded)) {
+    settleReaderReceipt(root, key, input.receipt, "recorded", undefined, call.callId);
+    if (derive) settleReaderReceipt(root, derive.key, derive.receipt, "recorded", undefined, derive.callId);
+  }
   return recorded;
 }
 
