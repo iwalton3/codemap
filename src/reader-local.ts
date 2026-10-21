@@ -1,7 +1,9 @@
 /** Local reader requests and successful submit receipts, keyed by purpose and request ID.
  * These rows are machine-local transcript correlation state, not shared decision events.
  * The older answer-keyed tables remain for already issued interpretation briefs. */
+import { existsSync } from "node:fs";
 import { db, tx } from "./db.js";
+import { storeFile } from "./store-door.js";
 
 export type ReaderPurpose = "answer-interpretation" | "pair-comparison" | "issue-application" | "operation-signoff" | "repair-verification" | "repair-arbitration" | "withdrawal-review" | "release-review";
 export type ReaderReceiptState = "pending" | "recorded" | "invalid" | "cancelled";
@@ -50,6 +52,22 @@ export function readerRequest(root: string, key: ReaderKey): string | undefined 
 export function readerRequests(root: string, purpose: ReaderPurpose): { requestId: string; body: string }[] {
   return db(root).prepare("SELECT request_id AS requestId, body FROM reader_work_requests WHERE purpose = ? ORDER BY rowid DESC")
     .all(purpose) as { requestId: string; body: string }[];
+}
+
+/**
+ * Whether this store issued reader work under one of `ids` — a request id, a repair job of it
+ * (`<id>#<role><slot>`), a batch (`batch:<id>`) or a held receipt — or an interpretation brief
+ * on one of `answers`. How MCP finds a non-primary universe's work for a call that omits
+ * `universe`, since no launch prompt names one (F6). Never creates a store.
+ */
+export function holdsReaderWork(root: string, ids: string[], answers: string[] = []): boolean {
+  if (!existsSync(storeFile(root))) return false;
+  const d = db(root);
+  const request = d.prepare("SELECT 1 AS found FROM reader_work_requests WHERE request_id = ? OR request_id = ? OR substr(request_id, 1, ?) = ? LIMIT 1");
+  const receipt = d.prepare("SELECT 1 AS found FROM reader_work_receipts WHERE receipt = ? LIMIT 1");
+  const answer = d.prepare("SELECT 1 AS found FROM reader_work_requests WHERE purpose = 'answer-interpretation' AND json_valid(body) AND json_extract(body, '$.answer') = ? LIMIT 1");
+  return ids.some((id) => !!request.get(id, `batch:${id}`, id.length + 1, `${id}#`) || !!receipt.get(id))
+    || answers.some((a) => !!answer.get(a));
 }
 
 /** The receipt token identifies one successful submit-call result across all purposes.

@@ -32,6 +32,7 @@ import { applicationReaderBrief, submitApplicationVerdict, recordApplicationVerd
 import { questionnaireStatus, waitQuestionnaireStatus } from "./ops/questionnaire-status.js";
 import { comparisonDetail, requestComparison, comparisonBrief, submitComparisonJudgment, recordComparisonJudgment, comparisonResolutionBrief, resolveComparison } from "./ops/comparisons.js";
 import { RepairConnection } from "./verifier-boundary.js";
+import { holdsReaderWork } from "./reader-local.js";
 import { asLockout, foldDefectGate, lockoutGate } from "./lockout-gate.js";
 import { setProcessSessionKind } from "./sync-session.js";
 import { projectRulesOnOpen } from "./rules-projection.js";
@@ -96,6 +97,37 @@ const connection = new RepairConnection(resolvePrincipal(ws.primary.path) ?? "")
 interface Ctx {
   ws: Workspace;
   universe: Universe;
+}
+
+/**
+ * Reader work is saved in the store of the universe that issued it, and no launch prompt names
+ * that universe, so a subagent's call without `universe` used to reach the primary and be told
+ * there was no such brief (F6). These tools take the universe that holds the ids they carry.
+ */
+const READER_TOOLS = new Set(["repair_brief", "repair_batch_brief", "repair_verification", "repair_arbitration", "record_repair_verification",
+  "submit_release_verdict", "release_held_sort", "submit_verdict", "record_reading",
+  "submit_operation_signoff_verdict", "record_operation_signoff_verdict", "apply_operation_signoff",
+  "submit_application_verdict", "record_application_verdict", "apply_ruling",
+  "submit_comparison_judgment", "record_comparison_judgment", "submit_withdrawal_verdict", "withdraw_decision"]);
+/** Brief results say which universe they belong to, so a reader can pass it (F6). */
+const BRIEF_TOOLS = new Set(["repair_brief", "repair_batch_brief", "release_reader_brief", "reader_brief", "operation_signoff_reader_brief",
+  "application_reader_brief", "comparison_reader_brief", "withdrawal_reader_brief"]);
+const READER_KEYS = ["requestId", "request", "batch", "receipt"];
+
+function readerUniverse(ws: Workspace, name: string, args: Record<string, unknown>): Universe | undefined {
+  if (args.universe !== undefined || ws.universes.length < 2 || !READER_TOOLS.has(name)) return undefined;
+  const ids: string[] = [];
+  const take = (o: unknown) => {
+    if (!o || typeof o !== "object") return;
+    for (const k of READER_KEYS) if (typeof (o as Record<string, unknown>)[k] === "string") ids.push((o as Record<string, string>)[k]!);
+  };
+  take(args);
+  // One level down: `reader`, and each of `readers`.
+  for (const v of Object.values(args)) for (const x of Array.isArray(v) ? v : [v]) take(x);
+  const answers = (name === "submit_verdict" || name === "record_reading") && typeof args.answer === "string" ? [args.answer] : [];
+  if ((!ids.length && !answers.length) || holdsReaderWork(ws.primary.path, ids, answers)) return undefined;
+  const holders = ws.universes.filter((u) => !u.primary && holdsReaderWork(u.path, ids, answers));
+  return holders.length === 1 ? holders[0] : undefined;
 }
 
 interface Tool {
@@ -2575,7 +2607,7 @@ async function handle(msg: any): Promise<void> {
         send({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: `Error: ${bad}` }], isError: true } });
         return;
       }
-      const universe = args.universe ? ws.byId.get(args.universe) : ws.primary;
+      const universe = args.universe ? ws.byId.get(args.universe) : readerUniverse(ws, tool.name, args) ?? ws.primary;
       if (!universe) {
         send({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: `Error: unknown universe "${args.universe}"` }], isError: true } });
         return;
@@ -2588,7 +2620,9 @@ async function handle(msg: any): Promise<void> {
         }
         const run = () => tool.handler(args, { ws, universe });
         const locked = typeof tool.mutates === "function" ? tool.mutates(args) : tool.mutates;
-        const out = locked ? await withLock(universe.path, run) : await run();
+        const answered = locked ? await withLock(universe.path, run) : await run();
+        const out = BRIEF_TOOLS.has(tool.name) && ws.universes.length > 1 && answered && typeof answered === "object" && !Array.isArray(answered) && !("error" in answered)
+          ? { ...answered, universe: universe.id } : answered;
         // Every call from a session holding staged writes says so (plan 4.1): "sync and push often".
         const held = shared.stagedCount(ws.universes.map((u) => u.path));
         const defect = await foldDefectGate(ws.universes.map((u) => u.path));
