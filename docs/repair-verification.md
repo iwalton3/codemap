@@ -35,6 +35,14 @@ optionally with a **subagent** id. There are two ways to be one:
 A subagent shares its parent's connection, so its identity carries the parent's connection plus
 its own id.
 
+**A refused record is re-checked, not spent** (owner, 2026-10-20: "yes to both, build the re-check
+then merge"). A receipt a record refuses is settled `invalid` and may be recorded later; `recorded`
+and `cancelled` stay final. The residual, accepted: a refusal names what failed, so somebody could
+edit the transcript file to match and record again. A spent receipt made that one try harder and
+no more, because the transcripts are plain files the launching machine can already write before the
+first record. What it cost was real: two codemap-side refusals on 2026-10-20 each burned a whole
+verifier run, since a spent receipt left nothing to correct but a new run.
+
 **Only grants verify** (R2, plan 3.1: "We shouldn't pretend to know who the fixer is"): (G1) a
 fresh session a person starts with the `codemap-verify` skill, which claims the role first; (G2) a
 subagent on a controlled prompt path above — the exact single pointer, or a prompt holding a
