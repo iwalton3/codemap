@@ -34,6 +34,9 @@ export interface RepairLeftover { kind: "problem" | "note"; text: string }
 export interface RepairVerificationRun {
   id: string; requestId: string; capsuleHash: string; slot: 1 | 2; identity: VerifierIdentity; results: RepairClaimVerdict[];
   leftovers?: RepairLeftover[];
+  /** Slot 2 of a high-stakes request (schema 6, F18): the check its verifier wrote from the claim
+   *  alone, before the brief served the fixer's evidence, and its runs at the witness and the fix. */
+  derivedCheck?: { command: string; executions: RepairExecution[] };
 }
 export interface RepairVerificationArbitration {
   id: string; requestId: string; capsuleHash: string; identity: VerifierIdentity;
@@ -69,6 +72,24 @@ export function leftoversOf(runs: Pick<RepairVerificationRun, "slot" | "leftover
   const problems = texts.filter((t) => all.some((x) => x.text.trim() === t && x.kind === "problem"));
   return { problems, notes: texts.filter((t) => !problems.includes(t)) };
 }
+/**
+ * Whether slot `slot` of this request derives its own check (F18, owner: "Agreed"): slot 2 of a
+ * high-stakes request. Two slots that re-run the fixer's check are two observers of ONE check; the
+ * second opinion two slots pay for is a second check. Low stakes: unchanged.
+ */
+export const derivesCheck = (c: Pick<RepairVerificationCapsule, "sort">, slot: number): boolean => slot === 2 && slotsFor(c).length === 2;
+
+/** Why a derived check is malformed: its own command, run at the witness and at the fix, with actual results. */
+export function derivedCheckError(d: RepairVerificationRun["derivedCheck"], c: Pick<RepairVerificationCapsule, "evidence">): string | undefined {
+  if (!d || typeof d !== "object" || !text(d.command) || !Array.isArray(d.executions)) return "a derived check names its command and its runs";
+  if (d.executions.some((x) => !x || x.command !== d.command || !text(x.id) || !text(x.environment)
+    || !((x.phase === "witness" && x.commit === c.evidence.witnessCommit) || (x.phase === "fix" && x.commit === c.evidence.fixCommit))
+    || !["passed", "failed", "unknown"].includes(x.outcome) || (x.outcome === "unknown" ? !text(x.reason) : !Number.isInteger(x.exitCode))
+    || (x.outcome === "passed" && x.exitCode !== 0) || (x.outcome === "failed" && x.exitCode === 0)))
+    return "a derived check's runs are its own command, at the witness or the fix commit, each with an actual result";
+  if (!(["witness", "fix"] as const).every((p) => d.executions.some((x) => x.phase === p))) return "a derived check is run at the witness and at the fix";
+}
+
 const leftoversValid = (v: unknown): boolean => Array.isArray(v) && v.every((x) => !!x && (x.kind === "problem" || x.kind === "note") && text(x.text));
 
 export const repairVerificationHash = (value: unknown): string => createHash("sha256").update(canonical(value) ?? "null").digest("hex");
@@ -193,6 +214,11 @@ export function foldRepairVerification(events: LogEvent[]): RepairVerificationRe
             else if (previous.some((x) => x.slot === d.slot || x.id === d.id || verifierIdentityKey(x.identity) === verifierIdentityKey(d.identity))) error = "each blind slot needs its own verifier";
             else if (!Array.isArray(d.results) || !d.results.length || new Set(d.results.map(key)).size !== d.results.length) error = "run needs unique per-claim outcomes";
             else if (d.leftovers !== undefined && (!closeoutRules(e) || !leftoversValid(d.leftovers))) error = "leftovers are a list of { kind: problem | note, text }";
+            // The fold sees THAT slot 2 derived a check, never WHEN it read what: the order — written
+            // before the evidence was served — is the two-step brief's, an accepted gap (F18).
+            else if (closeoutRules(e) && derivesCheck(request.capsule, d.slot) && derivedCheckError(d.derivedCheck, request.capsule))
+              error = `slot 2 of a high-stakes request derives its own check: ${derivedCheckError(d.derivedCheck, request.capsule)}`;
+            else if (d.derivedCheck !== undefined && !(closeoutRules(e) && derivesCheck(request.capsule, d.slot))) error = "only slot 2 of a high-stakes request carries a derived check";
             else error = d.results.map((r) => resultError(r, request.capsule, closeoutRules(e))).find(Boolean);
             if (!error) out.runs.push(structuredClone(d));
           } else {

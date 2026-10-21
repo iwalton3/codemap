@@ -104,7 +104,7 @@ interface Ctx {
  * that universe, so a subagent's call without `universe` used to reach the primary and be told
  * there was no such brief (F6). These tools take the universe that holds the ids they carry.
  */
-const READER_TOOLS = new Set(["repair_brief", "repair_batch_brief", "repair_verification", "repair_arbitration", "record_repair_verification",
+const READER_TOOLS = new Set(["repair_brief", "repair_batch_brief", "repair_derived_check", "repair_verification", "repair_arbitration", "record_repair_verification",
   "submit_release_verdict", "release_held_sort", "submit_verdict", "record_reading",
   "submit_operation_signoff_verdict", "record_operation_signoff_verdict", "apply_operation_signoff",
   "submit_application_verdict", "record_application_verdict", "apply_ruling",
@@ -304,7 +304,7 @@ const reportedSortReceipt = obj({ id: repairString, source: repairString, conten
 const repairCoverage = { findingId: repairString, claimIds: repairStrings };
 const repairResult = { type: "string", enum: ["complete", "partial", "unknown"] };
 const repairRun = obj({ id: repairString, command: repairString, commit: repairString, environment: repairString,
-  phase: { type: "string", enum: ["witness", "fix", "regression", "mutation"], description: "mutation: run at the fix commit with `mutation` applied; it must fail. For a claim that a test was missing, it stands in for the witness failure." },
+  phase: { type: "string", enum: ["witness", "fix", "regression", "mutation"], description: "mutation: run at the fix commit with the change named in `mutation` applied; it must fail. For a claim that a test was missing, it stands in for the witness failure." },
   outcome: { type: "string", enum: ["passed", "failed", "unknown"] },
   exitCode: { type: "integer" }, stdout: repairString, stderr: repairString, reason: repairString,
   mutation: obj({ site: { ...repairString, description: "file:line or symbol mutated" }, change: { ...repairString, description: "what was changed, exactly" } }, ["site", "change"], false) },
@@ -389,10 +389,18 @@ const tools: Tool[] = [
       : ops.repairBatchBrief(c.universe.path, a.review, a as never, connection),
   },
   {
+    name: "repair_derived_check",
+    description: "Slot 2 of a HIGH-stakes request only, step 1 of its brief: the check you derived from the claims and the code alone, before you are shown the fixer's evidence. Written once; read the brief again afterwards for the evidence, and submit this check's own runs as `derivedCheck` with your results.",
+    inputSchema: obj({ review: repairString, requestId: repairString, slot: { type: "integer", enum: [2] }, command: repairString, rationale: { ...repairString, description: "Why this command tests the claims" } }, ["review", "requestId", "slot", "command", "rationale"]),
+    mutates: true,
+    handler: (a, c) => ops.submitDerivedCheck(c.universe.path, a.review, a as never, connection),
+  },
+  {
     name: "repair_verification",
     description: "Submit your results for one verifier slot: your own run of each check (fails at the witness, passes at the fix), or an inspection with a no-check reason. A subagent's submission is held until its launcher records it. Anything real you found beside the claim goes in `leftovers`, not in a reason: a `problem` becomes a new, narrower finding when the verdict is applied; a `note` stays on the closure.",
     inputSchema: obj({ review: { type: "string" }, requestId: { type: "string" }, slot: { type: "integer", enum: [1, 2] }, results: { type: "array", items: repairClaimVerdictSchema },
-      leftovers: { type: "array", items: obj({ kind: { type: "string", enum: ["problem", "note"] }, text: { type: "string" } }, ["kind", "text"], false) } }, ["review", "requestId", "slot", "results"]),
+      leftovers: { type: "array", items: obj({ kind: { type: "string", enum: ["problem", "note"] }, text: { type: "string" } }, ["kind", "text"], false) },
+      derivedCheck: obj({ command: repairString, executions: { type: "array", items: repairRun } }, ["command", "executions"], false) }, ["review", "requestId", "slot", "results"]),
     mutates: true,
     handler: (a, c) => ops.submitRepairVerification(c.universe.path, a.review, a, connection),
   },

@@ -26,7 +26,7 @@ export function verifierIdentityKey(identity: Pick<VerifierIdentity, "principal"
 /** The work a claimed verifier connection may do; anything else ends the claim. `pull` brings in
  *  a request made on another clone (owner, D1); what it receives is readable through none of these. */
 export const REPAIR_VERIFIER_TOOLS: readonly string[] = Object.freeze([
-  "pull", "repair_pending", "repair_brief", "repair_batch_brief", "repair_verification", "repair_arbitration",
+  "pull", "repair_pending", "repair_brief", "repair_batch_brief", "repair_derived_check", "repair_verification", "repair_arbitration",
 ]);
 
 /**

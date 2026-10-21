@@ -26,7 +26,7 @@ export { operationSignoffQuestion, operationSignoffReaderBrief, submitOperationS
 export { type Trust } from "./ops/shared.js";
 export { repairRecords, postRepairSort, recordRepairEvidence, recordRepairClaims } from "./ops/repairs.js";
 export { releaseReaderBrief, submitReleaseVerdict, releaseHeldSort, releaseRuledSort } from "./ops/repair-release.js";
-export { requestRepairVerification, pendingRepairJobs, repairVerificationBrief, repairBatchBrief, workspaceRepairBatchBriefs, submitRepairVerification, arbitrateRepairVerification, recordRepairVerification, applyRepairVerification, repairVerificationRecords } from "./ops/repair-verification.js";
+export { requestRepairVerification, pendingRepairJobs, repairVerificationBrief, repairBatchBrief, workspaceRepairBatchBriefs, submitDerivedCheck, submitRepairVerification, arbitrateRepairVerification, recordRepairVerification, applyRepairVerification, repairVerificationRecords } from "./ops/repair-verification.js";
 
 export { availableViews, status, dashboard, lintSummaries, findGaps, cover, coverageRules, uncover } from "./ops/overview.js";
 

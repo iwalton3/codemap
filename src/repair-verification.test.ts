@@ -51,9 +51,12 @@ function fixture(opts: { pinned?: RepairExecution[]; classification?: string; re
   const request = (id = "rq") => add(`e-${id}`, "repair.verification-requested", id, { id, capsule, capsuleHash: repairVerificationHash(capsule) });
   const verdict = (v: RepairClaimVerdict["verdict"], executions: RepairExecution[], grade: RepairClaimVerdict["grade"] = "executable", inspected: RepairClaimVerdict["inspected"] = []): RepairClaimVerdict =>
     ({ findingId: "f", claimId: "f:original", verdict: v, reason: "checked", grade, executions, inspected, ...(grade === "inspection" ? { noCheckReason: "nothing runs" } : {}) });
+  // Slot 2 of a high-stakes request derives its own check (F18); the fixture supplies one unless the test does.
+  const derived = { command: "node --test derived.test.js", executions: [run("node --test derived.test.js", W, "witness", "failed"), run("node --test derived.test.js", F, "fix", "passed")] };
   const verify = (slot: 1 | 2, identity: VerifierIdentity, result: RepairClaimVerdict, requestId = "rq", extra: Record<string, unknown> = {}) =>
     add(`e-run-${requestId}-${slot}-${identity.session}-${identity.child ?? ""}`, "repair.verification-recorded", `run-${requestId}-${slot}`,
-      { id: `run-${requestId}-${slot}`, requestId, capsuleHash: repairVerificationHash(capsule), slot, identity, results: [result], ...extra });
+      { id: `run-${requestId}-${slot}`, requestId, capsuleHash: repairVerificationHash(capsule), slot, identity, results: [result],
+        ...(slot === 2 && sort.stakes !== "low" ? { derivedCheck: derived } : {}), ...extra });
   const apply = (identity: VerifierIdentity, outcome = "fixed") => add(`e-apply-${events.length}`, "finding.repairApplied", "f",
     { id: `apply-${events.length}`, requestId: "rq", capsuleHash: repairVerificationHash(capsule), findingId: "f", openEpoch: finding.openEpoch,
       claimHash: issueClaimHash("finding", finding), outcome, contextHash: repairVerificationHash("ctx"), reason: "verified", identity,
@@ -257,4 +260,20 @@ test("F19: leftovers are unioned at apply, a problem in either slot wins, and an
   assert.deepEqual(foldFindings(f.events).get("f")!.repairClosure?.notes, ["never run against a real lapse"], "the closure shows the note, not the problem");
   const bad = fixture(); bad.request();
   assert.match(bad.rejected(bad.verify(1, conn("v1"), bad.verdict("fixed", observedFix), "rq", { leftovers: [{ kind: "worry", text: "?" }] })) ?? "", /leftovers are a list/);
+});
+
+test("F18: slot 2 of a high-stakes request carries the check it derived; slot 1, low stakes, and runs before schema 6 do not", () => {
+  const f = fixture(); f.request();
+  f.verify(1, conn("v1"), f.verdict("fixed", observedFix));
+  assert.match(f.rejected(f.verify(2, conn("v2"), f.verdict("fixed", observedFix), "rq", { derivedCheck: undefined })) ?? "", /derives its own check: a derived check names its command/);
+  const half = { command: "x", executions: [run("x", W, "witness", "failed")] };
+  assert.match(f.rejected(f.verify(2, conn("v3"), f.verdict("fixed", observedFix), "rq", { derivedCheck: half })) ?? "", /run at the witness and at the fix/);
+  assert.equal(f.rejected(f.verify(2, conn("v4"), f.verdict("fixed", observedFix))), undefined, "with its own check, at both commits");
+  const one = fixture(); one.request();
+  assert.match(one.rejected(one.verify(1, conn("v1"), one.verdict("fixed", observedFix), "rq", { derivedCheck: half })) ?? "", /only slot 2 of a high-stakes request/);
+  const old = fixture(); old.request();
+  old.verify(1, conn("v1"), old.verdict("fixed", observedFix));
+  const stamped = old.verify(2, conn("v2"), old.verdict("fixed", observedFix), "rq", { derivedCheck: undefined });
+  old.events.find((e) => e.id === stamped)!.eventSchema = 5;
+  assert.equal(old.rejected(stamped), undefined, "a run from before schema 6 needed none");
 });

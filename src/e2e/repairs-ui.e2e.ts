@@ -150,9 +150,15 @@ test("repair page retains original scope, separate evidence outcomes and the clo
       const verifierHost = makeHost();
       const brief = await ops.repairVerificationBrief(root, 7, { requestId: closureRequest.id, role: "verifier", slot }, verifierHost);
       assert.ok(!("error" in brief), JSON.stringify(brief));
+      // Slot 2 of a high-stakes request writes its own check before it sees the evidence (F18).
+      const command = "node --test derived.test.js";
+      if (slot === 2) assert.ok("ok" in await ops.submitDerivedCheck(root, 7, { requestId: closureRequest.id, slot: 2, command, rationale: "fails without the guard" }, verifierHost));
+      const derived = slot === 2 ? { derivedCheck: { command, executions: [
+        { id: "dw", command, commit, environment: "scratch", phase: "witness" as const, outcome: "failed" as const, exitCode: 1 },
+        { id: "df", command, commit, environment: "scratch", phase: "fix" as const, outcome: "passed" as const, exitCode: 0 }] } } : {};
       const submitted = await ops.submitRepairVerification(root, 7, { requestId: closureRequest.id, slot, results: [{ findingId: closureFinding.id, claimId: closureClaim,
         verdict: "fixed", grade: "inspection", reason: "Independent inspection of the fixture's exact source.", executions: [],
-        inspected: [{ source: "src/credits.ts", commit, reasoning: "Synthetic independent source inspection." }], noCheckReason: "synthetic inspection fixture" }] }, verifierHost);
+        inspected: [{ source: "src/credits.ts", commit, reasoning: "Synthetic independent source inspection." }], noCheckReason: "synthetic inspection fixture" }], ...derived }, verifierHost);
       assert.ok("ok" in submitted && submitted.ok, JSON.stringify(submitted));
     }
     const applied = await ops.applyRepairVerification(root, 7, { requestId: closureRequest.id, findingId: closureFinding.id, reason: "Two independent inspections cover the fixture." }, closureHost);

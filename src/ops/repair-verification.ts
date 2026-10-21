@@ -37,7 +37,7 @@ import { saveReaderRequest, readerRequest, readerRequests, holdReaderReceipt, re
 import { verifierIdentityKey, type RepairConnection, type VerifierIdentity } from "../verifier-boundary.js";
 import {
   foldRepairVerification, repairVerificationHash, repairVerificationDecision, repairVerificationDisagreements,
-  isRepairVerificationState, emptyRepairVerificationState, resultError, slotsFor, leftoversOf, type RepairLeftover,
+  isRepairVerificationState, emptyRepairVerificationState, resultError, slotsFor, leftoversOf, derivesCheck, derivedCheckError, type RepairLeftover,
   type RepairVerificationCapsule, type RepairVerificationRun, type RepairVerificationArbitration,
   type RepairVerificationApplication, type RepairClaimVerdict, type RepairVerificationRecords,
 } from "../repair-verification.js";
@@ -257,7 +257,7 @@ export async function repairVerificationBrief(root: string, review: number | str
   const source = await repairVerificationRecords(root, review);
   if ("error" in source) return source;
   if (source.status !== "complete") return { error: "repair scope is blocked" };
-  const brief = jobBrief(source.records, job);
+  const brief = jobBrief(root, source.records, job);
   if ("error" in brief) return brief;
   if (connection.claimed()) {
     const held = jobs.get(connection);
@@ -312,12 +312,13 @@ export async function repairBatchBrief(root: string, review: number | string,
     // Each job's own request too, so its submission is held and recorded exactly as a single brief's.
     const saved = saveReaderRequest(root, { purpose: purposeOf(job), requestId: jobKey(job) }, repairLaunchPrompt(review, job));
     if ("error" in saved) return saved;
-    const brief = jobBrief(source.records, job);
+    const brief = jobBrief(root, source.records, job);
     entries.push("error" in brief ? { requestId: job.requestId, skip: brief.error } : brief);
   }
   const launch = repairBatchLaunchLine(review, id);
   return { batch: id, role: batch.role, ...(batch.slot ? { slot: batch.slot } : {}), launch, entries,
     instruction: `Do each entry's instruction, on its own request: one ${batch.role === "verifier" ? `repair_verification per request, slot ${batch.slot}` : "repair_arbitration per request"}. An entry with \`skip\` needs nothing from you. `
+      + "An entry at `stage: derive` is two steps: submit its derived check, then read this batch again for the rest. "
       + `To hand this batch to a subagent, put this line, whole and on a line of its own, in its launch prompt: ${launch}` };
 }
 
@@ -344,8 +345,16 @@ export async function workspaceRepairBatchBriefs(universes: { id: string; root: 
       + "it does each batch's entries, passing that batch's `universe` on its calls. Launch slot 1 and slot 2 as different subagents." };
 }
 
+/** Where slot 2's derived check is kept, local and immutable once saved: it cannot be rewritten
+ *  after the evidence is served. Under the job's own key, so a launcher's routing finds it (F6). */
+const derivedKey = (job: Job) => ({ purpose: purposeOf(job), requestId: `${jobKey(job)}:derived` });
+const derivedOf = (root: string, job: Job): { command: string; rationale: string } | undefined => {
+  const body = readerRequest(root, derivedKey(job));
+  return body ? JSON.parse(body) as { command: string; rationale: string } : undefined;
+};
+
 /** One job's blind brief: what the verifier reads, and nothing it may not. */
-function jobBrief(records: RepairVerificationRecords, job: Job) {
+function jobBrief(root: string, records: RepairVerificationRecords, job: Job) {
   const request = records.requests.find((r) => r.id === job.requestId);
   if (!request) return { error: "unknown repair verification request" };
   const runs = records.runs.filter((r) => r.requestId === request.id);
@@ -354,6 +363,19 @@ function jobBrief(records: RepairVerificationRecords, job: Job) {
   if (job.role === "verifier" && !slotsFor(request.capsule).includes(job.slot!)) return { error: `a low-stakes request has one verifier: slot 1` };
   if (job.role === "verifier" && runs.some((r) => r.slot === job.slot)) return { error: "that slot already has its run" };
   const c = request.capsule;
+  const derives = job.role === "verifier" && derivesCheck(c, job.slot!);
+  const derived = derives ? derivedOf(root, job) : undefined;
+  if (derives && !derived) {
+    // F18, step 1 of 2: the claim and the code, and nothing of the fixer's — not even what it pinned.
+    return { requestId: request.id, capsuleHash: request.capsuleHash, stage: "derive" as const,
+      capsule: { scope: c.scope, targets: c.targets, code: { witnessCommit: c.code.witnessCommit, baseCommit: c.code.baseCommit, fixCommit: c.code.fixCommit },
+        claims: c.claims.map(({ id, findingId, text, parentId, witness, asFiled }) => ({ id, findingId, text, parentId, witness, asFiled })),
+        sort: { id: c.sort.id, classification: c.sort.classification, kind: c.sort.kind, coverage: c.sort.coverage, predicate: c.sort.predicate, sites: c.sort.sites } },
+      instruction: "Step 1 of 2 — you are slot 2 of a high-stakes request, the second opinion. From the claims and the code at the pinned commits alone, "
+        + "write the check YOU would run to test each claim: a command that fails at the witness commit if the claim is true and passes at the fix if it was fixed. "
+        + "You are not shown the fixer's evidence yet, on purpose. Call repair_derived_check with this requestId, slot 2, the command and why it tests the claims; "
+        + "then read this brief again — it will carry the fixer's evidence and the rest of the instructions." };
+  }
   // Blind: no other verdict, and none of the fixer's conclusions — only what they pinned to run.
   const neutral = { scope: c.scope, targets: c.targets, code: c.code,
     claims: c.claims.map(({ id, findingId, text, parentId, witness, asFiled }) => ({ id, findingId, text, parentId, witness, asFiled })),
@@ -369,8 +391,9 @@ function jobBrief(records: RepairVerificationRecords, job: Job) {
         ? { mutations: c.evidence.reproducer.filter((x) => x.phase === "mutation").map(({ command, mutation }) => ({ command, ...mutation })) } : {}) },
     rulingContext: c.rulingContext };
   return { requestId: request.id, capsuleHash: request.capsuleHash, capsule: neutral,
-    ...(job.role === "arbitrator" ? { runs } : {}),
-    instruction: "Independently assess only the original claims against the pinned code. Where the sort cites a `ruling`, or was "
+    ...(job.role === "arbitrator" ? { runs } : {}), ...(derived ? { stage: "verify" as const, derivedCheck: derived } : {}),
+    instruction: (derived ? `Step 2 of 2. Run your derived check (\`${derived.command}\`) at the witness and at the fix as well, and submit it as \`derivedCheck: { command, executions }\` beside your results. ` : "")
+      + "Independently assess only the original claims against the pinned code. Where the sort cites a `ruling`, or was "
       + "released on rulings (`release.rulings`; their text is in `rulingContext`), first judge whether those rulings decide the claim as it is now classified; if they "
       + "do not, the verdict is decision-needed. Work in a scratch worktree "
       + "at the pinned commits (`git worktree add <scratch> <commit>`), never in anyone's live checkout — a fresh, clean one for each "
@@ -387,6 +410,29 @@ function jobBrief(records: RepairVerificationRecords, job: Job) {
       + "disposition: fixed, or — for a site the evidence lists under `siteBugs` — filed, with that bug id. "
       + "A requirement or scope judgment is "
       + `decision-needed. Then call ${job.role === "verifier" ? "repair_verification" : "repair_arbitration"}.` };
+}
+
+/**
+ * F18, between the two steps of slot 2's brief on a high-stakes request: the check its verifier
+ * derived from the claim alone. Saved before the evidence is served and never replaced, so what is
+ * submitted with the run is checked against what was written first. Order is all this enforces —
+ * the fold cannot see it (an accepted gap, docs/repair-verification.md).
+ */
+export async function submitDerivedCheck(root: string, review: number | string, input: { requestId: string; slot: 2; command: string; rationale: string }, connection: RepairConnection) {
+  const job: Job = { requestId: input?.requestId, role: "verifier", slot: input?.slot };
+  const source = await repairVerificationRecords(root, review);
+  if ("error" in source) return source;
+  const request = source.records.requests.find((r) => r.id === job.requestId);
+  if (!request) return { error: "unknown repair verification request" };
+  if (!derivesCheck(request.capsule, job.slot!)) return { error: "only slot 2 of a high-stakes request derives its own check" };
+  if (source.records.runs.some((r) => r.requestId === request.id && r.slot === 2)) return { error: "that slot already has its run" };
+  if (typeof input.command !== "string" || !input.command.trim() || typeof input.rationale !== "string" || !input.rationale.trim())
+    return { error: "a derived check is a command and why it tests the claims" };
+  if (connection.claimed() && !jobs.get(connection)?.includes(jobKey(job))) return { error: "read this job's brief (repair_brief, or repair_batch_brief) on this connection first" };
+  if (!readerRequest(root, { purpose: purposeOf(job), requestId: jobKey(job) })) return { error: "no brief was issued for this job; call repair_brief first" };
+  const saved = saveReaderRequest(root, derivedKey(job), JSON.stringify({ command: input.command, rationale: input.rationale }));
+  if ("error" in saved) return { error: "a derived check is written once, before the evidence: this job already has one" };
+  return { ok: true as const, next: "read your brief again (repair_brief, or repair_batch_brief with your batch): it now carries the fixer's evidence" };
 }
 
 /**
@@ -433,7 +479,8 @@ async function submit(root: string, review: number | string, job: Job, body: Rec
     next: "held on this machine: the session that launched you records it with record_repair_verification, giving your agent id and this call's id" };
 }
 
-export async function submitRepairVerification(root: string, review: number | string, input: { requestId: string; slot: 1 | 2; results: RepairClaimVerdict[]; leftovers?: RepairLeftover[] }, connection: RepairConnection) {
+export async function submitRepairVerification(root: string, review: number | string, input: { requestId: string; slot: 1 | 2; results: RepairClaimVerdict[]; leftovers?: RepairLeftover[];
+  derivedCheck?: RepairVerificationRun["derivedCheck"] }, connection: RepairConnection) {
   input = structuredClone(input);
   // Validated BEFORE holding (G8: F37): a subagent otherwise got a held receipt for results the
   // fold would reject, and learned it only when its launcher tried to record them.
@@ -447,13 +494,20 @@ export async function submitRepairVerification(root: string, review: number | st
   if (input.leftovers !== undefined && (!Array.isArray(input.leftovers) || input.leftovers.some((x) => !x || (x.kind !== "problem" && x.kind !== "note") || typeof x.text !== "string" || !x.text.trim())))
     return { error: "leftovers: each { kind: problem | note, text } — a problem becomes a new, narrower finding when this is applied; a note stays on the closure" };
   const job: Job = { requestId: input.requestId, role: "verifier", slot: input.slot };
-  const left = input.leftovers?.length ? { leftovers: input.leftovers } : {};
-  return submit(root, review, job, { results: input.results, ...left }, connection, (identity) => async (events) => {
+  if (derivesCheck(request.capsule, input.slot)) {
+    const written = derivedOf(root, job);
+    if (!written) return { error: "slot 2 of a high-stakes request derives its own check first: call repair_derived_check, then read the brief again" };
+    if (input.derivedCheck?.command !== written.command) return { error: `submit the check you derived — \`${written.command}\` — as derivedCheck, with its runs at the witness and the fix` };
+    const why = derivedCheckError(input.derivedCheck, request.capsule);
+    if (why) return { error: why };
+  } else if (input.derivedCheck !== undefined) return { error: "only slot 2 of a high-stakes request carries a derived check" };
+  const extra = { ...(input.leftovers?.length ? { leftovers: input.leftovers } : {}), ...(input.derivedCheck ? { derivedCheck: input.derivedCheck } : {}) };
+  return submit(root, review, job, { results: input.results, ...extra }, connection, (identity) => async (events) => {
     const request = foldRepairVerification(events).requests.find((r) => r.id === input.requestId);
     if (!request) return { error: "unknown request" };
     const sites = await siteBugRefusal(root, events, input.results);
     if (sites) return { error: sites };
-    const data: RepairVerificationRun = { id: `run_${randomUUID()}`, requestId: request.id, capsuleHash: request.capsuleHash, slot: input.slot, identity, results: input.results, ...left };
+    const data: RepairVerificationRun = { id: `run_${randomUUID()}`, requestId: request.id, capsuleHash: request.capsuleHash, slot: input.slot, identity, results: input.results, ...extra };
     return { kind: "repair.verification-recorded", subject: data.id, data: { ...data } };
   });
 }
@@ -513,7 +567,8 @@ export async function recordRepairVerification(root: string, review: number | st
       const sites = await siteBugRefusal(root, events, body.results as RepairClaimVerdict[]);
       if (sites) return { error: sites };
       const data: RepairVerificationRun = { id: `run_${randomUUID()}`, requestId: request.id, capsuleHash: request.capsuleHash, slot: job.slot!, identity, results: body.results as RepairClaimVerdict[],
-        ...(body.leftovers ? { leftovers: body.leftovers as RepairLeftover[] } : {}) };
+        ...(body.leftovers ? { leftovers: body.leftovers as RepairLeftover[] } : {}),
+        ...(body.derivedCheck ? { derivedCheck: body.derivedCheck as RepairVerificationRun["derivedCheck"] } : {}) };
       return { kind: "repair.verification-recorded", subject: data.id, data: { ...data } };
     }
     const data: RepairVerificationArbitration = { id: `arb_${randomUUID()}`, requestId: request.id, capsuleHash: request.capsuleHash, identity,
