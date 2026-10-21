@@ -38,7 +38,7 @@ async function fixture(count = 1, decomposed = false, changeEvidence?: (evidence
     ok(claims); extra = (claims as { claims: { id: string }[] }).claims[0]!.id;
   }
   const sort: Omit<RepairSortInput, "id"> = { classification: "mechanical", kind: "isolated", source: "approved owner worklist",
-    coverage: ids.map(id => ({ findingId: id, claimIds: [`${id}:original`, ...(decomposed ? [extra] : [])] })), restsOn: [], provenance: "owner-reviewed", assessments: [], disagreements: [], ...sortOver };
+    coverage: ids.map(id => ({ findingId: id, claimIds: [`${id}:original`, ...(decomposed ? [extra] : [])] })), restsOn: [], provenance: "owner-reviewed", stakes: "high", assessments: [], disagreements: [], ...sortOver };
   const posted = await postRepairSort(root, 7, sort);
   ok(posted);
   const sortId = (posted as { id: string }).id;

@@ -76,7 +76,7 @@ for (const kind of ["finding", "bug"] as const) {
 function repair() {
   const actor = { principal: "owner" }, verifier = { principal: "verifier" };
   const identity = (session: string) => ({ principal: "verifier", harness: "mcp", session });
-  const sort: any = { id: "sort", classification: "mechanical", kind: "isolated", coverage: [{ findingId: "f", claimIds: ["f:original"] }], restsOn: [], source: "owner reviewed exact guard", provenance: "owner-reviewed", assessments: [], disagreements: [] };
+  const sort: any = { id: "sort", classification: "mechanical", kind: "isolated", coverage: [{ findingId: "f", claimIds: ["f:original"] }], restsOn: [], source: "owner reviewed exact guard", provenance: "owner-reviewed", stakes: "high", assessments: [], disagreements: [] };
   const evidence: any = { id: "proof", sortId: "sort", witnessCommit: "a".repeat(40), baseCommit: "b".repeat(40), fixCommit: "c".repeat(40), coverage: [{ findingId: "f", claimIds: ["f:original"], result: "complete", reason: "whole claim", claimResults: [{ claimId: "f:original", result: "complete", reason: "whole claim" }] }], reproducer: [], regression: [], inspected: [], rulingIds: [], attribution: [] };
   const events: LogEvent[] = [];
   let seq = 0;

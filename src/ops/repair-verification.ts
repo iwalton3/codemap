@@ -191,11 +191,15 @@ export async function requestRepairVerification(root: string, review: number | s
   input = structuredClone(input);
   const identity = identityIn(connection, root);
   const id = `rv_${randomUUID()}`;
-  return append(root, review, identity, async (events) => {
+  let stakes: RepairVerificationCapsule["sort"]["stakes"] | "unset" = "unset";
+  const made = await append(root, review, identity, async (events) => {
     const frozen = await capsule(root, review, events, input, identity);
     if ("error" in frozen) return frozen;
+    stakes = frozen.sort.stakes;
     return { kind: "repair.verification-requested", subject: id, data: { id, capsule: frozen, capsuleHash: repairVerificationHash(frozen) } };
   });
+  // Answered, not refused: the backlog's sorts predate stakes (owner: "support both modalities").
+  return "ok" in made && stakes === undefined ? { ...made, note: "this sort has no stakes, so it reads as high and needs two verifier slots. If it is low, set that first with a dual-sorted correction by fresh sorters, then request again." } : made;
 }
 
 type Job = { requestId: string; role: "verifier" | "arbitrator"; slot?: 1 | 2 };

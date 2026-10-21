@@ -67,6 +67,19 @@ const VERIFICATION_KINDS: readonly string[] = ["repair.verification-requested", 
 export const priorsOf = (d: Pick<RepairSortInput, "prior" | "priors">): string[] =>
   [...(typeof d.prior === "string" ? [d.prior] : []), ...(Array.isArray(d.priors) ? d.priors : [])];
 
+/**
+ * Whether `e` was written under EVENT_SCHEMA 6's close-out rules (plan 2026-10-20 Phase 2): stakes
+ * on every posted sort, evidence that can meet the bar at filing, slot 2's derived check. An event
+ * stamped lower keeps the rules it was written under, so a stakes-less sort or evidence filed
+ * before the bar stays valid instead of becoming damage. The first rules to condition on the stamp.
+ */
+export const CLOSEOUT_SCHEMA = 6;
+export const closeoutRules = (e: Pick<LogEvent, "eventSchema">): boolean => (e.eventSchema ?? 0) >= CLOSEOUT_SCHEMA;
+
+/** The sorter and arbitrator identities a sort was read by, for "fresh readers" (F15). */
+const readersOf = (d: Pick<RepairSortInput, "assessments" | "arbitration">): string[] =>
+  [...d.assessments.map((a) => a.identity), ...(d.arbitration ? [d.arbitration.identity] : [])].map((i) => verifierIdentityKey(i));
+
 /** Original claims come from creation, never the finding's mutable current text. */
 export function foldRepairRecords(input: LogEvent[]): RepairRecords {
   const out = emptyRepairRecords();
@@ -175,9 +188,21 @@ export function foldRepairRecords(input: LogEvent[]): RepairRecords {
         if (!error && priorsOf(data).length && (!nonempty(data.reason) || priorsOf(data).some(p => !out.sorts.some(s => s.input.id === p)))) error = "correction needs predecessor and reason";
         if (!error && data.ruling !== undefined && (!nonempty(data.ruling) || !priorsOf(data).length)) error = "a cited ruling belongs to a correction: it names a logged answer and a prior sort";
         if (!error && data.stakes !== undefined && data.stakes !== "high" && data.stakes !== "low") error = "stakes is high or low";
-        // Raise-only, so the sorters' disagreement-means-high cannot be undone in one step (V1).
-        if (!error && data.stakes === "low" && priorsOf(data).some(p => out.sorts.find(s => s.input.id === p)?.input.stakes !== "low"))
-          error = "a correction may raise stakes, never lower them: a sort without stakes is high";
+        // Released and ruled sorts are codemap's, and inherit the held sort's stakes, absent included.
+        if (!error && closeoutRules(e) && data.stakes === undefined && (data.provenance === "owner-reviewed" || data.provenance === "dual-sorted"))
+          error = "a sort states its stakes, high or low";
+        // Raise-only, so the sorters' disagreement-means-high cannot be undone in one step (V1). The
+        // one way down (F15): a sort that never had stakes, set by a NEW dual reading — fresh sorters,
+        // so a sorting is never re-labelled by the readers who left it without.
+        const lowered = !error && data.stakes === "low" ? priorsOf(data).map(p => out.sorts.find(s => s.input.id === p)?.input).filter(p => p?.stakes !== "low") : [];
+        if (lowered.length) {
+          const unset = lowered.every(p => p && p.stakes === undefined);
+          const readers = new Set(lowered.flatMap(p => (p ? readersOf(p) : [])));
+          if (!closeoutRules(e) || !unset || data.provenance !== "dual-sorted")
+            error = "a correction may raise stakes, never lower them; only a dual-sorted correction may set stakes on a sort that has none";
+          else if (readersOf(data).some(k => readers.has(k)))
+            error = "setting stakes on a sort that has none is a new reading: its sorters must not be the prior sort's";
+        }
         if (!error && data.kind === "pattern" && (!nonempty(data.predicate) || !data.sites?.length || !unique(data.sites))) error = "pattern needs predicate and original sites";
         if (!error) error = releaseError(data);
         if (!error) error = sequenceError(data);

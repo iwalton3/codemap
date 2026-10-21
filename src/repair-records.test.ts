@@ -20,9 +20,9 @@ const other = { ...who, session: "s2" };
 const actor = { principal: "alice" };
 const agent = { principal: "alice", via: { kind: "agent" as const, model: "m" } };
 const created = { kind: "finding.created", subject: "f1", data: { text: "negative and duplicate credits accepted", targetId: "a", targetKind: "anchor" } };
-const sort = (over: Partial<RepairSortInput> = {}): RepairSortInput => ({ id: "s1", classification: "mechanical", kind: "isolated", coverage: [{ findingId: "f1", claimIds: ["f1:original"] }], restsOn: [], source: "exact reviewed worklist", provenance: "owner-reviewed", assessments: [], disagreements: [], ...over });
+const sort = (over: Partial<RepairSortInput> = {}): RepairSortInput => ({ id: "s1", classification: "mechanical", kind: "isolated", coverage: [{ findingId: "f1", claimIds: ["f1:original"] }], restsOn: [], source: "exact reviewed worklist", provenance: "owner-reviewed", stakes: "high", assessments: [], disagreements: [], ...over });
 const ev = (over: Partial<RepairEvidenceInput> = {}): RepairEvidenceInput => ({ id: "proof", sortId: "s1", witnessCommit: "a".repeat(40), baseCommit: "b".repeat(40), fixCommit: "c".repeat(40), coverage: [{ findingId: "f1", claimIds: ["f1:original"], result: "complete", reason: "examined whole claim", claimResults: [{ claimId: "f1:original", result: "complete", reason: "examined whole claim" }] }], reproducer: [], regression: [], inspected: [], rulingIds: [], attribution: [], ...over });
-const chain = (rest: { kind: string; subject: string; data: Record<string, unknown>; actor?: { principal: string } }[]) => testChain("writer", [created, ...rest].map((e, i) => ({ id: String(i + 1), actor, ...e })));
+const chain = (rest: { kind: string; subject: string; data: Record<string, unknown>; actor?: { principal: string }; eventSchema?: number }[]) => testChain("writer", [created, ...rest].map((e, i) => ({ id: String(i + 1), actor, ...e })));
 const sorted = (s = sort(), by: { principal: string; via?: { kind: "agent"; model: string } } = actor) => ({ kind: "repair.sort-recorded", subject: s.id, data: { ...s }, actor: by });
 const proof = (data = ev()) => ({ kind: "repair.evidence-recorded", subject: data.id, data: { ...data } });
 
@@ -187,14 +187,46 @@ test("A8 (D2): a decision entry and a release ruling must exist in the decisions
   assert.deepEqual(await why(release("ans9")), ["no answer ans9 to r1:d1 in the decisions log"]);
 });
 
+/** Written by a build before EVENT_SCHEMA 6: a sort from before stakes existed. */
+const before6 = <T extends object>(e: T) => ({ ...e, eventSchema: 5 });
+
 test("V1: a correction may raise stakes and never lower them; a sort without stakes is high", () => {
   const corrected = (first: Partial<RepairSortInput>, next: Partial<RepairSortInput>) =>
-    foldRepairRecords(chain([sorted(sort(first)), sorted(sort({ id: "s2", prior: "s1", reason: "restaked", ...next }))])).rejected.map(r => r.reason);
+    foldRepairRecords(chain([before6(sorted(sort(first))), sorted(sort({ id: "s2", prior: "s1", reason: "restaked", ...next }))])).rejected.map(r => r.reason);
   assert.deepEqual(corrected({ stakes: "low" }, { stakes: "high" }), []);
   assert.deepEqual(corrected({ stakes: "low" }, { stakes: "low" }), []);
+  assert.deepEqual(corrected({ stakes: undefined }, { stakes: "high" }), [], "absent is high, so high is no change");
   assert.match(corrected({ stakes: "high" }, { stakes: "low" }).join(), /raise stakes, never lower/);
-  assert.match(corrected({}, { stakes: "low" }).join(), /raise stakes, never lower/);
+  assert.match(corrected({ stakes: undefined }, { stakes: "low" }).join(), /only a dual-sorted correction/);
   assert.match(foldRepairRecords(chain([sorted(sort({ stakes: "medium" as never }))])).rejected[0]?.reason ?? "", /high or low/);
+});
+
+test("2a: a sort posted under schema 6 states its stakes; one stamped earlier stays valid; codemap's ruled release inherits none", () => {
+  const reasons = (...evs: Parameters<typeof chain>[0]) => foldRepairRecords(chain(evs)).rejected.map(r => r.reason);
+  assert.match(reasons(sorted(sort({ stakes: undefined }))).join(), /states its stakes/);
+  assert.match(reasons(sorted(sort({ stakes: undefined, provenance: "dual-sorted", assessments: [
+    { identity: who, classification: "mechanical", reason: "a" }, { identity: other, classification: "mechanical", reason: "b" }] }))).join(), /states its stakes/);
+  assert.deepEqual(reasons(before6(sorted(sort({ stakes: undefined })))), [], "grandfathered: the same event at schema 5 is valid");
+  // A held sort from before stakes, released on its ruling under schema 6: the release copies the
+  // prior's stakes, absent included, and must not be refused for it.
+  const held = sort({ stakes: undefined, restsOn: ["decision:d1"] });
+  const ruled = { ...sort({ id: "s2", prior: "s1", reason: "released by ruling", classification: "implementation-defect", provenance: "ruled", stakes: undefined }),
+    release: { rulings: [{ decision: "d1", answer: "ans1", question: "D1", words: "fix it" }] } };
+  assert.deepEqual(reasons(before6(sorted(held)), sorted(ruled as RepairSortInput)), []);
+});
+
+test("F15: fresh dual sorters may set low on a sort that never had stakes; its own readers, one reader, or an explicit high may not", () => {
+  const s3 = { ...who, session: "s3" }, s4 = { ...who, session: "s4" };
+  const dual = (a: typeof who, b: typeof who, over: Partial<RepairSortInput> = {}) => sort({ provenance: "dual-sorted", assessments: [
+    { identity: a, classification: "mechanical", reason: "a" }, { identity: b, classification: "mechanical", reason: "b" }], ...over });
+  const lower = (prior: RepairSortInput, next: RepairSortInput, stamp = (e: ReturnType<typeof sorted>) => e) =>
+    foldRepairRecords(chain([before6(sorted(prior)), stamp(sorted({ ...next, id: "s2", prior: "s1", reason: "stakes set", stakes: "low" }))])).rejected.map(r => r.reason);
+  const unset = dual(who, other, { stakes: undefined });
+  assert.deepEqual(lower(unset, dual(s3, s4)), [], "two fresh sorters set it");
+  assert.match(lower(unset, dual(who, s3)).join(), /new reading/, "one of the prior's sorters may not");
+  assert.match(lower(unset, sort()).join(), /only a dual-sorted correction/, "an owner-reviewed correction may not");
+  assert.match(lower(dual(who, other, { stakes: "high" }), dual(s3, s4)).join(), /raise stakes, never lower/, "an explicit high stays");
+  assert.match(lower(unset, dual(s3, s4), before6).join(), /only a dual-sorted correction/, "the way down binds only events written under schema 6");
 });
 
 test("arbitration must address each disagreement and unresolved dependency holds", () => {
@@ -246,7 +278,7 @@ test("unchanged shards replay old materializer cache and atomically persist repa
     const result = await readCached(root, log, scope, "identity", foldFindings, findingsProjection);
     assert.equal((result.value as import("./repair-records.js").RepairFindingMap<import("./shared-findings.js").SharedFinding>).repairRecords!.evidence.length, 1);
     assert.equal(readRepairRecords(root, scope).claims[0]!.text, created.data.text);
-    assert.equal(MATERIALIZER_VERSION, 59);
+    assert.equal(MATERIALIZER_VERSION, 60);
     assert.equal((d.prepare("SELECT fingerprint FROM shared_scope WHERE scope=?").get(scope) as {fingerprint:string}).fingerprint, await scopeFingerprint(log, scope, "identity"));
     d.prepare("UPDATE repair_records SET body='{}' WHERE scope=?").run(scope);
     assert.throws(() => readRepairRecords(root, scope), /malformed shape/);

@@ -20,7 +20,7 @@ export const planted = new Set<string>();
 
 export async function appendUnfolded(
   logRoot: string, scope: string, actor: Actor, kind: string, subject: string, data: Record<string, unknown>,
-  opts: { after?: string[]; writer?: string } = {},
+  opts: { after?: string[]; writer?: string; /** An older build's stamp; needs `writer`. */ eventSchema?: number } = {},
 ): Promise<LogEvent> {
   if (!opts.after && !opts.writer) {
     // The local door, never `write.ts`: a build without the door appends straight to its
@@ -36,7 +36,7 @@ export async function appendUnfolded(
   // Into the scope's one file, but with no `seq`: an event from before the linear log, placed
   // where a migrated sidecar would hold it. (A per-writer shard would read as unmigrated.)
   const event: LogEvent = {
-    sidecarProtocol: SIDECAR_PROTOCOL, eventSchema: EVENT_SCHEMA, id: mintId(), kind, subject, actor,
+    sidecarProtocol: SIDECAR_PROTOCOL, eventSchema: opts.eventSchema ?? EVENT_SCHEMA, id: mintId(), kind, subject, actor,
     at: new Date().toISOString(), writer, writerPrev: own.length ? own[own.length - 1]!.id : GENESIS,
     after: opts.after ?? causalHeads(scoped), data,
   };

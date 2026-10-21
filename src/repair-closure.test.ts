@@ -10,7 +10,7 @@ import type { LogEvent } from "./eventlog.js";
 function fixture(verdict: "fixed" | "factually-refuted" | "invalid" | "unknown" = "fixed") {
  const actor={principal:"owner"};
  const identity=(session:string)=>({principal:"verifier",harness:"mcp" as const,session});
- const sort:RepairSortInput={id:"sort",classification:verdict === "invalid" ? "invalid" : "mechanical",...(verdict === "invalid" ? {refutationSubtype:"assumed" as const} : {}),kind:"isolated",coverage:[{findingId:"f",claimIds:["f:original"]}],restsOn:[],source:"owner reviewed exact guard",provenance:"owner-reviewed",assessments:[],disagreements:[]};
+ const sort:RepairSortInput={id:"sort",classification:verdict === "invalid" ? "invalid" : "mechanical",...(verdict === "invalid" ? {refutationSubtype:"assumed" as const} : {}),kind:"isolated",coverage:[{findingId:"f",claimIds:["f:original"]}],restsOn:[],source:"owner reviewed exact guard",provenance:"owner-reviewed",stakes:"high",assessments:[],disagreements:[]};
  const evidence:RepairEvidenceInput={id:"proof",sortId:"sort",witnessCommit:"a".repeat(40),baseCommit:"b".repeat(40),fixCommit:"c".repeat(40),coverage:[{findingId:"f",claimIds:["f:original"],result:"complete",reason:"whole claim",claimResults:[{claimId:"f:original",result:"complete",reason:"whole claim"}]}],reproducer:[],regression:[],inspected:[],rulingIds:[],attribution:[]};
  const events:LogEvent[]=testChain("writer",[
  {id:"created",actor,kind:"finding.created",subject:"f",data:{text:"missing guard",targetId:"a",targetKind:"anchor",sourceRef:"a".repeat(40)}},

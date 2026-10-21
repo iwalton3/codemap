@@ -47,11 +47,11 @@ test("repair page retains original scope, separate evidence outcomes and the clo
     const [negative, duplicate] = decomposition.claims.map(c => c.id) as [string, string];
     const marker = join(root, "command-must-not-run");
     const sort = await ops.postRepairSort(root, 7, { classification: "implementation-defect", kind: "isolated",
-      provenance: "owner-reviewed", source: "Owner-reviewed exact input-2 worklist", coverage: [{ findingId: finding.id, claimIds: [original, negative, duplicate] }], restsOn: [], assessments: [], disagreements: [],
+      provenance: "owner-reviewed", stakes: "high", source: "Owner-reviewed exact input-2 worklist", coverage: [{ findingId: finding.id, claimIds: [original, negative, duplicate] }], restsOn: [], assessments: [], disagreements: [],
     });
     assert.ok("ok" in sort && sort.ok, JSON.stringify(sort));
     const revised = await ops.postRepairSort(root, 7, { prior: sort.id, reason: "A requirement dependency was overlooked.",
-      classification: "design", kind: "isolated", provenance: "owner-reviewed", source: "Owner-reviewed correction",
+      classification: "design", kind: "isolated", provenance: "owner-reviewed", stakes: "high", source: "Owner-reviewed correction",
       coverage: [{ findingId: finding.id, claimIds: [original, negative, duplicate] }], restsOn: ["req-credit"], assessments: [],
       disagreements: [{ id: "conflict-scope", text: "The duplicate policy needs a ruling." }],
       arbitration: { addresses: ["conflict-scope"], reason: "Keep the dependency until the owner rules.", identity: { principal: "Alice" } as never },
@@ -235,7 +235,7 @@ test("a released sort shows the rulings it was released on and both readers' ver
     ok(await ops.answerDirect(root, { decision: "D-guard", option: "Reject them" }));
     const decision = ((await ops.decisionRound(root, "R-guard")) as any).decisions[0].id;
     const held = await ops.postRepairSort(root, 7, { classification: "design-defect", kind: "isolated", coverage: [{ findingId: finding.id, claimIds: [`${finding.id}:original`] }],
-      restsOn: [`decision:${decision}`], source: "owner worklist", provenance: "owner-reviewed", assessments: [], disagreements: [] }) as any;
+      restsOn: [`decision:${decision}`], source: "owner worklist", provenance: "owner-reviewed", stakes: "high", assessments: [], disagreements: [] }) as any;
     ok(held);
     const readers = [];
     for (const slot of [1, 2] as const) {
@@ -286,7 +286,7 @@ test("a ruled sort says it was released on the ruling, never by readers it did n
     ok(await ops.answerDirect(root, { decision: "D-ruled", option: "Fix it" }));
     const decision = ((await ops.decisionRound(root, "R-ruled")) as any).decisions[0].id;
     const held = await ops.postRepairSort(root, 7, { classification: "design-defect", kind: "isolated", coverage: [{ findingId: finding.id, claimIds: [`${finding.id}:original`] }],
-      restsOn: [`decision:${decision}`], source: "owner worklist", provenance: "owner-reviewed", assessments: [], disagreements: [] }) as any;
+      restsOn: [`decision:${decision}`], source: "owner worklist", provenance: "owner-reviewed", stakes: "high", assessments: [], disagreements: [] }) as any;
     ok(held);
     const released = await ops.releaseRuledSort(root, 7, { sort: held.id }) as any;
     ok(released);

@@ -142,7 +142,7 @@ test("D4 over MCP: post_repair_sort fills both sorters' session from the connect
   try {
     const sorter = (child?: string) => ({ identity: { principal: "alice@acme.test", ...(child ? { child } : {}) }, classification: "implementation-defect", reason: "read code" });
     const sort = { classification: "implementation-defect", kind: "isolated", coverage: [{ findingId: u.f, claimIds: [`${u.f}:original`] }],
-      restsOn: [], source: "triage-review round", provenance: "dual-sorted", assessments: [sorter(), sorter("a1234567")], disagreements: [] };
+      restsOn: [], source: "triage-review round", provenance: "dual-sorted", stakes: "high", assessments: [sorter(), sorter("a1234567")], disagreements: [] };
     const out = await u.mcp([
       { name: "post_repair_sort", arguments: { review: "7", sort: { ...sort, assessments: [{ ...sorter(), identity: { principal: "alice@acme.test", session: "mine" } }, sorter("a1")] } } },
       { name: "post_repair_sort", arguments: { review: "7", sort: { ...sort, assessments: [sorter(), sorter()] } } },
@@ -169,7 +169,7 @@ test("D2 over MCP: two readers launched from one session release a held sort; th
     ok(await answerDirect(u.root, { decision: "D-dir", option: "Both" }));
     const decisionId = (await decisionsView(u.root)).s.decisions.find((d) => (d.label ?? d.id) === "D-dir")!.id;
     const held = await postRepairSort(u.root, 7, { classification: "design-defect", kind: "isolated", coverage: [{ findingId: u.f, claimIds: [`${u.f}:original`] }],
-      restsOn: [`decision:${decisionId}`], source: "owner worklist: which guard", provenance: "owner-reviewed", assessments: [], disagreements: [] }) as { id: string };
+      restsOn: [`decision:${decisionId}`], source: "owner worklist: which guard", provenance: "owner-reviewed", stakes: "high", assessments: [], disagreements: [] }) as { id: string };
     ok(held);
     const parent = "5e55a0a0-0000-0000-0000-0000000000e1";
     const briefs: { requestId: string; prompt: string }[] = [], refs: { requestId: string; receipt: string }[] = [];

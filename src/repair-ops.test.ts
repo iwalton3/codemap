@@ -9,19 +9,25 @@ import { RepairConnection } from "./verifier-boundary.js";
 import { repairFindingCompleteness, type RepairSortInput, type RepairEvidenceInput } from "./repair-records.js";
 import { readFinding } from "./store.js";
 import { rpc } from "./test-mcp.js";
+import { requestRepairVerification, pendingRepairJobs } from "./ops/repair-verification.js";
+import { headCommit } from "./git.js";
+import { resolveSidecar } from "./sidecar-config.js";
+import { findingScope } from "./shared-findings.js";
+import { findingKeyScope } from "./review-target.js";
 import { postRound, answerDirect, relayAnswer } from "./ops/decisions.js";
 import { appendUnfolded } from "./test-door.js";
 import { prefixReader, referencesFor, tipReader } from "./eventlog.js";
 import { scanSidecar } from "./damage-scan.js";
 import { decisionsView } from "./ops/decision-holds.js";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const ok = (v: unknown) => assert.equal((v as { error?: string }).error, undefined, JSON.stringify(v));
 const sort = (findingId: string, claims: string[]): Omit<RepairSortInput, "id"> => ({ classification: "implementation-defect", kind: "isolated",
   source: "owner worklist: fix both independent obligations", coverage: [{ findingId, claimIds: [`${findingId}:original`, ...claims] }],
-  restsOn: [], provenance: "owner-reviewed", assessments: [], disagreements: [] });
+  restsOn: [], provenance: "owner-reviewed", stakes: "high", assessments: [], disagreements: [] });
 const sha = "a".repeat(40);
 /** A write answers with the record's id (F7); the review is read back with repair_records. */
 const sortsOf = async (root: string): Promise<any[]> => ((await repairRecords(root, 7)) as any).records.sorts;
@@ -93,7 +99,7 @@ test("D4 through the op: the connection fills each sorter's session; a caller's 
     ok(f);
     const conn = new RepairConnection("alice@acme.test");
     const dual = (children: (string | undefined)[], text: string): Omit<RepairSortInput, "id"> => ({ ...sort(f.id, []), source: text, provenance: "dual-sorted",
-      assessments: children.map((child, i) => ({ identity: { principal: "alice@acme.test", ...(child ? { child } : {}) } as never, classification: "implementation-defect", reason: `sorter ${i}` })) });
+      assessments: children.map((child, i) => ({ identity: { principal: "alice@acme.test", ...(child ? { child } : {}) } as never, classification: "implementation-defect", reason: `${text}: sorter ${i}` })) });
     const posted = await postRepairSort(root, 7, dual([undefined, "a1234567"], "the session and its subagent"), conn) as any;
     ok(posted);
     const s = (await sortsOf(root)).find((x: any) => x.input.id === posted.id);
@@ -345,4 +351,59 @@ test("R2: a ruled release refuses while an intent comparison restricts a covered
     if (prior === undefined) delete process.env.CODEMAP_PRINCIPAL; else process.env.CODEMAP_PRINCIPAL = prior;
     t.dispose();
   }
+});
+
+test("F5: re-pointing what a dual-sorted sort rests on keeps its two sorters, whoever posts the correction", async () => {
+  const t = await team(["alice@acme.test"]);
+  try {
+    const root = t.all[0]!.repo;
+    const f = await shareFinding(root, 7, { targetKind: "anchor", targetId: "src/pay.ts#f5", text: "f5 obligation" }) as { id: string };
+    ok(f);
+    const reading = (child?: string, reason = "a missing guard") => ({ identity: { principal: "alice@acme.test", ...(child ? { child } : {}) } as never, classification: "implementation-defect", reason });
+    const first = new RepairConnection("alice@acme.test"), later = new RepairConnection("alice@acme.test");
+    const posted = await postRepairSort(root, 7, { ...sort(f.id, []), provenance: "dual-sorted", assessments: [reading(), reading("a1234567")] }, first) as { id: string };
+    ok(posted);
+    const repointed = await postRepairSort(root, 7, { ...sort(f.id, []), provenance: "dual-sorted", prior: posted.id, reason: "waits on the owner",
+      restsOn: ["needs the owner's call"], assessments: [reading(), reading("a1234567")] }, later) as { id: string };
+    ok(repointed);
+    const ids = (id: string) => sortsOf(root).then((s) => s.find((x) => x.input.id === id)!.input.assessments.map((a: any) => a.identity));
+    assert.deepEqual(await ids(repointed.id), await ids(posted.id), "the original readers, not the correcting session");
+    assert.notEqual((await ids(repointed.id))[0].session, later.session);
+    const reread = await postRepairSort(root, 7, { ...sort(f.id, []), provenance: "dual-sorted", prior: repointed.id, reason: "read again", restsOn: ["needs the owner's call"],
+      assessments: [reading(undefined, "a different reading"), reading("a7654321", "a different reading")] }, later) as { id: string };
+    ok(reread);
+    assert.equal((await ids(reread.id))[0].session, later.session, "a changed reading is a new reading: new readers");
+  } finally { t.dispose(); }
+});
+
+test("2a: a request on a sort from before stakes is answered with a note, and fresh dual sorters take it to one slot", async () => {
+  const t = await team(["alice@acme.test"]);
+  try {
+    const root = t.all[0]!.repo, side = t.all[0]!.sidecar, head = headCommit(root)!;
+    const f = await shareFinding(root, 7, { targetKind: "anchor", targetId: "src/pay.ts#legacy", text: "legacy obligation", sourceRef: head }) as { id: string };
+    ok(f);
+    const cfg = resolveSidecar(root)!, scope = findingScope(findingKeyScope(cfg, 7));
+    const legacy = { ...sort(f.id, []), id: "rs_legacy", stakes: undefined };
+    await appendUnfolded(side, scope, { principal: "alice@acme.test" }, "repair.sort-recorded", legacy.id, { ...legacy }, { writer: "w_legacy", eventSchema: 5 });
+    // On the remote, as an older build's write would be.
+    for (const a of [["add", "-A"], ["commit", "-qm", "an older build's sort"], ["push", "-q"]])
+      assert.equal(spawnSync("git", ["-c", "user.email=x@x", "-c", "user.name=x", ...a], { cwd: side }).status, 0, a.join(" "));
+    const evidence = (sortId: string) => recordRepairEvidence(root, 7, { sortId, witnessCommit: head, baseCommit: head, fixCommit: head,
+      coverage: [{ findingId: f.id, claimIds: [`${f.id}:original`], result: "complete", reason: "r", claimResults: [{ claimId: `${f.id}:original`, result: "complete", reason: "r" }] }],
+      reproducer: [], regression: [], inspected: [{ source: "src/pay.ts", commit: head, reasoning: "read" }], noCheckReason: "no runnable check", rulingIds: [], attribution: [] }) as Promise<{ id: string }>;
+    const orchestrator = new RepairConnection("alice@acme.test");
+    const before = await requestRepairVerification(root, 7, { sortId: legacy.id, evidenceId: (await evidence(legacy.id)).id }, orchestrator) as { id: string; note?: string };
+    ok(before);
+    assert.match(String(before.note), /no stakes.*two verifier slots/);
+    const sorters = new RepairConnection("alice@acme.test");
+    const lowered = await postRepairSort(root, 7, { ...sort(f.id, []), provenance: "dual-sorted", prior: legacy.id, reason: "stakes, read fresh", stakes: "low",
+      assessments: [{ identity: { principal: "alice@acme.test" } as never, classification: "implementation-defect", reason: "no money, no data loss" },
+        { identity: { principal: "alice@acme.test", child: "a2222222" } as never, classification: "implementation-defect", reason: "test-only change" }] }, sorters) as { id: string };
+    ok(lowered);
+    const after = await requestRepairVerification(root, 7, { sortId: lowered.id, evidenceId: (await evidence(lowered.id)).id }, orchestrator) as { id: string; note?: string };
+    ok(after);
+    assert.equal(after.note, undefined);
+    const jobs = await pendingRepairJobs(root, 7) as { jobs: { requestId: string; slot?: number }[] };
+    assert.deepEqual(jobs.jobs.filter((j) => j.requestId === after.id).map((j) => j.slot), [1], "one verifier");
+  } finally { t.dispose(); }
 });

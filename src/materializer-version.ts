@@ -265,4 +265,9 @@
 // `law/decisions` and every legacy `decisions/<universe>` together; the repair fold learned the
 // `ruled` provenance and `stakes`, and the verification fold closes a low-stakes request on one
 // run. Same reason as 18 → 19: the shards do not move.
-export const MATERIALIZER_VERSION = 59;
+// 59 → 60 (plan 2026-10-20-reader-incident-followups, Phase 2, shipped with EVENT_SCHEMA 5 → 6):
+// the repair fold requires stakes on a posted sort and lets fresh readers set low on a sort without
+// it; evidence meets the bar at filing and may pin a mutation run; a verification run carries
+// leftovers and slot 2's derived check; an application records its leftovers, and a closure shows
+// its notes. Same reason as 18 → 19: the shards do not move.
+export const MATERIALIZER_VERSION = 60;

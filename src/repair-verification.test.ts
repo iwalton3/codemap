@@ -27,16 +27,17 @@ const run = (command: string, commit: string, phase: RepairExecution["phase"], o
 const CHECK = "node --test guard.test.js";
 const observedFix = [run(CHECK, W, "witness", "failed"), run(CHECK, F, "fix", "passed")];
 
-function fixture(opts: { pinned?: RepairExecution[]; classification?: string; refutationSubtype?: "factual" | "assumed"; stakes?: "high" | "low" } = {}) {
+function fixture(opts: { pinned?: RepairExecution[]; classification?: string; refutationSubtype?: "factual" | "assumed"; stakes?: "high" | "low" | "none" } = {}) {
   const sort: RepairSortInput = { id: "sort", classification: opts.classification ?? "mechanical", kind: "isolated", coverage: [{ findingId: "f", claimIds: ["f:original"] }],
     restsOn: [], source: "owner reviewed", provenance: "owner-reviewed", assessments: [], disagreements: [], ...(opts.refutationSubtype ? { refutationSubtype: opts.refutationSubtype } : {}),
-    ...(opts.stakes ? { stakes: opts.stakes } : {}) };
+    // "none": a sort from before stakes existed, which only a build before EVENT_SCHEMA 6 wrote.
+    ...(opts.stakes === "none" ? {} : { stakes: opts.stakes ?? "high" }) };
   const evidence: RepairEvidenceInput = { id: "proof", sortId: "sort", witnessCommit: W, baseCommit: "b".repeat(40), fixCommit: F,
     coverage: [{ findingId: "f", claimIds: ["f:original"], result: "complete", reason: "r", claimResults: [{ claimId: "f:original", result: "complete", reason: "r" }] }],
     reproducer: opts.pinned ?? [], regression: [], inspected: [], rulingIds: [], attribution: [] };
   const events: LogEvent[] = testChain("w", [
     { id: "created", actor: owner, kind: "finding.created", subject: "f", data: { text: "missing guard", targetId: "a", targetKind: "anchor" } },
-    { id: "sort", actor: owner, kind: "repair.sort-recorded", subject: "sort", data: { ...sort } },
+    { id: "sort", actor: owner, kind: "repair.sort-recorded", subject: "sort", data: { ...sort }, ...(opts.stakes === "none" ? { eventSchema: 5 } : {}) },
     { id: "proof", actor: owner, kind: "repair.evidence-recorded", subject: "proof", data: { ...evidence } },
   ]);
   const finding = foldFindings(events).get("f")!;
@@ -162,10 +163,10 @@ test("V2: a low-stakes request closes on its one run and has no slot 2; high, or
   const applied = low.apply(conn("fixer"));
   assert.equal(low.rejected(applied), undefined);
   assert.equal(foldFindings(low.events).get("f")!.closed?.eventId, applied);
-  for (const stakes of ["high", undefined] as const) {
+  for (const stakes of ["high", "none"] as const) {
     const high = fixture({ stakes }); high.request();
     high.verify(1, conn("v1"), high.verdict("fixed", observedFix));
-    assert.match(high.rejected(high.apply(conn("fixer"))) ?? "", /complete independent/, `${stakes ?? "absent"}: one run does not close it`);
+    assert.match(high.rejected(high.apply(conn("fixer"))) ?? "", /complete independent/, `${stakes}: one run does not close it`);
     assert.equal(repairVerificationDecision(high.folded(), "rq", "f").reasons[0], "two independent runs are required");
   }
   // One run stands for both: an unknown from it still closes nothing.
