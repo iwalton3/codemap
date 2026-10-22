@@ -51,7 +51,9 @@ There is no fixer record and no weaker grade for a verifier the fixer launched. 
 the grants; the fold keeps what it can see — the requester (whoever calls `repair_request`) never
 fills a slot of its own request, two runs are distinct verifiers, and a verifier cannot apply
 the verdict it gave. The rest is an accepted gap: a fixer that reconnects gets a fresh connection
-and could claim the role. This guards against mistakes, not adversaries.
+and could claim the role, and a dedicated slot-2 verifier whose connection drops after it read the
+evidence is served step 1 again, so the op accepts whatever it derives next (owner, 2026-10-21:
+"leave for now"). This guards against mistakes, not adversaries.
 
 ## The request and its slots
 
@@ -102,10 +104,13 @@ is saved once per connection and the op enforces the order. A subagent shares it
 connection, so there the check is HELD like a verdict (owner, C2: "Agreed"): `repair_derived_check`
 returns a receipt, the brief serves the evidence only to a caller passing it (`derived`), and the
 run names it (`derivedCheck.receipt`, dropped before the log). `record_repair_verification`
-refuses unless the same subagent made that derive call, before any brief result it read carried
-the evidence — so a relaunched verifier derives afresh and is never handed another's evidence.
+refuses unless the same subagent made that derive call, before any result it read named this
+request's evidence — the brief, `repair_records` or the sidecar log alike — so a relaunched verifier
+derives afresh and is never handed another's evidence.
 **Accepted gap:** the fold sees only that a check was derived; who derived it and when are checked
-at record from the transcript, which is the run's own strength. Per-claim outcomes are `fixed`, `factually-refuted`, `decision-needed` or `unknown`. An
+at record from the transcript, which is the run's own strength. And in a transcript row holding
+several results, one the harness saved to a file is read from its preview, so evidence in it goes
+unseen (owner, 2026-10-21: "Probably fine for now, log for follow-up"). Per-claim outcomes are `fixed`, `factually-refuted`, `decision-needed` or `unknown`. An
 arbitrator addresses each disagreement with a reason; it cannot manufacture evidence a run did not
 have.
 

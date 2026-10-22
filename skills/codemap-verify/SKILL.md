@@ -44,7 +44,7 @@ go looking for them in the repository, the pull request or the sidecar.
 **Slot 2 of a high-stakes request is two steps.** Its entry first comes at `stage: "derive"`, with
 the claims and the code only. Write the check you would run to test each claim — a command that
 fails at the witness if the claim is true and passes at the fix — and submit it with
-`repair_derived_check`. It is written once. Then read the brief again: it now carries the fixer's
+`repair_derived_check`. It is written once on this connection. Then read the brief again: it now carries the fixer's
 evidence. Run your derived check at both commits too, and submit it as `derivedCheck`.
 
 ## 3. Check it yourself
