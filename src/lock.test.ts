@@ -135,3 +135,38 @@ test("a released lock is no longer refreshed", async () => {
     discard(root);
   }
 });
+
+test("a lock file never exists without its holder: a process killed while acquiring cannot leave an empty one", async () => {
+  // An empty lock names no pid, so it is stolen only once stale (60s): a writer killed between
+  // creating and filling it — an MCP server ended during its on-connect check — stalled every
+  // later writer past its 30s timeout.
+  const root = await mkdtemp(join(tmpdir(), "codemap-lock-"));
+  try {
+    const p = join(root, ".codemap", ".lock");
+    let empty = 0, seen = 0, polling = true;
+    const poll = () => {
+      try { const t = readFileSync(p, "utf8"); seen++; if (!t) empty++; } catch { /* not held */ }
+      if (polling) setImmediate(poll);
+    };
+    poll();
+    for (let i = 0; i < 100; i++) await withLock(root, async () => { await new Promise((r) => setImmediate(r)); });
+    polling = false;
+    assert.ok(seen > 0, "the poller saw the lock held, so it could have seen it empty");
+    assert.equal(empty, 0, `observed an empty lock file ${empty} times`);
+    assert.deepEqual((await import("node:fs")).readdirSync(join(root, ".codemap")).filter((f) => f.startsWith(".lock")), [], "nothing staged is left behind");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("a dead writer's staged copy and steal grave are swept at acquire; a live writer's are not", async () => {
+  const root = await mkdtemp(join(tmpdir(), "codemap-lock-"));
+  try {
+    const dir = join(root, ".codemap");
+    await mkdir(dir, { recursive: true });
+    const { spawnSync } = await import("node:child_process");
+    const dead = spawnSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"]).stdout.toString();
+    const left = [`.lock.${dead}.deadbeef`, `.lock.dead-${dead}`, `.lock.${process.ppid}.cafebabe`];
+    for (const f of left) await writeFile(join(dir, f), "{}");
+    await withLock(root, async () => {});
+    assert.deepEqual((await import("node:fs")).readdirSync(dir).filter((f) => f.startsWith(".lock")), [left[2]]);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

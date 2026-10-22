@@ -11,7 +11,7 @@ import { findingsProjection } from "../shared-projections.js";
 import { readCached } from "../materialize.js";
 import { readScopeChecked } from "../eventlog.js";
 import { emitEventChecked } from "../write.js";
-import { emptyRepairRecords, foldRepairRecords, repairFindingCompleteness, type RepairFindingMap, type RepairSortInput, type RepairEvidenceInput, type RepairRecords } from "../repair-records.js";
+import { emptyRepairRecords, foldRepairRecords, priorsOf, readingShape, repairFindingCompleteness, type RepairFindingMap, type RepairSortInput, type RepairEvidenceInput, type RepairRecords } from "../repair-records.js";
 import type { RepairConnection } from "../verifier-boundary.js";
 import { earlierUnfavourableRuns, emptyRepairVerificationState, isRepairVerificationState, repairVerificationDecision, repairVerificationHash } from "../repair-verification.js";
 import { issueClaimHash } from "../ruling-application.js";
@@ -105,16 +105,16 @@ async function append(root: string, review: number | string, kind: string, subje
   const current = await repairRecords(root, review);
   if (current.error !== undefined) return { error: current.error };
   if (current.status === "blocked") return { error: "repair scope is blocked; records remain visible but cannot authorize a write" };
-  if (recorded?.(current.records)) return { ...current, ok: true as const, id: subject, alreadyRecorded: true };
+  // The written record's id, not the whole review, which overflows the caller's context (F7).
+  // `repair_records` is the read.
+  if (recorded?.(current.records)) return { ok: true as const, id: subject, alreadyRecorded: true as const };
   const event = await emitEventChecked(cfg.path, scope, actor, async () => {
     const checked = await readScopeChecked(cfg.path, scope);
     if (checked.status === "blocked") return { error: "repair scope became blocked before append" };
     return { kind, subject, data };
   }, (events) => ({ refused: foldRepairRecords(events).rejected.map((r) => ({ id: r.eventId, why: r.reason })) }));
   if ("error" in event) return event;
-  const result = await repairRecords(root, review);
-  if (result.error !== undefined) return { error: result.error };
-  return { ...result, ok: true as const, id: subject, eventId: event.id };
+  return { ok: true as const, id: subject, eventId: event.id };
 }
 
 /**
@@ -145,10 +145,16 @@ export async function postRepairSort(root: string, review: number | string, sort
   // Only codemap writes a release: release_ruled_sort from the ruling, release_held_sort from two readers (owner, D2).
   if ("release" in sort || sort.provenance === "released" || sort.provenance === "ruled")
     return { error: "a held sort is released only by release_ruled_sort (its ruling) or release_held_sort (two readers); leave `release` out" };
+  if (sort.stakes === undefined)
+    return { error: "a sort states its stakes: low (one verifier) or high (two, and an arbitrator where they disagree); sorters who disagree mean high. A sort that has none may be set low only by a dual-sorted correction from fresh sorters" };
   const identities = [...sort.assessments, ...(sort.arbitration?.identity ? [sort.arbitration] : [])].map(a => a.identity);
   if (identities.some(i => "session" in i)) return { error: "codemap fills each sorter's session from this connection; leave `session` out and name a subagent sorter by `child`, its agent id" };
-  if (identities.length && !connection) return { error: "a sort with sorters is posted over MCP, whose connection is their session" };
-  for (const i of identities) i.session = connection!.session;
+  const kept = await keptReading(root, review, sort);
+  if (kept) Object.assign(sort, kept);
+  else {
+    if (identities.length && !connection) return { error: "a sort with sorters is posted over MCP, whose connection is their session" };
+    for (const i of identities) i.session = connection!.session;
+  }
   if (sort.ruling !== undefined) {
     // The cross-scope half of R5 (a correction that removes coverage cites a ruling): the answer is
     // a verified, standing ruling in the decisions log.
@@ -158,6 +164,30 @@ export async function postRepairSort(root: string, review: number | string, sort
       return { error: `ruling ${String(sort.ruling)} is not a verified, standing answer in this universe's decisions log` };
   }
   return recordSort(root, review, sort);
+}
+
+/**
+ * F5: a correction that changes no READING keeps the readers who made it, identities and all — the
+ * same classification, stakes (absent is high), refutation and `readingShape`, and either no
+ * assessments or the prior's own classifications and reasons. Otherwise the sorters are re-filled
+ * from this connection, and re-pointing `restsOn` would make two sorters one. A correction that
+ * changes a reading needs new readers; the fold refuses copied ones only where stakes move (F15),
+ * because a session sorter re-sorting a widened correction has the same identity key by right.
+ */
+async function keptReading(root: string, review: number | string, sort: Omit<RepairSortInput, "id">) {
+  const named = priorsOf(sort);
+  if (named.length !== 1) return undefined;
+  const r = await repairRecords(root, review);
+  const prior = r.error === undefined ? r.records.sorts.find(s => s.input.id === named[0])?.input : undefined;
+  if (!prior || prior.provenance !== sort.provenance || prior.classification !== sort.classification
+    || (prior.stakes ?? "high") !== (sort.stakes ?? "high") || prior.refutationSubtype !== sort.refutationSubtype
+    || readingShape(prior) !== readingShape(sort)) return undefined;
+  const reading = (xs: { classification: string; reason: string }[]) => canonical(xs.map(x => [x.classification, x.reason]));
+  if (sort.assessments.length && reading(sort.assessments) !== reading(prior.assessments)) return undefined;
+  if (sort.arbitration && (!prior.arbitration || canonical([sort.arbitration.reason, sort.arbitration.addresses]) !== canonical([prior.arbitration.reason, prior.arbitration.addresses]))) return undefined;
+  if (sort.disagreements.length && canonical(sort.disagreements) !== canonical(prior.disagreements)) return undefined;
+  return { assessments: structuredClone(prior.assessments), disagreements: structuredClone(prior.disagreements),
+    ...(prior.arbitration ? { arbitration: structuredClone(prior.arbitration) } : {}) };
 }
 
 /** Appends a sort this module built or checked; the public door is `postRepairSort`. */

@@ -50,7 +50,7 @@ test("repair verification replays unchanged shards after an upgrade, and the doo
     assert.ok(finding.id);
     const scope = findingScope(findingKeyScope(cfg, 7));
     const claimId = `${finding.id}:original`, sha = "a".repeat(40);
-    const sorted = await postRepairSort(root, 7, { source: "exact owner input-2", provenance: "owner-reviewed",
+    const sorted = await postRepairSort(root, 7, { source: "exact owner input-2", provenance: "owner-reviewed", stakes: "high",
       classification: "implementation-defect", kind: "isolated", coverage: [{ findingId: finding.id, claimIds: [claimId] }], restsOn: [], assessments: [], disagreements: [] });
     assert.ok("ok" in sorted && sorted.ok, JSON.stringify(sorted));
     const evidence = await recordRepairEvidence(root, 7, { sortId: sorted.id, witnessCommit: sha, baseCommit: sha, fixCommit: sha,

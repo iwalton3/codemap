@@ -794,7 +794,7 @@ test("a reader refused by codemap's own transcript check records from the same r
       const { t, a, prompt } = await wordsWithBrief(u);
       const id = nextReader(), verdict = "D1 → Not a defect";
       t.reader(id, verdict, { prompt, answer: a });
-      // The 2026-10-20 shape: an entry type the check did not know, so its call is FOUND and then refused.
+      // An entry type the check does not know: its call is FOUND and then refused.
       const file = join(u.transcripts, SESSION, "subagents", `agent-${id}.jsonl`);
       appendFileSync(file, JSON.stringify({ type: "harness-bookkeeping", agentId: id, sessionId: SESSION }) + "\n");
       await submitVerdict(u.root, { answer: a, verdict }, {}, u.transcripts);

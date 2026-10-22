@@ -15,6 +15,10 @@ they were shown and their own words. A summary of what they said is not one.
    finding its options act on. If it answers `alreadyRuled`, the round is posted anyway: codemap
    learns of a standing ruling only by posting. Tell the person there is a standing ruling, and
    withdraw the now-redundant question with two readers (*Withdrawing a question*, below).
+   **One round covers every repo of the work.** Decisions are the workspace's, so a question about
+   findings in two universes is one round: name each finding of another universe as an exact
+   `issues` effect (`{kind: "finding", universe, scope, review, id}`), and its held sort releases
+   there with `release_ruled_sort`. Do not log a second round for the other repo.
 3. **Ask.** Ask with `AskUserQuestion`, using the returned `ask` payload **verbatim**. A paraphrase
    cannot be matched. For a questionnaire, see *Waiting on a questionnaire*.
 4. **Log it.** After every `AskUserQuestion`, `log_question` with the round. codemap finds the call

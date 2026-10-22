@@ -35,6 +35,14 @@ optionally with a **subagent** id. There are two ways to be one:
 A subagent shares its parent's connection, so its identity carries the parent's connection plus
 its own id.
 
+**A refused record is re-checked, not spent** (owner, 2026-10-20: "yes to both, build the re-check
+then merge"). A receipt a record refuses is settled `invalid` and may be recorded later; `recorded`
+and `cancelled` stay final. The residual, accepted: a refusal names what failed, so somebody could
+edit the transcript file to match and record again. A spent receipt made that one try harder and
+no more, because the transcripts are plain files the launching machine can already write before the
+first record. What it cost was real: two codemap-side refusals on 2026-10-20 each burned a whole
+verifier run, since a spent receipt left nothing to correct but a new run.
+
 **Only grants verify** (R2, plan 3.1: "We shouldn't pretend to know who the fixer is"): (G1) a
 fresh session a person starts with the `codemap-verify` skill, which claims the role first; (G2) a
 subagent on a controlled prompt path above — the exact single pointer, or a prompt holding a
@@ -43,7 +51,9 @@ There is no fixer record and no weaker grade for a verifier the fixer launched. 
 the grants; the fold keeps what it can see — the requester (whoever calls `repair_request`) never
 fills a slot of its own request, two runs are distinct verifiers, and a verifier cannot apply
 the verdict it gave. The rest is an accepted gap: a fixer that reconnects gets a fresh connection
-and could claim the role. This guards against mistakes, not adversaries.
+and could claim the role, and a dedicated slot-2 verifier whose connection drops after it read the
+evidence is served step 1 again, so the op accepts whatever it derives next (owner, 2026-10-21:
+"leave for now"). This guards against mistakes, not adversaries.
 
 ## The request and its slots
 
@@ -55,21 +65,52 @@ stored command.
 
 How many blind verifier slots a request has is its frozen sort's `stakes` (plan
 2026-10-19 V1, V2; `slotsFor`): **low** has slot 1 alone and closes on that run; **high** has two
-slots, and on a genuine disagreement a third verifier arbitrates. A sort without stakes — every
-sort from before stakes, and an owner-reviewed one that names none — is high: the default is
-applied where the fold reads `capsule.sort.stakes`, never computed by an op. Stakes is the
-sorters' judgment, trusted like the rest of the sort (I13): a standing `CLAUDE.md` definition,
-else the owner's five conditions (money, permanent data loss, PII, a credible lawsuit, a terminal
-broken state). Sorters who disagree make it high, and a correction may raise it and never lower
-it, so that guard cannot be undone in one step. Correcting a requested sort makes the request
-stale, as any sort change does.
+slots, and on a genuine disagreement a third verifier arbitrates. Stakes is the sorters'
+judgment, trusted like the rest of the sort (I13): a standing `CLAUDE.md` definition, else the
+owner's five conditions (money, permanent data loss, PII, a credible lawsuit, a terminal broken
+state). Sorters who disagree make it high. Correcting a requested sort makes the request stale, as
+any sort change does.
+
+**Every posted sort states its stakes** (owner, F15: "Yes ideally"), at the op and in the fold.
+Released and ruled sorts are codemap's and inherit the held sort's. A sort without stakes is one
+from before they existed, and it is high: the default is applied where the fold reads
+`capsule.sort.stakes`, never computed by an op. **A correction may raise stakes and never lower
+them, with one exception** (owner: "agreed"): a `dual-sorted` correction may set `low` on a sort
+that has NO stakes and no explicitly `high` ancestor, and only with fresh readers — the fold
+refuses it when a sorter's identity is the prior sort's, and walks every prior, so a stakes-less
+correction between an explicit high and the way down does not launder the high. Setting stakes is a new reading; without that, the backlog's sorts had no way
+down and every request needed two slots. `repair_request` on a stakes-less sort answers with a
+note saying so. A correction that changes no reading keeps the prior's sorters (F5): the same
+classification, stakes, refutation, and the same coverage, kind, predicate, sites and test-gap
+marker (`readingShape`, which a release must also keep), with either no assessments or the
+prior's own classifications and reasons. Supplied assessments that repeat the prior's keep its
+readers, as the owner ruled. The guard is the op's, not the fold's: a session sorter re-sorting a
+widened correction repeats its own identity key by right.
 
 `repair_brief` gives a slot the claims, the sort, the pinned commits and the checks the fixer
 pinned — never the fixer's conclusions or the other slot's verdict. `repair_batch_brief` gives the
 same, one entry per open job of one slot across the review, so a round's close-out costs one
 verifier per slot (plus an arbitrator for the high-stakes runs that split) whatever the number of
 findings. Each entry is still submitted and recorded per request, so every rule below is per
-request. Per-claim outcomes are `fixed`, `factually-refuted`, `decision-needed` or `unknown`. An
+request. Batches are per universe; a review that spans repos still costs one verifier per slot,
+because one subagent may carry several universes' launch lines (measured, P1), and
+`repair_batch_brief` with `workspace: true` hands the coordinator all of them at once.
+
+**Slot 2 of a high-stakes request derives its own check** (F18, owner: "Agreed"). Two slots that
+re-run the fixer's check are two observers of one check. Its brief is two steps: the claims and
+code only, then the evidence. Its run carries `derivedCheck`, that command run at the witness and
+the fix; the op and the fold refuse a slot-2 run without one. A dedicated verifier session's check
+is saved once per connection and the op enforces the order. A subagent shares its launcher's
+connection, so there the check is HELD like a verdict (owner, C2: "Agreed"): `repair_derived_check`
+returns a receipt, the brief serves the evidence only to a caller passing it (`derived`), and the
+run names it (`derivedCheck.receipt`, dropped before the log). `record_repair_verification`
+refuses unless the same subagent made that derive call, before any result it read named this
+request's evidence — the brief, `repair_records` or the sidecar log alike — so a relaunched verifier
+derives afresh and is never handed another's evidence.
+**Accepted gap:** the fold sees only that a check was derived; who derived it and when are checked
+at record from the transcript, which is the run's own strength. And in a transcript row holding
+several results, one the harness saved to a file is read from its preview, so evidence in it goes
+unseen (owner, 2026-10-21: "Probably fine for now, log for follow-up"). Per-claim outcomes are `fixed`, `factually-refuted`, `decision-needed` or `unknown`. An
 arbitrator addresses each disagreement with a reason; it cannot manufacture evidence a run did not
 have.
 
@@ -80,7 +121,17 @@ The owner's bar ("Your approved bar only"):
 - **fixed**, executable: the verifier itself runs the check and records it **failing at the
   witness commit and passing at the fix commit** — both observations, the same command. Every
   check the fixer pinned with a known outcome must be run that way; the verifier's result is its
-  own, never compared with the fixer's (an echo does not count).
+  own, never compared with the fixer's (an echo does not count). Each run is in a fresh, clean
+  worktree at its commit, and a check that finds no test to run is not a red (F17, the session's
+  tightening of this bar, named in the plan). **On a sort marked `testGap`, a mutation run**
+  stands in for the witness red, per command: run at the fix commit with a named change applied,
+  failing, beside the same command passing without it. It is how a missing-test claim shows its
+  test can fail, since the witness has none. The SORTERS set the marker (owner, C6: "a sorter-set
+  marker -- agreed"); on an unmarked sort a mutation run is not refused, it just does not count.
+  Two rules live in the skills, not in any op or fold: sorters who disagree on it mean no marker,
+  and a sort that would mix a behaviour claim with a test gap is split. The owner accepted the
+  residual: "the test can still be mutated to break but that it doesn't catch real failures, but
+  I think that is a reasonable risk to accept here for now, given the time limitations".
 - **factually-refuted**, executable — the *real basis* (plan 3.3): the verifier first states in
   `basis`, with a reason, whether the pinned check actually tests the claim. If it does not, the
   verifier cannot refute on it. Then it runs every pinned check at the witness (the old code),
@@ -92,6 +143,17 @@ The owner's bar ("Your approved bar only"):
   assumption IN THE CODE is a real finding and never invalid.
 - **inspection** grade (weaker): only when no pinned check ran, with a no-check reason and the
   relevant commit inspected.
+
+**Evidence that could never meet this bar is refused at filing** (F13, owner: "yes"), by
+`record_repair_evidence` and by the fold: per command a reproducer pins, a fix needs a red (at the
+witness, or a mutation run on a sort marked `testGap`) and a pass at the fix under that exact command string; a refutation
+needs a pass at the witness. Each such filing used to cost a verifier run returning `unknown`.
+
+**The schema-6 rules bind only events written under them** (`closeoutRules`, the first fold to
+condition on an event's own `eventSchema`): stakes on a posted sort, the filing check, the mutation
+phase, leftovers and slot 2's derived check. An event stamped lower keeps the rules it was written
+under, so evidence already in a team's log and every stakes-less sort stay valid instead of
+becoming damage.
 
 **This is the only way an agent closes a finding** (R4, "one bar"). An agent's direct `refuted` or
 `invalid` close is gone, including on its own unconfirmed finding. It becomes a person's ask. Local
@@ -126,6 +188,26 @@ and ruling context, and the findings fold checks the same (a stale claim or supe
 refuses). Fixed closes `resolved`, a factual refutation `refuted`, a refuted assumption `invalid`; unknown
 never closes or reopens. One application per finding per opening; a reopen starts a new epoch. Linked bugs are
 not closed.
+
+**Leftovers** (F19, owner: "if it is a real problem it becomes a newer, narrower scoped finding,
+otherwise it is a note during closure"). A verifier records anything real it found beside the claim
+as `leftovers`, `problem` or `note`. The application carries every slot's, unioned by text, and a
+text any slot called a problem is a problem — on a low-stakes request the one verifier is the only
+judge. The fold refuses an application whose leftovers are not exactly its runs'. **The findings
+fold derives each problem as a finding** from the request's first application (owner, C4: "Sgree"
+[agree]) — there is no act to skip. It is filed on the same review and the parent's as-filed code,
+citing the parent; its comment is the verifier's text, its `sourceRef` the fix commit, its author
+the lowest slot that called it a problem (so it opens `issued`), and `leftover` names the parent,
+the request and every run that named it. Its witness is the parent's anchor at the fix commit,
+which the fold has no git to compute, so the apply op computes it and carries it on the
+application as `leftoverWitness`; the fold checks it is the parent's own anchor (owner, Q1: "Op
+computes it"). A leftover has no `finding.created`, so every "does this finding exist" check goes
+through `findingIds` (`src/leftover-findings.ts`) — repair claims, a bug filed from a finding,
+workspace issue references and round effects — and `finding-created-sweep.test.ts` fails on a
+fifth reader. On a topic retired before the application, nothing is derived: the application
+holds them (`leftoversHeld`, checked both ways at the door) and they show on the closure with
+attention (`repairClosure.problems`). Notes stay on the closure (`repairClosure.notes`). The
+verifier stays blind and writes nothing but its run.
 
 A later contradiction — the code the closure verified has moved — keeps the historical closure and
 raises attention. A new request on the same fix shows the **earlier runs

@@ -104,7 +104,9 @@ purpose and artifact, never the first reading. Post the skill's own sort with th
 arbitrator's reasons where they disagreed, or `owner-reviewed` for a genuine owner-approved
 worklist — never fabricate owner approval. Carry each sort's `stakes` (`triage-review`'s
 `prompts/sorter.md`, *Stakes*): `high` where the sorters disagree, and a correction may raise it,
-never lower it. Name each subagent sorter by its agent id (`child`, as
+never lower it. Set `testGap: true` only where both sorters said the item is a test gap (*Test
+gap*): disagreement means no marker, and an item mixing a behaviour claim with a test gap is posted
+as two sorts — no op or fold checks either rule, so this is where they hold. Name each subagent sorter by its agent id (`child`, as
 its Agent result shows it) and leave it out for this session's own reading; codemap fills the
 session. Two sorters, and the arbitrator, must differ. Read `repair_records` for eligibility and
 holds. A correction names the current sort as prior and supersedes it; a correction naming an

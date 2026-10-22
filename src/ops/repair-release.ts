@@ -47,14 +47,14 @@ async function heldSort(root: string, review: number | string, sortId: string) {
   return { sort: sort.input, content: releaseBriefContent(sort.input, claims, rulings), rulings, scope: r.scope, decisions: view.s };
 }
 
-/** The correction a release records: the held sort's coverage, kind, predicate and sites as an
+/** The correction a release records: the held sort's coverage, kind, predicate, sites and marker as an
  *  implementation defect, its decision entries dropped. */
 function releaseCorrection(prior: RepairSortInput, provenance: "ruled" | "released", reason: string, release: NonNullable<RepairSortInput["release"]>): Omit<RepairSortInput, "id"> {
   return {
     prior: prior.id, reason, classification: "implementation-defect", kind: prior.kind, coverage: prior.coverage,
     ...(prior.predicate !== undefined ? { predicate: prior.predicate } : {}), ...(prior.sites !== undefined ? { sites: prior.sites } : {}),
     restsOn: prior.restsOn.filter((x) => !decisionOfEntry(x)), source: prior.source, provenance,
-    ...(prior.stakes !== undefined ? { stakes: prior.stakes } : {}),
+    ...(prior.stakes !== undefined ? { stakes: prior.stakes } : {}), ...(prior.testGap ? { testGap: true as const } : {}),
     assessments: [], disagreements: [], release,
   };
 }

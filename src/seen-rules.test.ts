@@ -76,7 +76,7 @@ for (const kind of ["finding", "bug"] as const) {
 function repair() {
   const actor = { principal: "owner" }, verifier = { principal: "verifier" };
   const identity = (session: string) => ({ principal: "verifier", harness: "mcp", session });
-  const sort: any = { id: "sort", classification: "mechanical", kind: "isolated", coverage: [{ findingId: "f", claimIds: ["f:original"] }], restsOn: [], source: "owner reviewed exact guard", provenance: "owner-reviewed", assessments: [], disagreements: [] };
+  const sort: any = { id: "sort", classification: "mechanical", kind: "isolated", coverage: [{ findingId: "f", claimIds: ["f:original"] }], restsOn: [], source: "owner reviewed exact guard", provenance: "owner-reviewed", stakes: "high", assessments: [], disagreements: [] };
   const evidence: any = { id: "proof", sortId: "sort", witnessCommit: "a".repeat(40), baseCommit: "b".repeat(40), fixCommit: "c".repeat(40), coverage: [{ findingId: "f", claimIds: ["f:original"], result: "complete", reason: "whole claim", claimResults: [{ claimId: "f:original", result: "complete", reason: "whole claim" }] }], reproducer: [], regression: [], inspected: [], rulingIds: [], attribution: [] };
   const events: LogEvent[] = [];
   let seq = 0;
@@ -91,9 +91,11 @@ function repair() {
   const c: any = { scope: "findings/acme/1", claims: foldRepairRecords(events).claims, sort, evidence, targets: [{ findingId: "f", openEpoch: finding.openEpoch, claimHash: issueClaimHash("finding", finding) }], code: { witnessCommit: evidence.witnessCommit, baseCommit: evidence.baseCommit, fixCommit: evidence.fixCommit, touched: [], availability: "available" }, rulingContext: "no holds", orchestrator: identity("orchestrator") };
   add("request", "repair.verification-requested", "request", { id: "request", capsule: c, capsuleHash: repairVerificationHash(c) }, verifier);
   for (const slot of [1, 2]) add(`run-${slot}`, "repair.verification-recorded", `run-${slot}`, { id: `run-${slot}`, requestId: "request", capsuleHash: repairVerificationHash(c), slot, identity: identity(`verifier-${slot}`),
-    results: [{ findingId: "f", claimId: "f:original", verdict: "fixed", reason: "guard rejects negatives", grade: "inspection", executions: [], inspected: [{ source: "guard", commit: evidence.fixCommit, reasoning: "negative branch returns" }], noCheckReason: "no runnable target" }] }, verifier);
+    results: [{ findingId: "f", claimId: "f:original", verdict: "fixed", reason: "guard rejects negatives", grade: "inspection", executions: [], inspected: [{ source: "guard", commit: evidence.fixCommit, reasoning: "negative branch returns" }], noCheckReason: "no runnable target" }],
+    ...(slot === 2 ? { derivedCheck: { command: "derived", executions: [{ id: "dw", command: "derived", commit: evidence.witnessCommit, environment: "scratch", phase: "witness", outcome: "failed", exitCode: 1 },
+      { id: "df", command: "derived", commit: evidence.fixCommit, environment: "scratch", phase: "fix", outcome: "passed", exitCode: 0 }] } } : {}) }, verifier);
   const tip = events.at(-1)!.id;
-  const data = { id: "application", requestId: "request", capsuleHash: repairVerificationHash(c), findingId: "f", openEpoch: finding.openEpoch, claimHash: issueClaimHash("finding", finding), outcome: "fixed", contextHash: repairVerificationHash(c.rulingContext), reason: "independent inspection covers exact whole claim", identity: identity("orchestrator") };
+  const data = { id: "application", requestId: "request", capsuleHash: repairVerificationHash(c), findingId: "f", openEpoch: finding.openEpoch, claimHash: issueClaimHash("finding", finding), outcome: "fixed", contextHash: repairVerificationHash(c.rulingContext), reason: "independent inspection covers exact whole claim", identity: identity("orchestrator"), leftovers: { problems: [], notes: [] } };
   const apply = (after: string[]) => add("A", "finding.repairApplied", "f", data, verifier, after);
   /** The read's state, and whether the registered findings door — what replay asks — refuses the act. */
   const judge = async () => {

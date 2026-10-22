@@ -574,6 +574,23 @@ export function readSubagentCall(agentId: string, callId: string, tool: RegExp, 
   return { reader, input: calls[0]!.input, result: (single ? resultObject(e.toolUseResult) : undefined) ?? resultObject(x.content) };
 }
 
+/**
+ * Whether subagent `agentId` made call `callId` before it got back any tool result that `carries`,
+ * in its own transcript (verify it first: `readSubagentCall`). A result that does not parse is
+ * passed to `carries` as its raw text, so the predicate decides how to read it.
+ */
+export function calledBefore(agentId: string, session: string, callId: string, carries: (result: unknown) => boolean,
+  dir: string = transcriptDir()): boolean {
+  const own = jsonl(join(dir, session, "subagents", `agent-${agentId}.jsonl`)) ?? [];
+  const at = own.findIndex((e) => callsTool(e, callId));
+  if (at < 0) return false;
+  return !own.slice(0, at).some((row) => {
+    if (row.type !== "user" || !Array.isArray(row.message?.content)) return false;
+    const blocks = row.message.content.filter((x: any) => x?.type === "tool_result");
+    return blocks.some((b: any) => carries((blocks.length === 1 ? resultObject(row.toolUseResult) : undefined) ?? resultObject(b.content) ?? JSON.stringify(b.content)));
+  });
+}
+
 /** How long a held submission may go unfound on disk before it is invalid. The call reaches its
  *  transcript ~12 ms after it returns (measured 2026-09-24). */
 export const verdictGraceMs = () => Number(process.env.CODEMAP_VERDICT_GRACE_MS ?? 60_000);

@@ -105,9 +105,16 @@ which:
 
 Everything else is low. Where the two sorts disagree, the item is high.
 
+**Test gap**, for every item that would close as fixed: `yes` only when every claim it covers is a
+missing test — the defect is that nothing would catch the behaviour, not the behaviour itself. It
+decides whether a mutation run (the new test failing with the fix's change undone) can stand in for
+a failure at the witness. An item that mixes a behaviour claim with a missing test is two items:
+say so, and split it. Where the two sorts disagree, it is `no`.
+
 **Per item, write:** the findings it covers; its group; for group 1 its kind, the sites counted
 and the command; for group 5 its refutation; what settles it; the level, with a level-5 fork
-spelled out where there is one; its stakes, with the condition it meets; and what the "why" rests on.
+spelled out where there is one; its stakes, with the condition it meets; its test gap, for an item
+that closes as fixed; and what the "why" rests on.
 
 While sorting, you will sometimes write a sentence about the work itself: a fix that was already
 wrong once, a rule at more sites than named, growth against a stated limit. **Those sentences go

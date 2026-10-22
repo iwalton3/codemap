@@ -443,3 +443,90 @@ test("a selector resolves with the walked commit's .codemapignore, not the worki
     assert.deepEqual([...new Set(p.outside.map((o) => o.lane))], ["test"]);
   } finally { r.cleanup(); }
 });
+
+test("C4: a leftover problem on a retired topic is held on the closure, never derived around the door; the hold is checked both ways", async () => {
+  const r = await repo();
+  try {
+    const { reportDefect } = await import("./ops/defect.js");
+    const { postRepairSort, recordRepairEvidence } = await import("./ops/repairs.js");
+    const V = await import("./ops/repair-verification.js");
+    const { RepairConnection } = await import("./verifier-boundary.js");
+    const { readFinding } = await import("./store.js");
+    const { resolveSidecar } = await import("./sidecar-config.js");
+    const { findingScope } = await import("./shared-findings.js");
+    const { findingKeyScope } = await import("./review-target.js");
+    const { referencesFor, tipReader } = await import("./eventlog.js");
+    const id = await r.ids(), sha = r.head(), key = "topic:fees";
+    ok(await topicDefine(r.root, { slug: "fees", title: "Fees", selector: { paths: ["src/fees.ts"] } }));
+    const walk = ok(await topicWalkthroughSet(r.root, "fees", feat(ch("all", id.fees))));
+    const f = ok((await reportDefect(r.root, { context: { kind: "topic", topic: "fees", walk: walk.walk! }, targetKind: "anchor", targetId: id.calc,
+      text: "calc doubles", comment: "calc doubles the amount", severity: "low" })) as { id: string });
+    const coverage = [{ findingId: f.id, claimIds: [`${f.id}:original`] }];
+    const sort = ok((await postRepairSort(r.root, key, { classification: "mechanical", kind: "isolated", source: "approved owner worklist", coverage,
+      restsOn: [], provenance: "owner-reviewed", stakes: "low", assessments: [], disagreements: [] })) as { id: string });
+    const evidence = ok((await recordRepairEvidence(r.root, key, { sortId: sort.id, witnessCommit: sha, baseCommit: sha, fixCommit: sha,
+      coverage: coverage.map((c) => ({ ...c, result: "complete" as const, reason: "r", claimResults: c.claimIds.map((claimId) => ({ claimId, result: "complete" as const, reason: "r" })) })),
+      reproducer: [], regression: [], inspected: [{ source: "src/fees.ts", commit: sha, reasoning: "read" }], noCheckReason: "no runnable check", rulingIds: [], attribution: [] })) as { id: string });
+    const orchestrator = new RepairConnection("izzie@x.com");
+    const request = ok((await V.requestRepairVerification(r.root, key, { sortId: sort.id, evidenceId: evidence.id }, orchestrator)) as { id: string });
+    const host = new RepairConnection("izzie@x.com"); host.claim();
+    ok(await V.repairVerificationBrief(r.root, key, { requestId: request.id, role: "verifier", slot: 1 }, host));
+    ok(await V.submitRepairVerification(r.root, key, { requestId: request.id, slot: 1, leftovers: [{ kind: "problem", text: "round truncates" }],
+      results: [{ findingId: f.id, claimId: `${f.id}:original`, verdict: "fixed", reason: "inspected", grade: "inspection", executions: [],
+        inspected: [{ source: "src/fees.ts", commit: sha, reasoning: "the fix is there" }], noCheckReason: "no runnable check" }] }, host));
+
+    // The door, both ways, on an application the op did not build.
+    const cfg = resolveSidecar(r.root)!, scope = findingScope(findingKeyScope(cfg, key));
+    const application = (held: boolean) => ({ id: "e-app", kind: "finding.repairApplied", subject: f.id, actor: { principal: "izzie@x.com" }, at: new Date().toISOString(), eventSchema: 6,
+      data: { requestId: request.id, findingId: f.id, leftovers: { problems: ["round truncates"], notes: [] }, ...(held ? { leftoversHeld: "topic-retired" } : {}) } });
+    const why = async (held: boolean) => (await referencesFor(scope)!(scope, application(held) as never, await tipReader(cfg.path).read(scope), tipReader(cfg.path))).map((x) => x.why).join();
+    assert.match(await why(true), /is not retired/);
+    assert.equal(await why(false), "");
+    ok(await topicRetire(r.root, "fees"));
+    assert.match(await why(false), /is retired: the application holds/);
+
+    const applied = ok((await V.applyRepairVerification(r.root, key, { requestId: request.id, findingId: f.id, reason: "verified" }, orchestrator)) as { filed?: string[] });
+    assert.equal(applied.filed, undefined, "nothing derived on a retired topic");
+    const closed = (await readFinding(r.root, f.id, { pr: key }))!;
+    assert.deepEqual(closed.repairClosure?.problems, ["round truncates"]);
+    assert.match(closed.repairClosure!.attention.join(), /topic was retired/);
+  } finally { r.cleanup(); }
+});
+
+test("F4: inside a transaction a request's second application on a retired topic reads the first from the staged log, not the disk", async () => {
+  const r = await repo();
+  try {
+    const { reportDefect } = await import("./ops/defect.js");
+    const { postRepairSort, recordRepairEvidence } = await import("./ops/repairs.js");
+    const V = await import("./ops/repair-verification.js");
+    const { RepairConnection } = await import("./verifier-boundary.js");
+    const { readFinding } = await import("./store.js");
+    const { beginTransaction, discardTransaction } = await import("./ops-shared.js");
+    const id = await r.ids(), sha = r.head(), key = "topic:fees";
+    ok(await topicDefine(r.root, { slug: "fees", title: "Fees", selector: { paths: ["src/fees.ts"] } }));
+    const walk = ok(await topicWalkthroughSet(r.root, "fees", feat(ch("all", id.fees))));
+    const file = async (anchor: string, text: string) => ok((await reportDefect(r.root, { context: { kind: "topic", topic: "fees", walk: walk.walk! }, targetKind: "anchor", targetId: anchor,
+      text, comment: text, severity: "low" })) as { id: string });
+    const fs = [await file(id.calc, "calc doubles"), await file(id.round, "round truncates")];
+    const coverage = fs.map((f) => ({ findingId: f.id, claimIds: [`${f.id}:original`] }));
+    const sort = ok((await postRepairSort(r.root, key, { classification: "mechanical", kind: "isolated", source: "approved owner worklist", coverage,
+      restsOn: [], provenance: "owner-reviewed", stakes: "low", assessments: [], disagreements: [] })) as { id: string });
+    const evidence = ok((await recordRepairEvidence(r.root, key, { sortId: sort.id, witnessCommit: sha, baseCommit: sha, fixCommit: sha,
+      coverage: coverage.map((c) => ({ ...c, result: "complete" as const, reason: "r", claimResults: c.claimIds.map((claimId) => ({ claimId, result: "complete" as const, reason: "r" })) })),
+      reproducer: [], regression: [], inspected: [{ source: "src/fees.ts", commit: sha, reasoning: "read" }], noCheckReason: "no runnable check", rulingIds: [], attribution: [] })) as { id: string });
+    const orchestrator = new RepairConnection("izzie@x.com");
+    const request = ok((await V.requestRepairVerification(r.root, key, { sortId: sort.id, evidenceId: evidence.id }, orchestrator)) as { id: string });
+    const host = new RepairConnection("izzie@x.com"); host.claim();
+    ok(await V.repairVerificationBrief(r.root, key, { requestId: request.id, role: "verifier", slot: 1 }, host));
+    ok(await V.submitRepairVerification(r.root, key, { requestId: request.id, slot: 1, leftovers: [{ kind: "problem", text: "fees go negative" }],
+      results: fs.map((f) => ({ findingId: f.id, claimId: `${f.id}:original`, verdict: "fixed" as const, reason: "inspected", grade: "inspection" as const, executions: [],
+        inspected: [{ source: "src/fees.ts", commit: sha, reasoning: "the fix is there" }], noCheckReason: "no runnable check" })) }, host));
+    ok(await topicRetire(r.root, "fees"));
+
+    ok(await beginTransaction(r.root));
+    try {
+      for (const f of fs) ok(await V.applyRepairVerification(r.root, key, { requestId: request.id, findingId: f.id, reason: "verified" }, orchestrator));
+      for (const f of fs) assert.ok((await readFinding(r.root, f.id, { pr: key }))!.repairClosure, `${f.id} reads closed through the overlay`);
+    } finally { await discardTransaction(r.root); }
+  } finally { r.cleanup(); }
+});

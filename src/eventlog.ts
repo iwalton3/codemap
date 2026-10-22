@@ -64,7 +64,14 @@ export const SIDECAR_PROTOCOL = 2;
 // leaves its hold with provenance `ruled`. An older build would refuse the second as an unknown
 // provenance — damage — and, ignoring the first, demand two verifiers of a low-stakes request
 // and read its one-run closure as unverified.
-export const EVENT_SCHEMA = 5;
+// 5 → 6 (plan 2026-10-20-reader-incident-followups, Phase 2): a posted repair sort must state
+// `stakes`, and a dual-sorted correction by fresh readers may set `low` on a sort that has none;
+// evidence must be able to meet the evidence bar at filing, and may pin a `mutation` run; a
+// verification run carries `leftovers` and, on slot 2 of a high-stakes request, the `derivedCheck`
+// its verifier wrote before seeing the fixer's evidence. An older build would refuse the way down
+// and the mutation phase as damage. Each new refusal binds only events stamped 6 or above
+// (`closeoutRules`), so no event already in a log becomes damage.
+export const EVENT_SCHEMA = 6;
 
 /**
  * The one file per scope that every write since the linear log goes to
@@ -383,7 +390,11 @@ export const prefixReader = (all: ScopeReader, beforeSeq: number): ScopeReader =
   scopes: () => all.scopes(),
 });
 
-/** What a scope's events name in OTHER scopes (docs/sidecar-references.md), one check per family. */
+/**
+ * What a scope's events name in OTHER scopes (docs/sidecar-references.md), one check per family.
+ * `own` is the event's own scope BEFORE it, never including it: a door's `events` end with
+ * `minted`, so a door filters it out (`shared-decisions.ts`, `shared-findings.ts`).
+ */
 export type ReferenceCheck = (scope: string, e: LogEvent, own: LogEvent[], read: ScopeReader) =>
   Promise<{ id: string; kind: string; why: string; cls: string }[]>;
 const references: { match: (scope: string) => boolean; check: ReferenceCheck }[] = [];

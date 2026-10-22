@@ -47,11 +47,11 @@ test("repair page retains original scope, separate evidence outcomes and the clo
     const [negative, duplicate] = decomposition.claims.map(c => c.id) as [string, string];
     const marker = join(root, "command-must-not-run");
     const sort = await ops.postRepairSort(root, 7, { classification: "implementation-defect", kind: "isolated",
-      provenance: "owner-reviewed", source: "Owner-reviewed exact input-2 worklist", coverage: [{ findingId: finding.id, claimIds: [original, negative, duplicate] }], restsOn: [], assessments: [], disagreements: [],
+      provenance: "owner-reviewed", stakes: "high", source: "Owner-reviewed exact input-2 worklist", coverage: [{ findingId: finding.id, claimIds: [original, negative, duplicate] }], restsOn: [], assessments: [], disagreements: [],
     });
     assert.ok("ok" in sort && sort.ok, JSON.stringify(sort));
     const revised = await ops.postRepairSort(root, 7, { prior: sort.id, reason: "A requirement dependency was overlooked.",
-      classification: "design", kind: "isolated", provenance: "owner-reviewed", source: "Owner-reviewed correction",
+      classification: "design", kind: "isolated", provenance: "owner-reviewed", stakes: "high", source: "Owner-reviewed correction",
       coverage: [{ findingId: finding.id, claimIds: [original, negative, duplicate] }], restsOn: ["req-credit"], assessments: [],
       disagreements: [{ id: "conflict-scope", text: "The duplicate policy needs a ruling." }],
       arbitration: { addresses: ["conflict-scope"], reason: "Keep the dependency until the owner rules.", identity: { principal: "Alice" } as never },
@@ -60,7 +60,9 @@ test("repair page retains original scope, separate evidence outcomes and the clo
     const evidence = await ops.recordRepairEvidence(root, 7, { sortId: sort.id,
       witnessCommit: commit, baseCommit: commit, fixCommit: commit,
       coverage: [{ findingId: finding.id, claimIds: [original, negative], result: "partial", reason: "Duplicate credits remain unchecked.", claimResults: [{ claimId: original, result: "partial", reason: "Duplicate credits remain unchecked." }, { claimId: negative, result: "complete", reason: "The negative claim has a run." }] }],
-      reproducer: [{ id: "repro", command: `touch ${marker}`, phase: "witness", commit, environment: "isolated scratch clone", outcome: "failed", exitCode: 1, stdout: "negative credit persists" }],
+      reproducer: [{ id: "repro", command: `touch ${marker}`, phase: "witness", commit, environment: "isolated scratch clone", outcome: "failed", exitCode: 1, stdout: "negative credit persists" },
+        // A fix needs its pass under the same command, or the evidence is refused at filing (F13).
+        { id: "repro-fix", command: `touch ${marker}`, phase: "fix", commit, environment: "isolated scratch clone", outcome: "passed", exitCode: 0, stdout: "negative credit refused" }],
       regression: [{ id: "suite", command: "npm test", phase: "regression", commit, environment: "isolated scratch clone", outcome: "passed", exitCode: 0 }],
       inspected: [{ source: "src/credits.ts", commit, reasoning: "The source returns the input directly." }],
       noCheckReason: "No useful duplicate-credit fixture exists yet.", rulingIds: [], attribution: [],
@@ -145,17 +147,23 @@ test("repair page retains original scope, separate evidence outcomes and the clo
     };
     const closureHost = new RepairConnection(actor.principal);
     const closureRequest = await ops.requestRepairVerification(root, 7, { sortId: closureSortId, evidenceId: closureEvidence.id }, closureHost);
-    assert.ok("request" in closureRequest && closureRequest.request, JSON.stringify(closureRequest));
+    assert.ok("ok" in closureRequest && closureRequest.ok, JSON.stringify(closureRequest));
     for (const slot of [1, 2] as const) {
       const verifierHost = makeHost();
-      const brief = await ops.repairVerificationBrief(root, 7, { requestId: closureRequest.request.id, role: "verifier", slot }, verifierHost);
+      const brief = await ops.repairVerificationBrief(root, 7, { requestId: closureRequest.id, role: "verifier", slot }, verifierHost);
       assert.ok(!("error" in brief), JSON.stringify(brief));
-      const submitted = await ops.submitRepairVerification(root, 7, { requestId: closureRequest.request.id, slot, results: [{ findingId: closureFinding.id, claimId: closureClaim,
+      // Slot 2 of a high-stakes request writes its own check before it sees the evidence (F18).
+      const command = "node --test derived.test.js";
+      if (slot === 2) assert.ok("ok" in await ops.submitDerivedCheck(root, 7, { requestId: closureRequest.id, slot: 2, command, rationale: "fails without the guard" }, verifierHost));
+      const derived = slot === 2 ? { derivedCheck: { command, executions: [
+        { id: "dw", command, commit, environment: "scratch", phase: "witness" as const, outcome: "failed" as const, exitCode: 1 },
+        { id: "df", command, commit, environment: "scratch", phase: "fix" as const, outcome: "passed" as const, exitCode: 0 }] } } : {};
+      const submitted = await ops.submitRepairVerification(root, 7, { requestId: closureRequest.id, slot, results: [{ findingId: closureFinding.id, claimId: closureClaim,
         verdict: "fixed", grade: "inspection", reason: "Independent inspection of the fixture's exact source.", executions: [],
-        inspected: [{ source: "src/credits.ts", commit, reasoning: "Synthetic independent source inspection." }], noCheckReason: "synthetic inspection fixture" }] }, verifierHost);
+        inspected: [{ source: "src/credits.ts", commit, reasoning: "Synthetic independent source inspection." }], noCheckReason: "synthetic inspection fixture" }], ...derived }, verifierHost);
       assert.ok("ok" in submitted && submitted.ok, JSON.stringify(submitted));
     }
-    const applied = await ops.applyRepairVerification(root, 7, { requestId: closureRequest.request.id, findingId: closureFinding.id, reason: "Two independent inspections cover the fixture." }, closureHost);
+    const applied = await ops.applyRepairVerification(root, 7, { requestId: closureRequest.id, findingId: closureFinding.id, reason: "Two independent inspections cover the fixture." }, closureHost);
     assert.ok("ok" in applied && applied.ok, JSON.stringify(applied));
     assert.equal((await readFinding(root, closureFinding.id))?.state, "resolved");
     await page.reload({ waitUntil: "networkidle" });
@@ -235,7 +243,7 @@ test("a released sort shows the rulings it was released on and both readers' ver
     ok(await ops.answerDirect(root, { decision: "D-guard", option: "Reject them" }));
     const decision = ((await ops.decisionRound(root, "R-guard")) as any).decisions[0].id;
     const held = await ops.postRepairSort(root, 7, { classification: "design-defect", kind: "isolated", coverage: [{ findingId: finding.id, claimIds: [`${finding.id}:original`] }],
-      restsOn: [`decision:${decision}`], source: "owner worklist", provenance: "owner-reviewed", assessments: [], disagreements: [] }) as any;
+      restsOn: [`decision:${decision}`], source: "owner worklist", provenance: "owner-reviewed", stakes: "high", assessments: [], disagreements: [] }) as any;
     ok(held);
     const readers = [];
     for (const slot of [1, 2] as const) {
@@ -286,7 +294,7 @@ test("a ruled sort says it was released on the ruling, never by readers it did n
     ok(await ops.answerDirect(root, { decision: "D-ruled", option: "Fix it" }));
     const decision = ((await ops.decisionRound(root, "R-ruled")) as any).decisions[0].id;
     const held = await ops.postRepairSort(root, 7, { classification: "design-defect", kind: "isolated", coverage: [{ findingId: finding.id, claimIds: [`${finding.id}:original`] }],
-      restsOn: [`decision:${decision}`], source: "owner worklist", provenance: "owner-reviewed", assessments: [], disagreements: [] }) as any;
+      restsOn: [`decision:${decision}`], source: "owner worklist", provenance: "owner-reviewed", stakes: "high", assessments: [], disagreements: [] }) as any;
     ok(held);
     const released = await ops.releaseRuledSort(root, 7, { sort: held.id }) as any;
     ok(released);

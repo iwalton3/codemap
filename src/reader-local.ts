@@ -1,7 +1,9 @@
 /** Local reader requests and successful submit receipts, keyed by purpose and request ID.
  * These rows are machine-local transcript correlation state, not shared decision events.
  * The older answer-keyed tables remain for already issued interpretation briefs. */
+import { existsSync } from "node:fs";
 import { db, tx } from "./db.js";
+import { storeFile } from "./store-door.js";
 
 export type ReaderPurpose = "answer-interpretation" | "pair-comparison" | "issue-application" | "operation-signoff" | "repair-verification" | "repair-arbitration" | "withdrawal-review" | "release-review";
 export type ReaderReceiptState = "pending" | "recorded" | "invalid" | "cancelled";
@@ -52,6 +54,22 @@ export function readerRequests(root: string, purpose: ReaderPurpose): { requestI
     .all(purpose) as { requestId: string; body: string }[];
 }
 
+/**
+ * Whether this store issued reader work under one of `ids` — a request id, a repair job of it
+ * (`<id>#<role><slot>`), a batch (`batch:<id>`) or a held receipt — or an interpretation brief
+ * on one of `answers`. How MCP finds a non-primary universe's work for a call that omits
+ * `universe`, since no launch prompt names one (F6). Never creates a store.
+ */
+export function holdsReaderWork(root: string, ids: string[], answers: string[] = []): boolean {
+  if (!existsSync(storeFile(root))) return false;
+  const d = db(root);
+  const request = d.prepare("SELECT 1 AS found FROM reader_work_requests WHERE request_id = ? OR request_id = ? OR substr(request_id, 1, ?) = ? LIMIT 1");
+  const receipt = d.prepare("SELECT 1 AS found FROM reader_work_receipts WHERE receipt = ? LIMIT 1");
+  const answer = d.prepare("SELECT 1 AS found FROM reader_work_requests WHERE purpose = 'answer-interpretation' AND json_valid(body) AND json_extract(body, '$.answer') = ? LIMIT 1");
+  return ids.some((id) => !!request.get(id, `batch:${id}`, id.length + 1, `${id}#`) || !!receipt.get(id))
+    || answers.some((a) => !!answer.get(a));
+}
+
 /** The receipt token identifies one successful submit-call result across all purposes.
  * This stores the claim for later transcript verification; it does not verify it. */
 export function holdReaderReceipt(
@@ -88,7 +106,7 @@ export function readerReceipts(root: string, key: ReaderKey): ReaderReceipt[] {
 }
 
 /** Called only after an external transcript check has reached a verdict. `invalid` is not final: a
- *  refusal can be codemap's own defect (2026-10-20: two in a day, each a lost verifier run), so a
+ *  refusal can be codemap's own defect, which would cost a verifier run each time, so a
  *  later record re-checks it. `recorded` and `cancelled` are final. */
 export function settleReaderReceipt(
   root: string, key: ReaderKey, receipt: string, state: Exclude<ReaderReceiptState, "pending">,

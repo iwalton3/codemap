@@ -5,7 +5,8 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Actor } from "./schema.js";
-import { sortEvents, readScope, type LogEvent } from "./eventlog.js";
+import { sortEvents, readScope, appendLinear, doorFor, referencesFor, type LogEvent, type ScopeReader } from "./eventlog.js";
+import { topicHex, topicsScope } from "./shared-topics.js";
 import {
   createFinding, corroborate, comment, promote, request, setState, recordOutcome, declineAsk, reratedFrom,
   markPosted, markUpstreamed, promoteToBug, readFindings, foldFindings, findingScope,
@@ -741,4 +742,34 @@ test("finding replay rejects stale or context-free agent reopens", () => {
   assert.equal(foldFindings(events.slice(0, 3)).get("f")?.state, "created");
   const forged = testEvent({ id: "6", kind: "finding.stateChanged", subject: "f", actor: opus, data: { state: "created" } });
   assert.equal(foldFindings([...events, forged]).get("f")?.state, "refuted");
+});
+
+test("F4: a retired topic's leftover hold reads its own scope from the log before the event, at the door and on read", async () => {
+  const scope = `findings/u/t-${topicHex("u", "fees")}`;
+  let seq = 0;
+  const ev = (id: string, kind: string, subject: string, data: Record<string, unknown>) => testChain("w", [{ id, kind, subject, data, actor: izzie, seq: ++seq }])[0]!;
+  const topics = [ev("t1", "topic.defined", "fees", { title: "Fees", selector: { paths: ["a.ts"] } }), ev("t2", "topic.retired", "fees", {})];
+  const created = [ev("c1", "finding.created", "f1", { topic: "fees", targetKind: "anchor", targetId: "a", text: "one" }),
+    ev("c2", "finding.created", "f2", { topic: "fees", targetKind: "anchor", targetId: "b", text: "two" })];
+  const app = (id: string, findingId: string, held: boolean) => ev(id, "finding.repairApplied", findingId,
+    { id, requestId: "r", findingId, leftovers: { problems: ["missing guard"], notes: [] }, ...(held ? { leftoversHeld: "topic-retired" } : {}) });
+  const app1 = app("app1", "f1", true), app2 = app("app2", "f2", false);
+  // The reader shows a stale view of this scope: a staged act is in `own` and not on disk.
+  const disk = (own: LogEvent[]): ScopeReader => ({ read: async (s) => (s === scope ? own : topics), scopes: async () => [] });
+  const refs = async (e: LogEvent, own: LogEvent[], read: ScopeReader) => (await referencesFor(scope)!(scope, e, own, read)).map((x) => x.why);
+  assert.deepEqual(await refs(app2, [...created, app1], disk(created)), [], "a second application, the first only staged, holds nothing");
+  assert.deepEqual(await refs(app1, created, disk([])), [], "a first application whose parent is only staged keeps its required hold");
+  assert.match((await refs(app("app1", "f1", false), created, disk(created))).join(), /is retired: the application holds/, "and a missing hold is still refused");
+
+  const root = tmp();
+  try {
+    await appendLinear(root, topicsScope("u"), topics);
+    await appendLinear(root, scope, created);
+    const door = doorFor(root, scope)!;
+    const why = async (events: LogEvent[], minted: LogEvent) => (await door(events, minted)).refused.filter((r) => r.id === minted.id && /leftover/.test(r.why)).map((r) => r.why);
+    // A door's events end with the minted event; were it left in `own`, every application would find itself as the earlier one.
+    const bare = app("app1", "f1", false);
+    assert.equal((await why([...created, bare], bare)).length, 1, "the door refuses a first application missing its hold");
+    assert.deepEqual(await why([...created, app1, app2], app2), [], "the door accepts a second application whose first is only staged");
+  } finally { discard(root); }
 });

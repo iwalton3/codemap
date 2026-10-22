@@ -113,6 +113,7 @@ class RepairsPage extends Component {
           ${this.provenance(record)}${this.coverage(record.input.coverage)}
           ${when(!!record.input.predicate, () => html`<p>Pattern predicate: ${record.input.predicate}</p><div class="fs">Original sites: ${(record.input.sites || []).join(', ')}</div>`)}
           ${when(!!record.input.refutationSubtype, () => html`<div class="fs">Refutation subtype: ${record.input.refutationSubtype}</div>`)}
+          ${when(!!record.input.testGap, () => html`<div class="fs">Test gap: a mutation run at the fix stands in for the witness failure</div>`)}
           <div class="fs">Depends on: ${record.input.restsOn.join(', ') || 'none recorded'}</div>
           ${each(record.holds, (hold) => html`<div class="fs qbadge drift">${hold}</div>`, (hold) => hold)}
           ${each(record.input.assessments, (assessment) => html`<div class="fs">Sorter ${identityText(assessment.identity)} · ${assessment.classification}: ${assessment.reason}${when(!!assessment.receipt, () => html`<details><summary>Reported receipt ${assessment.receipt.id} · ${assessment.receipt.source}</summary><pre>${assessment.receipt.content}</pre></details>`)}</div>`, (assessment, i) => i)}
@@ -151,6 +152,7 @@ class RepairsPage extends Component {
         <div class="sec">Recorded closure history (${detail.historicalClosures.length})</div>
         ${each(detail.historicalClosures, (closure) => html`<div class="op-card historical-repair-closure"><div class="fs">Recorded historical closure ${closure.applicationId}: finding ${closure.findingId} · ${closure.outcome} · current finding state ${closure.state}. Request ${closure.requestId}. The completed act remains history.</div>
           ${each(closure.attention, (reason) => html`<div class="fs qbadge drift repair-closure-attention">Closure needs attention: ${reason}</div>`, (reason) => reason)}
+          ${each(closure.notes ?? [], (note) => html`<div class="fs repair-closure-note">Verifier's note: ${note}</div>`, (note) => note)}
         </div>`, (closure) => closure.applicationId)}
         ${when(!!detail.verification, () => this.verificationHistory(detail.verification, detail.verificationResults))}
         ${when(!!detail.records.rejected.length, () => html`<div class="sec">Rejected records</div>${each(detail.records.rejected, (rejection) => html`<div class="fs">${rejection.eventId}: ${rejection.reason}</div>`, (rejection) => rejection.eventId)}`)}

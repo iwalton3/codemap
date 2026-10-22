@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
 import { sortEvents, type LogEvent } from "./eventlog.js";
 import { canonical } from "./transcript.js";
-import { foldRepairRecords } from "./repair-records.js";
+import { closeoutRules, foldRepairRecords } from "./repair-records.js";
 import type { RepairClaim, RepairSortInput, RepairEvidenceInput, RepairExecution, RepairCoverage } from "./repair-records.js";
 import { verifierIdentityKey, type VerifierIdentity } from "./verifier-boundary.js";
+import type { BugWitness } from "./schema.js";
 
 export type RepairVerdict = "fixed" | "factually-refuted" | "invalid" | "decision-needed" | "unknown";
 export interface RepairVerificationCapsule {
@@ -28,8 +29,15 @@ export interface RepairClaimVerdict {
   /** A pattern's sites, from the SORT: each fixed (no bug) or filed as a bug (plan 3.4). */
   sites?: { site: string; bug?: string }[];
 }
+/** What a verifier found beside the claim (F19, owner: "if it is a real problem it becomes a newer,
+ *  narrower scoped finding, otherwise it is a note during closure"). */
+export interface RepairLeftover { kind: "problem" | "note"; text: string }
 export interface RepairVerificationRun {
   id: string; requestId: string; capsuleHash: string; slot: 1 | 2; identity: VerifierIdentity; results: RepairClaimVerdict[];
+  leftovers?: RepairLeftover[];
+  /** Slot 2 of a high-stakes request (schema 6, F18): the check its verifier wrote from the claim
+   *  alone, before the brief served the fixer's evidence, and its runs at the witness and the fix. */
+  derivedCheck?: { command: string; executions: RepairExecution[] };
 }
 export interface RepairVerificationArbitration {
   id: string; requestId: string; capsuleHash: string; identity: VerifierIdentity;
@@ -39,6 +47,15 @@ export interface RepairVerificationArbitration {
 export interface RepairVerificationApplication {
   id: string; requestId: string; capsuleHash: string; findingId: string; openEpoch: string; claimHash: string;
   outcome: "fixed" | "factually-refuted" | "invalid"; contextHash: string; reason: string; identity: VerifierIdentity;
+  /** Every slot's leftovers, as `leftoversOf` derives them (schema 6): the first application's
+   *  problems become findings, derived by the findings fold (`leftover-findings.ts`). */
+  leftovers?: { problems: string[]; notes: string[] };
+  /** The first application only, on an anchor target: the parent's anchor at the fix commit, which
+   *  the fold has no git to compute (owner, Q1: "Op computes it"). The leftovers' witness. */
+  leftoverWitness?: BugWitness;
+  /** The first application only, on a topic the log shows retired: its problems are not derived,
+   *  because the door would refuse a finding filed there (`outsideReferences` checks it both ways). */
+  leftoversHeld?: "topic-retired";
 }
 export interface RepairVerificationRecords {
   requests: RepairVerificationRequest[]; runs: RepairVerificationRun[];
@@ -52,6 +69,36 @@ export interface RepairVerificationRecords {
  * stakes nothing here; it makes the request stale instead (`repairRecords`, "sort changed").
  */
 export const slotsFor = (c: Pick<RepairVerificationCapsule, "sort">): (1 | 2)[] => c.sort.stakes === "low" ? [1] : [1, 2];
+
+/**
+ * The leftovers of a request's runs, unioned by text: called a problem by ANY slot, it is a problem
+ * (owner: "this is *probably* fine"). On a low-stakes request the one verifier is the only judge.
+ */
+export function leftoversOf(runs: Pick<RepairVerificationRun, "slot" | "leftovers">[]): { problems: string[]; notes: string[] } {
+  const all = [...runs].sort((a, b) => a.slot - b.slot).flatMap((r) => r.leftovers ?? []);
+  const texts = [...new Set(all.map((x) => x.text.trim()))];
+  const problems = texts.filter((t) => all.some((x) => x.text.trim() === t && x.kind === "problem"));
+  return { problems, notes: texts.filter((t) => !problems.includes(t)) };
+}
+/**
+ * Whether slot `slot` of this request derives its own check (F18, owner: "Agreed"): slot 2 of a
+ * high-stakes request. Two slots that re-run the fixer's check are two observers of ONE check; the
+ * second opinion two slots pay for is a second check. Low stakes: unchanged.
+ */
+export const derivesCheck = (c: Pick<RepairVerificationCapsule, "sort">, slot: number): boolean => slot === 2 && slotsFor(c).length === 2;
+
+/** Why a derived check is malformed: its own command, run at the witness and at the fix, with actual results. */
+export function derivedCheckError(d: RepairVerificationRun["derivedCheck"], c: Pick<RepairVerificationCapsule, "evidence">): string | undefined {
+  if (!d || typeof d !== "object" || !text(d.command) || !Array.isArray(d.executions)) return "a derived check names its command and its runs";
+  if (d.executions.some((x) => !x || x.command !== d.command || !text(x.id) || !text(x.environment)
+    || !((x.phase === "witness" && x.commit === c.evidence.witnessCommit) || (x.phase === "fix" && x.commit === c.evidence.fixCommit))
+    || !["passed", "failed", "unknown"].includes(x.outcome) || (x.outcome === "unknown" ? !text(x.reason) : !Number.isInteger(x.exitCode))
+    || (x.outcome === "passed" && x.exitCode !== 0) || (x.outcome === "failed" && x.exitCode === 0)))
+    return "a derived check's runs are its own command, at the witness or the fix commit, each with an actual result";
+  if (!(["witness", "fix"] as const).every((p) => d.executions.some((x) => x.phase === p))) return "a derived check is run at the witness and at the fix";
+}
+
+const leftoversValid = (v: unknown): boolean => Array.isArray(v) && v.every((x) => !!x && (x.kind === "problem" || x.kind === "note") && text(x.text));
 
 export const repairVerificationHash = (value: unknown): string => createHash("sha256").update(canonical(value) ?? "null").digest("hex");
 
@@ -69,15 +116,17 @@ const coverageKeys = (coverage: RepairCoverage[]) => coverage.flatMap((c) => c.c
  * the verifier, never an echo of the fixer's outcomes. Every check the fixer pinned is one the
  * verifier must run that way. A factual refutation needs an execution at the witness that passes.
  */
-export function resultError(r: RepairClaimVerdict, c: RepairVerificationCapsule): string | undefined {
+export function resultError(r: RepairClaimVerdict, c: RepairVerificationCapsule, closeout = true): string | undefined {
   if (!r || !text(r.reason) || !verdicts.includes(r.verdict) || !["executable", "inspection", "none"].includes(r.grade)
     || !Array.isArray(r.executions) || !Array.isArray(r.inspected)) return "invalid claim verdict";
   if (!coverageKeys(c.sort.coverage).includes(key(r))) return "verdict exceeds immutable coverage";
   if (r.executions.some((x) => !text(x.id) || !text(x.command) || !text(x.environment) || !sha(x.commit)
-    || !["witness", "fix", "regression"].includes(x.phase) || !["passed", "failed", "unknown"].includes(x.outcome)
+    || !["witness", "fix", "regression", ...(closeout ? ["mutation"] : [])].includes(x.phase) || !["passed", "failed", "unknown"].includes(x.outcome)
     || (x.outcome === "unknown" ? !text(x.reason) : !Number.isInteger(x.exitCode))
     || (x.outcome === "passed" && x.exitCode !== 0) || (x.outcome === "failed" && x.exitCode === 0))) return "execution requires an actual consistent result";
   if (r.inspected.some((x) => !text(x.source) || ![c.evidence.witnessCommit, c.evidence.fixCommit].includes(x.commit) || !text(x.reasoning))) return "inspection must bind the witness or fix commit";
+  if (r.executions.some((x) => x.phase === "mutation" && (x.commit !== c.evidence.fixCommit || !x.mutation || !text(x.mutation.site) || !text(x.mutation.change))))
+    return "a mutation run is at the fix commit and names the site it mutates and the change";
   if (r.verdict !== "fixed" && r.verdict !== "factually-refuted" && r.verdict !== "invalid") return undefined;
   if (r.verdict !== "fixed" && c.sort.refutationSubtype === "scope") return "code evidence cannot refute a scope or requirement judgment";
   if (r.verdict === "invalid" && c.sort.refutationSubtype !== "assumed") return "only a reviewer's refuted assumption closes as invalid";
@@ -116,9 +165,16 @@ export function resultError(r: RepairClaimVerdict, c: RepairVerificationCapsule)
       ? undefined : "a refutation needs the verifier's own passing run of each pinned check at the witness commit";
   }
   const commands = pinned.length ? pinned : [...new Set(r.executions.map((x) => x.command))];
-  const both = (command: string) => observed(command, c.evidence.witnessCommit, "witness", "failed") && observed(command, c.evidence.fixCommit, "fix", "passed");
+  // A red at the witness, or (schema 6) a mutation run red at the fix on a sort its sorters marked a
+  // test gap. On an unmarked sort a mutation run is not refused; it does not count.
+  const gap = closeout && c.sort.testGap === true;
+  const red = (command: string) => observed(command, c.evidence.witnessCommit, "witness", "failed")
+    || (gap && observed(command, c.evidence.fixCommit, "mutation", "failed"));
+  const both = (command: string) => red(command) && observed(command, c.evidence.fixCommit, "fix", "passed");
   if (!commands.length || (pinned.length ? !pinned.every(both) : !commands.some(both)))
-    return "fixed needs the verifier's own observation of the check failing at the witness and passing at the fix";
+    return "fixed needs the verifier's own observation of the check failing at the witness and passing at the fix"
+      + (gap ? " (a mutation run at the fix stands in for the witness failure: the sort is marked testGap)"
+        : r.executions.some((x) => x.phase === "mutation") ? "; a mutation run counts only on a sort its sorters marked testGap" : "");
   return undefined;
 }
 
@@ -154,6 +210,18 @@ export function foldRepairVerification(events: LogEvent[]): RepairVerificationRe
           const workers = [...out.runs.filter((x) => x.requestId === d.requestId), ...out.arbitrations.filter((x) => x.requestId === d.requestId)];
           if (workers.some((x) => verifierIdentityKey(x.identity) === verifierIdentityKey(d.identity))) error = "a verifier cannot apply the verdict it gave";
           else error = repairVerificationApplicationError(out, d) ?? repairVerificationSnapshotError(ordered.slice(0, at), request.capsule);
+          // The application carries exactly its runs' leftovers, so nothing a verifier left can be dropped.
+          if (!error && closeoutRules(e) && canonical(d.leftovers ?? null) !== canonical(leftoversOf(out.runs.filter((x) => x.requestId === d.requestId))))
+            error = "an application carries every leftover its runs recorded";
+          if (!error && (d.leftoverWitness !== undefined || d.leftoversHeld !== undefined)) {
+            const first = !out.applications.some((x) => x.requestId === d.requestId) && !!d.leftovers?.problems.length;
+            const filed = request.capsule.claims.find((c) => c.findingId === d.findingId && !c.parentId)?.asFiled;
+            const w = d.leftoverWitness as unknown as Record<string, unknown> | undefined;
+            if (!closeoutRules(e) || !first) error = "only a request's first application, with leftover problems, carries their witness or hold";
+            else if (d.leftoversHeld !== undefined && (d.leftoversHeld !== "topic-retired" || w !== undefined)) error = "leftovers are held only as topic-retired, with no witness";
+            else if (w !== undefined && (!text(w.anchorId) || !text(w.bodyHash) || (w.deleted !== undefined && w.deleted !== true)
+              || filed?.targetKind !== "anchor" || filed.targetId !== w.anchorId)) error = "a leftover's witness is the parent finding's own anchor, as filed";
+          }
           // One-shot is spent in the FINDINGS arm, only when a closure actually happens (F34):
           // this fold cannot see whether the finding closed, and must not call that fold.
           if (!error) out.applications.push(structuredClone(d));
@@ -165,7 +233,13 @@ export function foldRepairVerification(events: LogEvent[]): RepairVerificationRe
             if (!slotsFor(request.capsule).includes(d.slot)) error = `a ${request.capsule.sort.stakes ?? "high"}-stakes request has slot${slotsFor(request.capsule).length > 1 ? "s 1 and 2" : " 1 only"}`;
             else if (previous.some((x) => x.slot === d.slot || x.id === d.id || verifierIdentityKey(x.identity) === verifierIdentityKey(d.identity))) error = "each blind slot needs its own verifier";
             else if (!Array.isArray(d.results) || !d.results.length || new Set(d.results.map(key)).size !== d.results.length) error = "run needs unique per-claim outcomes";
-            else error = d.results.map((r) => resultError(r, request.capsule)).find(Boolean);
+            else if (d.leftovers !== undefined && (!closeoutRules(e) || !leftoversValid(d.leftovers))) error = "leftovers are a list of { kind: problem | note, text }";
+            // The fold sees THAT slot 2 derived a check, never WHEN it read what: the order — written
+            // before the evidence was served — is the two-step brief's, an accepted gap (F18).
+            else if (closeoutRules(e) && derivesCheck(request.capsule, d.slot) && derivedCheckError(d.derivedCheck, request.capsule))
+              error = `slot 2 of a high-stakes request derives its own check: ${derivedCheckError(d.derivedCheck, request.capsule)}`;
+            else if (d.derivedCheck !== undefined && !(closeoutRules(e) && derivesCheck(request.capsule, d.slot))) error = "only slot 2 of a high-stakes request carries a derived check";
+            else error = d.results.map((r) => resultError(r, request.capsule, closeoutRules(e))).find(Boolean);
             if (!error) out.runs.push(structuredClone(d));
           } else {
             const runs = out.runs.filter((x) => x.requestId === d.requestId);

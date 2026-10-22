@@ -213,7 +213,7 @@ async function outsideReferences(scope: string, e: LogEvent, _own: LogEvent[], r
 
 registerReport((scope) => scope.startsWith("notes/"), foldNotesReport);
 registerDoor((scope) => scope.startsWith("notes/"), (logRoot, scope) => async (events, minted) => ({
-  refused: [...foldNotesReport(events).refused, ...await outsideReferences(scope, minted, events, tipReader(logRoot)), ...misfiled(scope, minted)],
+  refused: [...foldNotesReport(events).refused, ...await outsideReferences(scope, minted, events.filter((x) => x.id !== minted.id), tipReader(logRoot)), ...misfiled(scope, minted)],
 }));
 registerReferences((scope) => scope.startsWith("notes/"), outsideReferences);
 

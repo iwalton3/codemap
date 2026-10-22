@@ -26,12 +26,13 @@ import { METHODOLOGY } from "./guide.js";
 import { analyzeMarten } from "./analyzers/marten.js";
 import { enableAnalyzer } from "./analyzers/run.js";
 import { markReviewed, markReviewedBatch, unmarkReviewed } from "./reviews.js";
-import { withLock } from "./lock.js";
+import { withLock, holdsLock } from "./lock.js";
 import { SIGN_OFF_AXES, EVIDENCE_KINDS, OPERATION_KINDS } from "./schema.js";
 import { applicationReaderBrief, submitApplicationVerdict, recordApplicationVerdict, applyRuling } from "./ops/ruling-application.js";
 import { questionnaireStatus, waitQuestionnaireStatus } from "./ops/questionnaire-status.js";
 import { comparisonDetail, requestComparison, comparisonBrief, submitComparisonJudgment, recordComparisonJudgment, comparisonResolutionBrief, resolveComparison } from "./ops/comparisons.js";
 import { RepairConnection } from "./verifier-boundary.js";
+import { holdsReaderWork } from "./reader-local.js";
 import { asLockout, foldDefectGate, lockoutGate } from "./lockout-gate.js";
 import { setProcessSessionKind } from "./sync-session.js";
 import { projectRulesOnOpen } from "./rules-projection.js";
@@ -96,6 +97,37 @@ const connection = new RepairConnection(resolvePrincipal(ws.primary.path) ?? "")
 interface Ctx {
   ws: Workspace;
   universe: Universe;
+}
+
+/**
+ * Reader work is saved in the store of the universe that issued it, and no launch prompt names
+ * that universe, so a subagent's call without `universe` would reach the primary and be told
+ * there was no such brief (F6). These tools take the universe that holds the ids they carry.
+ */
+const READER_TOOLS = new Set(["repair_brief", "repair_batch_brief", "repair_derived_check", "repair_verification", "repair_arbitration", "record_repair_verification",
+  "submit_release_verdict", "release_held_sort", "submit_verdict", "record_reading",
+  "submit_operation_signoff_verdict", "record_operation_signoff_verdict", "apply_operation_signoff",
+  "submit_application_verdict", "record_application_verdict", "apply_ruling",
+  "submit_comparison_judgment", "record_comparison_judgment", "submit_withdrawal_verdict", "withdraw_decision"]);
+/** Brief results say which universe they belong to, so a reader can pass it (F6). */
+const BRIEF_TOOLS = new Set(["repair_brief", "repair_batch_brief", "release_reader_brief", "reader_brief", "operation_signoff_reader_brief",
+  "application_reader_brief", "comparison_reader_brief", "withdrawal_reader_brief"]);
+const READER_KEYS = ["requestId", "request", "batch", "receipt"];
+
+function readerUniverse(ws: Workspace, name: string, args: Record<string, unknown>): Universe | undefined {
+  if (args.universe !== undefined || ws.universes.length < 2 || !READER_TOOLS.has(name)) return undefined;
+  const ids: string[] = [];
+  const take = (o: unknown) => {
+    if (!o || typeof o !== "object") return;
+    for (const k of READER_KEYS) if (typeof (o as Record<string, unknown>)[k] === "string") ids.push((o as Record<string, string>)[k]!);
+  };
+  take(args);
+  // One level down: `reader`, and each of `readers`.
+  for (const v of Object.values(args)) for (const x of Array.isArray(v) ? v : [v]) take(x);
+  const answers = (name === "submit_verdict" || name === "record_reading") && typeof args.answer === "string" ? [args.answer] : [];
+  if ((!ids.length && !answers.length) || holdsReaderWork(ws.primary.path, ids, answers)) return undefined;
+  const holders = ws.universes.filter((u) => !u.primary && holdsReaderWork(u.path, ids, answers));
+  return holders.length === 1 ? holders[0] : undefined;
 }
 
 interface Tool {
@@ -272,9 +304,10 @@ const reportedSortReceipt = obj({ id: repairString, source: repairString, conten
 const repairCoverage = { findingId: repairString, claimIds: repairStrings };
 const repairResult = { type: "string", enum: ["complete", "partial", "unknown"] };
 const repairRun = obj({ id: repairString, command: repairString, commit: repairString, environment: repairString,
-  phase: { type: "string", enum: ["witness", "fix", "regression"] },
+  phase: { type: "string", enum: ["witness", "fix", "regression", "mutation"], description: "mutation: run at the fix commit with the change named in `mutation` applied; it must fail. It stands in for the witness failure only on a sort marked `testGap`." },
   outcome: { type: "string", enum: ["passed", "failed", "unknown"] },
-  exitCode: { type: "integer" }, stdout: repairString, stderr: repairString, reason: repairString },
+  exitCode: { type: "integer" }, stdout: repairString, stderr: repairString, reason: repairString,
+  mutation: obj({ site: { ...repairString, description: "file:line or symbol mutated" }, change: { ...repairString, description: "what was changed, exactly" } }, ["site", "change"], false) },
   ["id", "command", "commit", "environment", "phase", "outcome"], false);
 const repairSortSchema = obj({ prior: repairString,
   priors: { ...repairStrings, description: "Several current sorts this one replaces at once (a merge); `prior` names one." },
@@ -282,12 +315,13 @@ const repairSortSchema = obj({ prior: repairString,
   kind: { type: "string", enum: ["isolated", "pattern"] }, coverage: { type: "array", items: obj(repairCoverage, ["findingId", "claimIds"], false) },
   predicate: repairString, sites: repairStrings, refutationSubtype: { type: "string", enum: ["factual", "scope", "assumed"] },
   restsOn: repairStrings, source: repairString, provenance: { type: "string", enum: ["owner-reviewed", "dual-sorted"] },
-  stakes: { type: "string", enum: ["high", "low"], description: "How many verifiers close it: low, one; high, two and an arbitrator on disagreement. The sorters' judgment against a standing CLAUDE.md definition, else the owner's five conditions; sorters disagree → high. Absent is high. A correction may raise it, never lower it." },
+  stakes: { type: "string", enum: ["high", "low"], description: "Required. How many verifiers close it: low, one; high, two and an arbitrator on disagreement. The sorters' judgment against a standing CLAUDE.md definition, else the owner's five conditions; sorters disagree → high. A correction may raise it, never lower it, with one exception: a sort posted before stakes existed reads as high, and a dual-sorted correction by fresh sorters (not the prior sort's) may set it low." },
+  testGap: { type: "boolean", enum: [true], description: "Set only when the sorters agree every claim this sort covers is a missing test: a mutation run red at the fix then stands in for the witness red. Sorters who disagree mean no marker; a sort that would mix a behaviour claim and a test gap is split into two. Not on a refutation." },
   assessments: { type: "array", items: obj({ identity: repairIdentity, classification: repairString, reason: repairString, receipt: reportedSortReceipt }, ["identity", "classification", "reason"], false) },
   disagreements: { type: "array", items: obj({ id: repairString, text: repairString }, ["id", "text"], false) },
   arbitration: obj({ addresses: repairStrings, reason: repairString, identity: repairIdentity, receipt: reportedSortReceipt }, ["addresses", "reason", "identity"], false),
   ruling: { ...repairString, description: "A logged decisions answer: why the sites or claims this correction removes are not instances. Required only then; a ruling cited here never drops `restsOn` (release_ruled_sort does)." } },
-  ["classification", "kind", "coverage", "restsOn", "source", "provenance", "assessments", "disagreements"], false);
+  ["classification", "kind", "coverage", "restsOn", "source", "provenance", "stakes", "assessments", "disagreements"], false);
 const repairEvidenceSchema = obj({ sortId: repairString, witnessCommit: repairString, baseCommit: repairString, fixCommit: repairString,
   coverage: { type: "array", items: obj({ ...repairCoverage, result: repairResult, reason: repairString,
     claimResults: { type: "array", items: obj({ claimId: repairString, result: repairResult, reason: repairString }, ["claimId", "result", "reason"], false) } },
@@ -338,22 +372,39 @@ const tools: Tool[] = [
   {
     name: "repair_brief",
     description: "The blind brief for one verifier slot (1 or 2) or the arbitrator of a repair request, and the exact launch prompt for a subagent verifier, if you are delegating. No other verdict is shown.",
-    inputSchema: obj({ review: { type: "string" }, requestId: { type: "string" }, role: { type: "string", enum: ["verifier", "arbitrator"] }, slot: { type: "integer", enum: [1, 2] } }, ["review", "requestId", "role"]),
+    inputSchema: obj({ review: { type: "string" }, requestId: { type: "string" }, role: { type: "string", enum: ["verifier", "arbitrator"] }, slot: { type: "integer", enum: [1, 2] },
+      derived: { type: "string", description: "Slot 2 of a high-stakes request, step 2: the receipt repair_derived_check returned you. Without it you are given step 1 again." } }, ["review", "requestId", "role"]),
     mutates: true,
     handler: (a, c) => ops.repairVerificationBrief(c.universe.path, a.review, a, connection),
   },
   {
     name: "repair_batch_brief",
-    description: "One brief for a round's verification: every open job of one role and slot on the review (or of the `requests` named), each entry exactly repair_brief's. A low-stakes request has no slot 2, so slot 1's batch carries it alone. Submit each entry as its own repair_verification (or repair_arbitration). To delegate, put the returned `launch` line, whole and on a line of its own, in a subagent's prompt — a reviewer's prompt may carry it beside its review instructions; launch slot 1 and slot 2 as different subagents. Called with `batch` it re-reads that batch: what the subagent does first.",
+    description: "One brief for a round's verification: every open job of one role and slot on the review (or of the `requests` named), each entry exactly repair_brief's. A low-stakes request has no slot 2, so slot 1's batch carries it alone. Submit each entry as its own repair_verification (or repair_arbitration). To delegate, put the returned `launch` line, whole and on a line of its own, in a subagent's prompt — a reviewer's prompt may carry it beside its review instructions; launch slot 1 and slot 2 as different subagents. Called with `batch` it re-reads that batch: what the subagent does first. For a review that spans repos, `workspace: true` returns every universe's batch for the slot at once: one subagent per slot carries all their lines.",
     inputSchema: obj({ review: { type: "string" }, role: { type: "string", enum: ["verifier", "arbitrator"] }, slot: { type: "integer", enum: [1, 2] },
-      requests: { type: "array", items: { type: "string" } }, batch: { type: "string" } }, ["review"]),
+      requests: { type: "array", items: { type: "string" } }, batch: { type: "string" },
+      derived: { type: "object", additionalProperties: { type: "string" }, description: "With `batch`, slot 2's step 2: { <requestId>: <receipt repair_derived_check returned you> } for each entry you derived a check for." },
+      workspace: { type: "boolean", description: "With role and slot, every universe's batch for that slot of a review that spans repos, in one answer: put all of their launch lines in ONE subagent's prompt." } }, ["review"]),
     mutates: true,
-    handler: (a, c) => ops.repairBatchBrief(c.universe.path, a.review, a as never, connection),
+    handler: async (a, c) => a.workspace
+      ? (a.batch !== undefined || a.requests !== undefined ? { error: "the workspace form takes role and slot only" }
+        : ops.workspaceRepairBatchBriefs(c.ws.universes.map((u) => ({ id: u.id, root: u.path })), a.review, a as never, connection,
+          (root, fn) => (holdsLock(root) ? fn() : withLock(root, fn))))
+      : ops.repairBatchBrief(c.universe.path, a.review, a as never, connection),
+  },
+  {
+    name: "repair_derived_check",
+    description: "Slot 2 of a HIGH-stakes request only, step 1 of its brief: the check you derived from the claims and the code alone, before you are shown the fixer's evidence. A subagent gets a `receipt`: pass it as `derived` when it reads the brief again for the evidence, and as `derivedCheck.receipt` with its results — its launcher's record checks that the same agent derived the check before reading the evidence. A dedicated verifier session writes it once and gets no receipt. Submit this check's own runs as `derivedCheck` with your results.",
+    inputSchema: obj({ review: repairString, requestId: repairString, slot: { type: "integer", enum: [2] }, command: repairString, rationale: { ...repairString, description: "Why this command tests the claims" } }, ["review", "requestId", "slot", "command", "rationale"]),
+    mutates: true,
+    handler: (a, c) => ops.submitDerivedCheck(c.universe.path, a.review, a as never, connection),
   },
   {
     name: "repair_verification",
-    description: "Submit your results for one verifier slot: your own run of each check (fails at the witness, passes at the fix), or an inspection with a no-check reason. A subagent's submission is held until its launcher records it.",
-    inputSchema: obj({ review: { type: "string" }, requestId: { type: "string" }, slot: { type: "integer", enum: [1, 2] }, results: { type: "array", items: repairClaimVerdictSchema } }, ["review", "requestId", "slot", "results"]),
+    description: "Submit your results for one verifier slot: your own run of each check (fails at the witness, passes at the fix), or an inspection with a no-check reason. A subagent's submission is held until its launcher records it. Anything real you found beside the claim goes in `leftovers`, not in a reason: a `problem` becomes a new, narrower finding when the verdict is applied; a `note` stays on the closure.",
+    inputSchema: obj({ review: { type: "string" }, requestId: { type: "string" }, slot: { type: "integer", enum: [1, 2] }, results: { type: "array", items: repairClaimVerdictSchema },
+      leftovers: { type: "array", items: obj({ kind: { type: "string", enum: ["problem", "note"] }, text: { type: "string" } }, ["kind", "text"], false) },
+      derivedCheck: obj({ command: repairString, executions: { type: "array", items: repairRun },
+        receipt: { ...repairString, description: "The receipt repair_derived_check returned you, if it returned one." } }, ["command", "executions"], false) }, ["review", "requestId", "slot", "results"]),
     mutates: true,
     handler: (a, c) => ops.submitRepairVerification(c.universe.path, a.review, a, connection),
   },
@@ -366,7 +417,7 @@ const tools: Tool[] = [
   },
   {
     name: "record_repair_verification",
-    description: "Record a subagent verifier's held submission by the receipt it got back. Codemap finds the subagent's repair_verification (or repair_arbitration) call that returned it and checks its transcript: launched with exactly the issued prompt (or a prompt holding the launch line of a repair_batch_brief listing this job), and submitted exactly what was held." + " `pending`: the call is not in its transcript yet — call again in a moment (for up to a minute). An error repeats on every call unless codemap itself changes (a fork, a message sent after launch, a call this machine's transcripts do not show) — launch a new one. The receipt is not spent: if the refusal was codemap's defect, it records after the fix.",
+    description: "Record a subagent verifier's held submission by the receipt it got back. Codemap finds the subagent's repair_verification (or repair_arbitration) call that returned it and checks its transcript: launched with exactly the issued prompt (or a prompt holding the launch line of a repair_batch_brief listing this job), and submitted exactly what was held; for slot 2 of a high-stakes request, that the same subagent made the repair_derived_check call its run names, before any brief it read carried the evidence." + " `pending`: the call is not in its transcript yet — call again in a moment (for up to a minute). An error repeats on every call unless codemap itself changes (a fork, a message sent after launch, a call this machine's transcripts do not show) — launch a new one. The receipt is not spent: if the refusal was codemap's defect, it records after the fix.",
     inputSchema: obj({ review: { type: "string" }, requestId: { type: "string" }, role: { type: "string", enum: ["verifier", "arbitrator"] }, slot: { type: "integer", enum: [1, 2] },
       receipt: { type: "string" } }, ["review", "requestId", "role", "receipt"]),
     mutates: true,
@@ -430,7 +481,7 @@ const tools: Tool[] = [
   },
   {
     name: "record_repair_evidence",
-    description: "Record the fix's evidence: the checks (command, commit, witness/fix phase, actual result), regression runs, pattern enumeration and inspections. Commands are data; nothing is executed. Returns the evidence id.",
+    description: "Record the fix's evidence: the checks (command, commit, witness/fix phase, actual result), regression runs, pattern enumeration and inspections. Commands are data; nothing is executed. Returns the evidence id. Refused when its own runs could never meet the evidence bar: per command, a fix needs it failing at the witness (or a mutation run failing at the fix) and passing at the fix, under the SAME command string; a refutation needs it passing at the witness. Run each at its commit in a clean worktree: a check that finds no test is not a failure.",
     inputSchema: obj({ review: repairString, evidence: repairEvidenceSchema }, ["review", "evidence"]),
     mutates: true,
     handler: (a, c) => ops.recordRepairEvidence(c.universe.path, a.review, a.evidence),
@@ -2575,7 +2626,7 @@ async function handle(msg: any): Promise<void> {
         send({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: `Error: ${bad}` }], isError: true } });
         return;
       }
-      const universe = args.universe ? ws.byId.get(args.universe) : ws.primary;
+      const universe = args.universe ? ws.byId.get(args.universe) : readerUniverse(ws, tool.name, args) ?? ws.primary;
       if (!universe) {
         send({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: `Error: unknown universe "${args.universe}"` }], isError: true } });
         return;
@@ -2588,7 +2639,9 @@ async function handle(msg: any): Promise<void> {
         }
         const run = () => tool.handler(args, { ws, universe });
         const locked = typeof tool.mutates === "function" ? tool.mutates(args) : tool.mutates;
-        const out = locked ? await withLock(universe.path, run) : await run();
+        const answered = locked ? await withLock(universe.path, run) : await run();
+        const out = BRIEF_TOOLS.has(tool.name) && !args.workspace && ws.universes.length > 1 && answered && typeof answered === "object" && !Array.isArray(answered) && !("error" in answered)
+          ? { ...answered, universe: universe.id } : answered;
         // Every call from a session holding staged writes says so (plan 4.1): "sync and push often".
         const held = shared.stagedCount(ws.universes.map((u) => u.path));
         const defect = await foldDefectGate(ws.universes.map((u) => u.path));

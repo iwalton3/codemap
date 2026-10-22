@@ -24,6 +24,7 @@
  */
 import { registerKinds, registerReferences, tipReader, type ScopeReader } from "./eventlog.js";
 import { createHash } from "node:crypto";
+import { findingIds } from "./leftover-findings.js";
 import { comparisonContextHash, deriveComparison, validateComparisonRequest, type AnswerSource, type CanonicalIssue, type ComparisonProjection, type ComparisonRequest, type ReaderJudgment, type HumanResolution } from "./decision-comparison.js";
 import { readSets, readScope, readScopeChecked, registerDoor, scopesOnDisk, sortEvents, type AdmissionCheck, type DoorFold, type LogEvent, type ReadSets, type ScopeRead } from "./eventlog.js";
 import { emitEventChecked } from "./write.js";
@@ -398,7 +399,9 @@ export function checkDecision(d: Decision): string | null {
     || !d.payload.options.every((o) => o && typeof o === "object" && typeof o.label === "string")) {
     return "the payload is not an AskUserQuestion question";
   }
-  if (!str(d.id) || !str(d.round) || !/^D\d+$/.test(typeof d.ref === "string" ? d.ref : "")) return "a decision needs an id, a round and a ref like D2";
+  if (!str(d.id)) return "a decision needs an id";
+  if (!str(d.round)) return "a decision needs a round: the id of the round it belongs to";
+  if (typeof d.ref !== "string" || !/^D\d+$/.test(d.ref)) return `a decision's ref is D<n>, a D and digits only, like D2${typeof d.ref === "string" && d.ref ? ` — got ${JSON.stringify(d.ref)}` : ""}`;
   if (d.kind !== "options" && d.kind !== "words" && d.kind !== "bulk") return "kind must be options, words or bulk";
   const labels = d.payload.options.map((o) => o.label);
   // A pick is recorded by label, so two options sharing one could not be told apart (bulk 8).
@@ -429,7 +432,8 @@ export function checkDecision(d: Decision): string | null {
     if (o.park !== undefined) {
       if (multi) return "a multi-select question cannot offer a park: picked with other options it means nothing (owner, 2026-09-23)";
       // A park with no date in the verified text is not a park (C23).
-      if (typeof o.park !== "string" || !ISO_DATE.test(o.park) || !o.label.includes(o.park.slice(0, 10))) return `option "${o.label}" parks without its date in the label`;
+      if (typeof o.park !== "string" || !ISO_DATE.test(o.park)) return `option "${o.label}": park is the date it parks until, an ISO date string like 2026-11-01 — got ${JSON.stringify(o.park)}`;
+      if (!o.label.includes(o.park.slice(0, 10))) return `option "${o.label}" parks without its date in the label`;
     }
   }
   if (d.resolves) {
@@ -2666,7 +2670,10 @@ async function decisionReferences(read: ScopeReader, scope: string, events: LogE
   const findings = new Map<string, Set<string>>();
   const createdIn = async (sc: string) => {
     let s = findings.get(sc);
-    if (!s) { s = new Set((await read.read(sc)).filter((x) => x.kind === "finding.created" || x.kind === "bug.filed").map((x) => x.subject)); findings.set(sc, s); }
+    if (!s) {
+      const evs = await read.read(sc);
+      s = new Set([...findingIds(evs), ...evs.filter((x) => x.kind === "bug.filed").map((x) => x.subject)]); findings.set(sc, s);
+    }
     return s;
   };
   let allFindings: Set<string> | null = null;

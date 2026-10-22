@@ -142,7 +142,7 @@ test("D4 over MCP: post_repair_sort fills both sorters' session from the connect
   try {
     const sorter = (child?: string) => ({ identity: { principal: "alice@acme.test", ...(child ? { child } : {}) }, classification: "implementation-defect", reason: "read code" });
     const sort = { classification: "implementation-defect", kind: "isolated", coverage: [{ findingId: u.f, claimIds: [`${u.f}:original`] }],
-      restsOn: [], source: "triage-review round", provenance: "dual-sorted", assessments: [sorter(), sorter("a1234567")], disagreements: [] };
+      restsOn: [], source: "triage-review round", provenance: "dual-sorted", stakes: "high", assessments: [sorter(), sorter("a1234567")], disagreements: [] };
     const out = await u.mcp([
       { name: "post_repair_sort", arguments: { review: "7", sort: { ...sort, assessments: [{ ...sorter(), identity: { principal: "alice@acme.test", session: "mine" } }, sorter("a1")] } } },
       { name: "post_repair_sort", arguments: { review: "7", sort: { ...sort, assessments: [sorter(), sorter()] } } },
@@ -152,7 +152,8 @@ test("D4 over MCP: post_repair_sort fills both sorters' session from the connect
     assert.match(out[1]!, /two independent sorters/, "the session's own reading twice is one reader");
     const posted = json(out[2]!);
     assert.equal(posted.ok, true, out[2]!);
-    const s = posted.records.sorts.find((x: { input: { id: string } }) => x.input.id === posted.id);
+    assert.equal(posted.records, undefined, "F7: a write answers with its id, not the review");
+    const s = json((await u.mcp([{ name: "repair_records", arguments: { review: "7" } }]))[0]!).records.sorts.find((x: { input: { id: string } }) => x.input.id === posted.id);
     const [a, b] = s.input.assessments.map((x: { identity: unknown }) => x.identity);
     assert.ok(a.session && a.session === b.session, "both carry this connection's session");
     assert.equal(a.child, undefined); assert.equal(b.child, "a1234567");
@@ -168,7 +169,7 @@ test("D2 over MCP: two readers launched from one session release a held sort; th
     ok(await answerDirect(u.root, { decision: "D-dir", option: "Both" }));
     const decisionId = (await decisionsView(u.root)).s.decisions.find((d) => (d.label ?? d.id) === "D-dir")!.id;
     const held = await postRepairSort(u.root, 7, { classification: "design-defect", kind: "isolated", coverage: [{ findingId: u.f, claimIds: [`${u.f}:original`] }],
-      restsOn: [`decision:${decisionId}`], source: "owner worklist: which guard", provenance: "owner-reviewed", assessments: [], disagreements: [] }) as { id: string };
+      restsOn: [`decision:${decisionId}`], source: "owner worklist: which guard", provenance: "owner-reviewed", stakes: "high", assessments: [], disagreements: [] }) as { id: string };
     ok(held);
     const parent = "5e55a0a0-0000-0000-0000-0000000000e1";
     const briefs: { requestId: string; prompt: string }[] = [], refs: { requestId: string; receipt: string }[] = [];

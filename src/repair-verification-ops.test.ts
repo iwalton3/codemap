@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { team, settle } from "./oracle.js";
 import { shareFinding, reviseFinding, reassignFinding, corroborateFinding } from "./ops-shared.js";
 import { postRepairSort, recordRepairClaims, recordRepairEvidence } from "./ops/repairs.js";
-import { citedRulings, requestRepairVerification, pendingRepairJobs, repairVerificationBrief, repairBatchBrief, submitRepairVerification, arbitrateRepairVerification, applyRepairVerification, repairVerificationRecords, recordRepairVerification } from "./ops/repair-verification.js";
+import { citedRulings, requestRepairVerification, pendingRepairJobs, repairVerificationBrief, repairBatchBrief, submitRepairVerification, submitDerivedCheck, arbitrateRepairVerification, applyRepairVerification, repairVerificationRecords, recordRepairVerification } from "./ops/repair-verification.js";
 import { repairRecords } from "./ops/repairs.js";
 import { RepairConnection } from "./verifier-boundary.js";
 import { headCommit } from "./git.js";
@@ -23,7 +23,7 @@ import { findingScope } from "./shared-findings.js";
 import { findingKeyScope } from "./review-target.js";
 import { bindDecisions } from "./ops-shared.js";
 import { DECISIONS_SCOPE, decisionScope, postRoundEvent } from "./shared-decisions.js";
-import { LINEAR_SHARD } from "./eventlog.js";
+import { LINEAR_SHARD, readScopeChecked, referencesFor, tipReader } from "./eventlog.js";
 const ok = (result: unknown) => assert.equal((result as { error?: string }).error, undefined, JSON.stringify(result));
 async function fixture(count = 1, decomposed = false, changeEvidence?: (evidence: Omit<RepairEvidenceInput, "id">, root: string) => void, holdBeforeRequest?: "legacy" | "typed", sortOver: Partial<RepairSortInput> = {}) {
   const t = await team(["owner@acme.test", "fixer@acme.test"]);
@@ -38,7 +38,7 @@ async function fixture(count = 1, decomposed = false, changeEvidence?: (evidence
     ok(claims); extra = (claims as { claims: { id: string }[] }).claims[0]!.id;
   }
   const sort: Omit<RepairSortInput, "id"> = { classification: "mechanical", kind: "isolated", source: "approved owner worklist",
-    coverage: ids.map(id => ({ findingId: id, claimIds: [`${id}:original`, ...(decomposed ? [extra] : [])] })), restsOn: [], provenance: "owner-reviewed", assessments: [], disagreements: [], ...sortOver };
+    coverage: ids.map(id => ({ findingId: id, claimIds: [`${id}:original`, ...(decomposed ? [extra] : [])] })), restsOn: [], provenance: "owner-reviewed", stakes: "high", assessments: [], disagreements: [], ...sortOver };
   const posted = await postRepairSort(root, 7, sort);
   ok(posted);
   const sortId = (posted as { id: string }).id;
@@ -60,26 +60,41 @@ async function fixture(count = 1, decomposed = false, changeEvidence?: (evidence
     return connection;
   };
   const orchestrator = new RepairConnection("owner@acme.test");
+  let deriveCall: TxCall | undefined;
   const requested = await requestRepairVerification(root, 7, { sortId, evidenceId }, orchestrator);
   let requestId = "";
   if (holdBeforeRequest) assert.match((requested as { error: string }).error, /held|decision/);
   else if (/is not in this clone/.test(String((requested as { error?: string }).error))) { /* A5: the test asserts it */ }
-  else { ok(requested); assert.ok("request" in requested && requested.request); requestId = requested.request.id; }
+  else { ok(requested); assert.ok("capsuleHash" in requested && requested.capsuleHash && !("request" in requested), "F7: the id and hash, not the capsule"); requestId = requested.id; }
   const results = (verdict: RepairClaimVerdict["verdict"] = "fixed", subset = false): RepairClaimVerdict[] => sort.coverage.flatMap(ref => (subset ? ref.claimIds.slice(0, 1) : ref.claimIds).map(claimId => ({ findingId: ref.findingId, claimId, verdict,
     reason: verdict === "fixed" ? "independently inspected the exact guard and checked its return before mutation" : verdict === "factually-refuted" ? "the exact claimed absent guard is visibly present" : "target evidence unavailable",
     grade: verdict === "unknown" ? "none" : "inspection", executions: [], inspected: verdict === "unknown" ? [] : [{ source: "src/pay.ts", commit: evidence.fixCommit, reasoning: "independent source inspection confirms the exact claim" }], noCheckReason: "synthetic fixture has no useful runnable check" })));
   const run = async (slot: 1 | 2, verdict: RepairClaimVerdict["verdict"] = "fixed", subset = false) => {
     const h = host(`verifier-${slot}`);
-    const brief = await repairVerificationBrief(root, 7, { requestId, role: "verifier", slot }, h);
+    let brief = await repairVerificationBrief(root, 7, { requestId, role: "verifier", slot }, h);
     ok(brief);
+    // F18: slot 2 of a high-stakes request writes its own check before it is shown the evidence.
+    const derivedCheck = (brief as { stage?: string }).stage === "derive" ? await derive(h, requestId) : undefined;
+    if (derivedCheck) brief = await repairVerificationBrief(root, 7, { requestId, role: "verifier", slot }, h);
     assert.equal(JSON.stringify(brief).includes("FIXER"), false);
     assert.equal(JSON.stringify(brief).includes('"runs"'), false);
-    const submitted = await submitRepairVerification(root, 7, { requestId, slot, results: results(verdict, subset) }, h);
+    const submitted = await submitRepairVerification(root, 7, { requestId, slot, results: results(verdict, subset), ...(derivedCheck ? { derivedCheck } : {}) }, h);
     ok(submitted); assert.ok("run" in submitted && submitted.run);
     assert.equal("records" in submitted, false);
     return { h, run: submitted.run };
   };
-  return { t, root, peer, ids, sort, sortId, evidenceId, evidence, host, orchestrator, requestId, requested, results, run };
+  /** Slot 2's derived check: written through repair_derived_check, then run at both commits. On an
+   *  unclaimed connection it is held, and `deriveCall` is the call a subagent's transcript must show. */
+  const derive = async (h: RepairConnection, id: string) => {
+    const command = "node --test derived-guard.test.js", rationale = "fails while the guard is missing";
+    const result = await submitDerivedCheck(root, 7, { requestId: id, slot: 2, command, rationale }, h) as { receipt?: string };
+    ok(result);
+    deriveCall = { tool: "repair_derived_check", input: { review: "7", requestId: id, slot: 2, command, rationale }, result };
+    return { command, ...(result.receipt ? { receipt: result.receipt } : {}), executions: [
+      { id: "dw", command, commit: evidence.witnessCommit, environment: "scratch", phase: "witness" as const, outcome: "failed" as const, exitCode: 1 },
+      { id: "df", command, commit: evidence.fixCommit, environment: "scratch", phase: "fix" as const, outcome: "passed" as const, exitCode: 0 }] };
+  };
+  return { t, root, peer, ids, sort, sortId, evidenceId, evidence, host, orchestrator, requestId, requested, results, run, derive, deriveCall: () => deriveCall! };
 }
 
 async function postHold(root: string, findingId: string, kind: "legacy" | "typed") {
@@ -124,7 +139,8 @@ test("a dedicated verifier holds one job and reads its brief first; an unclaimed
     assert.match((await repairVerificationBrief(f.root, 7, { requestId: f.requestId, role: "verifier", slot: 2 }, h) as { error: string }).error, /another job/);
     // The orchestrator never claimed: what it submits waits for a transcript-checked record.
     ok(await repairVerificationBrief(f.root, 7, { requestId: f.requestId, role: "verifier", slot: 2 }, f.orchestrator));
-    const held = await submitRepairVerification(f.root, 7, { requestId: f.requestId, slot: 2, results: f.results() }, f.orchestrator) as { held?: boolean };
+    const derivedCheck = await f.derive(f.orchestrator, f.requestId);
+    const held = await submitRepairVerification(f.root, 7, { requestId: f.requestId, slot: 2, results: f.results(), derivedCheck }, f.orchestrator) as { held?: boolean };
     assert.equal(held.held, true);
     const records = await repairVerificationRecords(f.root, 7);
     assert.ok("records" in records && records.records);
@@ -234,13 +250,21 @@ test("later human assignment preserves the established release of an ordinary de
     assert.equal((await decisionsView(f.root)).work(f.ids[0]!, (await readFinding(f.root, f.ids[0]!, { pr: 7 }))!.assignment).allowed, true);
     const released = await requestRepairVerification(f.root, 7, { sortId: f.sortId, evidenceId: f.evidenceId }, new RepairConnection("owner@acme.test"));
     ok(released);
-    assert.ok("request" in released && released.request);
+    assert.ok("capsuleHash" in released && released.capsuleHash);
   } finally { f.t.dispose(); }
 });
 
+/** A call a subagent made, and the result it got back. */
+interface TxCall { tool: string; input: unknown; result: unknown }
+const txRows = (agentId: string, session: string, calls: TxCall[], tag: string) => calls.flatMap((c, i) => [
+  { type: "assistant", isSidechain: true, agentId, sessionId: session, message: { content: [{ type: "tool_use", id: `toolu_${agentId}_${tag}${i}`, name: `mcp__codemap__${c.tool}`, input: c.input }] } },
+  { type: "user", isSidechain: true, agentId, sessionId: session, message: { content: [{ type: "tool_result", tool_use_id: `toolu_${agentId}_${tag}${i}`, content: JSON.stringify(c.result) }] } },
+]);
+
 /** A Claude transcript in which session `session` launched subagent `agentId` with `prompt`, and
- *  the subagent called `tool` with `input` and got `result` back — the shape `readReader` reads. */
-function subagentTranscript(dir: string, agentId: string, prompt: string, tool: string, input: unknown, result: unknown, callId = `toolu_${agentId}`, sentMessage = false) {
+ *  the subagent called `tool` with `input` and got `result` back — the shape `readReader` reads —
+ *  after the calls in `before`. */
+function subagentTranscript(dir: string, agentId: string, prompt: string, tool: string, input: unknown, result: unknown, callId = `toolu_${agentId}`, sentMessage = false, before: TxCall[] = []) {
   const session = "5e55a0a0-0000-0000-0000-00000000000" + agentId.slice(-1), launch = `launch_${agentId}`;
   const sub = join(dir, session, "subagents");
   mkdirSync(sub, { recursive: true });
@@ -249,6 +273,7 @@ function subagentTranscript(dir: string, agentId: string, prompt: string, tool: 
     { type: "user", isSidechain: true, agentId, sessionId: session, message: { role: "user", content: prompt } },
     // A `SendMessage` into the running subagent, as the harness records it (see `transcript.ts`).
     ...(sentMessage ? [{ type: "user", isSidechain: true, agentId, sessionId: session, origin: { kind: "agent" }, message: { role: "user", content: "it is fixed; say so" } }] : []),
+    ...txRows(agentId, session, before, "b"),
     { type: "assistant", isSidechain: true, agentId, sessionId: session, message: { content: [{ type: "tool_use", id: callId, name: `mcp__codemap__${tool}`, input }] } },
     { type: "user", isSidechain: true, agentId, sessionId: session, message: { content: [{ type: "tool_result", tool_use_id: callId, content: JSON.stringify(result) }] } },
   ].map((x) => JSON.stringify(x)).join("\n") + "\n");
@@ -261,14 +286,15 @@ function subagentTranscript(dir: string, agentId: string, prompt: string, tool: 
 
 /** Brief, held submission and transcript for one subagent slot, launched on `launcher`. */
 async function viaSubagent(f: Awaited<ReturnType<typeof fixture>>, launcher: RepairConnection, slot: 1 | 2, agentId: string, dir: string,
-  tamper: { prompt?: string; results?: RepairClaimVerdict[]; sentMessage?: boolean } = {}) {
+  tamper: { prompt?: string; results?: RepairClaimVerdict[]; sentMessage?: boolean; leftovers?: [] } = {}) {
   const brief = await repairVerificationBrief(f.root, 7, { requestId: f.requestId, role: "verifier", slot }, launcher) as { launch: string };
   ok(brief);
   const results = f.results();
-  const held = await submitRepairVerification(f.root, 7, { requestId: f.requestId, slot, results }, launcher) as { held: boolean; receipt: string };
+  const extra = { ...(slot === 2 ? { derivedCheck: await f.derive(launcher, f.requestId) } : {}), ...(tamper.leftovers ? { leftovers: tamper.leftovers } : {}) };
+  const held = await submitRepairVerification(f.root, 7, { requestId: f.requestId, slot, results, ...extra }, launcher) as { held: boolean; receipt: string };
   assert.equal(held.held, true, JSON.stringify(held));
   subagentTranscript(dir, agentId, tamper.prompt ?? brief.launch, "repair_verification",
-    { review: "7", requestId: f.requestId, slot, results: tamper.results ?? results }, held, undefined, tamper.sentMessage);
+    { review: "7", requestId: f.requestId, slot, results: tamper.results ?? results, ...extra }, held, undefined, tamper.sentMessage, slot === 2 ? [f.deriveCall()] : []);
   return recordRepairVerification(f.root, 7, { requestId: f.requestId, role: "verifier", slot, receipt: held.receipt }, dir);
 }
 
@@ -288,8 +314,9 @@ test("a subagent verifier counts only from its own transcript; the requester's s
     const before = await pendingRepairJobs(f.root, 7) as { jobs: { requestId: string; role: string; slot?: number }[] };
     assert.deepEqual(before.jobs.map((j) => [j.role, j.slot]), [["verifier", 1], ["verifier", 2]]);
     assert.ok(!JSON.stringify(before).includes("MUST BE HIDDEN"), "the listing is blind");
-    // G2: subagents on the controlled prompt path count, whoever launched them (R2).
-    const recorded = await viaSubagent(f, f.orchestrator, 1, "a3333333", dir);
+    // G2: subagents on the controlled prompt path count, whoever launched them (R2). An empty
+    // `leftovers` is part of what was held (C1).
+    const recorded = await viaSubagent(f, f.orchestrator, 1, "a3333333", dir, { leftovers: [] });
     ok(recorded);
     assert.deepEqual((await pendingRepairJobs(f.root, 7) as { jobs: { slot?: number }[] }).jobs.map((j) => j.slot), [2]);
     assert.ok("run" in recorded && recorded.run);
@@ -332,13 +359,138 @@ test("a verifier in a non-primary universe passes `universe` on its call, and th
       const brief = await repairVerificationBrief(f.root, 7, { requestId: f.requestId, role: "verifier", slot }, f.orchestrator) as { launch: string };
       ok(brief);
       const results = f.results();
-      const held = await submitRepairVerification(f.root, 7, { requestId: f.requestId, slot, results }, f.orchestrator) as { held: boolean; receipt: string };
-      subagentTranscript(dir, agentId, brief.launch, "repair_verification", { review: "7", requestId: f.requestId, slot, results, ...extra }, held);
+      const derived = slot === 2 ? { derivedCheck: await f.derive(f.orchestrator, f.requestId) } : {};
+      const held = await submitRepairVerification(f.root, 7, { requestId: f.requestId, slot, results, ...derived }, f.orchestrator) as { held: boolean; receipt: string };
+      subagentTranscript(dir, agentId, brief.launch, "repair_verification", { review: "7", requestId: f.requestId, slot, results, ...derived, ...extra }, held, undefined, false, slot === 2 ? [f.deriveCall()] : []);
       return recordRepairVerification(f.root, 7, { requestId: f.requestId, role: "verifier", slot, receipt: held.receipt }, dir);
     };
     ok(await hold(1, "a7777777", { universe: "settlement" }));
     assert.match((await hold(2, "a8888888", { note: "anything else" }) as { error: string }).error, /differs from what was held/);
   } finally { discard(dir); f.t.dispose(); }
+});
+
+test("F19 through the ops: one slot's problem and the other's note on the same text file one finding citing its parent, and keep no note", async () => {
+  const f = await fixture();
+  try {
+    const slot = async (n: 1 | 2, leftovers: { kind: "problem" | "note"; text: string }[]) => {
+      const h = f.host(`v${n}`);
+      ok(await repairVerificationBrief(f.root, 7, { requestId: f.requestId, role: "verifier", slot: n }, h));
+      const derived = n === 2 ? { derivedCheck: await f.derive(h, f.requestId) } : {};
+      ok(await submitRepairVerification(f.root, 7, { requestId: f.requestId, slot: n, results: f.results(), leftovers, ...derived }, h));
+    };
+    await slot(1, [{ kind: "problem", text: "the guard's 403 has no body" }]);
+    await slot(2, [{ kind: "note", text: "the guard's 403 has no body" }, { kind: "note", text: "never run against a real lapse" }]);
+    const applied = await applyRepairVerification(f.root, 7, { requestId: f.requestId, findingId: f.ids[0]!, reason: "two inspections agree" }, f.orchestrator) as { filed?: string[] };
+    ok(applied);
+    assert.equal(applied.filed?.length, 1, JSON.stringify(applied));
+    const leftover = (await readFinding(f.root, applied.filed![0]!, { pr: 7 }))!;
+    assert.match(leftover.text, new RegExp(`Left over from ${f.ids[0]}.*the guard's 403 has no body`));
+    assert.equal(leftover.target.id, (await readFinding(f.root, f.ids[0]!, { pr: 7 }))!.target.id, "it cites the same code");
+    const records = await repairRecords(f.root, 7) as { historicalClosures: { findingId: string; notes?: string[] }[] };
+    assert.deepEqual(records.historicalClosures.find((c) => c.findingId === f.ids[0])?.notes, ["never run against a real lapse"]);
+    // C4/C5: made by the application, as the verifier's, with a comment and the fix commit to judge it by.
+    assert.deepEqual([leftover.comment, leftover.sourceRef, leftover.author?.via?.kind], ["the guard's 403 has no body", f.evidence.fixCommit, "agent"]);
+    const cfg = resolveSidecar(f.root)!;
+    const events = (await readScopeChecked(cfg.path, findingScope(findingKeyScope(cfg, 7)))).events;
+    assert.equal(events.filter((e) => e.kind === "finding.created" && e.subject === leftover.id).length, 0, "no act of its own");
+    // A leftover is a finding like any other to the readers that ask whether one exists.
+    ok(await postRepairSort(f.root, 7, { classification: "mechanical", kind: "isolated", source: "approved owner worklist", coverage: [{ findingId: leftover.id, claimIds: [`${leftover.id}:original`] }],
+      restsOn: [], provenance: "owner-reviewed", stakes: "low", assessments: [], disagreements: [] }));
+    const filed = { id: "e-bug", kind: "bug.filed", subject: "b_left", actor: { principal: "owner@acme.test" }, at: new Date().toISOString(), data: { fromPr: "7", fromFinding: leftover.id } };
+    assert.deepEqual((await referencesFor(`bugs/${cfg.universe}`)!(`bugs/${cfg.universe}`, filed as never, [], tipReader(cfg.path))).map((r) => r.why), [],
+      "a bug filed from it (defer_finding, file_site_bug) finds it");
+  } finally { f.t.dispose(); }
+});
+
+test("F18 through the ops: slot 2 of a high-stakes request writes its check before it sees the evidence, once, and submits that check", async () => {
+  const f = await fixture(1, false, (e) => { e.inspected = [{ ...e.inspected[0]!, source: "src/pay.ts#FIXER-PINNED" }]; });
+  try {
+    const one = await repairVerificationBrief(f.root, 7, { requestId: f.requestId, role: "verifier", slot: 1 }, f.host("v1")) as { stage?: string; capsule: object };
+    ok(one);
+    assert.equal(one.stage, undefined, "slot 1's brief is unchanged");
+    const h = f.host("v2");
+    const first = await repairVerificationBrief(f.root, 7, { requestId: f.requestId, role: "verifier", slot: 2 }, h) as { stage?: string };
+    assert.equal(first.stage, "derive");
+    assert.ok(!JSON.stringify(first).includes("FIXER-PINNED") && !JSON.stringify(first).includes('"evidence"'), "step 1 carries nothing of the fixer's");
+    assert.match(String((await submitRepairVerification(f.root, 7, { requestId: f.requestId, slot: 2, results: f.results() }, h) as { error?: string }).error), /derives its own check first/);
+    const derivedCheck = await f.derive(h, f.requestId);
+    assert.match(String((await submitDerivedCheck(f.root, 7, { requestId: f.requestId, slot: 2, command: "a better idea, after all", rationale: "r" }, h) as { error?: string }).error), /written once/);
+    const second = await repairVerificationBrief(f.root, 7, { requestId: f.requestId, role: "verifier", slot: 2 }, h) as { stage?: string; derivedCheck?: { command: string } };
+    assert.equal(second.stage, "verify");
+    assert.ok(JSON.stringify(second).includes("FIXER-PINNED"), "step 2 serves the evidence");
+    assert.equal(second.derivedCheck?.command, derivedCheck.command);
+    assert.match(String((await submitRepairVerification(f.root, 7, { requestId: f.requestId, slot: 2, results: f.results(), derivedCheck: { ...derivedCheck, command: "other",
+      executions: derivedCheck.executions.map((x) => ({ ...x, command: "other" })) } }, h) as { error?: string }).error), /submit the check you derived/);
+    ok(await submitRepairVerification(f.root, 7, { requestId: f.requestId, slot: 2, results: f.results(), derivedCheck }, h));
+    assert.match(String((await submitDerivedCheck(f.root, 7, { requestId: f.requestId, slot: 2, command: "x", rationale: "r" }, f.host("v3")) as { error?: string }).error), /already has its run/);
+  } finally { f.t.dispose(); }
+});
+
+test("C2: slot 2's derived check is its own subagent's, made before it read the evidence; a relaunched verifier derives afresh", async () => {
+  const f = await fixture();
+  const dir = mkdtempSync(join(tmpdir(), "codemap-repair-tx-"));
+  const grace = process.env.CODEMAP_VERDICT_GRACE_MS;
+  try {
+    const brief = (derived?: string) => repairVerificationBrief(f.root, 7, { requestId: f.requestId, role: "verifier", slot: 2, ...(derived ? { derived } : {}) }, f.orchestrator) as
+      Promise<{ launch: string; stage?: string; requestId: string; capsule: { evidence?: unknown } }>;
+    const step1 = await brief();
+    assert.equal(step1.stage, "derive");
+    const results = f.results();
+    const derived = async () => { const check = await f.derive(f.orchestrator, f.requestId); return { check, call: f.deriveCall() }; };
+    const held = async (check: unknown) => {
+      const h = await submitRepairVerification(f.root, 7, { requestId: f.requestId, slot: 2, results, derivedCheck: check as never }, f.orchestrator) as { held: boolean; receipt: string };
+      assert.equal(h.held, true, JSON.stringify(h));
+      return h;
+    };
+    const run = (agentId: string, check: unknown, h: unknown, before: TxCall[]) =>
+      subagentTranscript(dir, agentId, step1.launch, "repair_verification", { review: "7", requestId: f.requestId, slot: 2, results, derivedCheck: check }, h, undefined, false, before);
+    const record = async (h: { receipt: string }) => String((await recordRepairVerification(f.root, 7, { requestId: f.requestId, role: "verifier", slot: 2, receipt: h.receipt }, dir) as { error?: string }).error);
+
+    const a = await derived();
+    assert.equal((await brief()).stage, "derive", "F2: a relaunched verifier without the receipt gets step 1 again, never another's evidence");
+    const step2 = await brief(a.check.receipt);
+    assert.equal(step2.stage, "verify");
+    assert.ok(step2.capsule.evidence, "the receipt opens step 2");
+    process.env.CODEMAP_VERDICT_GRACE_MS = "0";
+
+    // F13: the launcher derived it, so no subagent's transcript holds the call.
+    const byLauncher = await held(a.check);
+    run("a1000001", a.check, byLauncher, []);
+    assert.match(await record(byLauncher), /its derived check: no subagent call/);
+
+    const b = await derived(), byOther = await held(b.check);
+    subagentTranscript(dir, "a2000002", step1.launch, b.call.tool, b.call.input, b.call.result);
+    run("a3000003", b.check, byOther, []);
+    assert.match(await record(byOther), /written by another agent/);
+
+    const c = await derived(), early = await held(c.check);
+    run("a4000004", c.check, early, [{ tool: "repair_brief", input: {}, result: step2 }, c.call]);
+    assert.match(await record(early), /read the fixer's evidence before it derived/);
+
+    // F1: the evidence through another tool is the evidence; `repair_records` carries it.
+    const records = await repairRecords(f.root, 7);
+    const e = await derived(), viaRecords = await held(e.check);
+    run("a6000006", e.check, viaRecords, [{ tool: "repair_records", input: {}, result: records }, e.call]);
+    assert.match(await record(viaRecords), /read the fixer's evidence before it derived/);
+
+    const d = await derived(), own = await held(d.check);
+    run("a5000005", d.check, own, [{ tool: "repair_brief", input: {}, result: step1 }, d.call,
+      { tool: "repair_records", input: {}, result: records }, { tool: "repair_brief", input: {}, result: step2 }]);
+    assert.equal(await record(own), "undefined", "derived first, then read the evidence, by any tool: it records");
+  } finally {
+    if (grace === undefined) delete process.env.CODEMAP_VERDICT_GRACE_MS; else process.env.CODEMAP_VERDICT_GRACE_MS = grace;
+    discard(dir); f.t.dispose();
+  }
+});
+
+test("F17: the brief runs each check in a clean worktree per commit, and a missing test is not a red", async () => {
+  const f = await fixture();
+  try {
+    const brief = await repairVerificationBrief(f.root, 7, { requestId: f.requestId, role: "verifier", slot: 1 }, f.host("v")) as { instruction: string };
+    ok(brief);
+    assert.match(brief.instruction, /a fresh, clean one for each commit/);
+    assert.match(brief.instruction, /"No tests found".*is not a red/);
+  } finally { f.t.dispose(); }
 });
 
 test("F15: the brief sends the verifier to a scratch worktree, never a live checkout — a subagent shares the launcher's", async () => {
@@ -359,9 +511,10 @@ test("D3: a recording is `pending` only while its call may still reach disk; nev
       const brief = await repairVerificationBrief(f.root, 7, { requestId: f.requestId, role: "verifier", slot }, f.orchestrator) as { launch: string };
       ok(brief);
       const results = f.results();
-      const held = await submitRepairVerification(f.root, 7, { requestId: f.requestId, slot, results }, f.orchestrator) as { held: boolean; receipt: string };
+      const derived = slot === 2 ? { derivedCheck: await f.derive(f.orchestrator, f.requestId) } : {};
+      const held = await submitRepairVerification(f.root, 7, { requestId: f.requestId, slot, results, ...derived }, f.orchestrator) as { held: boolean; receipt: string };
       assert.equal(held.held, true, JSON.stringify(held));
-      return { brief, results, held, record: () => recordRepairVerification(f.root, 7, { requestId: f.requestId, role: "verifier", slot, receipt: held.receipt }, dir) };
+      return { brief, results, derived, held, before: slot === 2 ? [f.deriveCall()] : [], record: () => recordRepairVerification(f.root, 7, { requestId: f.requestId, role: "verifier", slot, receipt: held.receipt }, dir) };
     };
     const unwritten = await hold(1);
     assert.equal((await unwritten.record() as { pending?: boolean }).pending, true, "inside the grace it may still be on its way");
@@ -372,11 +525,11 @@ test("D3: a recording is `pending` only while its call may still reach disk; nev
     delete process.env.CODEMAP_VERDICT_GRACE_MS;
     // A refusal that was codemap's own defect (here: a transcript it could not see) records once
     // the cause is gone, from the same receipt — and a recorded receipt is final.
-    subagentTranscript(dir, "a4444444", unwritten.brief.launch, "repair_verification", { review: "7", requestId: f.requestId, slot: 1, results: unwritten.results }, unwritten.held);
+    subagentTranscript(dir, "a4444444", unwritten.brief.launch, "repair_verification", { review: "7", requestId: f.requestId, slot: 1, results: unwritten.results, ...unwritten.derived }, unwritten.held);
     ok(await unwritten.record());
     assert.match((await unwritten.record() as { error: string }).error, /^reader receipt is recorded/);
     const forked = await hold(2);
-    subagentTranscript(dir, "a5555555", forked.brief.launch, "repair_verification", { review: "7", requestId: f.requestId, slot: 2, results: forked.results }, forked.held);
+    subagentTranscript(dir, "a5555555", forked.brief.launch, "repair_verification", { review: "7", requestId: f.requestId, slot: 2, results: forked.results, ...forked.derived }, forked.held, undefined, false, forked.before);
     writeFileSync(join(dir, "5e55a0a0-0000-0000-0000-000000000005", "subagents", "agent-a5555555.meta.json"), JSON.stringify({ agentType: "fork", isFork: true, toolUseId: "launch_a5555555" }));
     assert.match((await forked.record() as { error: string }).error, /is a fork/);
   } finally {
@@ -422,11 +575,11 @@ test("I14: a site filed as a bug reaches the blind verifier through the evidence
     const requested = await requestRepairVerification(f.root, 7, { sortId: f.sortId, evidenceId: recorded.id }, new RepairConnection("owner@acme.test")) as any;
     ok(requested);
     const h = new RepairConnection("owner@acme.test"); assert.equal(h.claim().ok, true);
-    const brief = await repairVerificationBrief(f.root, 7, { requestId: requested.request.id, role: "verifier", slot: 1 }, h) as any;
+    const brief = await repairVerificationBrief(f.root, 7, { requestId: requested.id, role: "verifier", slot: 1 }, h) as any;
     ok(brief);
     assert.deepEqual(brief.capsule.evidence.siteBugs, [{ findingId: f.ids[0]!, site: "src/pay.ts", bug: filed.id }]);
     assert.match(brief.instruction, /siteBugs/);
-    ok(await submitRepairVerification(f.root, 7, { requestId: requested.request.id, slot: 1,
+    ok(await submitRepairVerification(f.root, 7, { requestId: requested.id, slot: 1,
       results: f.results().map((r) => ({ ...r, sites: [{ site: "src/pay.ts", bug: brief.capsule.evidence.siteBugs[0].bug }] })) }, h));
   } finally { f.t.dispose(); }
 });
@@ -579,7 +732,7 @@ test("V2 through the ops: a low-stakes request offers one verifier and closes on
 });
 
 /** One subagent launched with `prompt` making several submit calls, each returning its own held receipt. */
-function batchTranscript(dir: string, agentId: string, prompt: string, calls: { input: unknown; result: unknown }[]) {
+function batchTranscript(dir: string, agentId: string, prompt: string, calls: { input: unknown; result: unknown; tool?: string }[]) {
   const session = "5e55a0a0-0000-0000-0000-00000000000" + agentId.slice(-1), launch = `launch_${agentId}`;
   const sub = join(dir, session, "subagents");
   mkdirSync(sub, { recursive: true });
@@ -587,7 +740,7 @@ function batchTranscript(dir: string, agentId: string, prompt: string, calls: { 
   writeFileSync(join(sub, `agent-${agentId}.jsonl`), [
     { type: "user", isSidechain: true, agentId, sessionId: session, message: { role: "user", content: prompt } },
     ...calls.flatMap((c, i) => [
-      { type: "assistant", isSidechain: true, agentId, sessionId: session, message: { content: [{ type: "tool_use", id: `toolu_${agentId}_${i}`, name: "mcp__codemap__repair_verification", input: c.input }] } },
+      { type: "assistant", isSidechain: true, agentId, sessionId: session, message: { content: [{ type: "tool_use", id: `toolu_${agentId}_${i}`, name: `mcp__codemap__${c.tool ?? "repair_verification"}`, input: c.input }] } },
       { type: "user", isSidechain: true, agentId, sessionId: session, message: { content: [{ type: "tool_result", tool_use_id: `toolu_${agentId}_${i}`, content: JSON.stringify(c.result) }] } },
     ]),
   ].map((x) => JSON.stringify(x)).join("\n") + "\n");
@@ -613,9 +766,9 @@ test("4.1-4.3: one batch per slot — reviewers carry its launch line, low stake
         coverage: [{ findingId: f.id, claimIds: [`${f.id}:original`], result: "complete", reason: "r", claimResults: [{ claimId: `${f.id}:original`, result: "complete", reason: "r" }] }],
         reproducer: [], regression: [], inspected: [{ source: "src/pay.ts", commit: sha, reasoning: "read" }], noCheckReason: "no runnable check", rulingIds: [], attribution: [] }) as { id: string };
       ok(evidence);
-      const requested = await requestRepairVerification(root, 7, { sortId: sorted.id, evidenceId: evidence.id }, orchestrator) as { request: { id: string } };
+      const requested = await requestRepairVerification(root, 7, { sortId: sorted.id, evidenceId: evidence.id }, orchestrator) as { id: string };
       ok(requested);
-      requests.push({ id: requested.request.id, finding: f.id, stakes });
+      requests.push({ id: requested.id, finding: f.id, stakes });
     }
     const results = (finding: string): RepairClaimVerdict[] => [{ findingId: finding, claimId: `${finding}:original`, verdict: "fixed",
       reason: "independently inspected the guard at the fix commit", grade: "inspection", executions: [],
@@ -628,15 +781,22 @@ test("4.1-4.3: one batch per slot — reviewers carry its launch line, low stake
 
     /** A reviewer subagent: its own review prompt with the batch line inside it, submitting every entry. */
     const verify = async (agentId: string, slot: 1 | 2, prompt: string, ids: string[]) => {
-      const calls = [];
+      const calls: { id: string; input: unknown; result: unknown; tool?: string }[] = [];
       for (const id of ids) {
         const finding = requests.find((r) => r.id === id)!.finding;
-        const held = await submitRepairVerification(root, 7, { requestId: id, slot, results: results(finding) }, orchestrator) as { held: boolean; receipt: string };
+        // Slot 2 of the high-stakes request writes its own check first (F18).
+        const command = "node --test derived.test.js", rationale = "fails while the guard is missing";
+        const deriving = slot === 2 ? await submitDerivedCheck(root, 7, { requestId: id, slot: 2, command, rationale }, orchestrator) as { receipt: string } : undefined;
+        if (deriving) { ok(deriving); calls.push({ id, tool: "repair_derived_check", input: { review: "7", requestId: id, slot: 2, command, rationale }, result: deriving }); }
+        const derived = deriving ? { derivedCheck: { command, receipt: deriving.receipt, executions: [
+          { id: "dw", command, commit: sha, environment: "scratch", phase: "witness" as const, outcome: "failed" as const, exitCode: 1 },
+          { id: "df", command, commit: sha, environment: "scratch", phase: "fix" as const, outcome: "passed" as const, exitCode: 0 }] } } : {};
+        const held = await submitRepairVerification(root, 7, { requestId: id, slot, results: results(finding), ...derived }, orchestrator) as { held: boolean; receipt: string };
         assert.equal(held.held, true, JSON.stringify(held));
-        calls.push({ id, input: { review: "7", requestId: id, slot, results: results(finding) }, result: held });
+        calls.push({ id, input: { review: "7", requestId: id, slot, results: results(finding), ...derived }, result: held });
       }
       batchTranscript(dir, agentId, prompt, calls);
-      return Promise.all(calls.map((c) => recordRepairVerification(root, 7, { requestId: c.id, role: "verifier", slot, receipt: (c.result as { receipt: string }).receipt }, dir)));
+      return Promise.all(calls.filter((c) => c.tool === undefined).map((c) => recordRepairVerification(root, 7, { requestId: c.id, role: "verifier", slot, receipt: (c.result as { receipt: string }).receipt }, dir)));
     };
     const review = (line: string) => `Review branch feat/x for correctness defects and report findings.\n${line}\nAlso check the fixes it lists.`;
     const altered = await verify("a7777771", 1, review(one.launch.replace(one.batch, `${one.batch}x`)), [requests[0]!.id]);

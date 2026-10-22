@@ -10,7 +10,7 @@ import type { LogEvent } from "./eventlog.js";
 function fixture(verdict: "fixed" | "factually-refuted" | "invalid" | "unknown" = "fixed") {
  const actor={principal:"owner"};
  const identity=(session:string)=>({principal:"verifier",harness:"mcp" as const,session});
- const sort:RepairSortInput={id:"sort",classification:verdict === "invalid" ? "invalid" : "mechanical",...(verdict === "invalid" ? {refutationSubtype:"assumed" as const} : {}),kind:"isolated",coverage:[{findingId:"f",claimIds:["f:original"]}],restsOn:[],source:"owner reviewed exact guard",provenance:"owner-reviewed",assessments:[],disagreements:[]};
+ const sort:RepairSortInput={id:"sort",classification:verdict === "invalid" ? "invalid" : "mechanical",...(verdict === "invalid" ? {refutationSubtype:"assumed" as const} : {}),kind:"isolated",coverage:[{findingId:"f",claimIds:["f:original"]}],restsOn:[],source:"owner reviewed exact guard",provenance:"owner-reviewed",stakes:"high",assessments:[],disagreements:[]};
  const evidence:RepairEvidenceInput={id:"proof",sortId:"sort",witnessCommit:"a".repeat(40),baseCommit:"b".repeat(40),fixCommit:"c".repeat(40),coverage:[{findingId:"f",claimIds:["f:original"],result:"complete",reason:"whole claim",claimResults:[{claimId:"f:original",result:"complete",reason:"whole claim"}]}],reproducer:[],regression:[],inspected:[],rulingIds:[],attribution:[]};
  const events:LogEvent[]=testChain("writer",[
  {id:"created",actor,kind:"finding.created",subject:"f",data:{text:"missing guard",targetId:"a",targetKind:"anchor",sourceRef:"a".repeat(40)}},
@@ -29,9 +29,11 @@ function fixture(verdict: "fixed" | "factually-refuted" | "invalid" | "unknown" 
  for(const slot of [1,2] as const) {
   const who=identity(`verifier-${slot}`);
   const result:RepairClaimVerdict={findingId:"f",claimId:"f:original",verdict,reason:verdict === "factually-refuted" || verdict === "invalid" ? "guard already exists at cited target" : "guard rejects negatives",grade:verdict === "unknown" ? "none":"inspection",executions:[],inspected:verdict === "unknown" ? []:[{source:"guard",commit:verdict === "factually-refuted" || verdict === "invalid" ? evidence.witnessCommit : evidence.fixCommit,reasoning:"negative branch returns before mutation"}],noCheckReason:"no runnable target"};
-  append("repair.verification-recorded",`run-${slot}`,{id:`run-${slot}`,requestId:"request",capsuleHash:repairVerificationHash(c),slot,identity:who,results:[result]},verifier);
+  // Slot 2 of a high-stakes request carries the check it derived (F18).
+  const derivedCheck={command:"derived",executions:[{id:"dw",command:"derived",commit:c.evidence.witnessCommit,environment:"scratch",phase:"witness" as const,outcome:"failed" as const,exitCode:1},{id:"df",command:"derived",commit:c.evidence.fixCommit,environment:"scratch",phase:"fix" as const,outcome:"passed" as const,exitCode:0}]};
+  append("repair.verification-recorded",`run-${slot}`,{id:`run-${slot}`,requestId:"request",capsuleHash:repairVerificationHash(c),slot,identity:who,results:[result],...(slot===2?{derivedCheck}:{})},verifier);
  }
- const apply=()=>append("finding.repairApplied","f",{id:`application-${events.length}`,requestId:"request",capsuleHash:repairVerificationHash(c),findingId:"f",openEpoch:finding.openEpoch,claimHash:issueClaimHash("finding",finding),outcome:verdict === "unknown" ? "fixed":verdict,contextHash:repairVerificationHash(c.rulingContext),reason:"independent inspection covers exact whole claim",identity:identity("orchestrator")},verifier);
+ const apply=()=>append("finding.repairApplied","f",{id:`application-${events.length}`,requestId:"request",capsuleHash:repairVerificationHash(c),findingId:"f",openEpoch:finding.openEpoch,claimHash:issueClaimHash("finding",finding),outcome:verdict === "unknown" ? "fixed":verdict,contextHash:repairVerificationHash(c.rulingContext),reason:"independent inspection covers exact whole claim",identity:identity("orchestrator"),leftovers:{problems:[],notes:[]}},verifier);
  return {events,append,apply,sort,c,identity};
 }
 

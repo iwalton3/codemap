@@ -7,7 +7,7 @@ import type { Anchor } from "./schema.js";
 import { indexCommit } from "./repo.js";
 import { revParse } from "./git.js";
 import {
-  anchorsUnderRef, blobReuser, readCachedSnapshot, referencedAnchorIds, retainOrphans, snapshotKey, writeSnapshot,
+  anchorsUnderRef, blobReuser, bodyHashAt, readCachedSnapshot, referencedAnchorIds, retainOrphans, snapshotKey, snapshotRefusal, writeSnapshot,
 } from "./store.js";
 import { db } from "./db.js";
 
@@ -46,4 +46,17 @@ export async function buildSnapshot(root: string, sha: string, label?: string | 
   const kept = (db(root).prepare("SELECT branch FROM snapshots WHERE ref = ?").get(sha) as { branch: string | null } | undefined)?.branch;
   await writeSnapshot(root, sha, label ?? kept ?? null, anchors, new Date().toISOString(), { blobs });
   return anchors;
+}
+
+/**
+ * `anchorId`'s body hash at commit `ref`, from that commit's snapshot — built when it is not one
+ * `readSnapshot` would serve, since the point lookup is raw. Undefined when the commit holds no
+ * such anchor. Throws when the snapshot is refused: a witness against it would record a body that
+ * is not that commit's.
+ */
+export async function bodyHashAtCommit(root: string, ref: string, anchorId: string): Promise<string | undefined> {
+  const sha = snapshotKey(root, ref);
+  if (snapshotRefusal(root, sha) && !(await readSnapshot(root, sha)))
+    throw new Error(`${snapshotRefusal(root, sha)!.message} — witnessing against it would record a body that is not that commit's.`);
+  return bodyHashAt(root, sha, anchorId) ?? undefined;
 }

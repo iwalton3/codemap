@@ -3,13 +3,17 @@ import { createHash } from "node:crypto";
 import { canonical } from "./canonical.js";
 import { sortEvents, type LogEvent } from "./eventlog.js";
 import { verifierIdentityKey, type VerifierIdentity } from "./verifier-boundary.js";
+import { closeoutRules, filedFindings, type FiledFinding } from "./leftover-findings.js";
 
 export type { RepairClaim, RepairCoverage, ReportedSortReceipt, RepairAssessment, RepairSortInput, ReleaseRuling, ReleaseReceipt, RepairRelease } from "./repair-sort-types.js";
 import type { RepairClaim, RepairCoverage, ReportedSortReceipt, RepairSortInput, ReleaseRuling, ReleaseReceipt } from "./repair-sort-types.js";
 export interface RepairExecution {
   id: string; command: string; commit: string; environment: string;
-  phase: "witness" | "fix" | "regression";
+  /** `mutation` (schema 6): the check run at the fix commit with `mutation` applied, which must
+   *  fail — how a missing-test claim shows its new test can fail, when the witness has no test. */
+  phase: "witness" | "fix" | "regression" | "mutation";
   outcome: "passed" | "failed" | "unknown"; exitCode?: number; stdout?: string; stderr?: string; reason?: string;
+  mutation?: { site: string; change: string };
 }
 export interface RepairEvidenceInput {
   id: string; sortId: string; witnessCommit: string; baseCommit: string; fixCommit: string;
@@ -66,6 +70,41 @@ const VERIFICATION_KINDS: readonly string[] = ["repair.verification-requested", 
 /** Every sort a sort replaces: `prior`, and `priors` (owner, O19: "Let a sort name several it replaces"). */
 export const priorsOf = (d: Pick<RepairSortInput, "prior" | "priors">): string[] =>
   [...(typeof d.prior === "string" ? [d.prior] : []), ...(Array.isArray(d.priors) ? d.priors : [])];
+
+export { CLOSEOUT_SCHEMA, closeoutRules } from "./leftover-findings.js";
+
+/**
+ * Whether evidence's OWN reproducer runs could ever meet the evidence bar for its sort (F13): per
+ * command it pins (any run with an outcome), a fix needs a red — at the witness, or, on a sort
+ * marked `testGap`, a mutation run at the fix — and a pass at the fix under that exact command string; a refutation needs a pass at
+ * the witness. Evidence that cannot meet it cost a verifier run each time it was filed (C3: "same
+ * command as …", a check passing at both commits). Regression and inspection are not checks here.
+ */
+export function evidenceBarError(evidence: Pick<RepairEvidenceInput, "reproducer" | "witnessCommit" | "fixCommit">, sort: Pick<RepairSortInput, "refutationSubtype" | "testGap">): string | undefined {
+  const runs = evidence.reproducer;
+  const ran = (command: string, phase: RepairExecution["phase"], outcome: RepairExecution["outcome"]) => runs.some((x) => x.command === command && x.phase === phase && x.outcome === outcome);
+  for (const command of [...new Set(runs.filter((x) => x.outcome !== "unknown").map((x) => x.command))]) {
+    if (sort.refutationSubtype !== undefined) {
+      if (!ran(command, "witness", "passed")) return `reproducer ${JSON.stringify(command)} cannot meet the bar: a refutation needs it passing at the witness commit`;
+    } else if (!ran(command, "fix", "passed") || !(ran(command, "witness", "failed") || (sort.testGap === true && ran(command, "mutation", "failed"))))
+      return `reproducer ${JSON.stringify(command)} cannot meet the bar: a fix needs it failing at the witness (or, on a sort its sorters marked testGap, a mutation run failing at the fix) and passing at the fix, under this exact command`;
+  }
+  const m = runs.find((x) => x.phase === "mutation" && (x.commit !== evidence.fixCommit || !x.mutation || !nonempty(x.mutation.site) || !nonempty(x.mutation.change)));
+  if (m) return `mutation run ${JSON.stringify(m.command)} runs at the fix commit and names the site it mutates and the change`;
+}
+
+/**
+ * What a sort reads: the claims it covers, as one defect or a pattern of sites, and whether they
+ * are a missing test. A correction
+ * that changes it is a new reading, so it does not keep the prior's sorters (`keptReading`), and a
+ * release must keep it.
+ */
+export const readingShape = (s: Pick<RepairSortInput, "coverage" | "kind" | "predicate" | "sites" | "testGap">): string =>
+  canonical({ coverage: s.coverage, kind: s.kind, predicate: s.predicate ?? null, sites: s.sites ?? null, testGap: s.testGap ?? null });
+
+/** The sorter and arbitrator identities a sort was read by, for "fresh readers" (F15). */
+const readersOf = (d: Pick<RepairSortInput, "assessments" | "arbitration">): string[] =>
+  [...d.assessments.map((a) => a.identity), ...(d.arbitration ? [d.arbitration.identity] : [])].map((i) => verifierIdentityKey(i));
 
 /** Original claims come from creation, never the finding's mutable current text. */
 export function foldRepairRecords(input: LogEvent[]): RepairRecords {
@@ -124,8 +163,7 @@ export function foldRepairRecords(input: LogEvent[]): RepairRecords {
     if (!["mechanical", "implementation-defect"].includes(d.classification)) return "a release settles a sort only as mechanical or implementation-defect";
     if (d.assessments.length || d.disagreements.length || d.arbitration || d.ruling !== undefined || d.refutationSubtype !== undefined)
       return ruled ? "a ruled sort's provenance is its rulings alone" : "a released sort's provenance is its two readers alone";
-    const shape = (s: RepairSortInput) => canonical({ coverage: s.coverage, kind: s.kind, predicate: s.predicate ?? null, sites: s.sites ?? null });
-    if (shape(d) !== shape(prior)) return "a release keeps the held sort's coverage, kind, predicate and sites";
+    if (readingShape(d) !== readingShape(prior)) return "a release keeps the held sort's coverage, kind, predicate, sites and test-gap marker";
     if (!Array.isArray(r.rulings) || !r.rulings.length || r.rulings.some(x => !x || ![x.decision, x.answer, x.question, x.words].every(nonempty))
       || !unique(r.rulings.map(x => x.decision))) return "a release names one ruling, with its question and words, for each decision it drops";
     const dropped = prior.restsOn.filter(x => !d.restsOn.includes(x));
@@ -144,11 +182,17 @@ export function foldRepairRecords(input: LogEvent[]): RepairRecords {
     if (key(a) === key(b) || a.launch === b.launch || a.id === b.id) return "the two release readers were not independently launched";
     if (a.verdict !== "yes" || b.verdict !== "yes") return "a release needs both readers' yes; there is no arbitrator";
   };
+  // A finding's original claim, at the event that filed it: its creation, or the application that
+  // left it over (C4), so a leftover can be sorted and verified like any other.
+  const filedAt = new Map<string, FiledFinding[]>();
+  for (const f of filedFindings(events)) filedAt.set(f.eventId, [...(filedAt.get(f.eventId) ?? []), f]);
   for (const e of events) {
     const d = e.data as any;
-    if (e.kind === "finding.created" && nonempty(d?.text) && nonempty(d.targetId) && ["anchor", "node"].includes(d.targetKind) && !out.claims.some(c => c.findingId === e.subject)) {
-      out.claims.push({ id: `${e.subject}:original`, findingId: e.subject, text: d.text, eventId: e.id, actor: e.actor, at: e.at,
-        asFiled: structuredClone(d), ...(d.witness ? { witness: d.witness } : {}) });
+    for (const f of filedAt.get(e.id) ?? []) {
+      const x = f.data as any;
+      if (nonempty(x?.text) && nonempty(x.targetId) && ["anchor", "node"].includes(x.targetKind) && !out.claims.some(c => c.findingId === f.id))
+        out.claims.push({ id: `${f.id}:original`, findingId: f.id, text: x.text, eventId: e.id, actor: f.actor, at: e.at,
+          asFiled: structuredClone(x), ...(x.witness ? { witness: x.witness } : {}) });
     }
     if (!e.kind.startsWith("repair.") || RETIRED_REPAIR_KINDS.includes(e.kind) || VERIFICATION_KINDS.includes(e.kind)) continue;
     let error: string | undefined;
@@ -175,9 +219,31 @@ export function foldRepairRecords(input: LogEvent[]): RepairRecords {
         if (!error && priorsOf(data).length && (!nonempty(data.reason) || priorsOf(data).some(p => !out.sorts.some(s => s.input.id === p)))) error = "correction needs predecessor and reason";
         if (!error && data.ruling !== undefined && (!nonempty(data.ruling) || !priorsOf(data).length)) error = "a cited ruling belongs to a correction: it names a logged answer and a prior sort";
         if (!error && data.stakes !== undefined && data.stakes !== "high" && data.stakes !== "low") error = "stakes is high or low";
-        // Raise-only, so the sorters' disagreement-means-high cannot be undone in one step (V1).
-        if (!error && data.stakes === "low" && priorsOf(data).some(p => out.sorts.find(s => s.input.id === p)?.input.stakes !== "low"))
-          error = "a correction may raise stakes, never lower them: a sort without stakes is high";
+        if (!error && data.testGap !== undefined && (data.testGap !== true || !closeoutRules(e) || data.refutationSubtype !== undefined))
+          error = "testGap is true or absent, and marks only a sort that closes as fixed";
+        // Released and ruled sorts are codemap's, and inherit the held sort's stakes, absent included.
+        if (!error && closeoutRules(e) && data.stakes === undefined && (data.provenance === "owner-reviewed" || data.provenance === "dual-sorted"))
+          error = "a sort states its stakes, high or low";
+        // Raise-only, so the sorters' disagreement-means-high cannot be undone in one step (V1). The
+        // one way down (F15): a sort that never had stakes, set by a NEW dual reading — fresh sorters,
+        // so a sorting is never re-labelled by the readers who left it without.
+        const lowered = !error && data.stakes === "low" ? priorsOf(data).map(p => out.sorts.find(s => s.input.id === p)?.input).filter(p => p?.stakes !== "low") : [];
+        if (lowered.length) {
+          // Every ancestor, not only the direct prior: a stakes-less correction between an explicit
+          // high and the way down would otherwise launder the high.
+          const ancestors = new Set<string>(), walk = [...priorsOf(data)];
+          for (let id; (id = walk.pop()) !== undefined;) {
+            const s = ancestors.has(id) ? undefined : out.sorts.find(x => x.input.id === id)?.input;
+            if (s) { ancestors.add(id); walk.push(...priorsOf(s)); }
+          }
+          const unset = lowered.every(p => p && p.stakes === undefined)
+            && ![...ancestors].some(id => out.sorts.find(x => x.input.id === id)!.input.stakes === "high");
+          const readers = new Set(lowered.flatMap(p => (p ? readersOf(p) : [])));
+          if (!closeoutRules(e) || !unset || data.provenance !== "dual-sorted")
+            error = "a correction may raise stakes, never lower them; only a dual-sorted correction may set stakes on a sort that has none";
+          else if (readersOf(data).some(k => readers.has(k)))
+            error = "setting stakes on a sort that has none is a new reading: its sorters must not be the prior sort's";
+        }
         if (!error && data.kind === "pattern" && (!nonempty(data.predicate) || !data.sites?.length || !unique(data.sites))) error = "pattern needs predicate and original sites";
         if (!error) error = releaseError(data);
         if (!error) error = sequenceError(data);
@@ -191,8 +257,10 @@ export function foldRepairRecords(input: LogEvent[]): RepairRecords {
         if (!error && ![data.reproducer, data.regression, data.inspected, data.rulingIds, data.attribution].every(Array.isArray)) error = "structured evidence fields are required";
         if (!error && [...data.reproducer, ...data.regression].some(x => !nonempty(x.command) || !commit(x.commit) || !nonempty(x.environment) || !["passed", "failed", "unknown"].includes(x.outcome) || (x.outcome === "unknown" ? !nonempty(x.reason) : !Number.isInteger(x.exitCode)))) error = "execution needs actual result or explicit unknown reason";
         if (!error && data.coverage.some(c => !Array.isArray(c.claimResults) || !unique(c.claimResults.map(r => r.claimId)) || c.claimResults.some(r => !c.claimIds.includes(r.claimId) || !["complete", "partial", "unknown"].includes(r.result) || !nonempty(r.reason)))) error = "per-claim outcomes must cite covered claims and explicit reasons";
-        if (!error && [...data.reproducer, ...data.regression].some(x => !["witness", "fix", "regression"].includes(x.phase))) error = "execution phase is required";
-        if (!error && data.reproducer.some(x => !["witness", "fix"].includes(x.phase))) error = "reproducer runs distinguish witness from fix";
+        const phases = closeoutRules(e) ? ["witness", "fix", "mutation"] : ["witness", "fix"];
+        if (!error && [...data.reproducer, ...data.regression].some(x => ![...phases, "regression"].includes(x.phase))) error = "execution phase is required";
+        if (!error && data.reproducer.some(x => !phases.includes(x.phase))) error = `reproducer runs distinguish ${phases.join(", ")}`;
+        if (!error && closeoutRules(e)) error = evidenceBarError(data, sort!.input);
         if (!error && data.regression.some(x => x.phase !== "regression")) error = "regression runs have a separate phase";
         if (!error && !unique(data.rulingIds)) error = "ruling IDs must be unique";
         if (!error && data.rulingIds.some(x => !nonempty(x))) error = "ruling IDs must be nonempty";

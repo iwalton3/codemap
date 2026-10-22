@@ -42,6 +42,7 @@ import { mintId, readScope, registerDoor, type LogEvent } from "./eventlog.js";
 import { emitEvent } from "./write.js";
 import { issueClaimHash, validateApplicationCapsule, type ApplicationAttempt } from "./ruling-application.js";
 import { foldTopicsReport, topicsScope, topicHex } from "./shared-topics.js";
+import { closeoutRules, filedFindings, type FiledFinding, type LeftoverOrigin } from "./leftover-findings.js";
 
 /**
  * Lifecycle. `issued` is an agent's proposal; `created` is a claim somebody stands
@@ -367,7 +368,11 @@ export interface SharedFinding {
    * and the agent that did the work keeps its attribution.
    */
   applications?: ApplicationAttempt[];
-  repairClosure?: { requestId: string; applicationId: string; outcome: "fixed" | "factually-refuted" | "invalid"; attention: string[] };
+  repairClosure?: { requestId: string; applicationId: string; outcome: "fixed" | "factually-refuted" | "invalid"; attention: string[]; notes?: string[];
+    /** Leftover problems not made findings, because the topic was retired (`leftoversHeld`). */
+    problems?: string[] };
+  /** A leftover: made by the application that closed `parent`, not by a `finding.created` (C4). */
+  leftover?: LeftoverOrigin;
   /** Last accepted opening act; captured by a ruling application. */
   openEpoch?: string;
   closed?: {
@@ -685,9 +690,25 @@ function foldFindingsInternal(events: LogEvent[], replay: ApplicationReplay): Ma
   // happens here — like `spent` for ruling applications (F34).
   const repairSpent = new Set<string>();
 
+  const leftoversAt = new Map<string, FiledFinding[]>();
+  for (const x of filedFindings(events)) if (x.leftover) leftoversAt.set(x.eventId, [...(leftoversAt.get(x.eventId) ?? []), x]);
+
   for (let at = 0; at < events.length; at++) {
     const e = events[at]!;
     const d = e.data as Data | undefined;
+
+    for (const x of leftoversAt.get(e.id) ?? []) {
+      if (out.has(x.id)) continue;
+      created.set(x.id, JSON.stringify(x.data));
+      out.set(x.id, {
+        id: x.id, target: { kind: x.data.targetKind as "anchor" | "node", id: x.data.targetId as string },
+        text: x.data.text as string, comment: str(x.data, "comment"), witness: witnessOf(obj(x.data, "witness")), sourceRef: str(x.data, "sourceRef"),
+        ...(str(x.data, "branch") ? { branch: str(x.data, "branch") } : {}),
+        ...(str(x.data, "topic") ? { topic: str(x.data, "topic") } : {}),
+        author: x.actor, createdAt: e.at, state: isAgentActor(x.actor) ? "issued" : "created", openEpoch: e.id,
+        corroboration: [], outcomes: [], asks: [], thread: [], revisions: [], leftover: x.leftover,
+      });
+    }
 
     if (e.kind === "finding.created") {
       if (out.has(e.subject)) {
@@ -1034,7 +1055,10 @@ function foldFindingsInternal(events: LogEvent[], replay: ApplicationReplay): Ma
         repairSpent.add(once);
         f.state = application.outcome === "fixed" ? "resolved" : application.outcome === "invalid" ? "invalid" : "refuted";
         f.closed = { eventId: e.id, at: e.at, by: e.actor, reason: application.reason };
-        f.repairClosure = { requestId: application.requestId, applicationId: application.id, outcome: application.outcome, attention: [] };
+        const held = application.leftoversHeld ? application.leftovers?.problems ?? [] : [];
+        f.repairClosure = { requestId: application.requestId, applicationId: application.id, outcome: application.outcome,
+          attention: held.length ? [`The topic was retired, so the verifier's leftover problems were not filed as findings: file them where they belong — ${held.join("; ")}`] : [],
+          ...(application.leftovers?.notes.length ? { notes: application.leftovers.notes } : {}), ...(held.length ? { problems: held } : {}) };
         f.pending = undefined;
         break;
       }
@@ -1155,7 +1179,7 @@ function universeOfFindingScope(scope: string): string | null {
  * (rows 29-31), a repair sort the decisions it rests on and the rulings that released it (A8),
  * and a verification result's sites the bugs they were filed as (row 51).
  */
-async function outsideReferences(scope: string, e: LogEvent, _own: LogEvent[], read: ScopeReader): Promise<Refusal[]> {
+async function outsideReferences(scope: string, e: LogEvent, own: LogEvent[], read: ScopeReader): Promise<Refusal[]> {
   const universe = universeOfFindingScope(scope);
   if (!universe) return [];
   if (e.kind === "finding.rulingApplied") return rulingReferences(read, e);
@@ -1165,6 +1189,7 @@ async function outsideReferences(scope: string, e: LogEvent, _own: LogEvent[], r
     if (bound) return [{ id: e.id, kind: e.kind, cls: "reference", why: bound }];
     if (/\/t-[0-9a-f]+$/.test(scope)) return topicReferences(scope, universe, e, read);
   }
+  if (e.kind === "finding.repairApplied") return leftoverHoldReferences(scope, universe, e, own, read);
   const named = e.kind === "finding.promotedToBug" ? [str(e.data as Data | undefined, "bug")]
     : e.kind === "repair.verification-recorded"
       ? (((e.data as Data | undefined)?.results as { sites?: { bug?: unknown }[] }[] | undefined) ?? [])
@@ -1218,6 +1243,24 @@ async function topicReferences(scope: string, universe: string, e: LogEvent, rea
   return [];
 }
 
+/**
+ * A request's first application with leftover problems holds them (`leftoversHeld`) exactly when
+ * its topic is retired as the log stood before it: a derived finding meets the creation rule a
+ * filed one does (`topicReferences`), and is never derived around it.
+ */
+async function leftoverHoldReferences(scope: string, universe: string, e: LogEvent, own: LogEvent[], read: ScopeReader): Promise<Refusal[]> {
+  const d = e.data as { requestId?: unknown; findingId?: unknown; leftovers?: { problems?: unknown[] }; leftoversHeld?: unknown } | undefined;
+  const refuse = (why: string): Refusal[] => [{ id: e.id, kind: e.kind, cls: "reference", why }];
+  if (!closeoutRules(e) || !d?.leftovers?.problems?.length) return [];
+  if (!/\/t-[0-9a-f]+$/.test(scope)) return d.leftoversHeld === undefined ? [] : refuse("only a topic's application holds its leftovers");
+  if (own.some((x) => x.kind === "finding.repairApplied" && (x.data as Data | undefined)?.requestId === d.requestId)) return [];
+  const slug = str(filedFindings(own).find((x) => x.id === d.findingId)?.data, "topic");
+  const retired = !!slug && foldTopicsReport(await read.read(topicsScope(universe))).value.find((t) => t.slug === slug)?.status === "retired";
+  if (retired && d.leftoversHeld !== "topic-retired") return refuse(`topic ${slug} is retired: the application holds its leftover problems (leftoversHeld)`);
+  if (!retired && d.leftoversHeld !== undefined) return refuse(`topic ${slug} is not retired: its leftover problems are made findings`);
+  return [];
+}
+
 registerReport((scope) => scope.startsWith("findings/"), foldFindingsScopeReport);
 
 /** A verification application lands only if it is what closed the finding (claim, epoch, authority). */
@@ -1233,7 +1276,7 @@ registerDoor((scope) => scope.startsWith("findings/"), (logRoot, scope) => async
   refused: [
     ...foldFindingsScopeReport(events).refused,
     ...repairApplicationRefused(events, minted),
-    ...await outsideReferences(scope, minted, events, tipReader(logRoot)),
+    ...await outsideReferences(scope, minted, events.filter((x) => x.id !== minted.id), tipReader(logRoot)),
   ],
 }));
 registerReferences((scope) => scope.startsWith("findings/"), outsideReferences);

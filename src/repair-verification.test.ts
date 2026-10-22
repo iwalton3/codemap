@@ -8,11 +8,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { foldRepairRecords, type RepairSortInput, type RepairEvidenceInput, type RepairExecution } from "./repair-records.js";
-import { foldFindings } from "./shared-findings.js";
+import { foldFindings, foldFindingsScopeReport } from "./shared-findings.js";
+import { leftoverId, filedFindings } from "./leftover-findings.js";
 import { issueClaimHash } from "./ruling-application.js";
 import { testChain } from "./test-events.js";
 import {
-  foldRepairVerification, repairVerificationDecision, repairVerificationHash, earlierUnfavourableRuns, isRepairVerificationState,
+  foldRepairVerification, repairVerificationDecision, repairVerificationHash, earlierUnfavourableRuns, isRepairVerificationState, leftoversOf, resultError,
   type RepairVerificationCapsule, type RepairClaimVerdict,
 } from "./repair-verification.js";
 import type { VerifierIdentity } from "./verifier-boundary.js";
@@ -27,16 +28,17 @@ const run = (command: string, commit: string, phase: RepairExecution["phase"], o
 const CHECK = "node --test guard.test.js";
 const observedFix = [run(CHECK, W, "witness", "failed"), run(CHECK, F, "fix", "passed")];
 
-function fixture(opts: { pinned?: RepairExecution[]; classification?: string; refutationSubtype?: "factual" | "assumed"; stakes?: "high" | "low" } = {}) {
+function fixture(opts: { pinned?: RepairExecution[]; classification?: string; refutationSubtype?: "factual" | "assumed"; stakes?: "high" | "low" | "none"; testGap?: true } = {}) {
   const sort: RepairSortInput = { id: "sort", classification: opts.classification ?? "mechanical", kind: "isolated", coverage: [{ findingId: "f", claimIds: ["f:original"] }],
     restsOn: [], source: "owner reviewed", provenance: "owner-reviewed", assessments: [], disagreements: [], ...(opts.refutationSubtype ? { refutationSubtype: opts.refutationSubtype } : {}),
-    ...(opts.stakes ? { stakes: opts.stakes } : {}) };
+    // "none": a sort from before stakes existed, which only a build before EVENT_SCHEMA 6 wrote.
+    ...(opts.stakes === "none" ? {} : { stakes: opts.stakes ?? "high" }), ...(opts.testGap ? { testGap: true as const } : {}) };
   const evidence: RepairEvidenceInput = { id: "proof", sortId: "sort", witnessCommit: W, baseCommit: "b".repeat(40), fixCommit: F,
     coverage: [{ findingId: "f", claimIds: ["f:original"], result: "complete", reason: "r", claimResults: [{ claimId: "f:original", result: "complete", reason: "r" }] }],
     reproducer: opts.pinned ?? [], regression: [], inspected: [], rulingIds: [], attribution: [] };
   const events: LogEvent[] = testChain("w", [
     { id: "created", actor: owner, kind: "finding.created", subject: "f", data: { text: "missing guard", targetId: "a", targetKind: "anchor" } },
-    { id: "sort", actor: owner, kind: "repair.sort-recorded", subject: "sort", data: { ...sort } },
+    { id: "sort", actor: owner, kind: "repair.sort-recorded", subject: "sort", data: { ...sort }, ...(opts.stakes === "none" ? { eventSchema: 5 } : {}) },
     { id: "proof", actor: owner, kind: "repair.evidence-recorded", subject: "proof", data: { ...evidence } },
   ]);
   const finding = foldFindings(events).get("f")!;
@@ -50,12 +52,16 @@ function fixture(opts: { pinned?: RepairExecution[]; classification?: string; re
   const request = (id = "rq") => add(`e-${id}`, "repair.verification-requested", id, { id, capsule, capsuleHash: repairVerificationHash(capsule) });
   const verdict = (v: RepairClaimVerdict["verdict"], executions: RepairExecution[], grade: RepairClaimVerdict["grade"] = "executable", inspected: RepairClaimVerdict["inspected"] = []): RepairClaimVerdict =>
     ({ findingId: "f", claimId: "f:original", verdict: v, reason: "checked", grade, executions, inspected, ...(grade === "inspection" ? { noCheckReason: "nothing runs" } : {}) });
-  const verify = (slot: 1 | 2, identity: VerifierIdentity, result: RepairClaimVerdict, requestId = "rq") =>
+  // Slot 2 of a high-stakes request derives its own check (F18); the fixture supplies one unless the test does.
+  const derived = { command: "node --test derived.test.js", executions: [run("node --test derived.test.js", W, "witness", "failed"), run("node --test derived.test.js", F, "fix", "passed")] };
+  const verify = (slot: 1 | 2, identity: VerifierIdentity, result: RepairClaimVerdict, requestId = "rq", extra: Record<string, unknown> = {}) =>
     add(`e-run-${requestId}-${slot}-${identity.session}-${identity.child ?? ""}`, "repair.verification-recorded", `run-${requestId}-${slot}`,
-      { id: `run-${requestId}-${slot}`, requestId, capsuleHash: repairVerificationHash(capsule), slot, identity, results: [result] });
-  const apply = (identity: VerifierIdentity, outcome = "fixed") => add(`e-apply-${events.length}`, "finding.repairApplied", "f",
+      { id: `run-${requestId}-${slot}`, requestId, capsuleHash: repairVerificationHash(capsule), slot, identity, results: [result],
+        ...(slot === 2 && sort.stakes !== "low" ? { derivedCheck: derived } : {}), ...extra });
+  const apply = (identity: VerifierIdentity, outcome = "fixed", extra: Record<string, unknown> = {}) => add(`e-apply-${events.length}`, "finding.repairApplied", "f",
     { id: `apply-${events.length}`, requestId: "rq", capsuleHash: repairVerificationHash(capsule), findingId: "f", openEpoch: finding.openEpoch,
-      claimHash: issueClaimHash("finding", finding), outcome, contextHash: repairVerificationHash("ctx"), reason: "verified", identity });
+      claimHash: issueClaimHash("finding", finding), outcome, contextHash: repairVerificationHash("ctx"), reason: "verified", identity,
+      leftovers: leftoversOf(foldRepairVerification(events).runs.filter((r) => r.requestId === "rq")), ...extra });
   const folded = () => foldRepairVerification(events);
   const rejected = (eventId: string) => folded().rejected.find((r) => r.eventId === eventId)?.reason;
   return { events, request, verdict, verify, apply, folded, rejected, add, capsule };
@@ -143,6 +149,17 @@ test("two blind slots take two verifiers, once each, and the orchestrator is nei
   assert.match(self.rejected(self.verify(1, conn("orch"), self.verdict("fixed", observedFix))) ?? "", /orchestrator cannot verify/);
 });
 
+test("P3: a second slot-1 run with its own run id is refused, and the first run is the one the decision reads", () => {
+  const f = fixture({ stakes: "low" }); f.request();
+  f.verify(1, conn("v1"), f.verdict("fixed", observedFix));
+  // Two subagents on one batch mint distinct `run_<uuid>` ids, so the id clause cannot be what refuses it.
+  const second = f.add("e-second", "repair.verification-recorded", "run-other", { id: "run-other", requestId: "rq", capsuleHash: repairVerificationHash(f.capsule),
+    slot: 1, identity: conn("v2"), results: [f.verdict("unknown", [], "none")] });
+  assert.match(f.rejected(second) ?? "", /its own verifier/);
+  assert.deepEqual(f.folded().runs.map((r) => r.id), ["run-rq-1"]);
+  assert.equal(repairVerificationDecision(f.folded(), "rq", "f").verdict, "fixed");
+});
+
 test("V2: a low-stakes request closes on its one run and has no slot 2; high, or no stakes, still needs two", () => {
   const low = fixture({ stakes: "low" }); low.request();
   low.verify(1, conn("v1"), low.verdict("fixed", observedFix));
@@ -151,10 +168,10 @@ test("V2: a low-stakes request closes on its one run and has no slot 2; high, or
   const applied = low.apply(conn("fixer"));
   assert.equal(low.rejected(applied), undefined);
   assert.equal(foldFindings(low.events).get("f")!.closed?.eventId, applied);
-  for (const stakes of ["high", undefined] as const) {
+  for (const stakes of ["high", "none"] as const) {
     const high = fixture({ stakes }); high.request();
     high.verify(1, conn("v1"), high.verdict("fixed", observedFix));
-    assert.match(high.rejected(high.apply(conn("fixer"))) ?? "", /complete independent/, `${stakes ?? "absent"}: one run does not close it`);
+    assert.match(high.rejected(high.apply(conn("fixer"))) ?? "", /complete independent/, `${stakes}: one run does not close it`);
     assert.equal(repairVerificationDecision(high.folded(), "rq", "f").reasons[0], "two independent runs are required");
   }
   // One run stands for both: an unknown from it still closes nothing.
@@ -211,4 +228,94 @@ test("a projected verification state with a broken record fails closed", () => {
   assert.equal(isRepairVerificationState(state), true);
   state.runs[0].identity = { principal: "owner", harness: "claude-subagent", session: "s" };
   assert.equal(isRepairVerificationState(state), false, "a subagent identity names its subagent");
+});
+
+test("2c: on a sort marked testGap a mutation run red at the fix stands in for the witness red; it names its change, and only schema 6 runs carry one", () => {
+  const mutation = { site: "auth.ts:12", change: "ValidIssuer widened" };
+  const mutated = (extra = {}): RepairExecution => ({ ...run(CHECK, F, "fix", "failed"), id: "mutation-c", phase: "mutation", mutation, ...extra });
+  const f = fixture({ pinned: [mutated(), run(CHECK, F, "fix", "passed")], stakes: "low", testGap: true }); f.request();
+  const closes = f.verify(1, conn("v1"), f.verdict("fixed", [mutated(), run(CHECK, F, "fix", "passed")]));
+  assert.equal(f.rejected(closes), undefined, "no witness red, and it closes");
+  assert.equal(repairVerificationDecision(f.folded(), "rq", "f").verdict, "fixed");
+  const g = fixture({ pinned: [mutated(), run(CHECK, F, "fix", "passed")], stakes: "low", testGap: true }); g.request();
+  assert.match(g.rejected(g.verify(1, conn("v1"), g.verdict("fixed", [mutated({ mutation: undefined }), run(CHECK, F, "fix", "passed")]))) ?? "", /names the site it mutates/);
+  assert.match(g.rejected(g.verify(1, conn("v2"), g.verdict("fixed", [run(CHECK, F, "fix", "passed")]))) ?? "", /failing at the witness .*stands in.*marked testGap/);
+  const old = fixture({ pinned: [mutated(), run(CHECK, F, "fix", "passed")], stakes: "low", testGap: true }); old.request();
+  const stamped = old.verify(1, conn("v1"), old.verdict("fixed", [mutated(), run(CHECK, F, "fix", "passed")]));
+  old.events.find((e) => e.id === stamped)!.eventSchema = 5;
+  assert.match(old.rejected(stamped) ?? "", /actual consistent result/, "a build before schema 6 never wrote a mutation phase");
+  // C6: on an unmarked sort the same run is not refused for its phase; it just does not count.
+  const unmarked = fixture({ stakes: "low" });
+  assert.match(resultError(unmarked.verdict("fixed", [mutated(), run(CHECK, F, "fix", "passed")]), unmarked.capsule) ?? "", /counts only on a sort its sorters marked testGap/);
+});
+
+test("F19: leftovers are unioned at apply, a problem in either slot wins, and an application that drops one is refused", () => {
+  assert.deepEqual(leftoversOf([{ slot: 2, leftovers: [{ kind: "note", text: "x" }, { kind: "note", text: "y" }] }, { slot: 1, leftovers: [{ kind: "problem", text: " x " }] }]),
+    { problems: ["x"], notes: ["y"] });
+  const f = fixture(); f.request();
+  f.verify(1, conn("v1"), f.verdict("fixed", observedFix), "rq", { leftovers: [{ kind: "problem", text: "the 403 has no body" }] });
+  f.verify(2, conn("v2"), f.verdict("fixed", observedFix), "rq", { leftovers: [{ kind: "note", text: "the 403 has no body" }, { kind: "note", text: "never run against a real lapse" }] });
+  const dropped = f.add("e-dropped", "finding.repairApplied", "f", { id: "apply-dropped", requestId: "rq", capsuleHash: repairVerificationHash(f.capsule), findingId: "f",
+    openEpoch: foldFindings(f.events).get("f")!.openEpoch, claimHash: issueClaimHash("finding", foldFindings(f.events).get("f")!), outcome: "fixed",
+    contextHash: repairVerificationHash("ctx"), reason: "verified", identity: conn("applier"), leftovers: { problems: [], notes: ["never run against a real lapse"] } });
+  assert.match(f.rejected(dropped) ?? "", /carries every leftover/);
+  const applied = f.apply(conn("applier"));
+  assert.equal(f.rejected(applied), undefined);
+  assert.deepEqual(foldFindings(f.events).get("f")!.repairClosure?.notes, ["never run against a real lapse"], "the closure shows the note, not the problem");
+  const bad = fixture(); bad.request();
+  assert.match(bad.rejected(bad.verify(1, conn("v1"), bad.verdict("fixed", observedFix), "rq", { leftovers: [{ kind: "worry", text: "?" }] })) ?? "", /leftovers are a list/);
+});
+
+test("C4: the first application carries the leftovers' witness, on the parent's own anchor, or their hold; a held leftover is shown, not derived", () => {
+  const problem = () => {
+    const f = fixture(); f.request();
+    f.verify(1, conn("v1"), f.verdict("fixed", observedFix), "rq", { leftovers: [{ kind: "problem", text: "the 403 has no body" }] });
+    f.verify(2, conn("v2"), f.verdict("fixed", observedFix), "rq", { leftovers: [{ kind: "note", text: "the 403 has no body" }] });
+    return f;
+  };
+  const wrong = problem();
+  assert.match(wrong.rejected(wrong.apply(conn("applier"), "fixed", { leftoverWitness: { anchorId: "other", bodyHash: "sha256:x" } })) ?? "", /parent finding's own anchor/);
+  const right = problem();
+  assert.equal(right.rejected(right.apply(conn("applier"), "fixed", { leftoverWitness: { anchorId: "a", bodyHash: "sha256:x" } })), undefined);
+  assert.deepEqual(foldFindings(right.events).get(leftoverId("rq", "the 403 has no body"))?.witness, { anchorId: "a", bodyHash: "sha256:x" });
+  // The application makes the problem a finding — run on hand-built events, with no finding.created for it.
+  const leftover = foldFindings(right.events).get(leftoverId("rq", "the 403 has no body"));
+  assert.ok(leftover, "the fold derives the leftover finding");
+  assert.equal(right.events.filter((e) => e.kind === "finding.created" && e.subject === leftover.id).length, 0);
+  assert.deepEqual([leftover.comment, leftover.sourceRef, leftover.target.id, leftover.author.via?.kind, leftover.state, leftover.leftover?.parent],
+    ["the 403 has no body", F, "a", "agent", "issued", "f"], "comment, the fix commit, the parent's target, its verifier as author");
+  assert.deepEqual(leftover.leftover?.runs.map((r) => [r.slot, r.kind]), [[1, "problem"], [2, "note"]]);
+  assert.ok(foldRepairRecords(right.events).claims.some((c) => c.id === `${leftover.id}:original`), "and it has an original claim to sort");
+  const held = problem();
+  assert.equal(held.rejected(held.apply(conn("applier"), "fixed", { leftoversHeld: "topic-retired" })), undefined);
+  assert.equal(foldFindings(held.events).get(leftoverId("rq", "the 403 has no body")), undefined, "nothing derived around the topic's retirement");
+  assert.deepEqual(foldFindings(held.events).get("f")!.repairClosure?.problems, ["the 403 has no body"]);
+  assert.match(foldFindings(held.events).get("f")!.repairClosure!.attention.join(), /topic was retired/);
+});
+
+test("F6: a recorded run with a malformed leftover or no identity is refused by the fold, never a throw out of the leftover scan", () => {
+  for (const [label, extra] of [["text 42", { leftovers: [{ kind: "problem", text: 42 }] }], ["no identity", { identity: undefined, leftovers: [{ kind: "problem", text: "x" }] }]] as const) {
+    const f = fixture(); f.request();
+    const bad = f.verify(1, conn("v1"), f.verdict("fixed", observedFix), "rq", { ...extra });
+    // Not f.apply: its leftovers come from the folded runs, which leave the malformed one out.
+    f.add("e-apply-raw", "finding.repairApplied", "f", { id: "apply-raw", requestId: "rq", findingId: "f", leftovers: { problems: ["x"], notes: [] } });
+    assert.doesNotThrow(() => filedFindings(f.events), label);
+    assert.ok(foldFindingsScopeReport(f.events).refused.some((r) => r.id === bad), `${label}: the run itself is refused`);
+  }
+});
+
+test("F18: slot 2 of a high-stakes request carries the check it derived; slot 1, low stakes, and runs before schema 6 do not", () => {
+  const f = fixture(); f.request();
+  f.verify(1, conn("v1"), f.verdict("fixed", observedFix));
+  assert.match(f.rejected(f.verify(2, conn("v2"), f.verdict("fixed", observedFix), "rq", { derivedCheck: undefined })) ?? "", /derives its own check: a derived check names its command/);
+  const half = { command: "x", executions: [run("x", W, "witness", "failed")] };
+  assert.match(f.rejected(f.verify(2, conn("v3"), f.verdict("fixed", observedFix), "rq", { derivedCheck: half })) ?? "", /run at the witness and at the fix/);
+  assert.equal(f.rejected(f.verify(2, conn("v4"), f.verdict("fixed", observedFix))), undefined, "with its own check, at both commits");
+  const one = fixture(); one.request();
+  assert.match(one.rejected(one.verify(1, conn("v1"), one.verdict("fixed", observedFix), "rq", { derivedCheck: half })) ?? "", /only slot 2 of a high-stakes request/);
+  const old = fixture(); old.request();
+  old.verify(1, conn("v1"), old.verdict("fixed", observedFix));
+  const stamped = old.verify(2, conn("v2"), old.verdict("fixed", observedFix), "rq", { derivedCheck: undefined });
+  old.events.find((e) => e.id === stamped)!.eventSchema = 5;
+  assert.equal(old.rejected(stamped), undefined, "a run from before schema 6 needed none");
 });
