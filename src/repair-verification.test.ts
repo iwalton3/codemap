@@ -8,8 +8,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { foldRepairRecords, type RepairSortInput, type RepairEvidenceInput, type RepairExecution } from "./repair-records.js";
-import { foldFindings } from "./shared-findings.js";
-import { leftoverId } from "./leftover-findings.js";
+import { foldFindings, foldFindingsScopeReport } from "./shared-findings.js";
+import { leftoverId, filedFindings } from "./leftover-findings.js";
 import { issueClaimHash } from "./ruling-application.js";
 import { testChain } from "./test-events.js";
 import {
@@ -291,6 +291,17 @@ test("C4: the first application carries the leftovers' witness, on the parent's 
   assert.equal(foldFindings(held.events).get(leftoverId("rq", "the 403 has no body")), undefined, "nothing derived around the topic's retirement");
   assert.deepEqual(foldFindings(held.events).get("f")!.repairClosure?.problems, ["the 403 has no body"]);
   assert.match(foldFindings(held.events).get("f")!.repairClosure!.attention.join(), /topic was retired/);
+});
+
+test("F6: a recorded run with a malformed leftover or no identity is refused by the fold, never a throw out of the leftover scan", () => {
+  for (const [label, extra] of [["text 42", { leftovers: [{ kind: "problem", text: 42 }] }], ["no identity", { identity: undefined, leftovers: [{ kind: "problem", text: "x" }] }]] as const) {
+    const f = fixture(); f.request();
+    const bad = f.verify(1, conn("v1"), f.verdict("fixed", observedFix), "rq", { ...extra });
+    // Not f.apply: its leftovers come from the folded runs, which leave the malformed one out.
+    f.add("e-apply-raw", "finding.repairApplied", "f", { id: "apply-raw", requestId: "rq", findingId: "f", leftovers: { problems: ["x"], notes: [] } });
+    assert.doesNotThrow(() => filedFindings(f.events), label);
+    assert.ok(foldFindingsScopeReport(f.events).refused.some((r) => r.id === bad), `${label}: the run itself is refused`);
+  }
 });
 
 test("F18: slot 2 of a high-stakes request carries the check it derived; slot 1, low stakes, and runs before schema 6 do not", () => {

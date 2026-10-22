@@ -56,9 +56,9 @@ export function filedFindings(events: LogEvent[]): FiledFinding[] {
       const runs = [...(runsOf.get(d.requestId) ?? [])].sort((a, b) => a.slot - b.slot);
       for (const text of problems) {
         if (typeof text !== "string" || !text.trim()) continue;
-        const named = runs.flatMap((r) => (Array.isArray(r.leftovers) ? r.leftovers : []).filter((x) => x?.text?.trim() === text).map((x) => ({ id: r.id, slot: r.slot, kind: x.kind })));
+        const named = runs.flatMap((r) => (Array.isArray(r.leftovers) ? r.leftovers : []).filter((x) => typeof x?.text === "string" && x.text.trim() === text).map((x) => ({ id: r.id, slot: r.slot, kind: x.kind })));
         // The lowest slot whose run called it a problem is its author (owner, Q3: "Both are right").
-        const by = runs.find((r) => named.some((n) => n.id === r.id && n.kind === "problem"));
+        const by = runs.find((r) => typeof r.identity?.principal === "string" && named.some((n) => n.id === r.id && n.kind === "problem"));
         const author: Actor = by ? { principal: by.identity.principal, via: { kind: "agent", ...(by.identity.harness ? { harness: by.identity.harness } : {}) } } : e.actor;
         const id = leftoverId(d.requestId, text), fix = fixOf.get(d.requestId);
         const data: Record<string, unknown> = {
