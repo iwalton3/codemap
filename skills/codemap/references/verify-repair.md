@@ -17,6 +17,9 @@ jobs already open. If a request is open for these findings, go to step 5. Do not
 one beside it. Once both runs are in and agree, `repair_pending` lists nothing for that request even
 though nothing is applied yet: go to step 6.
 
+This step is the fixer's and the applier's. A slot-2 verifier of a high-stakes request does not call
+`repair_records` before it has derived its own check: its run is refused if it saw the evidence first.
+
 Check holds now, before any evidence work. `findings` marks a finding `held` when a person's
 decision holds it, and `repair_request` refuses a request that covers a held or closed finding. A
 held finding is a person's decision first (`references/asking.md`).

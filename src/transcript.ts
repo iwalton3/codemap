@@ -575,22 +575,19 @@ export function readSubagentCall(agentId: string, callId: string, tool: RegExp, 
 }
 
 /**
- * Whether subagent `agentId` made call `callId` before it got back any result of a `tool` call that
- * `carries`, in its own transcript (verify it first: `readSubagentCall`). A result that does not
- * parse is passed to `carries` as its raw text, so the predicate decides how to read it.
+ * Whether subagent `agentId` made call `callId` before it got back any tool result that `carries`,
+ * in its own transcript (verify it first: `readSubagentCall`). A result that does not parse is
+ * passed to `carries` as its raw text, so the predicate decides how to read it.
  */
-export function calledBefore(agentId: string, session: string, callId: string, tool: RegExp, carries: (result: unknown) => boolean,
+export function calledBefore(agentId: string, session: string, callId: string, carries: (result: unknown) => boolean,
   dir: string = transcriptDir()): boolean {
   const own = jsonl(join(dir, session, "subagents", `agent-${agentId}.jsonl`)) ?? [];
   const at = own.findIndex((e) => callsTool(e, callId));
   if (at < 0) return false;
-  const named = new Set(own.filter((e) => e.type === "assistant" && Array.isArray(e.message?.content))
-    .flatMap((e) => e.message.content.filter((x: any) => x?.type === "tool_use" && tool.test(String(x.name ?? ""))).map((x: any) => x.id)));
   return !own.slice(0, at).some((row) => {
     if (row.type !== "user" || !Array.isArray(row.message?.content)) return false;
     const blocks = row.message.content.filter((x: any) => x?.type === "tool_result");
-    return blocks.some((b: any) => named.has(b.tool_use_id)
-      && carries((blocks.length === 1 ? resultObject(row.toolUseResult) : undefined) ?? resultObject(b.content) ?? JSON.stringify(b.content)));
+    return blocks.some((b: any) => carries((blocks.length === 1 ? resultObject(row.toolUseResult) : undefined) ?? resultObject(b.content) ?? JSON.stringify(b.content)));
   });
 }
 

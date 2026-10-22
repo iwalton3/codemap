@@ -368,11 +368,11 @@ function derivedFor(root: string, job: Job, connection: RepairConnection, receip
   const { command, rationale } = JSON.parse(held.body) as Derived;
   return { command, rationale, receipt: held.receipt };
 }
-/** A brief result (one job's, or a batch's entries) that carried this request's evidence. */
-const carriesEvidence = (requestId: string) => (v: unknown): boolean => typeof v === "string"
-  ? v.includes(requestId) && /\\*"evidence\\*"\s*:/.test(v)
-  : !!v && typeof v === "object" && (((v as any).requestId === requestId && (v as any).capsule?.evidence !== undefined)
-    || Object.values(v as object).some((x) => carriesEvidence(requestId)(x)));
+/**
+ * A tool result that names this request's evidence record: step 2 of the brief, a batch entry,
+ * `repair_records`, or a read of the sidecar log. Step 1 never carries the id.
+ */
+const namesEvidence = (evidenceId: string) => (v: unknown): boolean => JSON.stringify(v ?? null).includes(evidenceId);
 
 /** One job's blind brief: what the verifier reads, and nothing it may not. */
 function jobBrief(root: string, records: RepairVerificationRecords, job: Job, connection: RepairConnection, derivedReceipt?: unknown) {
@@ -398,7 +398,7 @@ function jobBrief(root: string, records: RepairVerificationRecords, job: Job, co
         sort: { id: c.sort.id, classification: c.sort.classification, kind: c.sort.kind, coverage: c.sort.coverage, predicate: c.sort.predicate, sites: c.sort.sites } },
       instruction: "Step 1 of 2 — you are slot 2 of a high-stakes request, the second opinion. From the claims and the code at the pinned commits alone, "
         + "write the check YOU would run to test each claim: a command that fails at the witness commit if the claim is true and passes at the fix if it was fixed. "
-        + "You are not shown the fixer's evidence yet, on purpose. Call repair_derived_check with this requestId, slot 2, the command and why it tests the claims; "
+        + "You are not shown the fixer's evidence yet, on purpose: do not read it any other way, repair_records or the sidecar included, before you derive. Call repair_derived_check with this requestId, slot 2, the command and why it tests the claims; "
         + "then read this brief again — it will carry the fixer's evidence and the rest of the instructions. If repair_derived_check returns a `receipt`, "
         + "pass it as `derived` when you read the brief again (in a batch: `derived: { <requestId>: <receipt> }`); without it you are given this step again." };
   }
@@ -610,7 +610,7 @@ export async function recordRepairVerification(root: string, review: number | st
         : isUnverified(found) ? `its derived check: ${found.unverified}`
         : found.agentId !== call.agentId ? "slot 2's derived check was written by another agent: the verifier derives its own"
         : found.input?.command !== (JSON.parse(dheld.body) as Derived).command ? "the derive call's command differs from what was held"
-        : !calledBefore(call.agentId, call.reader.session, found.callId, /(^|__)repair_(batch_)?brief$/, carriesEvidence(job.requestId), dir)
+        : !calledBefore(call.agentId, call.reader.session, found.callId, namesEvidence(request.capsule.evidence.id), dir)
           ? "the verifier read the fixer's evidence before it derived its own check" : undefined;
       if (!reason) derive = { key: deriveKey(job), receipt: dheld!.receipt, callId: (found as { callId: string }).callId };
     }

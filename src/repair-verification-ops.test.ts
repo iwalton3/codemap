@@ -467,9 +467,16 @@ test("C2: slot 2's derived check is its own subagent's, made before it read the 
     run("a4000004", c.check, early, [{ tool: "repair_brief", input: {}, result: step2 }, c.call]);
     assert.match(await record(early), /read the fixer's evidence before it derived/);
 
+    // F1: the evidence through another tool is the evidence; `repair_records` carries it.
+    const records = await repairRecords(f.root, 7);
+    const e = await derived(), viaRecords = await held(e.check);
+    run("a6000006", e.check, viaRecords, [{ tool: "repair_records", input: {}, result: records }, e.call]);
+    assert.match(await record(viaRecords), /read the fixer's evidence before it derived/);
+
     const d = await derived(), own = await held(d.check);
-    run("a5000005", d.check, own, [{ tool: "repair_brief", input: {}, result: step1 }, d.call, { tool: "repair_brief", input: {}, result: step2 }]);
-    assert.equal(await record(own), "undefined", "derived first, then read the evidence: it records");
+    run("a5000005", d.check, own, [{ tool: "repair_brief", input: {}, result: step1 }, d.call,
+      { tool: "repair_records", input: {}, result: records }, { tool: "repair_brief", input: {}, result: step2 }]);
+    assert.equal(await record(own), "undefined", "derived first, then read the evidence, by any tool: it records");
   } finally {
     if (grace === undefined) delete process.env.CODEMAP_VERDICT_GRACE_MS; else process.env.CODEMAP_VERDICT_GRACE_MS = grace;
     discard(dir); f.t.dispose();
