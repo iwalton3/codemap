@@ -24,7 +24,7 @@ import { cachedBugs } from "../bugs-publish.js";
 import { filedFindings, leftoverId } from "../leftover-findings.js";
 import { foldTopicsReport, topicsScope } from "../shared-topics.js";
 import { readAnchorStore } from "../store.js";
-import { bodyHashAtCommit } from "../snapshots.js";
+import { bodyHashAtCommit, readSnapshot } from "../snapshots.js";
 import { findingsProjection } from "../shared-projections.js";
 import { readCached } from "../materialize.js";
 import { readScopeChecked, type LogEvent } from "../eventlog.js";
@@ -647,6 +647,13 @@ export async function recordRepairVerification(root: string, review: number | st
 export async function applyRepairVerification(root: string, review: number | string, input: { requestId: string; findingId: string; reason: string }, connection: RepairConnection) {
   input = structuredClone(input);
   const identity = identityIn(connection, root);
+  // The leftover witness indexes the fix commit inside `append`, under the sidecar lock; index it
+  // first. A stale view here can only miss or waste the warm, never change the witness.
+  const before = await repairVerificationRecords(root, review);
+  const seen = "error" in before ? undefined : before.records;
+  const fixCommit = seen?.requests.find((r) => r.id === input.requestId)?.capsule.evidence.fixCommit;
+  if (fixCommit && leftoversOf(seen!.runs.filter((x) => x.requestId === input.requestId)).problems.length)
+    await readSnapshot(root, fixCommit).catch(() => null);
   let filed: string[] = [];
   const applied = await append(root, review, identity, async (events) => {
     const records = foldRepairVerification(events);
