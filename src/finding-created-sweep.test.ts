@@ -1,8 +1,7 @@
 /**
  * A leftover finding is made by the application that closed its parent, with no `finding.created`
  * event (C4), so "does this finding exist" goes through `findingIds` (`leftover-findings.ts`). A
- * reader that scans for `finding.created` itself refuses every leftover — four did when leftovers
- * became derived. This fails when a fifth appears.
+ * reader that scans for `finding.created` itself refuses every leftover. This fails when one appears.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";

@@ -2,12 +2,14 @@
  * The findings a scope's log makes, whichever act made them: each `finding.created`, and each
  * leftover problem a verifier left on a repair verification, which the request's first
  * APPLICATION makes (C4). There is no act for a leftover, so none can be skipped. Pure over the
- * events and a leaf (an ES-module cycle made the old filer exist), so the findings fold, the
+ * events and a leaf — it imports none of the op modules — so the findings fold, the
  * repair records and every cross-scope "does this finding exist" check read one answer:
  * `findingIds`, never their own scan for `finding.created` (`finding-created-sweep.test.ts`).
  *
- * Every application in a readable log is an accepted one — a refused one is damage and locks —
- * so this does not run the verification fold.
+ * This does not run the verification fold, so a refused application still makes its leftovers.
+ * Usually that refusal is damage and locks; in the classes `judge` serves without a lock
+ * (`validation.ts`) the leftovers exist beside an open parent. Accepted (owner, 2026-10-21:
+ * "Accept, fix the comment").
  */
 import { createHash } from "node:crypto";
 import { COMMENT_MAX, type Actor } from "./schema.js";
