@@ -690,6 +690,5 @@ export async function applyRepairVerification(root: string, review: number | str
     return { kind: "finding.repairApplied", subject: target.findingId, data: { ...data } };
   });
   if (!("ok" in applied) || !filed.length) return applied;
-  await repairVerificationRecords(root, review);   // re-folds the scope, so a read sees them
   return { ...applied, filed };
 }
