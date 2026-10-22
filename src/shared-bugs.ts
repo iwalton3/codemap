@@ -637,7 +637,7 @@ async function outsideReferences(scope: string, e: LogEvent, _own: LogEvent[], r
 
 registerReport((scope) => scope.startsWith("bugs/"), foldBugsReport);
 registerDoor((scope) => scope.startsWith("bugs/"), (logRoot, scope) => async (events, minted) => ({
-  refused: [...foldBugsReport(events).refused, ...await outsideReferences(scope, minted, events, tipReader(logRoot))],
+  refused: [...foldBugsReport(events).refused, ...await outsideReferences(scope, minted, events.filter((x) => x.id !== minted.id), tipReader(logRoot))],
 }));
 registerReferences((scope) => scope.startsWith("bugs/"), outsideReferences);
 

@@ -390,7 +390,11 @@ export const prefixReader = (all: ScopeReader, beforeSeq: number): ScopeReader =
   scopes: () => all.scopes(),
 });
 
-/** What a scope's events name in OTHER scopes (docs/sidecar-references.md), one check per family. */
+/**
+ * What a scope's events name in OTHER scopes (docs/sidecar-references.md), one check per family.
+ * `own` is the event's own scope BEFORE it, never including it: a door's `events` end with
+ * `minted`, so a door filters it out (`shared-decisions.ts`, `shared-findings.ts`).
+ */
 export type ReferenceCheck = (scope: string, e: LogEvent, own: LogEvent[], read: ScopeReader) =>
   Promise<{ id: string; kind: string; why: string; cls: string }[]>;
 const references: { match: (scope: string) => boolean; check: ReferenceCheck }[] = [];

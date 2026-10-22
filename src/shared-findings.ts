@@ -1179,7 +1179,7 @@ function universeOfFindingScope(scope: string): string | null {
  * (rows 29-31), a repair sort the decisions it rests on and the rulings that released it (A8),
  * and a verification result's sites the bugs they were filed as (row 51).
  */
-async function outsideReferences(scope: string, e: LogEvent, _own: LogEvent[], read: ScopeReader): Promise<Refusal[]> {
+async function outsideReferences(scope: string, e: LogEvent, own: LogEvent[], read: ScopeReader): Promise<Refusal[]> {
   const universe = universeOfFindingScope(scope);
   if (!universe) return [];
   if (e.kind === "finding.rulingApplied") return rulingReferences(read, e);
@@ -1189,7 +1189,7 @@ async function outsideReferences(scope: string, e: LogEvent, _own: LogEvent[], r
     if (bound) return [{ id: e.id, kind: e.kind, cls: "reference", why: bound }];
     if (/\/t-[0-9a-f]+$/.test(scope)) return topicReferences(scope, universe, e, read);
   }
-  if (e.kind === "finding.repairApplied") return leftoverHoldReferences(scope, universe, e, read);
+  if (e.kind === "finding.repairApplied") return leftoverHoldReferences(scope, universe, e, own, read);
   const named = e.kind === "finding.promotedToBug" ? [str(e.data as Data | undefined, "bug")]
     : e.kind === "repair.verification-recorded"
       ? (((e.data as Data | undefined)?.results as { sites?: { bug?: unknown }[] }[] | undefined) ?? [])
@@ -1248,14 +1248,13 @@ async function topicReferences(scope: string, universe: string, e: LogEvent, rea
  * its topic is retired as the log stood before it: a derived finding meets the creation rule a
  * filed one does (`topicReferences`), and is never derived around it.
  */
-async function leftoverHoldReferences(scope: string, universe: string, e: LogEvent, read: ScopeReader): Promise<Refusal[]> {
+async function leftoverHoldReferences(scope: string, universe: string, e: LogEvent, own: LogEvent[], read: ScopeReader): Promise<Refusal[]> {
   const d = e.data as { requestId?: unknown; findingId?: unknown; leftovers?: { problems?: unknown[] }; leftoversHeld?: unknown } | undefined;
   const refuse = (why: string): Refusal[] => [{ id: e.id, kind: e.kind, cls: "reference", why }];
   if (!closeoutRules(e) || !d?.leftovers?.problems?.length) return [];
   if (!/\/t-[0-9a-f]+$/.test(scope)) return d.leftoversHeld === undefined ? [] : refuse("only a topic's application holds its leftovers");
-  const prior = await read.read(scope);
-  if (prior.some((x) => x.kind === "finding.repairApplied" && (x.data as Data | undefined)?.requestId === d.requestId)) return [];
-  const slug = str(filedFindings(prior).find((x) => x.id === d.findingId)?.data, "topic");
+  if (own.some((x) => x.kind === "finding.repairApplied" && (x.data as Data | undefined)?.requestId === d.requestId)) return [];
+  const slug = str(filedFindings(own).find((x) => x.id === d.findingId)?.data, "topic");
   const retired = !!slug && foldTopicsReport(await read.read(topicsScope(universe))).value.find((t) => t.slug === slug)?.status === "retired";
   if (retired && d.leftoversHeld !== "topic-retired") return refuse(`topic ${slug} is retired: the application holds its leftover problems (leftoversHeld)`);
   if (!retired && d.leftoversHeld !== undefined) return refuse(`topic ${slug} is not retired: its leftover problems are made findings`);
@@ -1277,7 +1276,7 @@ registerDoor((scope) => scope.startsWith("findings/"), (logRoot, scope) => async
   refused: [
     ...foldFindingsScopeReport(events).refused,
     ...repairApplicationRefused(events, minted),
-    ...await outsideReferences(scope, minted, events, tipReader(logRoot)),
+    ...await outsideReferences(scope, minted, events.filter((x) => x.id !== minted.id), tipReader(logRoot)),
   ],
 }));
 registerReferences((scope) => scope.startsWith("findings/"), outsideReferences);
